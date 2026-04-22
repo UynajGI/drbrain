@@ -1,16 +1,15 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+*.egg-info/
+.venv/
+*.egg
+*.pyc
 
-# Virtual environments
-.venv
-
-# DrBrain
+# DrBrain data
 data/*.db
 data/reports/*.json
 data/cache/*
 !data/cache/.gitkeep
+config.local.yaml
+data/logs/
