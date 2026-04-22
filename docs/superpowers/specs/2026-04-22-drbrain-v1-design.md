@@ -37,7 +37,7 @@ PDF → MinerU(Markdown) → Chapter Filter → LLM JSON Extraction
 
 | Command | Function | Input | Output |
 |---------|----------|-------|--------|
-| `drbrain setup` | Init DB, YAML, MinerU token guide | None | Interactive prompt, config files created |
+| `drbrain setup` | Full interactive init wizard | None | `config.yaml`, `config.local.yaml`, DB, dirs |
 | `drbrain ingest <path>` | Full pipeline ingest | PDF/MD path or dir | Terminal summary + JSON report |
 | `drbrain expand --id <id>` | Citation topology extension | Paper local_id | JSONL of refs/cits, placeholders created |
 | `drbrain list` | List all papers | None | Markdown table |
@@ -84,7 +84,54 @@ dirs:
 
 Loading: `config.yaml` first, then `config.local.yaml` deep-merges on top. `DRBRAIN_CONFIG` env var or `--config-path` flag overrides.
 
-## 5. MinerU Integration
+## 5. Setup Command — Full Interactive Wizard
+
+`drbrain setup` is the only interactive command. It guides the user through all configuration, writes `config.yaml` + `config.local.yaml`, initializes the database, and creates required directories.
+
+### 5.1 Step-by-step flow
+
+Each step shows the current default, lets the user type a new value, or press Enter to accept.
+
+| Step | Prompt | Default | Validation | Stored in |
+|------|--------|---------|------------|-----------|
+| **1. Directories** | Confirm data dirs | `data/cache`, `data/reports`, `data/pdfs` | Must be writable paths | `config.local.yaml` / dirs created |
+| **2. Database** | DB path | `data/drbrain.db` | File creatable | `config.local.yaml` |
+| **3. MinerU mode** | Token or Flash? | `flash` (free) | `flash` / `token` | `config.local.yaml` |
+| **4. MinerU token** | If token chosen: paste token | None | Non-empty string | `config.local.yaml` |
+| **5. MinerU token URL** | Show `https://mineru.net/apiManage/token` | — | Info only | Printed to terminal |
+| **6. MinerU model** | pipeline / vlm / MinerU-HTML | `vlm` (recommended) | Enum | `config.local.yaml` |
+| **7. MinerU OCR** | Enable OCR? | `false` | bool | `config.local.yaml` |
+| **8. MinerU formulas** | Enable formula parsing? | `true` | bool | `config.local.yaml` |
+| **9. MinerU tables** | Enable table extraction? | `true` | bool | `config.local.yaml` |
+| **10. LLM primary** | Primary model name | `openai/gpt-4o` | litellm format | `config.local.yaml` |
+| **11. LLM primary key** | Env var name for API key | `OPENAI_API_KEY` | Non-empty if api_base is null | `config.local.yaml` |
+| **12. LLM primary base** | Custom API base (or null) | null (provider default) | URL or null | `config.local.yaml` |
+| **13. LLM fallback** | Fallback model | `ollama/qwen2.5:14b` | Same format | `config.local.yaml` |
+| **14. LLM fallback base** | Fallback API base | `http://localhost:11434/v1` | URL or null | `config.local.yaml` |
+| **15. LLM temperature** | Extraction temperature | `0.1` | 0.0–1.0 | `config.local.yaml` |
+| **16. LLM context limit** | Max context chars | `12000` | >0 int | `config.local.yaml` |
+
+After all steps: validate config by testing LLM availability (check env var for primary model), test MinerU connectivity if token provided, write files, print summary.
+
+### 5.2 Output files
+
+**`config.yaml`** — committed template with all defaults and comments.
+**`config.local.yaml`** — gitignored, contains all user overrides (token, keys, custom paths).
+**`config.example.yaml`** — annotated example, committed.
+
+The config loader reads `config.yaml` first, then deep-merges `config.local.yaml` on top. Empty keys in local inherit from base. `models` in local replaces entirely if non-empty.
+
+### 5.3 Validation
+
+After writing config, setup runs:
+1. `load_config()` — verify YAML parses correctly
+2. Check primary model env var exists (if required) — print warning if missing
+3. Verify DB is creatable at specified path
+4. Print summary table of all settings
+
+User can re-run `drbrain setup` at any time to change settings.
+
+## 6. MinerU Integration
 
 Three modes via `from mineru import MinerU`:
 
