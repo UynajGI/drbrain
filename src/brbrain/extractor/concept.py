@@ -1,11 +1,10 @@
-"""Academic concept extraction via LLM."""
-
+"""Academic concept + argument extraction via LLM with fallback chain."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import litellm
+from brbrain.extractor.llm_client import acall_with_fallback
+from brbrain.extractor.argument import ExtractedArgument, parse_arguments
 
 PROMPT_TEMPLATE = Path(__file__).parent.parent.parent.parent / "prompts" / "extract_concepts.txt"
 
@@ -21,6 +20,7 @@ class ExtractedConcepts:
         self.gaps: list[dict] = data.get("gaps", [])
         self.actors: list[dict] = data.get("actors", [])
         self.relations: list[dict] = data.get("relations", [])
+        self.arguments: list[ExtractedArgument] = parse_arguments(data.get("arguments", []))
 
     def to_dict(self) -> dict:
         return {
@@ -31,33 +31,21 @@ class ExtractedConcepts:
             "gaps": self.gaps,
             "actors": self.actors,
             "relations": self.relations,
+            "arguments": [a.to_dict() for a in self.arguments],
         }
 
 
 async def extract_concepts(
     text: str,
-    model: str = "openai/gpt-4o",
-    api_base: str | None = None,
-) -> ExtractedConcepts:
-    """Extract academic concepts from paper text using LLM.
-
-    Uses litellm for provider-agnostic calls.
-    """
-    prompt = PROMPT_TEMPLATE.read_text(encoding="utf-8")
-
-    kwargs: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": text[:12000]},
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.1,
-    }
-    if api_base:
-        kwargs["api_base"] = api_base
-
-    response = await litellm.acompletion(**kwargs)
-    content = response.choices[0].message.content
-    data = json.loads(content)
+    models: list[dict],
+) -> ExtractedConcepts | None:
+    """Extract academic concepts + arguments from paper text using LLM fallback chain."""
+    system_prompt = PROMPT_TEMPLATE.read_text(encoding="utf-8")
+    data = await acall_with_fallback(
+        prompt=text[:12000],
+        models=models,
+        system_prompt=system_prompt,
+    )
+    if data is None:
+        return None
     return ExtractedConcepts(data)

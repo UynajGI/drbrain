@@ -28,8 +28,10 @@ class PaperReport:
     ids: dict = field(default_factory=dict)
     status: str = "uploaded"
     concepts: dict = field(default_factory=dict)
+    arguments: list[dict] = field(default_factory=list)
     references: list[RefEntry] = field(default_factory=list)
     citations: list[RefEntry] = field(default_factory=list)
+    validation: dict = field(default_factory=dict)
 
     @property
     def summary(self) -> dict:
@@ -51,10 +53,13 @@ class PaperReport:
     def boundary_alert(self) -> dict:
         s = self.summary
         missing = [r for r in self.references if not r.in_graph and r.title]
-        return {
+        alert = {
             "missing_core_refs": len(missing) > 5,
             "isolated_subgraph": s["graph_coverage"] < 0.3 and total_refs_and_citations(self) > 10,
         }
+        if self.validation.get("items_rejected", 0) > 0:
+            alert["validation_failures"] = True
+        return alert
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +71,7 @@ class PaperReport:
                 "status": self.status,
             },
             "concepts": self.concepts,
+            "arguments": self.arguments,
             "references": [
                 {
                     "title": r.title, "year": r.year, "ids": r.ids,
@@ -82,6 +88,7 @@ class PaperReport:
             ],
             "summary": self.summary,
             "boundary_alert": self.boundary_alert,
+            "validation": self.validation,
         }
 
     def save(self, output_dir: str | Path = "data/reports") -> Path:

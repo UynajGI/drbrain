@@ -27,7 +27,22 @@ CREATE TABLE IF NOT EXISTS concepts (
     local_id TEXT NOT NULL REFERENCES papers(local_id),
     type TEXT NOT NULL CHECK(type IN ('Problem', 'Method', 'Conclusion', 'Debate', 'Gap', 'Actor')),
     label TEXT NOT NULL,
-    confidence REAL DEFAULT 1.0
+    confidence REAL DEFAULT 1.0,
+    first_seen INTEGER,
+    last_seen INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS arguments (
+    arg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_paper TEXT NOT NULL REFERENCES papers(local_id),
+    claim TEXT NOT NULL,
+    claim_type TEXT NOT NULL CHECK(claim_type IN ('supports', 'challenges', 'extends', 'limits', 'solves', 'proposes')),
+    target_label TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK(target_type IN ('Method', 'Problem', 'Conclusion', 'Gap', 'Debate', 'Argument')),
+    evidence_type TEXT CHECK(evidence_type IN ('empirical', 'theoretical', 'case_study', 'survey')),
+    evidence_detail TEXT,
+    confidence REAL DEFAULT 1.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -44,10 +59,32 @@ CREATE TABLE IF NOT EXISTS aliases (
     canonical_id TEXT NOT NULL REFERENCES concepts(concept_id)
 );
 
+CREATE TABLE IF NOT EXISTS confidence_queue (
+    queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_paper TEXT NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('concept', 'alias', 'relation')),
+    item_data TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_concepts_type ON concepts(type);
 CREATE INDEX IF NOT EXISTS idx_concepts_label ON concepts(label);
+CREATE INDEX IF NOT EXISTS idx_concepts_first_seen ON concepts(first_seen);
+CREATE INDEX IF NOT EXISTS idx_arguments_source ON arguments(source_paper);
+CREATE INDEX IF NOT EXISTS idx_arguments_target ON arguments(target_label);
 CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON confidence_queue(status);
+
+CREATE TABLE IF NOT EXISTS research_seeds (
+    seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    confidence REAL DEFAULT 0.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -112,3 +149,187 @@ class Database:
             "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
             (local_id,),
         )
+
+    # -- Concept/edge/alias/seed inserts --
+
+    def insert_concept(self, local_id: str, ctype: str, label: str, confidence: float = 1.0, year: int | None = None) -> int:
+        """Insert a concept with temporal tracking. Returns concept_id."""
+        cur = self.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
+            (local_id, ctype, label, confidence, year, year),
+        )
+        return cur.lastrowid
+
+    def insert_edge(self, src_id: str, dst_id: str, relation: str, source_paper: str, weight: float = 1.0) -> None:
+        """Insert an edge between concepts."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
+            (src_id, dst_id, relation, source_paper, weight),
+        )
+
+    def insert_alias(self, variant: str, canonical_id: str) -> None:
+        """Insert an alias mapping."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO aliases (variant, canonical_id) VALUES (?, ?)",
+            (variant, canonical_id),
+        )
+
+    def insert_seed(self, pattern_type: str, description: str, confidence: float = 0.0) -> int:
+        """Insert a research seed and return its seed_id."""
+        cur = self.conn.execute(
+            "INSERT INTO research_seeds (pattern_type, description, confidence) VALUES (?, ?, ?)",
+            (pattern_type, description, confidence),
+        )
+        return cur.lastrowid
+
+    # -- Query helpers --
+
+    def get_all_papers(self) -> list[dict]:
+        """Return all papers as list of dicts."""
+        rows = self.conn.execute(
+            "SELECT p.local_id, p.title, p.year, p.status, p.created_at, "
+            "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
+            "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
+        ).fetchall()
+        cols = ["local_id", "title", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_paper(self, local_id: str) -> dict | None:
+        """Get a single paper by local_id."""
+        row = self.conn.execute(
+            "SELECT p.local_id, p.title, p.year, p.status, "
+            "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
+            "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
+            "WHERE p.local_id = ?", (local_id,)
+        ).fetchone()
+        if not row:
+            return None
+        cols = ["local_id", "title", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
+        return dict(zip(cols, row))
+
+    def get_concepts_by_paper(self, local_id: str) -> list[dict]:
+        """Get all concepts for a paper."""
+        rows = self.conn.execute(
+            "SELECT concept_id, type, label, confidence FROM concepts WHERE local_id = ?",
+            (local_id,)
+        ).fetchall()
+        return [dict(zip(["concept_id", "type", "label", "confidence"], row)) for row in rows]
+
+    def get_all_seeds(self) -> list[dict]:
+        """Return all research seeds."""
+        rows = self.conn.execute(
+            "SELECT seed_id, pattern_type, description, confidence, created_at FROM research_seeds"
+        ).fetchall()
+        cols = ["seed_id", "pattern_type", "description", "confidence", "created_at"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def delete_seed(self, seed_id: int) -> None:
+        """Delete a research seed."""
+        self.conn.execute("DELETE FROM research_seeds WHERE seed_id = ?", (seed_id,))
+
+    def insert_argument(self, source_paper: str, claim: str, claim_type: str,
+                        target_label: str, target_type: str,
+                        evidence_type: str | None = None, evidence_detail: str | None = None,
+                        confidence: float = 1.0) -> int:
+        """Insert an argument unit. Returns arg_id."""
+        cur = self.conn.execute(
+            "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
+            "evidence_type, evidence_detail, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_paper, claim, claim_type, target_label, target_type,
+             evidence_type, evidence_detail, confidence),
+        )
+        return cur.lastrowid
+
+    def insert_queue_item(self, source_paper: str, item_type: str, item_data: str,
+                          confidence: float) -> int:
+        """Insert a confidence queue item. Returns queue_id."""
+        cur = self.conn.execute(
+            "INSERT INTO confidence_queue (source_paper, item_type, item_data, confidence, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (source_paper, item_type, item_data, confidence),
+        )
+        return cur.lastrowid
+
+    def accept_queue_item(self, queue_id: int) -> None:
+        """Mark queue item as accepted."""
+        self.conn.execute(
+            "UPDATE confidence_queue SET status = 'accepted' WHERE queue_id = ?", (queue_id,)
+        )
+
+    def reject_queue_item(self, queue_id: int) -> None:
+        """Mark queue item as rejected."""
+        self.conn.execute(
+            "UPDATE confidence_queue SET status = 'rejected' WHERE queue_id = ?", (queue_id,)
+        )
+
+    def get_queue_pending(self) -> list[dict]:
+        """Return all pending queue items."""
+        rows = self.conn.execute(
+            "SELECT queue_id, source_paper, item_type, item_data, confidence, created_at "
+            "FROM confidence_queue WHERE status = 'pending' ORDER BY created_at"
+        ).fetchall()
+        cols = ["queue_id", "source_paper", "item_type", "item_data", "confidence", "created_at"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_arguments_by_paper(self, local_id: str) -> list[dict]:
+        """Get all arguments for a paper."""
+        rows = self.conn.execute(
+            "SELECT arg_id, claim, claim_type, target_label, target_type, "
+            "evidence_type, evidence_detail, confidence "
+            "FROM arguments WHERE source_paper = ?", (local_id,)
+        ).fetchall()
+        cols = ["arg_id", "claim", "claim_type", "target_label", "target_type",
+                "evidence_type", "evidence_detail", "confidence"]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_concept_evolution(self, label: str) -> list[dict]:
+        """Get year-by-year usage stats for a concept label."""
+        rows = self.conn.execute(
+            "SELECT p.year, COUNT(*) as count, AVG(c.confidence) as avg_conf "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL "
+            "GROUP BY p.year ORDER BY p.year",
+            (label,),
+        ).fetchall()
+        return [dict(zip(["year", "count", "avg_conf"], row)) for row in rows]
+
+    def detect_evolution_signals(self) -> list[dict]:
+        """Detect evolution signals across all concepts."""
+        rows = self.conn.execute(
+            "SELECT c.label, c.type, MIN(p.year) as first_seen, MAX(p.year) as last_seen, "
+            "COUNT(DISTINCT c.local_id) as paper_count, AVG(c.confidence) as avg_conf "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE p.year IS NOT NULL "
+            "GROUP BY c.label, c.type"
+        ).fetchall()
+
+        from datetime import datetime
+        current_year = datetime.now().year
+        signals = []
+
+        for label, ctype, first_seen, last_seen, paper_count, avg_conf in rows:
+            signal = "established"
+            if first_seen >= current_year - 2 and paper_count >= 2:
+                signal = "emerging"
+            elif paper_count > 10 and avg_conf > 0.8:
+                signal = "established"
+            elif last_seen <= current_year - 3 and paper_count <= 5:
+                signal = "declining"
+            elif avg_conf < 0.7 and paper_count > 5:
+                signal = "contested"
+            elif last_seen <= current_year - 3:
+                recent = self.conn.execute(
+                    "SELECT COUNT(*) FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+                    "WHERE c.label = ? AND p.year >= ?",
+                    (label, current_year - 1),
+                ).fetchone()[0]
+                if recent > 0:
+                    signal = "resurging"
+
+            signals.append({
+                "label": label, "type": ctype, "signal": signal,
+                "first_seen": first_seen, "last_seen": last_seen,
+                "paper_count": paper_count, "avg_confidence": round(avg_conf, 3),
+            })
+
+        return signals

@@ -137,3 +137,17 @@ class GraphEngine:
                 })
 
         return seeds
+
+    def load_from_db(self, db) -> None:
+        """Load all edges from database into NetworkX graph."""
+        rows = db.conn.execute(
+            "SELECT src_id, dst_id, relation, source_paper, weight FROM edges"
+        ).fetchall()
+        for src, dst, rel, src_paper, weight in rows:
+            self.graph.add_edge(src, dst, relation=rel, source=src_paper, weight=weight)
+
+    def persist_to_db(self, db) -> None:
+        """Write all graph edges to database."""
+        for u, v, data in self.graph.edges(data=True):
+            db.insert_edge(u, v, data["relation"], data["source"], data.get("weight", 1.0))
+        db.commit()

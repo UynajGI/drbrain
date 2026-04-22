@@ -1,200 +1,533 @@
-# DrBrain MVP v1.0 Design Spec
+# DrBrain v1 — Academic Knowledge Graph (CLI-Driven)
 
+> **Design Date:** 2026-04-22
 > **Status:** Approved
-> **Date:** 2026-04-22
-> **Goal:** Pure CLI-driven academic knowledge graph. PDF ingest → cognitive map → research seeds.
+> **Scope:** v1.0 — pure CLI, no frontend
 
-## 1. Architecture Overview
+---
 
-DrBrain is a vector-free, symbol-driven research discovery engine. It maps academic papers to a knowledge graph of Problems, Methods, Gaps, Debates, Conclusions, and Actors. The full pipeline runs from the terminal.
+## 1. Core Purpose
 
-**Pipeline:**
-```
-PDF → MinerU(Markdown) → Chapter Filter → LLM JSON Extraction
-  → ID Dedup → Alias Canonicalization → SQLite Insert
-  → Citation API Extension → Placeholder Nodes → Rule Closure
-  → Seed Detection → JSON Report
-```
+Engineer the process of "a PhD student spending 2-3 years exploring domain context, locating research boundaries, discovering innovation entry points" into an **automatically buildable, queryable, boundary-reasoning lightweight cognitive operating system**.
 
-**No vector databases, no embeddings, no web scraping.** All lookups are exact ID matching or LLM-structured extraction.
+## 2. Core Principles
 
-## 2. Tech Stack
+1. **User-driven full text**: PDF provided by user, avoids copyright/anti-scraping
+2. **API-driven topology**: Citation network auto-expanded via public APIs, placeholder nodes maintain connectivity
+3. **Zero vector dependency**: Entire pipeline uses exact ID matching, symbolic rule closure, LLM structured extraction
+4. **Cognitive ontology first**: Nodes/edges map directly to academic cognitive structure (Problem/Method/Gap/Debate/Actor), not generic triplets
+5. **CLI & LLM-Code friendly**: Pure terminal interaction, standardized JSON/Markdown output
+6. **Schema-first validation**: TBox/RBox constraints filter LLM hallucination before ingestion
+7. **Confidence queue**: Single-model extraction + confidence threshold + human review, no expensive multi-model voting
+8. **Argument-centric**: Store argument structure (claim + evidence + target), not just flat concept lists
+9. **Temporal evolution**: Track concept definitions and usage across time, detect shifts and obsolescence
 
-| Module | Choice |
-|--------|--------|
-| Package manager | `uv` |
-| Version control | `jj` (jujutsu, git colocate) |
-| CLI framework | `typer` |
-| PDF parsing | MinerU SDK (`from mineru import MinerU`) |
-| LLM extraction | `litellm` with YAML fallback chain |
-| Configuration | Flat YAML: `config.yaml` + `config.local.yaml` overlay |
-| Storage | SQLite (5 core tables) |
-| Graph computation | `networkx` (in-memory) |
-| Search | BM25 (`rank-bm25`) |
-| Frontend | None (v2) |
+## 3. Technology Stack
 
-## 3. CLI Commands
+| Module | Choice | Notes |
+|--------|--------|-------|
+| **PDF parsing** | MinerU SDK (`from mineru import MinerU`) | Flash mode (free, no token) + Token mode (registered token, 1000 pages/day). Models: pipeline (default), vlm (recommended), MinerU-HTML (HTML only) |
+| **LLM extraction** | litellm with YAML fallback chain | Single model per paper, ordered chain for failover |
+| **Schema validation** | Python symbolic rule engine | TBox type constraints + RBox relation restrictions, no external reasoner |
+| **Graph computation** | NetworkX (in-memory) | Centrality, connected components, path queries, pattern matching |
+| **Full-text search** | rank-bm25 | BM25 ranking over paper titles, abstracts, concept labels, argument claims |
+| **Storage** | SQLite (single file) | 8 core tables: papers, paper_ids, concepts, arguments, edges, aliases, confidence_queue, research_seeds |
+| **CLI framework** | typer | Auto-generated help, subcommands, typed arguments |
+| **Package manager** | uv | pyproject.toml, uv.lock, uv run |
+| **Version control** | jj (jujutsu) with git colocate | `jj git init --colocate` |
+| **Configuration** | Flat YAML (`config.yaml` + `config.local.yaml` overlay) | pyyaml, local overrides main |
+
+## 4. CLI Commands
 
 | Command | Function | Input | Output |
 |---------|----------|-------|--------|
-| `drbrain setup` | Full interactive init wizard | None | `config.yaml`, `config.local.yaml`, DB, dirs |
-| `drbrain ingest <path>` | Full pipeline ingest | PDF/MD path or dir | Terminal summary + JSON report |
-| `drbrain expand --id <id>` | Citation topology extension | Paper local_id | JSONL of refs/cits, placeholders created |
-| `drbrain list` | List all papers | None | Markdown table |
-| `drbrain query <text>` | BM25 full-text search | Query string | Matching concepts + edges |
-| `drbrain closure` | Rule-based closure engine | None | Inferred edge count |
-| `drbrain seed` | Research seed detection | None | Structured seed list |
-| `drbrain report --id <id>` | Single paper JSON report | Paper local_id | JSON to stdout or file |
-| `drbrain export --id <id>` | Export report to file | Paper local_id | Saved JSON file path |
-| `drbrain stats` | Graph statistics | None | Terminal summary table |
+| `drbrain setup` | Interactive 16-step configuration wizard | None | Writes `config.local.yaml` |
+| `drbrain ingest <pdf>` | Parse PDF, extract concepts+arguments, validate, ingest | PDF path | Structured JSON report + terminal summary |
+| `drbrain expand --id <local_id> --depth 2` | Pull references/citations, create placeholders | Node ID, depth | Citation marking JSON + topology update log |
+| `drbrain report --id <local_id>` | Generate single-paper report (coverage/blind spots) | Node ID | `reports/<id>.json` + terminal Markdown table |
+| `drbrain seed` | Detect knowledge boundaries from argument patterns | None | `seeds.json` + terminal structured list |
+| `drbrain query --type Problem --bm25 "attention"` | Query concepts/arguments with BM25 + type filter | Query params | JSONL result stream |
+| `drbrain closure` | Run rule engine (transitive closure, debate binding, gap detection) | None | Closure update log |
+| `drbrain queue` | Review confidence queue (human-in-the-loop) | None | Terminal table of pending items |
+| `drbrain queue resolve --id <qid> --accept` | Accept/reject a queue item | Queue item ID | Updates aliases/concepts, removes from queue |
+| `drbrain timeline --concept "transformer"` | Show concept evolution over time | Concept label | Terminal timeline + year-by-year stats |
+| `drbrain list` | List all papers in database | None | Terminal table |
+| `drbrain stats` | Database statistics (nodes, edges, coverage, queue depth) | None | Terminal summary |
+| `drbrain export --format json` | Export graph data | Format | JSON/GraphML output |
 
-## 4. Configuration
+## 5. Configuration (Flat YAML)
 
-Single flat YAML at project root. `config.yaml` is committed, `config.local.yaml` is gitignored and overlays on top.
+`config.yaml` (template) + `config.local.yaml` (user overrides, gitignored).
 
 ```yaml
+# config.yaml — annotated template
 llm:
   models:
-    - name: openai/gpt-4o
-      api_key_env: OPENAI_API_KEY
-      timeout: 30
-      max_tokens: 4096
-    - name: ollama/qwen2.5:14b
-      api_base: http://localhost:11434/v1
-      api_key_env: null
-      timeout: 120
-      max_tokens: 4096
-  temperature: 0.1
+    - provider: openai
+      model: gpt-4o
+      api_key: "${OPENAI_API_KEY}"
+      base_url: null
+    - provider: ollama
+      model: qwen2.5:7b
+      api_key: null
+      base_url: "http://localhost:11434"
 
 mineru:
-  token: null              # null = Flash mode (free, no auth)
-  model: vlm               # pipeline / vlm / MinerU-HTML
+  token: "${MINERU_TOKEN}"  # empty = flash mode
+  model: "vlm"              # pipeline | vlm | MinerU-HTML
   is_ocr: false
   enable_formula: true
   enable_table: true
 
 db:
-  path: data/drbrain.db
+  path: "data/drbrain.db"
 
 dirs:
-  cache: data/cache
-  reports: data/reports
-  pdfs: data/pdfs
+  pdfs: "data/pdfs"
+  reports: "data/reports"
+  cache: "data/cache"
+  logs: "data/logs"
+
+api:
+  s2_rate_limit: 100        # requests per minute
+  cache_ttl: 86400          # 24h local cache
+
+bm25:
+  k1: 1.5
+  b: 0.75
+
+# Confidence queue thresholds
+queue:
+  weak_threshold: 0.7       # confidence below this goes to queue
+  auto_accept: 0.9          # confidence above this auto-accepted
 ```
 
-Loading: `config.yaml` first, then `config.local.yaml` deep-merges on top. `DRBRAIN_CONFIG` env var or `--config-path` flag overrides.
+Local overlay (`config.local.yaml`) only contains keys the user wants to override.
 
-## 5. Setup Command — Full Interactive Wizard
+## 6. Setup Wizard (16 Steps)
 
-`drbrain setup` is the only interactive command. It guides the user through all configuration, writes `config.yaml` + `config.local.yaml`, initializes the database, and creates required directories.
+`drbrain setup` — interactive wizard with `typer.prompt()` / `typer.confirm()`:
 
-### 5.1 Step-by-step flow
+1. **LLM primary model** — provider, model name, API key, base_url
+2. **LLM fallback model** — optional secondary (provider/model/key/url)
+3. **LLM third model** — optional tertiary (e.g., local Ollama)
+4. **MinerU mode** — token mode or flash (free) mode
+5. **MinerU token** — if token mode, input token (with link to https://mineru.net/apiManage/token)
+6. **MinerU model** — pipeline (default) / vlm (recommended) / MinerU-HTML
+7. **MinerU OCR** — enable/disable OCR extraction
+8. **MinerU formula** — enable/disable formula parsing
+9. **MinerU table** — enable/disable table parsing
+10. **Database path** — default `data/drbrain.db`
+11. **PDF storage directory** — default `data/pdfs`
+12. **Reports directory** — default `data/reports`
+13. **Cache directory** — default `data/cache`
+14. **S2 API rate limit** — default 100 req/min
+15. **BM25 k1 parameter** — default 1.5
+16. **BM25 b parameter** — default 0.75
 
-Each step shows the current default, lets the user type a new value, or press Enter to accept.
+Each step shows current default, allows skip (Enter for default), validates input where applicable. Writes to `config.local.yaml`.
 
-| Step | Prompt | Default | Validation | Stored in |
-|------|--------|---------|------------|-----------|
-| **1. Directories** | Confirm data dirs | `data/cache`, `data/reports`, `data/pdfs` | Must be writable paths | `config.local.yaml` / dirs created |
-| **2. Database** | DB path | `data/drbrain.db` | File creatable | `config.local.yaml` |
-| **3. MinerU mode** | Token or Flash? | `flash` (free) | `flash` / `token` | `config.local.yaml` |
-| **4. MinerU token** | If token chosen: paste token | None | Non-empty string | `config.local.yaml` |
-| **5. MinerU token URL** | Show `https://mineru.net/apiManage/token` | — | Info only | Printed to terminal |
-| **6. MinerU model** | pipeline / vlm / MinerU-HTML | `vlm` (recommended) | Enum | `config.local.yaml` |
-| **7. MinerU OCR** | Enable OCR? | `false` | bool | `config.local.yaml` |
-| **8. MinerU formulas** | Enable formula parsing? | `true` | bool | `config.local.yaml` |
-| **9. MinerU tables** | Enable table extraction? | `true` | bool | `config.local.yaml` |
-| **10. LLM primary** | Primary model name | `openai/gpt-4o` | litellm format | `config.local.yaml` |
-| **11. LLM primary key** | Env var name for API key | `OPENAI_API_KEY` | Non-empty if api_base is null | `config.local.yaml` |
-| **12. LLM primary base** | Custom API base (or null) | null (provider default) | URL or null | `config.local.yaml` |
-| **13. LLM fallback** | Fallback model | `ollama/qwen2.5:14b` | Same format | `config.local.yaml` |
-| **14. LLM fallback base** | Fallback API base | `http://localhost:11434/v1` | URL or null | `config.local.yaml` |
-| **15. LLM temperature** | Extraction temperature | `0.1` | 0.0–1.0 | `config.local.yaml` |
-| **16. LLM context limit** | Max context chars | `12000` | >0 int | `config.local.yaml` |
+## 7. MinerU Integration
 
-After all steps: validate config by testing LLM availability (check env var for primary model), test MinerU connectivity if token provided, write files, print summary.
+```python
+from mineru import MinerU
 
-### 5.2 Output files
+# Flash mode (no token)
+client = MinerU()
 
-**`config.yaml`** — committed template with all defaults and comments.
-**`config.local.yaml`** — gitignored, contains all user overrides (token, keys, custom paths).
-**`config.example.yaml`** — annotated example, committed.
+# Token mode
+client = MinerU(token="your_token_here")
 
-The config loader reads `config.yaml` first, then deep-merges `config.local.yaml` on top. Empty keys in local inherit from base. `models` in local replaces entirely if non-empty.
+# Extract PDF
+result = client.extract(
+    pdf_path="path/to/paper.pdf",
+    model="vlm",          # pipeline | vlm | MinerU-HTML
+    is_ocr=False,
+    enable_formula=True,
+    enable_table=True,
+)
 
-### 5.3 Validation
+# result contains structured markdown with sections
+```
 
-After writing config, setup runs:
-1. `load_config()` — verify YAML parses correctly
-2. Check primary model env var exists (if required) — print warning if missing
-3. Verify DB is creatable at specified path
-4. Print summary table of all settings
+Flash mode: free, no token required, basic extraction.
+Token mode: registered token from https://mineru.net/apiManage/token, 1000 pages/day free quota, higher quality.
 
-User can re-run `drbrain setup` at any time to change settings.
+Chapter filtering post-extraction: keep Abstract, Introduction, Related Work, Method, Conclusion, Limitations sections. Discard formulas, tables, appendices. Limit to ≤12k characters per chunk for LLM budget control.
 
-## 6. MinerU Integration
+## 8. Triple ID Dedup Strategy
 
-Three modes via `from mineru import MinerU`:
+| Match key | Priority | Cleaning rules | Conflict handling |
+|-----------|----------|----------------|-------------------|
+| DOI | 1 (highest) | Strip `https://doi.org/`, lowercase, no spaces | Absolute unique key, merge on hit |
+| arXiv ID | 2 | Strip `v\d+` version suffix, normalize to `YYMM.NNNNN` | DOI overrides arXiv if conflict |
+| S2 Paper ID | 3 | Direct `paperId` field | Auxiliary only, doesn't override |
+| OpenAlex ID | 4 | Strip `W` prefix, digits only | Auxiliary, fill missing metadata |
+| Title + Year | 5 (fallback) | Strip articles/punctuation/case, compute edit distance | Threshold >0.85, mark `weak_match` for manual review |
 
-- **Flash mode:** `MinerU()` — free, no token, cloud-based, IP rate limited
-- **Token mode:** `MinerU("token")` — registered token, higher limits, 1000 pages/day
-- **Model choice:** `pipeline` (default), `vlm` (recommended, enhanced), `MinerU-HTML` (HTML only)
+Priority order prevents split identities. Conflict resolution: DOI > arXiv > S2 > OpenAlex > title/year.
 
-`setup` command guides the user: shows token申请 URL (`https://mineru.net/apiManage/token`), stores in `config.local.yaml`.
+## 9. SQLite Schema
 
-Fallback: if MinerU fails (network error, rate limit, token invalid), fall back to `pypdf` for basic text extraction.
+```sql
+CREATE TABLE IF NOT EXISTS papers (
+    local_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    year INTEGER,
+    status TEXT NOT NULL DEFAULT 'placeholder'
+        CHECK(status IN ('uploaded', 'placeholder', 'merged')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-## 6. ID Deduplication
+CREATE TABLE IF NOT EXISTS paper_ids (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    doi TEXT UNIQUE,
+    arxiv TEXT UNIQUE,
+    s2_id TEXT UNIQUE,
+    openalex_id TEXT UNIQUE
+);
 
-Priority order: DOI > arXiv > S2 ID > OpenAlex ID > Title+Year (fuzzy)
+CREATE TABLE IF NOT EXISTS concepts (
+    concept_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    local_id TEXT NOT NULL REFERENCES papers(local_id),
+    type TEXT NOT NULL CHECK(type IN ('Problem', 'Method', 'Conclusion', 'Debate', 'Gap', 'Actor')),
+    label TEXT NOT NULL,
+    confidence REAL DEFAULT 1.0,
+    first_seen INTEGER,
+    last_seen INTEGER
+);
 
-| Key | Priority | Cleanup | Conflict |
-|-----|----------|---------|----------|
-| DOI | 1 | Strip `https://doi.org/`, lowercase | Absolute unique |
-| arXiv ID | 2 | Strip `v\d+` suffix | DOI overrides |
-| S2 Paper ID | 3 | Direct `paperId` | Auxiliary only |
-| OpenAlex ID | 4 | Extract `W` digits | Auxiliary only |
-| Title+Year | 5 | Strip articles/punctuation, Jaccard similarity | Mark `weak_match` if >0.85 |
+CREATE TABLE IF NOT EXISTS arguments (
+    arg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_paper TEXT NOT NULL REFERENCES papers(local_id),
+    claim TEXT NOT NULL,
+    claim_type TEXT NOT NULL CHECK(claim_type IN ('supports', 'challenges', 'extends', 'limits', 'solves', 'proposes')),
+    target_label TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK(target_type IN ('Method', 'Problem', 'Conclusion', 'Gap', 'Debate', 'Argument')),
+    evidence_type TEXT CHECK(evidence_type IN ('empirical', 'theoretical', 'case_study', 'survey')),
+    evidence_detail TEXT,
+    confidence REAL DEFAULT 1.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-## 7. SQLite Schema
+CREATE TABLE IF NOT EXISTS edges (
+    src_id TEXT NOT NULL,
+    dst_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    source_paper TEXT NOT NULL,
+    weight REAL DEFAULT 1.0,
+    PRIMARY KEY (src_id, dst_id, relation, source_paper)
+);
 
-**papers:** `local_id PK, title, year, status (uploaded/placeholder/merged), created_at`
-**paper_ids:** `local_id FK, doi UNIQUE, arxiv UNIQUE, s2_id UNIQUE, openalex_id UNIQUE`
-**concepts:** `concept_id PK AUTO, local_id FK, type, label, confidence`
-**edges:** `src_id, dst_id, relation, source_paper, weight` — composite PK `(src,dst,rel,source)`
-**aliases:** `variant PK, canonical_id FK→concepts`
-**research_seeds:** `id PK AUTO, seed_type, node, signal, created_at`
+CREATE TABLE IF NOT EXISTS aliases (
+    variant TEXT PRIMARY KEY,
+    canonical_id TEXT NOT NULL REFERENCES concepts(concept_id)
+);
 
-## 8. Graph Engine
+CREATE TABLE IF NOT EXISTS confidence_queue (
+    queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_paper TEXT NOT NULL,
+    item_type TEXT NOT NULL CHECK(item_type IN ('concept', 'alias', 'relation')),
+    item_data TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'accepted', 'rejected')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-NetworkX in-memory graph loaded from SQLite.
+CREATE TABLE IF NOT EXISTS research_seeds (
+    seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern_type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    confidence REAL DEFAULT 0.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
-**Closure rules:**
-1. `creates_debate` — if two papers reach same Conclusion with opposite relations
-2. `gap_addressed` — if a Method addressing a Problem also proposes a Conclusion that resolves a Gap
-3. `indirect_evolution` — if Method A extends Method B which addresses Problem P, link A→P
+CREATE INDEX IF NOT EXISTS idx_concepts_type ON concepts(type);
+CREATE INDEX IF NOT EXISTS idx_concepts_label ON concepts(label);
+CREATE INDEX IF NOT EXISTS idx_concepts_first_seen ON concepts(first_seen);
+CREATE INDEX IF NOT EXISTS idx_arguments_source ON arguments(source_paper);
+CREATE INDEX IF NOT EXISTS idx_arguments_target ON arguments(target_label);
+CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
+CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON confidence_queue(status);
+```
 
-**Seed patterns:**
-1. `stale_problem` — Problem with in-degree ≥3, no recent addresses
-2. `unaddressed_gap` — Gap with no incoming edges
-3. `debate_zone` — Conclusion with both `supports` and `challenges` edges
-4. `tech_discontinuity` — Method with historical activity then silence + related Gap
-5. `cross_domain` — Two subgraphs sharing Problem/Metric but path length >3
+**Key additions vs original schema:**
+- `arguments` table: stores argument units (claim + evidence + target), not just flat concepts
+- `confidence_queue` table: pending items for human-in-the-loop review
+- `concepts.first_seen` / `concepts.last_seen`: temporal tracking fields
 
-## 9. BM25 Query
+## 10. Node States
 
-`rank-bm25` library. Index built on-the-fly from `concepts.label` + `papers.title`. Query returns ranked concept matches with paper context. No persistent index — rebuilt per query for MVP scale.
+| State | Trigger | Data characteristics | System behavior | Seed generation impact |
+|-------|---------|---------------------|-----------------|------------------------|
+| `placeholder` | Citation expansion finds uningested paper | Only ID/title/year, no concepts | Participates in graph traversal, no LLM extraction | Marked "boundary fuzzy", filters its Gap weight |
+| `uploaded` | Extraction complete, ingested | Concepts + arguments + edges populated | Activates citation expansion, triggers local rule closure | Activates deep pattern mining |
+| `merged` | Multiple versions/duplicate placeholders found | ID cross-match points to same paper | Merge concepts as union, keep latest metadata, redirect edges | Eliminates noise, improves subgraph confidence |
 
-## 12. Git Ignore
+## 11. Pipeline Stages (Updated)
+
+| Stage | Input | Processing | Output | Quality control |
+|-------|-------|------------|--------|-----------------|
+| **1. Parse** | User PDF | MinerU → Markdown → chapter filter | Structured text blocks (≤12k chars) | Skip formulas/tables/appendices |
+| **2. Identify** | Text + filename | Extract title/year/IDs → triple ID parse → local dedup | `local_id` assigned, `uploaded`/`placeholder` | Priority matching prevents splits |
+| **3. Extract** | Filtered text | LLM outputs JSON: concepts + arguments + relations (with confidence) | Structured concepts + argument units + relation triples | Forced JSON Schema, confidence per item |
+| **3.5. Validate** | Extracted concepts + relations | TBox type check + RBox relation check | Valid items pass, invalid items logged | Reject impossible pairs (e.g., Problem --proposes--> Method) |
+| **3.6. Queue** | Items with confidence < threshold | Route to `confidence_queue` table | Accepted items proceed, low-confidence items pending | Configurable weak_threshold (default 0.7) |
+| **4. Align** | Valid concept list | Rule cleaning → alias table match → LLM light judgment for new | `canonical_id`, update `Aliases` | 90%+ auto-align, 10% to confidence queue |
+| **5. Ingest** | Concepts + arguments + relations + metadata | Write to `concepts`/`arguments`/`edges`, bind `source_paper`, update `first_seen`/`last_seen` | Graph partial update, node activated | Transactional write, rollback on failure |
+| **6. Expand** | `s2_id`/`openalex_id` | Call S2 API for references & citations (limit 50/direction) → ID parse → local match | Neighbor metadata list + status tagging | Rate limiting + 24h local cache |
+| **7. Placeholder** | `in_graph=false` neighbors | Create `status='placeholder'` nodes, only ID/title/year, write `cites` edges | Topology connected, concepts empty | Placeholder nodes don't trigger re-expansion |
+| **8. Closure** | New edges and arguments | Run rule engine (transitive closure / debate binding / gap承接 detection / evolution chain completion) | Implicit relations filled, Debate/Gap updated | Only runs on `uploaded` connected component |
+| **9. Report** | All intermediate results | Assemble single-paper JSON report, compute coverage, generate boundary hints, persist to `reports/` | Pipeline-ready structured document | Coverage <30% or high-citation missing triggers terminal highlight |
+
+**New stages:** 3.5 (Schema validation), 3.6 (Confidence queue routing)
+**Updated stages:** 3 (now extracts arguments), 4 (routes to queue), 5 (writes arguments + temporal fields), 8 (uses arguments for closure)
+
+## 12. Schema-First Validation Layer
+
+Before any LLM output enters the database, it passes through symbolic constraint checks. No external reasoner needed — Python rule engine covers 90% of cases.
+
+### TBox Constraints (Type Restrictions)
+
+Each concept type has a whitelist of valid relation types:
+
+```python
+TBOX = {
+    "Problem":   {"addresses", "leaves_open", "points_to"},
+    "Method":    {"addresses", "proposes", "extends", "replaces", "solves"},
+    "Conclusion":{"supports", "challenges", "limits"},
+    "Debate":    {"supports", "challenges"},
+    "Gap":       {"leaves_open", "points_to", "constrains"},
+    "Actor":     {"affiliated_with", "proposes"},
+}
+```
+
+Validation rule: if `concept.type == "Problem"` and `relation == "proposes"`, reject — Problems cannot propose Methods, they are addressed by them.
+
+### RBox Constraints (Relation Restrictions)
+
+```python
+RBOX = {
+    "transitive": {"extends"},
+    "asymmetric": {"extends", "replaces", "challenges", "supports"},
+    "irreflexive": {"extends", "replaces", "challenges", "supports", "limits"},
+}
+```
+
+- Transitive: A extends B, B extends C → infer A extends C (handled in closure)
+- Asymmetric: A extends B → B cannot extend A
+- Irreflexive: A cannot extend A
+
+### Validation Result
+
+- **Pass**: item proceeds to ingestion
+- **Fail**: item logged to `data/logs/`, replaced with warning in terminal output
+- **Edge case** (valid but unusual): item routed to confidence queue
+
+## 13. Confidence Queue (Single-Model + Threshold + Human Review)
+
+Instead of expensive multi-model voting, use a single LLM with confidence-aware routing:
+
+```python
+# Ingest pipeline decision tree:
+if item.confidence >= config["queue"]["auto_accept"]:   # default 0.9
+    → direct ingestion
+elif item.confidence >= config["queue"]["weak_threshold"]:  # default 0.7
+    → ingestion with "weak" marker
+else:
+    → confidence_queue table (status = "pending")
+```
+
+### Queue CLI
+
+`drbrain queue` — list all pending items:
 
 ```
-# Python
+┌──────────┬──────────┬──────────┬────────────┬──────────┐
+│ Queue ID │ Type     │ Concept  │ Confidence │ Paper    │
+├──────────┼──────────┼──────────┼────────────┼──────────┤
+│ q001     │ concept  │ neuro-symbolic reasoning │ 0.52 │ p1a2b3 │
+│ q002     │ relation │ solves: X → Y     │ 0.48 │ p1a2b3 │
+└──────────┴──────────┴─────────────────────┴──────────┴────────┘
+```
+
+`drbrain queue resolve --id q001 --accept` — accept item (moves to concepts)
+`drbrain queue resolve --id q001 --reject` — reject item (discards)
+
+### Consensus Feedback Loop
+
+When a concept appears in multiple papers:
+- If 3+ papers independently extract the same normalized label with confidence > 0.8 → auto-promote to "consensus"
+- Queue items matching a consensus concept → auto-accept
+- This creates a self-improving system without multi-model cost
+
+## 14. Argument Units (论证单元)
+
+The core difference between "flat concept list" and "argument structure":
+
+**Before (flat):**
+```
+Paper p1 → {Method: "Transformer", Problem: "long-range dependency"}
+```
+
+**After (argument):**
+```
+Argument a1:
+  source: p1
+  claim: "Self-attention replaces RNN for sequence modeling"
+  type: proposes
+  target: "Transformer" (Method)
+  target_problem: "long-range dependency" (Problem)
+  evidence: empirical (WMT14 EN-DE, BLEU +2.0)
+  confidence: 0.95
+```
+
+This enables:
+- Cross-paper argument comparison (A claims X works, B claims X fails under Y)
+- Debate detection (two arguments with same target, opposite claim_type)
+- Gap tracking (argument with type "limits" that identifies a Gap)
+
+### LLM Extraction for Arguments
+
+The extraction prompt is extended to output arguments alongside concepts:
+
+```json
+{
+  "concepts": { /* existing schema */ },
+  "arguments": [
+    {
+      "claim": "3-15 word claim statement",
+      "claim_type": "supports|challenges|extends|limits|solves|proposes",
+      "target": "target concept label",
+      "target_type": "Method|Problem|Conclusion|Gap|Debate",
+      "evidence_type": "empirical|theoretical|case_study|survey",
+      "evidence_detail": "brief description of supporting evidence",
+      "confidence": 0.0-1.0
+    }
+  ]
+}
+```
+
+## 15. Temporal Concept Evolution
+
+Track how concepts change over time using `first_seen` and `last_seen` fields on `concepts`:
+
+```sql
+-- Concept evolution timeline
+SELECT c.label, c.type, MIN(p.year) as first_seen, MAX(p.year) as last_seen,
+       COUNT(DISTINCT c.local_id) as paper_count,
+       AVG(c.confidence) as avg_confidence
+FROM concepts c JOIN papers p ON c.local_id = p.local_id
+GROUP BY c.label
+ORDER BY first_seen;
+```
+
+### Evolution Signals
+
+| Signal | Detection logic | Meaning |
+|--------|----------------|---------|
+| **Emerging** | first_seen in last 2 years, paper_count growing | New concept gaining traction |
+| **Established** | paper_count > 10, avg_confidence > 0.8 | Consensus concept |
+| **Declining** | last_seen > 3 years ago, paper_count plateau | Method/Problem being superseded |
+| **Contested** | avg_confidence < 0.7, paper_count > 5 | Active debate around this concept |
+| **Resurging** | dormant > 3 years, then new paper_count in last year | Revived approach (e.g., symbolic AI) |
+
+### Timeline CLI
+
+`drbrain timeline --concept "transformer"` output:
+
+```
+Concept: transformer (Method)
+  2017: first appeared (1 paper, confidence 0.95)
+  2018: 12 papers (avg confidence 0.92) — rapid adoption
+  2020: 45 papers (avg confidence 0.88) — peak
+  2023: 23 papers (avg confidence 0.71) — declining, efficiency concerns
+  2025: 8 papers (avg confidence 0.65) — contested by state-space models
+Status: DECLINING
+```
+
+## 16. Knowledge Boundary Discovery (Upgraded from Research Seed)
+
+Only runs on high-coverage (`uploaded` dense) subgraphs. Uses both concept and argument data.
+
+| Boundary Pattern | Detection logic | Output |
+|------------------|-----------------|--------|
+| 🔴 **Consensus Bottleneck** | Problem with >=5 incoming `addresses` edges, but no new `addresses` in last 2 years | "Problem X has no substantial progress since 2023, addressed by N papers but unresolved" |
+| 🟡 **Unaddressed Gap** | Gap node exists with >=2 `leaves_open` edges, but zero incoming `solves` or `addresses` | "Gap Y identified by N papers but no proposed solution exists" |
+| 🔵 **Debate Zone** | Same target has both `supports` and `challenges` arguments, with |supports| ≈ |challenges| | "N papers support X, M papers challenge X — active debate, needs new benchmark" |
+| 🟢 **Technology Cliff** | Method with dense `extends` chain ending at year Y, then gap in `extends` edges, and related Gap exists | "Method D stalled after year Y due to constraint E, current conditions may enable revival" |
+| 🟣 **Cross-Domain Isomorphism** | Two disconnected subgraphs share same Problem label (normalized), path length > 3 | "Domain G and H both address Problem P but share no methods — potential transfer opportunity" |
+| ⚪ **Confidence Collapse** | Concept with avg_confidence dropping > 0.2 between consecutive 2-year windows | "Concept C confidence dropped from 0.85 to 0.60 — paradigm shift detected" |
+
+## 17. Citation Marking & JSON Report Structure
+
+```json
+{
+  "paper": {
+    "local_id": "p001",
+    "title": "Attention Is All You Need",
+    "year": 2017,
+    "ids": { "doi": "10.x/xxx", "arxiv": "1706.03762" },
+    "status": "uploaded"
+  },
+  "concepts": {
+    "problems": [{ "label": "长程依赖建模", "confidence": 0.92 }],
+    "methods": [{ "label": "Transformer", "confidence": 0.95 }],
+    "conclusions": [],
+    "debates": [],
+    "gaps": [],
+    "actors": []
+  },
+  "arguments": [
+    {
+      "claim": "Self-attention replaces RNN for sequence modeling",
+      "claim_type": "proposes",
+      "target": "Transformer",
+      "evidence_type": "empirical",
+      "confidence": 0.95
+    }
+  ],
+  "references": [
+    { "title": "...", "year": 2016, "ids": {}, "in_graph": true, "local_id": "p002" }
+  ],
+  "citations": [
+    { "title": "...", "year": 2018, "ids": {}, "in_graph": false, "local_id": null }
+  ],
+  "summary": {
+    "refs_in_graph": 12,
+    "cits_in_graph": 3,
+    "total_refs": 20,
+    "total_cits": 15,
+    "graph_coverage": 0.43
+  },
+  "boundary_alert": {
+    "missing_core_refs": false,
+    "isolated_subgraph": false,
+    "low_coverage": false
+  },
+  "validation": {
+    "items_rejected": 0,
+    "items_queued": 1,
+    "tbox_violations": [],
+    "rbox_violations": []
+  }
+}
+```
+
+## 18. BM25 Query
+
+Full-text search over paper titles, abstracts (from MinerU extraction), concept labels, and argument claims. Uses `rank-bm25` library. Configurable `k1` and `b` parameters. Supports type filtering (`--type Problem`), argument type filtering (`--arg-type challenges`), year range, and combined with graph traversal.
+
+## 19. .gitignore Rules
+
+```
 __pycache__/
 *.py[oc]
-*.egg-info/
-.venv/
-*.egg
-
-# DrBrain data
+build/
+dist/
+*.egg-info
+.venv
 data/*.db
 data/reports/*.json
 data/cache/*
@@ -203,21 +536,14 @@ config.local.yaml
 data/logs/
 ```
 
-`data/` 目录存在但内容不提交：DB、reports、cache、logs 都是本地运行时生成。`config.local.yaml` 含 token 和 key，必须 gitignore。
+## 20. Error Handling & Output Protocol
 
-## 13. Output Protocol
-
-All commands output machine-readable by default:
-- Reports: JSON to `reports/<local_id>.json`
-- Seeds: JSON array
-- Lists: Markdown table to stdout
-- Errors: JSONL to stderr
-- `--json` flag forces JSON output where applicable
-
-## 14. Error Handling
-
-- MinerU failure → pypdf fallback → skip with warning
-- LLM failure → skip concept extraction, log conflict
-- API rate limit → exponential backoff, 3 retries → cache miss allowed
-- DB write failure → transaction rollback, no partial state
-- All errors logged to `data/logs/conflicts.jsonl`
+- All commands output structured JSON to stdout with `--json` flag
+- Terminal output uses `rich` for colored tables, progress bars
+- Errors: non-zero exit code, error message to stderr
+- LLM failures: fallback chain, final failure logged to `data/logs/`
+- API rate limits: exponential backoff, local cache
+- Transaction rollback on DB write failure
+- Coverage <30% or high-citation missing triggers terminal highlight (yellow/red)
+- Schema validation failures: logged to `data/logs/validation.log`, terminal warning with count
+- Confidence queue items with status "pending" counted in `drbrain stats`

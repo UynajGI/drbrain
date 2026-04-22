@@ -1,0 +1,37 @@
+# config.yaml — DrBrain base configuration
+# Override values in config.local.yaml (gitignored)
+
+llm:
+  models:
+    - provider: openai
+      model: gpt-4o
+      api_key: "${OPENAI_API_KEY}"
+      base_url: null
+    - provider: ollama
+      model: qwen2.5:7b
+      api_key: null
+      base_url: "http://localhost:11434"
+
+mineru:
+  token: "${MINERU_TOKEN}"
+  model: "vlm"
+  is_ocr: false
+  enable_formula: true
+  enable_table: true
+
+db:
+  path: "data/drbrain.db"
+
+dirs:
+  pdfs: "data/pdfs"
+  reports: "data/reports"
+  cache: "data/cache"
+  logs: "data/logs"
+
+api:
+  s2_rate_limit: 100
+  cache_ttl: 86400
+
+bm25:
+  k1: 1.5
+  b: 0.75
