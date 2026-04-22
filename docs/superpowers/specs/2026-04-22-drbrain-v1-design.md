@@ -184,7 +184,28 @@ NetworkX in-memory graph loaded from SQLite.
 
 `rank-bm25` library. Index built on-the-fly from `concepts.label` + `papers.title`. Query returns ranked concept matches with paper context. No persistent index — rebuilt per query for MVP scale.
 
-## 10. Output Protocol
+## 12. Git Ignore
+
+```
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+.venv/
+*.egg
+
+# DrBrain data
+data/*.db
+data/reports/*.json
+data/cache/*
+!data/cache/.gitkeep
+config.local.yaml
+data/logs/
+```
+
+`data/` 目录存在但内容不提交：DB、reports、cache、logs 都是本地运行时生成。`config.local.yaml` 含 token 和 key，必须 gitignore。
+
+## 13. Output Protocol
 
 All commands output machine-readable by default:
 - Reports: JSON to `reports/<local_id>.json`
@@ -193,7 +214,7 @@ All commands output machine-readable by default:
 - Errors: JSONL to stderr
 - `--json` flag forces JSON output where applicable
 
-## 11. Error Handling
+## 14. Error Handling
 
 - MinerU failure → pypdf fallback → skip with warning
 - LLM failure → skip concept extraction, log conflict
