@@ -18,6 +18,8 @@ def generate_local_config(
     mineru_enable_table: bool = True,
     db_path: str = "data/drbrain.db",
     s2_rate_limit: int = 100,
+    crossref_email: str = "",
+    openalex_token: str = "",
     bm25_k1: float = 1.5,
     bm25_b: float = 0.75,
 ) -> Path:
@@ -34,9 +36,15 @@ def generate_local_config(
             "enable_table": mineru_enable_table,
         },
         "db": {"path": db_path},
-        "api": {"s2_rate_limit": s2_rate_limit},
+        "api": {
+            "s2_rate_limit": s2_rate_limit,
+        },
         "bm25": {"k1": bm25_k1, "b": bm25_b},
     }
+    if crossref_email:
+        config["api"]["crossref_email"] = crossref_email
+    if openalex_token:
+        config["api"]["openalex_token"] = openalex_token
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +115,11 @@ def setup_cmd():
     typer.echo("\n[14/16] Semantic Scholar API")
     s2_rate_limit = typer.prompt("  Rate limit (req/min)", default=100)
 
-    typer.echo("\n[15/16] BM25 Parameters")
+    typer.echo("\n[15/16] External APIs")
+    crossref_email = typer.prompt("  CrossRef email (for polite pool)", default="", show_default=False)
+    openalex_token = typer.prompt("  OpenAlex token (empty for anonymous)", default="", hide_input=True)
+
+    typer.echo("\n[16/16] BM25 Parameters")
     bm25_k1 = typer.prompt("  k1 (term frequency saturation)", default=1.5)
     bm25_b = typer.prompt("  b (document length normalization)", default=0.75)
 
@@ -127,6 +139,8 @@ def setup_cmd():
             mineru_enable_table=mineru_enable_table,
             db_path=db_path,
             s2_rate_limit=s2_rate_limit,
+            crossref_email=crossref_email,
+            openalex_token=openalex_token,
             bm25_k1=float(bm25_k1),
             bm25_b=float(bm25_b),
         )

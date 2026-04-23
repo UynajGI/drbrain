@@ -31,6 +31,8 @@ dirs:
 api:
   s2_rate_limit: 100
   cache_ttl: 86400
+  crossref_email: "${CROSSREF_EMAIL}"
+  openalex_token: "${OPENALEX_TOKEN}"
 
 bm25:
   k1: 1.5

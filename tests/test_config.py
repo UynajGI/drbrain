@@ -34,7 +34,7 @@ bm25:
   k1: 1.5
   b: 0.75
 """)
-        cfg = load_config(base_path=base)
+        cfg = load_config(base_path=base, local_path=Path(td) / "nonexistent.yaml")
         assert cfg["llm"]["models"][0]["model"] == "gpt-4o"
         assert cfg["mineru"]["model"] == "vlm"
         assert cfg["db"]["path"] == "data/drbrain.db"

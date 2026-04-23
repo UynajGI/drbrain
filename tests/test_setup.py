@@ -1,42 +1,76 @@
-"""Tests for setup wizard — tests the config generation logic, not interactive I/O."""
-from pathlib import Path
+"""Tests for setup.py config generation."""
 import tempfile
-from brbrain.config import load_config
+from pathlib import Path
+
 from brbrain.cli.setup import generate_local_config
 
-def test_generate_local_config_writes_valid_yaml():
-    """generate_local_config produces a file that load_config can read."""
+
+def test_generate_local_config_creates_file():
+    """generate_local_config writes a valid YAML file."""
     with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "config.local.yaml"
-        generate_local_config(
-            output_path=out,
-            llm_primary={"provider": "openai", "model": "gpt-4o", "api_key": "sk-123", "base_url": None},
-            mineru_mode="flash",
-            mineru_model="vlm",
-            db_path="data/test.db",
+        out_path = Path(td) / "config.local.yaml"
+        result = generate_local_config(
+            output_path=out_path,
+            llm_primary={"provider": "openai", "model": "gpt-4", "api_key": "x"},
         )
-        assert out.exists()
-        cfg = load_config(
-            base_path=Path(__file__).parent.parent / "config.yaml",
-            local_path=out,
-        )
-        assert cfg["llm"]["models"][0]["provider"] == "openai"
-        assert cfg["mineru"]["token"] == ""
+        assert result == out_path
+        assert out_path.exists()
+
+        import yaml
+        config = yaml.safe_load(out_path.read_text())
+        assert config["llm"]["models"][0]["provider"] == "openai"
+        assert config["db"]["path"] == "data/drbrain.db"
+        assert config["mineru"]["model"] == "vlm"
+
 
 def test_generate_local_config_token_mode():
-    """Token mode writes the token value."""
+    """Token mode includes mineru token in config."""
     with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "config.local.yaml"
+        out_path = Path(td) / "config.local.yaml"
         generate_local_config(
-            output_path=out,
-            llm_primary={"provider": "openai", "model": "gpt-4o", "api_key": "sk-123", "base_url": None},
+            output_path=out_path,
+            llm_primary={"provider": "openai", "model": "gpt-4", "api_key": "x"},
             mineru_mode="token",
-            mineru_token="abc-token-123",
-            mineru_model="pipeline",
-            db_path="data/test.db",
+            mineru_token="my-secret-token",
         )
-        cfg = load_config(
-            base_path=Path(__file__).parent.parent / "config.yaml",
-            local_path=out,
+
+        import yaml
+        config = yaml.safe_load(out_path.read_text())
+        assert config["mineru"]["token"] == "my-secret-token"
+
+
+def test_generate_local_config_flash_mode_no_token():
+    """Flash mode has empty mineru token."""
+    with tempfile.TemporaryDirectory() as td:
+        out_path = Path(td) / "config.local.yaml"
+        generate_local_config(
+            output_path=out_path,
+            llm_primary={"provider": "openai", "model": "gpt-4", "api_key": "x"},
+            mineru_mode="flash",
+            mineru_token="should-be-ignored",
         )
-        assert cfg["mineru"]["token"] == "abc-token-123"
+
+        import yaml
+        config = yaml.safe_load(out_path.read_text())
+        assert config["mineru"]["token"] == ""
+
+
+def test_generate_local_config_custom_params():
+    """Custom DB path and BM25 params are saved."""
+    with tempfile.TemporaryDirectory() as td:
+        out_path = Path(td) / "config.local.yaml"
+        generate_local_config(
+            output_path=out_path,
+            llm_primary={"provider": "ollama", "model": "qwen2.5:7b", "api_key": ""},
+            db_path=str(Path(td) / "custom.db"),
+            bm25_k1=2.0,
+            bm25_b=0.5,
+            s2_rate_limit=60,
+        )
+
+        import yaml
+        config = yaml.safe_load(out_path.read_text())
+        assert config["db"]["path"] == str(Path(td) / "custom.db")
+        assert config["bm25"]["k1"] == 2.0
+        assert config["bm25"]["b"] == 0.5
+        assert config["api"]["s2_rate_limit"] == 60

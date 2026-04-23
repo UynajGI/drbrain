@@ -5,14 +5,36 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+*.egg
 
 # Virtual environments
 .venv
 
-# DrBrain
-data/*.db
-data/reports/*.json
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# DrBrain data (generated at runtime)
+data/reports/
+data/papers/
+data/logs/
 data/cache/*
 !data/cache/.gitkeep
+data/drbrain.db
+
+# Local config (contains secrets)
 config.local.yaml
-data/logs/
+
+# MinerU temp output
+mineru_*/
+
+# Superpowers docs (local tooling, not part of the project)
+docs/superpowers/
