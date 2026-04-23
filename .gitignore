@@ -36,5 +36,7 @@ config.local.yaml
 # MinerU temp output
 mineru_*/
 
-# Superpowers docs (local tooling, not part of the project)
-docs/superpowers/
+# Superpowers tooling docs (plans/skills are local, specs are project docs)
+docs/superpowers/plans/
+docs/superpowers/skills/
+!docs/superpowers/specs/

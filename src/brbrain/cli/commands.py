@@ -249,6 +249,22 @@ def _ingest_single_paper(
     echo(f"  References: {len(refs)} ({refs_in} in graph)")
     echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
 
+    # Stage 7: DOI enrichment via CrossRef (if paper has no DOI)
+    current_doi = db.get_paper(local_id).get("doi")
+    if not current_doi and parsed.title:
+        echo("  Enriching DOI via CrossRef...")
+        crossref_email = cfg.get("api", {}).get("crossref_email")
+        doi_info = _enrich_doi_from_crossref(parsed.title, crossref_email)
+        if doi_info:
+            db.conn.execute(
+                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                (doi_info["doi"], local_id),
+            )
+            db.commit()
+            echo(f"  Found DOI: {doi_info['doi']} (CrossRef)")
+        else:
+            echo("  No DOI found in CrossRef")
+
     # Stage 8: Closure
     echo("  Running rule closure...")
     graph.load_from_db(db)
@@ -365,6 +381,15 @@ def save_raw_md(raw_md: str, local_id: str, papers_dir: Path | None = None,
     md_path = papers_dir / f"{local_id}.md"
     md_path.write_text(raw_md, encoding="utf-8")
     return True
+
+
+def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | None:
+    """Try to find DOI for a paper title via CrossRef API."""
+    try:
+        from brbrain.extractor.crossref import fetch_doi_by_title
+        return fetch_doi_by_title(title, email=email)
+    except Exception:
+        return None
 
 
 def expand_cmd(local_id: str, depth: int = 2):
