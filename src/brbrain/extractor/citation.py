@@ -272,12 +272,11 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
 def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
     """Fallback: expand citations using OpenAlex when S2 fails."""
     from brbrain.extractor.openalex import (
-        search_work_by_title, search_work_by_arxiv, _fetch_work_by_id,
+        search_work_by_title, search_work_by_arxiv, batch_fetch_works,
     )
     from brbrain.extractor.openalex import get_work_by_doi
 
     oa_token = token
-
     title = paper.get("title", "")
     arxiv = paper.get("arxiv")
     doi = paper.get("doi")
@@ -290,6 +289,15 @@ def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = No
         oa_work = search_work_by_arxiv(arxiv, token=oa_token)
     if not oa_work and title:
         oa_work = search_work_by_title(title, token=oa_token)
+
+    # If found but missing referenced_works, fetch them via DOI
+    if oa_work and not oa_work.get("referenced_works") and oa_work.get("doi"):
+        full_work = get_work_by_doi(oa_work["doi"], token=oa_token)
+        if full_work and full_work.get("referenced_works"):
+            oa_work["referenced_works"] = full_work["referenced_works"]
+
+    if not oa_work:
+        return [], []
 
     if not oa_work:
         return [], []
@@ -310,12 +318,12 @@ def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = No
         )
         db.commit()
 
-    # Fetch references from OpenAlex
+    # Fetch references using batch endpoint
     references: list[RefEntry] = []
-    ref_ids = oa_work.get("referenced_works", [])
-    for ref_id in ref_ids[:50]:
-        ref_info = _fetch_work_by_id(ref_id, token=oa_token)
-        if ref_info:
+    ref_ids = oa_work.get("referenced_works", [])[:50]
+    if ref_ids:
+        oa_refs = batch_fetch_works(ref_ids, token=oa_token)
+        for ref_info in oa_refs:
             entry = match_to_local(db, ref_info)
             references.append(entry)
             if not entry.in_graph:
@@ -328,6 +336,5 @@ def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = No
                     (local_id, pid, "cites", local_id, 1.0),
                 )
                 db.commit()
-        time.sleep(0.1)  # polite delay for OpenAlex
 
     return references, []

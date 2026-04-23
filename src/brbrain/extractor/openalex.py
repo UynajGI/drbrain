@@ -152,8 +152,8 @@ def get_work_references(openalex_id: str, token: str | None = None,
     return []
 
 
-def _fetch_work_by_id(openalex_id: str, token: str | None = None,
-                      max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def get_work_by_openalex_id(openalex_id: str, token: str | None = None,
+                             max_retries: int = 2, retry_delay: float = 0.5) -> dict[str, Any] | None:
     """Fetch a single work by its OpenAlex ID."""
     fields = _select_fields(["id", "doi", "title", "publication_year", "ids"])
     url = f"{openalex_id}?select={fields}"
@@ -180,3 +180,40 @@ def _fetch_work_by_id(openalex_id: str, token: str | None = None,
                 time.sleep(retry_delay)
             continue
     return None
+
+
+def batch_fetch_works(work_ids: list[str], token: str | None = None,
+                      max_retries: int = 2, retry_delay: float = 0.5) -> list[dict[str, Any]]:
+    """Batch fetch multiple works from OpenAlex using the bulk endpoint."""
+    if not work_ids:
+        return []
+
+    fields = _select_fields(["id", "doi", "title", "publication_year", "ids"])
+    # Use filter endpoint with multiple IDs
+    id_filter = "|".join(work_ids[:50])
+    url = f"{OPENALEX_BASE}/works?filter=openalex_id:{id_filter}&per_page=50&select={fields}"
+    headers: dict[str, str] = {"Accept": "application/json"}
+
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req)
+            data = json.loads(resp.read())
+            results = data.get("results", [])
+            works = []
+            for r in results:
+                doi = r.get("doi", "")
+                if doi:
+                    doi = re.sub(r"^https?://doi\.org/", "", doi)
+                works.append({
+                    "doi": doi or None,
+                    "title": r.get("title", ""),
+                    "year": r.get("publication_year"),
+                    "openalex_id": r.get("id", ""),
+                })
+            return works
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            continue
+    return []

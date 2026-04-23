@@ -204,7 +204,8 @@ def test_expand_citations_returns_empty_when_no_s2_id():
         db.insert_paper("p1", "No ID Paper", 2024, "uploaded")
         db.commit()
 
-        with unittest.mock.patch("brbrain.extractor.citation.search_s2", return_value=[]):
+        with unittest.mock.patch("brbrain.extractor.citation.search_s2", return_value=[]), \
+             unittest.mock.patch("brbrain.extractor.citation._expand_with_openalex", return_value=([], [])):
             refs, cits = expand_citations(db, "p1", {})
 
         assert refs == []

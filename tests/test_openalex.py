@@ -1,7 +1,7 @@
 """Tests for OpenAlex API client."""
 from brbrain.extractor.openalex import (
     search_work_by_title, search_work_by_arxiv, get_work_by_doi,
-    _fetch_work_by_id
+    batch_fetch_works, get_work_by_openalex_id,
 )
 from unittest import mock
 import json
@@ -95,20 +95,21 @@ def test_get_work_by_doi_empty():
     assert get_work_by_doi("") is None
 
 
-def test_fetch_work_by_id():
-    """_fetch_work_by_id retrieves a single work."""
+def test_batch_fetch_works():
+    """batch_fetch_works retrieves multiple works in one call."""
     mock_response = {
-        "id": "https://openalex.org/W999",
-        "doi": "https://doi.org/10.9999/fetch",
-        "title": "Fetch Paper",
-        "publication_year": 2024,
+        "results": [
+            {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/one", "title": "Paper One", "publication_year": 2024},
+            {"id": "https://openalex.org/W2", "doi": "https://doi.org/10.2/two", "title": "Paper Two", "publication_year": 2025},
+        ]
     }
     mock_resp = mock.Mock()
     mock_resp.read.return_value = json.dumps(mock_response)
 
+    from brbrain.extractor.openalex import batch_fetch_works
     with mock.patch("urllib.request.urlopen", return_value=mock_resp):
-        result = _fetch_work_by_id("https://openalex.org/W999")
+        results = batch_fetch_works(["https://openalex.org/W1", "https://openalex.org/W2"])
 
-    assert result is not None
-    assert result["doi"] == "10.9999/fetch"
-    assert result["openalex_id"] == "https://openalex.org/W999"
+    assert len(results) == 2
+    assert results[0]["doi"] == "10.1/one"
+    assert results[1]["doi"] == "10.2/two"

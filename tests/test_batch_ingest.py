@@ -19,6 +19,7 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
         "api": {"s2_rate_limit": 100, "cache_ttl": 86400},
         "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
         "bm25": {"k1": 1.5, "b": 0.75},
+        "openalex_token": None,
     }
 
 
@@ -68,7 +69,7 @@ def test_ingest_single_file():
 
         from brbrain.storage.database import Database
         db = Database(str(db_path))
-        papers = db.get_all_papers()
+        papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 1
         assert papers[0]["title"] == "Test Paper 0"
         db.close()
@@ -104,7 +105,7 @@ def test_ingest_directory():
 
         from brbrain.storage.database import Database
         db = Database(str(db_path))
-        papers = db.get_all_papers()
+        papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2
         titles = {p["title"] for p in papers}
         assert titles == {"Test Paper 0", "Test Paper 1"}
@@ -150,7 +151,7 @@ def test_ingest_skips_failed_papers():
 
         from brbrain.storage.database import Database
         db = Database(str(db_path))
-        papers = db.get_all_papers()
+        papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         # Only 2 should succeed
         assert len(papers) == 2
         db.close()
@@ -186,7 +187,7 @@ def test_ingest_multiple_files():
 
         from brbrain.storage.database import Database
         db = Database(str(db_path))
-        papers = db.get_all_papers()
+        papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2
         db.close()
 
