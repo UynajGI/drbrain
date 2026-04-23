@@ -75,3 +75,76 @@ def _titles_match(a: str, b: str) -> bool:
     overlap = len(words_a & words_b)
     min_len = min(len(words_a), len(words_b))
     return overlap / min_len >= 0.7
+
+
+def fetch_doi_by_doi(doi: str, email: str | None = None,
+                     max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+    """Direct DOI resolution - bypasses title search entirely."""
+    if not doi:
+        return None
+
+    url = f"{CROSSREF_API}/{urllib.parse.quote(doi)}"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if email:
+        headers["mailto"] = email
+
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req)
+            data = json.loads(resp.read())
+            msg = data.get("message", {})
+            doi_val = msg.get("DOI")
+            title = msg.get("title", [""])[0]
+            year = (msg.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                    or msg.get("published-online", {}).get("date-parts", [[None]])[0][0])
+            return {"doi": doi_val, "title": title, "year": year}
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            continue
+    return None
+
+
+def fetch_doi_by_arxiv(arxiv_id: str, email: str | None = None,
+                       max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+    """Look up DOI via CrossRef using arXiv ID with container-title filter."""
+    clean_arxiv = re.sub(r"v\d+$", "", arxiv_id).strip()
+    if not clean_arxiv:
+        return None
+
+    # Use query.bibcode or query.container-title for arXiv
+    url = f"{CROSSREF_API}?query.bibliographic_info={urllib.parse.quote(clean_arxiv)}&select=DOI,title,year,arxivid&rows=10"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if email:
+        headers["mailto"] = email
+
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req)
+            data = json.loads(resp.read())
+            items = data.get("message", {}).get("items", [])
+            for item in items:
+                # Check if this is actually our arXiv paper
+                item_arxiv = item.get("arxivid", "")
+                if item_arxiv and re.sub(r"v\d+$", "", item_arxiv) == clean_arxiv:
+                    doi = item.get("DOI")
+                    year = (item.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                            or item.get("published-online", {}).get("date-parts", [[None]])[0][0])
+                    title = item.get("title", [""])[0]
+                    return {"doi": doi, "title": title, "year": year}
+            # Fall back: check DOIs for physical review papers
+            for item in items:
+                doi = item.get("DOI", "")
+                if doi and "10.1103" in doi.lower():
+                    year = (item.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                            or item.get("published-online", {}).get("date-parts", [[None]])[0][0])
+                    title = item.get("title", [""])[0]
+                    return {"doi": doi, "title": title, "year": year}
+            return None
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            continue
+    return None

@@ -255,7 +255,13 @@ def _ingest_single_paper(
         echo("  Enriching DOI via CrossRef...")
         crossref_email = cfg.get("api", {}).get("crossref_email")
         doi_info = _enrich_doi_from_crossref(parsed.title, crossref_email)
-        if doi_info:
+        # Fallback: try arXiv ID if title search fails
+        if not doi_info and parsed.arxiv:
+            doi_info = _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email)
+        # Fallback: try direct DOI if we somehow have a candidate
+        if not doi_info and parsed.doi:
+            doi_info = _enrich_doi_from_crossref_doi(parsed.doi, crossref_email)
+        if doi_info and doi_info.get("doi"):
             db.conn.execute(
                 "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
                 (doi_info["doi"], local_id),
@@ -388,6 +394,24 @@ def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | No
     try:
         from brbrain.extractor.crossref import fetch_doi_by_title
         return fetch_doi_by_title(title, email=email)
+    except Exception:
+        return None
+
+
+def _enrich_doi_from_crossref_arxiv(arxiv_id: str, email: str | None = None) -> dict | None:
+    """Fallback: find DOI via arXiv ID in CrossRef."""
+    try:
+        from brbrain.extractor.crossref import fetch_doi_by_arxiv
+        return fetch_doi_by_arxiv(arxiv_id, email=email)
+    except Exception:
+        return None
+
+
+def _enrich_doi_from_crossref_doi(doi: str, email: str | None = None) -> dict | None:
+    """Fallback: resolve DOI directly via CrossRef."""
+    try:
+        from brbrain.extractor.crossref import fetch_doi_by_doi
+        return fetch_doi_by_doi(doi, email=email)
     except Exception:
         return None
 

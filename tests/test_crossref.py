@@ -1,6 +1,6 @@
 """Tests for CrossRef DOI enrichment."""
 from brbrain.extractor.crossref import (
-    fetch_doi_by_title, _clean_title, _titles_match
+    fetch_doi_by_title, fetch_doi_by_doi, _clean_title, _titles_match
 )
 from unittest import mock
 import json
@@ -104,3 +104,55 @@ def test_fetch_doi_by_title_retries_on_error():
     assert call_count == 2
     assert result is not None
     assert result["doi"] == "10.9999/retry"
+
+
+def test_fetch_doi_by_doi_success():
+    """fetch_doi_by_doi resolves a known DOI directly."""
+    mock_response = {
+        "message": {
+            "DOI": "10.1103/kmpl-mdbx",
+            "title": ["L-entropy: A New Genuine Multipartite Entanglement Measure"],
+            "published-print": {"date-parts": [[2025, 3, 15]]},
+        }
+    }
+    mock_resp = mock.Mock()
+    mock_resp.read.return_value = json.dumps(mock_response)
+
+    with mock.patch("urllib.request.urlopen", return_value=mock_resp):
+        result = fetch_doi_by_doi("10.1103/kmpl-mdbx", email="test@test.com")
+
+    assert result is not None
+    assert result["doi"] == "10.1103/kmpl-mdbx"
+    assert result["year"] == 2025
+
+
+def test_fetch_doi_by_doi_empty():
+    """fetch_doi_by_doi returns None for empty DOI."""
+    assert fetch_doi_by_doi("") is None
+
+
+def test_fetch_doi_by_doi_retries_on_error():
+    """fetch_doi_by_doi retries on network errors."""
+    call_count = 0
+
+    def mock_urlopen(*args):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 2:
+            raise ConnectionError("timeout")
+        mock_resp = mock.Mock()
+        mock_resp.read.return_value = json.dumps({
+            "message": {
+                "DOI": "10.9999/direct",
+                "title": ["Direct DOI Paper"],
+                "published-online": {"date-parts": [[2025]]},
+            }
+        })
+        return mock_resp
+
+    with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        result = fetch_doi_by_doi("10.9999/direct", max_retries=2, retry_delay=0.01)
+
+    assert call_count == 2
+    assert result is not None
+    assert result["doi"] == "10.9999/direct"
