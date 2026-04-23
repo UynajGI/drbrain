@@ -145,6 +145,15 @@ def match_to_local(db, ref: dict) -> RefEntry:
                 ids={"s2_id": ref["s2_id"]},
                 in_graph=True, local_id=local_id,
             )
+    # Try OpenAlex ID
+    if ref.get("openalex_id"):
+        local_id = db.get_paper_by_external_id("openalex_id", ref["openalex_id"])
+        if local_id:
+            return RefEntry(
+                title=ref["title"], year=ref["year"],
+                ids={"openalex_id": ref["openalex_id"]},
+                in_graph=True, local_id=local_id,
+            )
     # Try title+year
     if ref.get("title") and ref.get("year"):
         local_id = db.fuzzy_match_title_year(ref["title"], ref["year"])
@@ -168,31 +177,36 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
     if not paper:
         return [], []
 
-    # Try to find S2 ID
+    # Try S2 first
     s2_id = paper.get("s2_id")
+    s2_data = None
     if not s2_id:
         title = paper.get("title", "")
-        if not title:
-            return [], []
-        results = search_s2(title, limit=1)
-        if not results:
-            return [], []
-        parsed = parse_s2_response(results[0])
-        s2_id = parsed.get("s2_id")
-        if s2_id:
-            db.conn.execute(
-                "UPDATE paper_ids SET s2_id = ? WHERE local_id = ?",
-                (s2_id, local_id),
-            )
-            db.commit()
+        if title:
+            results = search_s2(title, limit=1)
+            if results:
+                parsed = parse_s2_response(results[0])
+                s2_id = parsed.get("s2_id")
+                if s2_id:
+                    db.conn.execute(
+                        "UPDATE paper_ids SET s2_id = ? WHERE local_id = ?",
+                        (s2_id, local_id),
+                    )
+                    db.commit()
 
-    if not s2_id:
-        return [], []
+    if s2_id:
+        s2_data = fetch_s2_paper(s2_id)
 
-    data = fetch_s2_paper(s2_id)
-    if not data:
-        return [], []
+    if s2_data:
+        return _process_citations_from_s2(db, local_id, s2_data, paper, config)
 
+    # Fallback: OpenAlex
+    openalex_token = config.get("api", {}).get("openalex_token")
+    return _expand_with_openalex(db, local_id, paper, openalex_token)
+
+
+def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, config: dict) -> tuple[list[RefEntry], list[RefEntry]]:
+    """Process citation data from S2 API."""
     # Backfill missing external IDs from S2
     ext_ids = data.get("externalIds") or {}
     s2_doi = ext_ids.get("DOI")
@@ -253,3 +267,67 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
         time.sleep(delay)
 
     return references, citations
+
+
+def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
+    """Fallback: expand citations using OpenAlex when S2 fails."""
+    from brbrain.extractor.openalex import (
+        search_work_by_title, search_work_by_arxiv, _fetch_work_by_id,
+    )
+    from brbrain.extractor.openalex import get_work_by_doi
+
+    oa_token = token
+
+    title = paper.get("title", "")
+    arxiv = paper.get("arxiv")
+    doi = paper.get("doi")
+
+    # Find the paper in OpenAlex
+    oa_work = None
+    if doi:
+        oa_work = get_work_by_doi(doi, token=oa_token)
+    if not oa_work and arxiv:
+        oa_work = search_work_by_arxiv(arxiv, token=oa_token)
+    if not oa_work and title:
+        oa_work = search_work_by_title(title, token=oa_token)
+
+    if not oa_work:
+        return [], []
+
+    # Backfill DOI from OpenAlex
+    if not paper.get("doi") and oa_work.get("doi"):
+        db.conn.execute(
+            "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+            (oa_work["doi"], local_id),
+        )
+        db.commit()
+
+    # Update openalex_id if we have it
+    if oa_work.get("openalex_id"):
+        db.conn.execute(
+            "UPDATE paper_ids SET openalex_id = ? WHERE local_id = ?",
+            (oa_work["openalex_id"], local_id),
+        )
+        db.commit()
+
+    # Fetch references from OpenAlex
+    references: list[RefEntry] = []
+    ref_ids = oa_work.get("referenced_works", [])
+    for ref_id in ref_ids[:50]:
+        ref_info = _fetch_work_by_id(ref_id, token=oa_token)
+        if ref_info:
+            entry = match_to_local(db, ref_info)
+            references.append(entry)
+            if not entry.in_graph:
+                pid = f"p{local_id[1:]}_ref_{len(references)}"
+                db.insert_paper(pid, entry.title or "Unknown", entry.year, "placeholder")
+                db.insert_paper_ids(pid, doi=entry.ids.get("doi"), arxiv=entry.ids.get("arxiv"),
+                                   openalex_id=entry.ids.get("openalex_id"))
+                db.conn.execute(
+                    "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
+                    (local_id, pid, "cites", local_id, 1.0),
+                )
+                db.commit()
+        time.sleep(0.1)  # polite delay for OpenAlex
+
+    return references, []

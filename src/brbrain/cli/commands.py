@@ -249,27 +249,36 @@ def _ingest_single_paper(
     echo(f"  References: {len(refs)} ({refs_in} in graph)")
     echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
 
-    # Stage 7: DOI enrichment via CrossRef (if paper has no DOI)
+    # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")
     if not current_doi and parsed.title:
-        echo("  Enriching DOI via CrossRef...")
         crossref_email = cfg.get("api", {}).get("crossref_email")
-        doi_info = _enrich_doi_from_crossref(parsed.title, crossref_email)
-        # Fallback: try arXiv ID if title search fails
-        if not doi_info and parsed.arxiv:
-            doi_info = _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email)
-        # Fallback: try direct DOI if we somehow have a candidate
-        if not doi_info and parsed.doi:
-            doi_info = _enrich_doi_from_crossref_doi(parsed.doi, crossref_email)
+        openalex_token = cfg.get("api", {}).get("openalex_token")
+
+        # Try S2-provided DOI first (already backfilled in expand_citations)
+        # Then try: CrossRef title → CrossRef arXiv → CrossRef direct DOI → OpenAlex title → OpenAlex arXiv
+        doi_info = None
+        sources = [
+            ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
+            ("CrossRef arXiv", lambda: _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email) if parsed.arxiv else None),
+            ("CrossRef DOI", lambda: _enrich_doi_from_crossref_doi(parsed.doi, crossref_email) if parsed.doi else None),
+            ("OpenAlex title", lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token)),
+        ]
+        for name, fn in sources:
+            if doi_info and doi_info.get("doi"):
+                break
+            echo(f"  Trying {name}...")
+            doi_info = fn()
+
         if doi_info and doi_info.get("doi"):
             db.conn.execute(
                 "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
                 (doi_info["doi"], local_id),
             )
             db.commit()
-            echo(f"  Found DOI: {doi_info['doi']} (CrossRef)")
+            echo(f"  Found DOI: {doi_info['doi']}")
         else:
-            echo("  No DOI found in CrossRef")
+            echo("  No DOI found in any source")
 
     # Stage 8: Closure
     echo("  Running rule closure...")
@@ -412,6 +421,23 @@ def _enrich_doi_from_crossref_doi(doi: str, email: str | None = None) -> dict | 
     try:
         from brbrain.extractor.crossref import fetch_doi_by_doi
         return fetch_doi_by_doi(doi, email=email)
+    except Exception:
+        return None
+
+
+def _enrich_doi_from_openalex(title: str, arxiv: str | None = None,
+                              token: str | None = None) -> dict | None:
+    """Try OpenAlex title search, then arXiv fallback."""
+    try:
+        from brbrain.extractor.openalex import search_work_by_title, search_work_by_arxiv
+        result = search_work_by_title(title, token=token)
+        if result and result.get("doi"):
+            return result
+        if arxiv:
+            result = search_work_by_arxiv(arxiv, token=token)
+            if result and result.get("doi"):
+                return result
+        return None
     except Exception:
         return None
 
