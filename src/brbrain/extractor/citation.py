@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import logging
+import re
 
 import requests
 
@@ -11,6 +12,9 @@ from brbrain.report.generator import RefEntry
 log = logging.getLogger(__name__)
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper"
 S2_FIELDS = "title,year,externalIds,authors,citationCount,references,citations"
+
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF = 2.0  # exponential backoff multiplier in seconds
 
 
 def fetch_s2_paper(paper_id: str, api_key: str | None = None) -> dict | None:
@@ -44,6 +48,58 @@ def search_s2(query: str, limit: int = 50, api_key: str | None = None) -> list[d
     except Exception as e:
         log.warning(f"S2 search error: {e}")
         return []
+
+
+def _s2_retry(fn, url: str, headers: dict, max_retries: int) -> dict | None:
+    """Retry on 429 with exponential backoff. Non-429 errors fail immediately."""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            resp = getattr(e, "response", None)
+            status = resp.status_code if resp is not None else None
+            if status == 429:
+                delay = DEFAULT_BACKOFF * (2 ** attempt)
+                log.warning(f"S2 rate limit (429), retry {attempt+1}/{max_retries} in {delay}s")
+                time.sleep(delay)
+            else:
+                log.warning(f"S2 API error (status={status}): {e}")
+                return None
+        except Exception as e:
+            log.warning(f"S2 API error: {e}")
+            return None
+    return None
+
+
+def fetch_s2_with_retry(
+    paper_id: str, api_key: str | None = None,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+) -> dict | None:
+    """Fetch paper details from S2 API with retry on 429."""
+    headers = {}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    url = f"{S2_BASE}/{paper_id}?fields={S2_FIELDS}"
+    return _s2_retry(fetch_s2_with_retry, url, headers, max_retries)
+
+
+def search_s2_with_retry(
+    query: str, limit: int = 50, api_key: str | None = None,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+) -> list[dict]:
+    """Search S2 with retry on 429."""
+    headers = {}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    url = f"{S2_BASE}/search?query={requests.utils.quote(query)}&limit={limit}&fields={S2_FIELDS}"
+    data = _s2_retry(search_s2_with_retry, url, headers, max_retries)
+    if data is None:
+        return []
+    return data.get("data", [])
 
 
 def parse_s2_response(s2_data: dict) -> dict:
@@ -136,6 +192,26 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
     data = fetch_s2_paper(s2_id)
     if not data:
         return [], []
+
+    # Backfill missing external IDs from S2
+    ext_ids = data.get("externalIds") or {}
+    s2_doi = ext_ids.get("DOI")
+    s2_arxiv = ext_ids.get("ArXiv")
+    if s2_arxiv:
+        s2_arxiv = re.sub(r"v\d+$", "", s2_arxiv)
+    if s2_doi or s2_arxiv:
+        existing_doi = paper.get("doi")
+        existing_arxiv = paper.get("arxiv")
+        if not existing_doi and s2_doi:
+            db.conn.execute(
+                "UPDATE paper_ids SET doi = ? WHERE local_id = ?", (s2_doi, local_id)
+            )
+            db.commit()
+        if not existing_arxiv and s2_arxiv:
+            db.conn.execute(
+                "UPDATE paper_ids SET arxiv = ? WHERE local_id = ?", (s2_arxiv, local_id)
+            )
+            db.commit()
 
     rate_limit = config.get("api", {}).get("s2_rate_limit", 100)
     delay = 60.0 / rate_limit

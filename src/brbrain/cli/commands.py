@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import uuid
 from pathlib import Path
 
@@ -21,8 +23,36 @@ from brbrain.report.generator import PaperReport
 console = Console()
 
 
-def ingest_cmd(pdf_path: str, json_flag: bool = False):
-    """Full ingest pipeline: parse -> identify -> extract -> validate -> queue -> align -> ingest -> expand -> report."""
+def ingest_cmd(
+    paths: list[str] = typer.Argument(None, help="PDF file(s) or directory. Defaults to data/pdfs/."),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+):
+    """Full ingest pipeline: parse -> identify -> extract -> validate -> queue -> align -> ingest -> expand -> report.
+
+    Accepts single file, multiple files, or a directory of PDFs.
+    Defaults to data/pdfs/ when no paths provided.
+    """
+    if not paths:
+        paths = ["data/pdfs/"]
+
+    pdf_files: list[Path] = []
+    for p in paths:
+        path = Path(p)
+        if path.is_dir():
+            pdf_files.extend(sorted(path.glob("*.pdf")))
+        elif path.is_file():
+            pdf_files.append(path)
+        else:
+            if not json_output:
+                typer.echo(f"File not found: {p}", err=True)
+
+    if not pdf_files:
+        if json_output:
+            typer.echo(json.dumps({"error": "No PDF files found"}))
+        else:
+            typer.echo("No PDF files found.", err=True)
+        raise typer.Exit(1)
+
     cfg = load_config()
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
@@ -34,60 +64,125 @@ def ingest_cmd(pdf_path: str, json_flag: bool = False):
     weak_threshold = queue_cfg.get("weak_threshold", 0.7)
     auto_accept = queue_cfg.get("auto_accept", 0.9)
 
+    results = []
+    for i, pdf_path in enumerate(pdf_files, 1):
+        if not json_output and len(pdf_files) > 1:
+            typer.echo(f"\n{'='*60}")
+            typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
+            typer.echo(f"{'='*60}")
+
+        result = _ingest_single_paper(
+            pdf_path, cfg, db, graph, dedup, alias_table,
+            weak_threshold, auto_accept,
+            json_mode=json_output,
+        )
+        results.append(result)
+
+    if json_output:
+        output = {
+            "ingested": len(results),
+            "successful": sum(1 for r in results if r.get("ok")),
+            "failed": sum(1 for r in results if not r.get("ok")),
+            "papers": [r.get("report", {}) for r in results if r.get("ok")],
+            "errors": [r.get("error", str(pdf_files[i])) for i, r in enumerate(results) if not r.get("ok")],
+        }
+        typer.echo(json.dumps(output, indent=2, ensure_ascii=False, default=str))
+    else:
+        if len(pdf_files) > 1:
+            typer.echo(f"\n{'='*60}")
+            typer.echo(f"Batch complete: {len(results)} papers ingested")
+            success = sum(1 for r in results if r.get("ok"))
+            typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
+
+    db.close()
+
+
+def _ingest_single_paper(
+    pdf_path: Path,
+    cfg: dict,
+    db: "Database",
+    graph: "GraphEngine",
+    dedup: "DedupEngine",
+    alias_table: "AliasTable",
+    weak_threshold: float,
+    auto_accept: float,
+    json_mode: bool = False,
+) -> dict:
+    """Ingest a single paper. Returns {"ok": bool, "local_id": str|None, "report": dict|None, "error": str|None}."""
+    def echo(msg: str):
+        if not json_mode:
+            typer.echo(msg)
+
     # Stage 1: Parse
-    typer.echo(f"Parsing: {pdf_path}")
+    echo(f"Parsing: {pdf_path}")
     try:
         parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
-        typer.echo(f"Error parsing PDF: {e}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"  Title: {parsed.title}")
-    typer.echo(f"  Year: {parsed.year}")
-    typer.echo(f"  Sections: {len(parsed.text_blocks)} high-signal blocks")
+        echo(f"Error parsing PDF: {e}")
+        return {"ok": False, "local_id": None, "error": str(e)}
+    echo(f"  Title: {parsed.title}")
+    echo(f"  Year: {parsed.year}")
+    echo(f"  arXiv: {parsed.arxiv}")
+    echo(f"  Sections: {len(parsed.text_blocks)} high-signal blocks")
 
     # Stage 2: Identify
     ids = PaperIDs(doi=parsed.doi, arxiv=parsed.arxiv)
     local_id = dedup.resolve(ids, title=parsed.title, year=parsed.year)
     is_new = local_id is None
+
     if is_new:
-        local_id = f"p{uuid.uuid4().hex[:6]}"
-        db.insert_paper(local_id, parsed.title, parsed.year, "uploaded")
-        db.insert_paper_ids(local_id, doi=ids.doi, arxiv=ids.arxiv)
-        db.commit()
-        typer.echo(f"  [new] {local_id}")
+        # Check for duplicate placeholders sharing the same external ID
+        merged_id = _check_and_merge_duplicates(db, ids, parsed.title, parsed.year)
+        if merged_id is not None:
+            local_id = merged_id
+            echo(f"  [merged] {local_id}")
+            db.upgrade_placeholder(local_id)
+            db.commit()
+        else:
+            local_id = f"p{uuid.uuid4().hex[:6]}"
+            db.insert_paper(local_id, parsed.title, parsed.year, "uploaded")
+            db.insert_paper_ids(local_id, doi=ids.doi, arxiv=ids.arxiv)
+            db.commit()
+            echo(f"  [new] {local_id}")
     else:
         db.upgrade_placeholder(local_id)
         db.commit()
-        typer.echo(f"  [upgrade] {local_id}")
+        echo(f"  [upgrade] {local_id}")
+
+    # Save parsed markdown for inspection
+    papers_dir = Path(cfg.get("dirs", {}).get("pdfs", "data/pdfs")).parent / "papers"
+    save_raw_md(parsed.raw_md, local_id, papers_dir, parsed.images_dir)
 
     # Stage 3: Extract
-    typer.echo("  Extracting concepts + arguments...")
+    echo("  Extracting concepts + arguments...")
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
-        typer.echo("Error: no LLM models configured. Run: drbrain setup", err=True)
+        echo("Error: no LLM models configured. Run: drbrain setup")
+        _log_error(cfg, "No LLM models configured")
         raise typer.Exit(1)
 
     import asyncio
     full_text = "\n\n".join(parsed.text_blocks)
     concepts = asyncio.run(extract_concepts(full_text, llm_models))
     if concepts is None:
-        typer.echo("Error: LLM extraction failed. All models exhausted.", err=True)
+        echo("Error: LLM extraction failed. All models exhausted.")
+        _log_error(cfg, f"LLM extraction failed for {local_id}")
         raise typer.Exit(1)
 
     # Stage 3.5: Validate
     from brbrain.validator.schema import validate_extraction
-    typer.echo("  Validating extraction...")
+    echo("  Validating extraction...")
     concept_data = {
         "problems": concepts.problems, "methods": concepts.methods,
         "conclusions": concepts.conclusions, "debates": concepts.debates,
         "gaps": concepts.gaps, "actors": concepts.actors,
     }
     validation = validate_extraction(concept_data, concepts.relations)
-    typer.echo(f"  Valid items: {len(validation['valid'])}")
+    echo(f"  Valid items: {len(validation['valid'])}")
     if validation["rejected"]:
-        typer.echo(f"  Rejected: {len(validation['rejected'])}")
+        echo(f"  Rejected: {len(validation['rejected'])}")
         for r in validation["rejected"]:
-            typer.echo(f"    [yellow]{r['reason']}[/yellow]")
+            echo(f"    [yellow]{r['reason']}[/yellow]")
 
     valid_relations = [r["detail"] for r in validation["valid"] if r["type"] == "relation"]
 
@@ -136,32 +231,32 @@ def ingest_cmd(pdf_path: str, json_flag: bool = False):
         )
 
     db.commit()
-    typer.echo(f"  Concepts inserted: {typed_count}")
-    typer.echo(f"  Arguments inserted: {len(valid_args)}")
+    echo(f"  Concepts inserted: {typed_count}")
+    echo(f"  Arguments inserted: {len(valid_args)}")
     if queued_count:
-        typer.echo(f"  Queued for review: {queued_count}")
+        echo(f"  Queued for review: {queued_count}")
     if weak_count:
-        typer.echo(f"  Weak (ingested with marker): {weak_count}")
+        echo(f"  Weak (ingested with marker): {weak_count}")
     if rejected_args:
-        typer.echo(f"  Arguments rejected: {len(rejected_args)}")
+        echo(f"  Arguments rejected: {len(rejected_args)}")
 
     # Stage 6: Expand
-    typer.echo("  Expanding citations...")
+    echo("  Expanding citations...")
     from brbrain.extractor.citation import expand_citations
     refs, cits = expand_citations(db, local_id, cfg)
     refs_in = sum(1 for r in refs if r.in_graph)
     cits_in = sum(1 for c in cits if c.in_graph)
-    typer.echo(f"  References: {len(refs)} ({refs_in} in graph)")
-    typer.echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
+    echo(f"  References: {len(refs)} ({refs_in} in graph)")
+    echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
 
     # Stage 8: Closure
-    typer.echo("  Running rule closure...")
+    echo("  Running rule closure...")
     graph.load_from_db(db)
     inferred = graph.closure()
     for edge in inferred:
         db.insert_edge(edge["src"], edge["dst"], edge["relation"], local_id)
     db.commit()
-    typer.echo(f"  Inferred edges: {len(inferred)}")
+    echo(f"  Inferred edges: {len(inferred)}")
 
     # Stage 9: Report
     report = PaperReport(
@@ -181,14 +276,95 @@ def ingest_cmd(pdf_path: str, json_flag: bool = False):
     )
     report_dir = Path(cfg["dirs"]["reports"])
     report_path = report.save(report_dir)
-    typer.echo(f"  Report saved: {report_path}")
+    echo(f"  Report saved: {report_path}")
 
     summary = report.summary
     if summary["graph_coverage"] < 0.3:
-        typer.echo(f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]")
+        echo(f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]")
 
-    db.close()
-    typer.echo(f"\nDone: {local_id}")
+    echo(f"\nDone: {local_id}")
+    return {"ok": True, "local_id": local_id, "report": report.to_dict()}
+
+
+def _check_and_merge_duplicates(db: "Database", ids: "PaperIDs", title: str, year: int | None) -> str | None:
+    """Find existing placeholders sharing the same external ID and merge. Returns merged local_id or None."""
+    target_id = None
+
+    for key, val in [("doi", ids.doi), ("arxiv", ids.arxiv)]:
+        if not val:
+            continue
+        existing = db.get_paper_by_external_id(key, val)
+        if existing and existing != target_id:
+            if target_id is None:
+                target_id = existing
+            else:
+                # Two different placeholders share the same ID — merge them
+                _merge_papers(db, keep_id=target_id, merge_id=existing)
+
+    return target_id
+
+
+def _merge_papers(db: "Database", keep_id: str, merge_id: str) -> None:
+    """Merge merge_id into keep_id: move concepts, edges, update references."""
+    # Move concepts
+    db.conn.execute(
+        "UPDATE concepts SET local_id = ? WHERE local_id = ?",
+        (keep_id, merge_id),
+    )
+    # Move arguments
+    db.conn.execute(
+        "UPDATE arguments SET source_paper = ? WHERE source_paper = ?",
+        (keep_id, merge_id),
+    )
+    # Redirect edges pointing to merge_id
+    db.conn.execute(
+        "UPDATE edges SET src_id = ? WHERE src_id = ?",
+        (keep_id, merge_id),
+    )
+    db.conn.execute(
+        "UPDATE edges SET dst_id = ? WHERE dst_id = ?",
+        (keep_id, merge_id),
+    )
+    # Update source_paper in edges
+    db.conn.execute(
+        "UPDATE edges SET source_paper = ? WHERE source_paper = ?",
+        (keep_id, merge_id),
+    )
+    # Delete the merged paper (cascades to paper_ids)
+    db.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
+    db.commit()
+
+
+def _log_error(cfg: dict, message: str) -> None:
+    """Append error message to data/logs/validation.log."""
+    logs_dir = Path(cfg.get("dirs", {}).get("logs", "data/logs"))
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / "validation.log"
+    import datetime
+    timestamp = datetime.datetime.now().isoformat()
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"[{timestamp}] {message}\n")
+
+
+def save_raw_md(raw_md: str, local_id: str, papers_dir: Path | None = None,
+                images_src: Path | None = None) -> bool:
+    """Save parsed markdown to data/papers/<local_id>.md and images to data/papers/images/<local_id>/."""
+    if not raw_md or not local_id:
+        return False
+    if papers_dir is None:
+        papers_dir = Path("data/papers")
+    papers_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy images to data/papers/images/<local_id>/
+    if images_src and images_src.exists():
+        img_dst = papers_dir / "images" / local_id
+        shutil.copytree(images_src, img_dst, dirs_exist_ok=True)
+        # Rewrite image refs in MD to point to local copies
+        raw_md = re.sub(r"!\[(.*?)\]\((images/[^)]+)\)", rf"![\1](images/{local_id}/\2)", raw_md)
+
+    md_path = papers_dir / f"{local_id}.md"
+    md_path.write_text(raw_md, encoding="utf-8")
+    return True
 
 
 def expand_cmd(local_id: str, depth: int = 2):
