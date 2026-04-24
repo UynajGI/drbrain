@@ -214,7 +214,9 @@ def test_query_cmd_no_results():
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
         with _mock_load_config(cfg):
-            query_cmd("nonexistent concept")
+            query_cmd("nonexistent concept", type_filter=None, arg_type=None,
+                      year_start=None, year_end=None, limit=20,
+                      neighbors=0, json_output=False, jsonl=False)
 
 
 def test_query_cmd_with_results():
@@ -233,7 +235,7 @@ def test_query_cmd_with_results():
         with _mock_load_config(cfg):
             query_cmd("transformer", type_filter=None, arg_type=None,
                       year_start=None, year_end=None, limit=20,
-                      json_output=False, jsonl=False)
+                      neighbors=0, json_output=False, jsonl=False)
 
 
 # -- export_cmd --
