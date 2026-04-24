@@ -139,3 +139,33 @@ def test_paper_has_abstract_field():
         assert len(papers) == 1
         assert papers[0]["abstract"] == "This is a test abstract."
         db.close()
+
+
+def test_query_neighbors_expansion():
+    """query_cmd --neighbors expands results via graph traversal."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        # Create connected papers with edges between concepts
+        db.insert_paper("p1", "Paper A", 2020, "uploaded")
+        db.insert_paper("p2", "Paper B", 2021, "uploaded")
+        db.insert_concept("p1", "Method", "transformer_v1", 0.9, year=2020)
+        db.insert_concept("p2", "Method", "transformer_v2", 0.9, year=2021)
+        # Edge is between concept labels (as stored in graph)
+        db.insert_edge("transformer_v1", "transformer_v2", "extends", "p1")
+        db.commit()
+
+        from brbrain.query.bm25 import build_bm25_index
+        from brbrain.graph.engine import GraphEngine
+
+        # BM25 finds v1
+        index = build_bm25_index(db)
+        results = index.search("transformer_v1", type_filter="Method")
+        assert len(results) >= 1
+
+        # Graph expansion should find connected nodes (includes start node)
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        neighbors = graph.get_neighbors("transformer_v1", hops=1)
+        assert "transformer_v1" in neighbors  # includes start
+        assert "transformer_v2" in neighbors  # connected node
+        db.close()

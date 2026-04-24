@@ -7,14 +7,14 @@ from brbrain.storage.database import Database
 
 
 def test_get_neighbors_1hop():
-    """get_neighbors with hops=1 returns the start node."""
+    """get_neighbors with hops=1 returns start node + immediate neighbors."""
     g = GraphEngine()
     g.add_edge("A", "B", "cites", "p1")
     g.add_edge("B", "C", "cites", "p1")
 
-    # hops=1: visited = {start} after first iteration
+    # hops=1: start node + direct neighbors
     neighbors = g.get_neighbors("B", hops=1)
-    assert neighbors == {"B"}
+    assert neighbors == {"A", "B", "C"}
 
 
 def test_get_neighbors_2hop():

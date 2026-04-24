@@ -18,8 +18,8 @@ class GraphEngine:
         self.graph.add_edge(src, dst, relation=relation, source=source_paper, weight=weight)
 
     def get_neighbors(self, node: str, hops: int = 2) -> set[str]:
-        """Get N-hop neighborhood."""
-        visited: set[str] = set()
+        """Get N-hop neighborhood (includes start node)."""
+        visited: set[str] = {node}
         current = {node}
         for _ in range(hops):
             next_layer: set[str] = set()
@@ -27,8 +27,11 @@ class GraphEngine:
                 if n in self.graph:
                     next_layer |= set(self.graph.predecessors(n))
                     next_layer |= set(self.graph.successors(n))
-            visited |= current
-            current = next_layer - visited
+            next_layer -= visited
+            if not next_layer:
+                break
+            visited |= next_layer
+            current = next_layer
         return visited
 
     def closure(self) -> list[dict]:

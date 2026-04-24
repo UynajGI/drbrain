@@ -655,6 +655,7 @@ def query_cmd(
     year_start: int = typer.Option(None, "--year-start", help="Filter by minimum year"),
     year_end: int = typer.Option(None, "--year-end", help="Filter by maximum year"),
     limit: int = typer.Option(20, "--limit", help="Maximum results"),
+    neighbors: int = typer.Option(0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
 ):
@@ -672,7 +673,31 @@ def query_cmd(
         y_end = year_end or 9999
         results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
 
-    db.close()
+    # Expand by graph traversal
+    if neighbors > 0 and results:
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        seed_ids = {r["local_id"] for r in results}
+        expanded_ids = set()
+        for sid in seed_ids:
+            expanded_ids.update(graph.get_neighbors(sid, hops=neighbors))
+        # Add neighbor papers as Paper-type results
+        for nid in expanded_ids - seed_ids:
+            paper = db.get_paper(nid)
+            if paper:
+                results.append({
+                    "local_id": nid,
+                    "type": "Paper",
+                    "label": paper["title"],
+                    "text": paper.get("abstract", ""),
+                    "year": paper.get("year"),
+                    "score": 0.0,
+                    "_via_neighbors": True,
+                })
+        graph.graph = None  # Free memory
+        db.close()
+    else:
+        db.close()
 
     # JSON output modes
     if json_output:
@@ -696,6 +721,8 @@ def query_cmd(
         filters.append(f"arg_type={arg_type}")
     if year_start or year_end:
         filters.append(f"year={year_start or '...'}-{year_end or '...'}")
+    if neighbors:
+        filters.append(f"neighbors={neighbors}")
     if filters:
         typer.echo(f"  Filters: {', '.join(filters)}")
     typer.echo(f"  Results: {len(results)}")
@@ -703,6 +730,8 @@ def query_cmd(
         extra = ""
         if r["type"] == "Argument":
             extra = f" [{r.get('arg_type', '')}]"
+        if r.get("_via_neighbors"):
+            extra += " [neighbor]"
         year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
         typer.echo(f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str})")
 
