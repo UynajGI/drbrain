@@ -231,7 +231,9 @@ def test_query_cmd_with_results():
         db.close()
 
         with _mock_load_config(cfg):
-            query_cmd("transformer")
+            query_cmd("transformer", type_filter=None, arg_type=None,
+                      year_start=None, year_end=None, limit=20,
+                      json_output=False, jsonl=False)
 
 
 # -- export_cmd --

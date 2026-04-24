@@ -91,18 +91,19 @@ def test_detect_research_seeds_stale_problem():
     seeds = g.detect_research_seeds()
     stale = [s for s in seeds if s["type"] == "stale_problem"]
     assert len(stale) >= 1
-    assert stale[0]["node"] == "Problem_X"
+    assert stale[0]["concept"] == "Problem_X"
 
 
 def test_detect_research_seeds_unaddressed_gap():
     """Gap node with no incoming addresses triggers unaddressed_gap seed."""
     g = GraphEngine()
-    g.graph.add_node("Gap_Y", type="Gap")
+    g.add_edge("G1", "Gap_Y", "leaves_open", "p1")
+    g.add_edge("G2", "Gap_Y", "leaves_open", "p2")
 
     seeds = g.detect_research_seeds()
     gaps = [s for s in seeds if s["type"] == "unaddressed_gap"]
     assert len(gaps) == 1
-    assert gaps[0]["node"] == "Gap_Y"
+    assert gaps[0]["concept"] == "Gap_Y"
 
 
 def test_detect_research_seeds_debate_zone():
@@ -114,7 +115,7 @@ def test_detect_research_seeds_debate_zone():
     seeds = g.detect_research_seeds()
     debates = [s for s in seeds if s["type"] == "debate_zone"]
     assert len(debates) == 1
-    assert debates[0]["node"] == "Conclusion_Z"
+    assert debates[0]["concept"] == "Conclusion_Z"
 
 
 def test_detect_research_seeds_no_seeds_on_empty_graph():
