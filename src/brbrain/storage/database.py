@@ -9,6 +9,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS papers (
     local_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    abstract TEXT DEFAULT '',
     year INTEGER,
     status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -144,6 +145,12 @@ class Database:
             (local_id, doi, arxiv, s2_id, openalex_id),
         )
 
+    def set_paper_abstract(self, local_id: str, abstract: str) -> None:
+        self.conn.execute(
+            "UPDATE papers SET abstract = ? WHERE local_id = ?",
+            (abstract, local_id),
+        )
+
     def upgrade_placeholder(self, local_id: str) -> None:
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
@@ -187,24 +194,24 @@ class Database:
     def get_all_papers(self) -> list[dict]:
         """Return all papers as list of dicts."""
         rows = self.conn.execute(
-            "SELECT p.local_id, p.title, p.year, p.status, p.created_at, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, p.created_at, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
-        cols = ["local_id", "title", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = ["local_id", "title", "abstract", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
         return [dict(zip(cols, row)) for row in rows]
 
     def get_paper(self, local_id: str) -> dict | None:
         """Get a single paper by local_id."""
         row = self.conn.execute(
-            "SELECT p.local_id, p.title, p.year, p.status, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
             "WHERE p.local_id = ?", (local_id,)
         ).fetchone()
         if not row:
             return None
-        cols = ["local_id", "title", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = ["local_id", "title", "abstract", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
         return dict(zip(cols, row))
 
     def get_concepts_by_paper(self, local_id: str) -> list[dict]:

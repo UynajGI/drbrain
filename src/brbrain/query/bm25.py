@@ -61,10 +61,10 @@ class BM25Search:
                 continue
             if arg_type_filter and doc.get("arg_type") != arg_type_filter:
                 continue
-            if score >= 0:
-                results.append({
-                    **doc, "score": round(float(score), 4),
-                })
+            # Include any document that has matching terms (score can be negative with BM25)
+            results.append({
+                **doc, "score": round(float(score), 4),
+            })
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
@@ -74,12 +74,12 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
     """Build a BM25 index from database papers, concepts, and arguments."""
     index = BM25Search()
 
-    # Add paper titles
+    # Add paper titles + abstracts
     papers = db.get_all_papers()
     for p in papers:
         index.add_document(
             p["local_id"], "Paper", p["title"],
-            text=p.get("status", ""),
+            text=p.get("abstract", "") + " " + p.get("status", ""),
             year=p.get("year"),
         )
 

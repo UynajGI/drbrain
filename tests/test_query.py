@@ -107,3 +107,35 @@ def test_bm25_argument_document_has_claim_text():
         # The label should contain the claim
         assert "graph neural networks" in arg_results[0]["label"].lower()
         db.close()
+
+
+def test_bm25_includes_paper_abstracts():
+    """BM25 index includes paper abstract text."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Short Title", 2024, "uploaded")
+        db.set_paper_abstract("p1", "We propose a novel neural architecture search method "
+                              "that combines reinforcement learning with evolutionary strategies")
+        db.commit()
+
+        index = build_bm25_index(db)
+        # Search for text that's only in the abstract, not the title
+        results = index.search("evolutionary strategies")
+        paper_results = [r for r in results if r["type"] == "Paper"]
+        assert len(paper_results) >= 1
+        assert "Short Title" in paper_results[0]["label"]
+        db.close()
+
+
+def test_paper_has_abstract_field():
+    """Database supports abstract field on papers."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.set_paper_abstract("p1", "This is a test abstract.")
+        db.commit()
+
+        papers = db.get_all_papers()
+        assert len(papers) == 1
+        assert papers[0]["abstract"] == "This is a test abstract."
+        db.close()
