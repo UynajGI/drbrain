@@ -313,6 +313,11 @@ def _ingest_single_paper(
     if summary["graph_coverage"] < 0.3:
         echo(f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]")
 
+    # Log validation failures
+    tbox_violations = [r["reason"] for r in validation["rejected"]]
+    for reason in tbox_violations:
+        _log_error(cfg, f"[{local_id}] TBox violation: {reason}")
+
     echo(f"\nDone: {local_id}")
     return {"ok": True, "local_id": local_id, "report": report.to_dict()}
 
