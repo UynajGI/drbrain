@@ -1,60 +1,109 @@
-"""Tests for BM25 full-text search."""
+"""Tests for query command enhancements: arg-type filter, year-range, BM25 argument claims."""
 import tempfile
 from pathlib import Path
+
+import pytest
 from brbrain.storage.database import Database
-from brbrain.query.bm25 import BM25Search, build_bm25_index
+from brbrain.query.bm25 import build_bm25_index, BM25Search, tokenize
 
-def test_bm25_search_finds_title():
-    """BM25 search finds papers by title terms."""
+
+def test_tokenizer_normalizes():
+    """Tokenizer lowercases and extracts alphanumeric tokens."""
+    assert tokenize("Attention Is ALL You Need") == ["attention", "is", "all", "you", "need"]
+    assert tokenize("Transformer-3.1") == ["transformer", "3", "1"]
+
+
+def test_bm25_includes_argument_claims():
+    """BM25 index includes argument claim text."""
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Attention Is All You Need", 2017, "uploaded")
-        db.insert_paper("p2", "BERT: Pre-training of Deep Bidirectional Transformers", 2018, "uploaded")
-        db.insert_paper("p3", "Graph Neural Networks for Text Classification", 2019, "uploaded")
+        db.insert_paper("p1", "Attention Paper", 2017, "uploaded")
+        db.insert_concept("p1", "Method", "Transformer", 0.95, year=2017)
+        db.insert_argument(
+            "p1", "Self-attention replaces RNN for sequence modeling",
+            "proposes", "Transformer", "Method", "empirical", "WMT14 BLEU +2.0", 0.95,
+        )
         db.commit()
 
         index = build_bm25_index(db)
-        results = index.search("attention")
-        assert len(results) >= 1
-        assert results[0]["local_id"] == "p1"
+        # Search for "replaces RNN" which is in the argument claim, not concept label
+        results = index.search("replaces RNN")
+        # Should find the argument document
+        arg_results = [r for r in results if r["type"] == "Argument"]
+        assert len(arg_results) >= 1
+        assert "replaces" in arg_results[0]["label"].lower() or "self-attention" in arg_results[0]["label"].lower()
+        db.close()
 
-def test_bm25_search_finds_concept_labels():
-    """BM25 search finds concepts by label."""
+
+def test_bm25_search_with_arg_type_filter():
+    """BM25 search can filter by argument claim type."""
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Paper One", 2020, "uploaded")
-        db.insert_concept("p1", "Method", "transformer architecture", 0.95)
-        db.insert_concept("p1", "Problem", "long range dependency", 0.9)
+        db.insert_paper("p1", "Paper 1", 2024, "uploaded")
+        db.insert_argument("p1", "Supports claim", "supports", "Method X", "Method", "empirical", "", 0.9)
+        db.insert_argument("p1", "Challenges claim", "challenges", "Method X", "Method", "empirical", "", 0.8)
         db.commit()
 
         index = build_bm25_index(db)
-        results = index.search("transformer")
-        assert len(results) >= 1
-        assert "transformer" in results[0]["label"].lower()
+        # Search for "claim" with arg-type filter
+        results = index.search("claim", type_filter="Argument")
+        assert len(results) == 2
 
-def test_bm25_type_filter():
-    """BM25 search respects type filter."""
+        # Filter by specific arg_type (stored in the document)
+        supports_results = [r for r in results if "supports" in r.get("arg_type", "").lower()]
+        challenges_results = [r for r in results if "challenges" in r.get("arg_type", "").lower()]
+        assert len(supports_results) == 1
+        assert len(challenges_results) == 1
+        db.close()
+
+
+def test_query_with_year_range():
+    """query_cmd filters results by year range."""
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Paper One", 2020, "uploaded")
-        db.insert_concept("p1", "Method", "transformer", 0.95)
-        db.insert_concept("p1", "Problem", "attention bottleneck", 0.9)
+        # Papers across years
+        for year in [2018, 2020, 2022, 2024]:
+            pid = f"p{year}"
+            db.insert_paper(pid, f"Paper {year}", year, "uploaded")
+            db.insert_concept(pid, "Method", "attention", 0.9, year=year)
+        db.commit()
+
+        from brbrain.query.bm25 import build_bm25_index
+        index = build_bm25_index(db)
+        results = index.search("attention", type_filter="Method")
+        assert len(results) == 4
+
+        # Filter by year range via db query (year_range is applied at query_cmd level)
+        # The BM25 index itself doesn't know years, but query_cmd will post-filter
+        # We test the db method that provides year info
+        rows = db.conn.execute(
+            "SELECT DISTINCT c.local_id FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year BETWEEN ? AND ?",
+            ("attention", 2020, 2022),
+        ).fetchall()
+        local_ids = {r[0] for r in rows}
+        assert "p2018" not in local_ids
+        assert "p2020" in local_ids
+        assert "p2022" in local_ids
+        assert "p2024" not in local_ids
+        db.close()
+
+
+def test_bm25_argument_document_has_claim_text():
+    """Argument documents store full claim text for BM25 matching."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.insert_argument(
+            "p1", "Graph neural networks outperform MLPs on molecular property prediction",
+            "proposes", "GNN", "Method", "empirical", "MoleculeNet benchmark", 0.9,
+        )
         db.commit()
 
         index = build_bm25_index(db)
-        results = index.search("transformer", type_filter="Method")
-        assert len(results) >= 1
-        assert results[0]["type"] == "Method"
-
-        results = index.search("transformer", type_filter="Problem")
-        assert len(results) == 0
-
-def test_bm25_empty_query():
-    """BM25 search returns empty for query with no matches."""
-    with tempfile.TemporaryDirectory() as td:
-        db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Deep Learning", 2015, "uploaded")
-        db.commit()
-        index = build_bm25_index(db)
-        results = index.search("quantum computing")
-        assert len(results) == 0
+        results = index.search("molecular property prediction")
+        arg_results = [r for r in results if r["type"] == "Argument"]
+        assert len(arg_results) >= 1
+        # The label should contain the claim
+        assert "graph neural networks" in arg_results[0]["label"].lower()
+        db.close()

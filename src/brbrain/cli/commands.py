@@ -574,14 +574,28 @@ def stats_cmd():
     console.print(table)
 
 
-def query_cmd(text: str, type_filter: str = None, limit: int = 20):
-    """Query concepts with BM25 + type filter."""
+def query_cmd(
+    text: str,
+    type_filter: str = None,
+    arg_type: str = None,
+    year_start: int = None,
+    year_end: int = None,
+    limit: int = 20,
+):
+    """Query concepts and arguments with BM25 + filters."""
     cfg = load_config()
     db = Database(cfg["db"]["path"])
 
     from brbrain.query.bm25 import build_bm25_index
     bm25 = build_bm25_index(db)
-    results = bm25.search(text, type_filter=type_filter, limit=limit)
+    results = bm25.search(text, type_filter=type_filter, arg_type_filter=arg_type, limit=limit)
+
+    # Post-filter by year range
+    if year_start is not None or year_end is not None:
+        y_start = year_start or 0
+        y_end = year_end or 9999
+        results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
+
     db.close()
 
     if not results:
@@ -589,11 +603,22 @@ def query_cmd(text: str, type_filter: str = None, limit: int = 20):
         return
 
     typer.echo(f"Query: {text}")
+    filters = []
     if type_filter:
-        typer.echo(f"  Type filter: {type_filter}")
+        filters.append(f"type={type_filter}")
+    if arg_type:
+        filters.append(f"arg_type={arg_type}")
+    if year_start or year_end:
+        filters.append(f"year={year_start or '...'}-{year_end or '...'}")
+    if filters:
+        typer.echo(f"  Filters: {', '.join(filters)}")
     typer.echo(f"  Results: {len(results)}")
     for i, r in enumerate(results, 1):
-        typer.echo(f"  {i}. [{r['type']}] {r['label']} (score: {r['score']:.3f}, paper: {r['local_id']})")
+        extra = ""
+        if r["type"] == "Argument":
+            extra = f" [{r.get('arg_type', '')}]"
+        year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
+        typer.echo(f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str})")
 
 
 def export_cmd(format: str = "json"):
@@ -696,29 +721,27 @@ def timeline_cmd(concept: str):
 
     typer.echo(f"\nConcept: {concept} ({ctype})")
 
-    from datetime import datetime
-    current_year = datetime.now().year
+    trend_labels = {
+        "first_appeared": "— first appeared",
+        "growing": "— rapid adoption",
+        "declining": "— declining",
+        "stable": "",
+    }
 
     for entry in evolution:
         year = entry["year"]
         count = entry["count"]
         avg_conf = entry["avg_conf"]
-
-        if year == evolution[0]["year"]:
-            signal = "first appeared"
-        elif year >= current_year - 2:
-            signal = "recent"
-        else:
-            signal = ""
+        trend = entry.get("trend", "stable")
+        label = trend_labels.get(trend, "")
 
         line = f"  {year}: {count} paper{'s' if count > 1 else ''} (avg confidence {avg_conf:.2f})"
-        if signal:
-            line += f" — {signal}"
+        if label:
+            line += f" {label}"
         typer.echo(line)
 
-    signals = db.detect_evolution_signals()
-    matching = [s for s in signals if s["label"] == concept]
-    if matching:
-        typer.echo(f"Status: {matching[0]['signal'].upper()}")
+    signal_info = db.get_concept_signal(concept)
+    if signal_info:
+        typer.echo(f"Status: {signal_info['signal'].upper()}")
 
     db.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 
 import networkx as nx
 
@@ -96,44 +97,254 @@ class GraphEngine:
 
         return inferred
 
-    def detect_research_seeds(self) -> list[dict]:
-        """Detect research opportunities via graph patterns."""
+    def detect_research_seeds(self, db=None) -> list[dict]:
+        """Detect research opportunities via graph patterns + temporal data.
+
+        When db is provided, also detects:
+        - technology_cliff: dense extends chain ends, related Gap constrains it
+        - cross_domain_isomorphism: disconnected subgraphs share same Problem
+        - confidence_collapse: avg_confidence drops > 0.2 between 2-year windows
+
+        Without db, only detects graph-based patterns:
+        - stale_problem: Problem with many incoming edges
+        - unaddressed_gap: Gap with leaves_open but no solves/addresses
+        - debate_zone: Same target has both supports and challenges
+        """
         seeds: list[dict] = []
 
-        # Pattern 1: High in-degree Problem with no recent addresses
-        problem_in_degree = dict(self.graph.in_degree())
-        for node, deg in problem_in_degree.items():
-            if deg >= 3:
-                seeds.append({
-                    "type": "stale_problem",
-                    "node": node,
-                    "signal": f"High attention ({deg} edges), check for recent solutions",
-                })
+        # Build relation index
+        edges_by_rel: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for u, v, data in self.graph.edges(data=True):
+            edges_by_rel[data["relation"]].append((u, v))
 
-        # Pattern 2: Gaps with no incoming addresses
-        for node, data in self.graph.nodes(data=True):
-            if data.get("type") == "Gap":
-                incoming = list(self.graph.predecessors(node))
-                if not incoming:
+        # --- Pattern 1: Stale problem ---
+        if db:
+            seeds.extend(self._detect_stale_problems(db, edges_by_rel))
+        else:
+            problem_in_degree: dict[str, int] = defaultdict(int)
+            for _, dst in edges_by_rel.get("addresses", []):
+                problem_in_degree[dst] += 1
+            for problem, deg in problem_in_degree.items():
+                if deg >= 3:
                     seeds.append({
-                        "type": "unaddressed_gap",
-                        "node": node,
-                        "signal": "Gap identified but no method addresses it",
+                        "type": "stale_problem",
+                        "concept": problem,
+                        "description": f"High attention ({deg} edges), check for recent solutions",
+                        "confidence": 0.6,
                     })
 
-        # Pattern 3: Conclusion with both supports and challenges
-        in_edges = defaultdict(list)
-        for u, v, data in self.graph.edges(data=True):
-            if data["relation"] in ("supports", "challenges"):
-                in_edges[v].append((u, data["relation"]))
+        # --- Pattern 2: Unaddressed gap ---
+        gap_nodes: set[str] = set()
+        for _, dst in edges_by_rel.get("leaves_open", []):
+            gap_nodes.add(dst)
+        addressed_gaps: set[str] = set()
+        for rel_name in ("solves", "addresses"):
+            for _, dst in edges_by_rel.get(rel_name, []):
+                addressed_gaps.add(dst)
+        for gap in gap_nodes:
+            if gap not in addressed_gaps:
+                count = len([v for _, v in edges_by_rel["leaves_open"] if v == gap])
+                if db:
+                    seeds.append({
+                        "type": "unaddressed_gap",
+                        "concept": gap,
+                        "description": f"Gap '{gap}' identified by {count} papers but no proposed solution exists",
+                        "confidence": 0.8,
+                    })
+                else:
+                    seeds.append({
+                        "type": "unaddressed_gap",
+                        "concept": gap,
+                        "description": f"Gap identified but no method addresses it ({count} leaves_open edges)",
+                        "confidence": 0.6,
+                    })
 
-        for conclusion, edges in in_edges.items():
-            rels = {r for _, r in edges}
-            if len(rels) == 2:
+        # --- Pattern 3: Debate zone ---
+        supports_targets = {v for _, v in edges_by_rel.get("supports", [])}
+        challenges_targets = {v for _, v in edges_by_rel.get("challenges", [])}
+        debate_targets = supports_targets & challenges_targets
+        for target in debate_targets:
+            n_support = len([v for _, v in edges_by_rel["supports"] if v == target])
+            n_challenge = len([v for _, v in edges_by_rel["challenges"] if v == target])
+            if db:
                 seeds.append({
                     "type": "debate_zone",
-                    "node": conclusion,
-                    "signal": f"Active debate: {len(edges)} papers with conflicting views",
+                    "concept": target,
+                    "description": f"{n_support} papers support '{target}', {n_challenge} challenge it — active debate",
+                    "confidence": 0.75,
+                })
+            else:
+                seeds.append({
+                    "type": "debate_zone",
+                    "concept": target,
+                    "description": f"Active debate: {n_support + n_challenge} papers with conflicting views",
+                    "confidence": 0.6,
+                })
+
+        # --- New DB-augmented patterns ---
+        if db:
+            seeds.extend(self._detect_technology_cliffs(db))
+            seeds.extend(self._detect_cross_domain_isomorphism(db))
+            seeds.extend(self._detect_confidence_collapse(db))
+
+        return seeds
+
+    # ---------- DB-augmented pattern detectors ----------
+
+    def _detect_stale_problems(self, db, edges_by_rel) -> list[dict]:
+        """Problem with >=5 incoming addresses edges but no new ones in last 2 years."""
+        current = datetime.now().year
+        seeds = []
+        address_targets: dict[str, list] = defaultdict(list)
+        for src, dst in edges_by_rel.get("addresses", []):
+            address_targets[dst].append(src)
+
+        for problem, sources in address_targets.items():
+            if len(sources) < 5:
+                continue
+            recent = db.conn.execute(
+                "SELECT COUNT(*) FROM edges e JOIN papers p ON e.source_paper = p.local_id "
+                "WHERE e.relation = 'addresses' AND e.dst_id = ? AND p.year >= ?",
+                (problem, current - 2),
+            ).fetchone()[0]
+            if recent == 0:
+                seeds.append({
+                    "type": "stale_problem",
+                    "concept": problem,
+                    "description": f"Problem '{problem}' addressed by {len(sources)} papers but no progress since {current - 3}",
+                    "confidence": 0.85,
+                })
+        return seeds
+
+    def _detect_technology_cliffs(self, db) -> list[dict]:
+        """Method with dense extends chain that ended, and a related Gap constrains it."""
+        seeds = []
+
+        # Get all methods that appear in extends edges
+        extends_methods: set[str] = set()
+        for u, v, data in self.graph.edges(data=True):
+            if data["relation"] == "extends":
+                extends_methods.add(u)
+                extends_methods.add(v)
+
+        if not extends_methods:
+            return seeds
+
+        for method in extends_methods:
+            # Check for constraining Gap
+            constraining_gaps = db.conn.execute(
+                "SELECT e.src_id FROM edges e JOIN concepts c ON e.src_id = c.label "
+                "WHERE e.relation = 'constrains' AND e.dst_id = ? AND c.type = 'Gap'",
+                (method,),
+            ).fetchall()
+
+            if constraining_gaps:
+                gap_label = constraining_gaps[0][0]
+                # Get last active year
+                last_active = db.conn.execute(
+                    "SELECT MAX(p.year) FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+                    "WHERE c.label = ? AND p.year IS NOT NULL",
+                    (method,),
+                ).fetchone()
+                year_str = str(last_active[0]) if last_active and last_active[0] else "unknown"
+
+                seeds.append({
+                    "type": "technology_cliff",
+                    "concept": method,
+                    "description": (
+                        f"Method '{method}' stalled after {year_str} due to constraint "
+                        f"'{gap_label}' — current conditions may enable revival"
+                    ),
+                    "confidence": 0.7,
+                })
+
+        return seeds
+
+    def _detect_cross_domain_isomorphism(self, db) -> list[dict]:
+        """Two disconnected subgraphs share the same Problem label, path length > 3."""
+        seeds = []
+
+        # Find problems addressed by methods in distinct groups
+        problem_methods: dict[str, set[str]] = defaultdict(set)
+        for u, v, data in self.graph.edges(data=True):
+            if data["relation"] == "addresses":
+                # Check if dst is a Problem
+                row = db.conn.execute(
+                    "SELECT type FROM concepts WHERE label = ? LIMIT 1", (v,)
+                ).fetchone()
+                if row and row[0] == "Problem":
+                    problem_methods[v].add(u)
+
+        for problem, methods in problem_methods.items():
+            if len(methods) < 4:
+                continue
+
+            # Check for disconnected pairs
+            method_list = list(methods)
+            disconnected_pairs = 0
+            for i in range(len(method_list)):
+                for j in range(i + 1, len(method_list)):
+                    if not nx.has_path(self.graph, method_list[i], method_list[j]):
+                        disconnected_pairs += 1
+
+            if disconnected_pairs > 0:
+                seeds.append({
+                    "type": "cross_domain_isomorphism",
+                    "concept": problem,
+                    "description": (
+                        f"Multiple disconnected approaches address '{problem}' "
+                        f"({len(methods)} methods, {disconnected_pairs} disconnected pairs) "
+                        f"— potential transfer opportunity"
+                    ),
+                    "confidence": 0.65,
+                })
+
+        return seeds
+
+    def _detect_confidence_collapse(self, db) -> list[dict]:
+        """Concept with avg_confidence dropping > 0.2 between consecutive 2-year windows."""
+        seeds = []
+
+        rows = db.conn.execute(
+            "SELECT c.label, c.type, p.year, AVG(c.confidence) as avg_conf "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE p.year IS NOT NULL GROUP BY c.label, c.type, p.year"
+        ).fetchall()
+
+        concept_years: dict[str, list[tuple[int, float, str]]] = defaultdict(list)
+        for label, ctype, year, avg_conf in rows:
+            concept_years[label].append((year, avg_conf, ctype))
+
+        for label, data in concept_years.items():
+            if len(data) < 4:
+                continue
+            years_data = sorted(data, key=lambda x: x[0])
+            ctype = years_data[0][2]
+
+            min_year = min(y[0] for y in years_data)
+            max_year = max(y[0] for y in years_data)
+            if max_year - min_year < 4:
+                continue
+
+            mid_year = min_year + (max_year - min_year) // 2
+            early_confs = [y[1] for y in years_data if y[0] <= mid_year]
+            late_confs = [y[1] for y in years_data if y[0] > mid_year]
+
+            if not early_confs or not late_confs:
+                continue
+
+            early_avg = sum(early_confs) / len(early_confs)
+            late_avg = sum(late_confs) / len(late_confs)
+
+            if early_avg - late_avg > 0.2:
+                seeds.append({
+                    "type": "confidence_collapse",
+                    "concept": label,
+                    "description": (
+                        f"Concept '{label}' confidence dropped from {early_avg:.2f} to "
+                        f"{late_avg:.2f} — paradigm shift detected"
+                    ),
+                    "confidence": 0.8,
                 })
 
         return seeds
