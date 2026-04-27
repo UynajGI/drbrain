@@ -7,6 +7,7 @@ import re
 
 import requests
 
+from brbrain.extractor.cache import ApiCache
 from brbrain.report.generator import RefEntry
 
 log = logging.getLogger(__name__)
@@ -16,35 +17,69 @@ S2_FIELDS = "title,year,externalIds,authors,citationCount,references,citations"
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 2.0  # exponential backoff multiplier in seconds
 
+_cache: ApiCache | None = None
 
-def fetch_s2_paper(paper_id: str, api_key: str | None = None) -> dict | None:
+
+def _get_cache(config: dict) -> ApiCache | None:
+    """Get or create the API cache from config."""
+    global _cache
+    cache_ttl = config.get("api", {}).get("cache_ttl")
+    if cache_ttl and cache_ttl > 0:
+        if _cache is None:
+            from pathlib import Path
+            cache_dir = config.get("dirs", {}).get("cache", "data/cache")
+            _cache = ApiCache(cache_dir, ttl=cache_ttl)
+        return _cache
+    return None
+
+
+def fetch_s2_paper(paper_id: str, api_key: str | None = None, cache: ApiCache | None = None) -> dict | None:
     """Fetch paper details from Semantic Scholar API."""
     headers = {}
     if api_key:
         headers["x-api-key"] = api_key
 
     url = f"{S2_BASE}/{paper_id}?fields={S2_FIELDS}"
+
+    if cache:
+        cached = cache.get(f"s2_paper:{paper_id}")
+        if cached is not None:
+            return cached
+
     try:
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if cache:
+            cache.set(f"s2_paper:{paper_id}", data)
+        return data
     except Exception as e:
         log.warning(f"S2 API error for {paper_id}: {e}")
         return None
 
 
-def search_s2(query: str, limit: int = 50, api_key: str | None = None) -> list[dict]:
+def search_s2(query: str, limit: int = 50, api_key: str | None = None, cache: ApiCache | None = None) -> list[dict]:
     """Search Semantic Scholar."""
     headers = {}
     if api_key:
         headers["x-api-key"] = api_key
 
     url = f"{S2_BASE}/search?query={requests.utils.quote(query)}&limit={limit}&fields={S2_FIELDS}"
+    cache_key = f"s2_search:{query}:{limit}"
+
+    if cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
     try:
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("data", [])
+        result = data.get("data", [])
+        if cache:
+            cache.set(cache_key, result)
+        return result
     except Exception as e:
         log.warning(f"S2 search error: {e}")
         return []
@@ -177,13 +212,15 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
     if not paper:
         return [], []
 
+    cache = _get_cache(config)
+
     # Try S2 first
     s2_id = paper.get("s2_id")
     s2_data = None
     if not s2_id:
         title = paper.get("title", "")
         if title:
-            results = search_s2(title, limit=1)
+            results = search_s2(title, limit=1, cache=cache)
             if results:
                 parsed = parse_s2_response(results[0])
                 s2_id = parsed.get("s2_id")
@@ -195,17 +232,17 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
                     db.commit()
 
     if s2_id:
-        s2_data = fetch_s2_paper(s2_id)
+        s2_data = fetch_s2_paper(s2_id, cache=cache)
 
     if s2_data:
-        return _process_citations_from_s2(db, local_id, s2_data, paper, config)
+        return _process_citations_from_s2(db, local_id, s2_data, paper, config, cache)
 
     # Fallback: OpenAlex
     openalex_token = config.get("api", {}).get("openalex_token")
     return _expand_with_openalex(db, local_id, paper, openalex_token)
 
 
-def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, config: dict) -> tuple[list[RefEntry], list[RefEntry]]:
+def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, config: dict, cache: ApiCache | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
     """Process citation data from S2 API."""
     # Backfill missing external IDs from S2
     ext_ids = data.get("externalIds") or {}
