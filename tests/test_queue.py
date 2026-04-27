@@ -62,3 +62,62 @@ def test_resolve_reject():
         row = db.conn.execute("SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)).fetchone()
         assert row[0] == "rejected"
         db.close()
+
+
+def test_route_item_at_weak_threshold():
+    """Items exactly at weak_threshold get weak marker, not queued."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        result = route_item(db, "p1", "concept", {"label": "borderline", "type": "Method"}, 0.7, weak_threshold=0.7, auto_accept=0.9)
+        assert result["action"] == "weak"
+        db.close()
+
+
+def test_route_item_at_auto_accept_threshold():
+    """Items exactly at auto_accept get accepted."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        result = route_item(db, "p1", "concept", {"label": "exact threshold"}, 0.9, weak_threshold=0.7, auto_accept=0.9)
+        assert result["action"] == "accepted"
+        db.close()
+
+
+def test_route_item_returns_queue_id():
+    """route_item returns a queue_id when queued."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        result = route_item(db, "p1", "concept", {"label": "test concept", "type": "Problem"}, 0.5, weak_threshold=0.7, auto_accept=0.9)
+        assert result["action"] == "queued"
+        assert result["queue_id"] is not None
+        db.close()
+
+
+def test_check_consensus_false_insufficient_papers():
+    """check_consensus returns False when concept appears in fewer than 3 papers."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "A", 2020, "uploaded")
+        db.insert_concept("p1", "Method", "transformer", 0.95, year=2020)
+        db.commit()
+
+        is_consensus = check_consensus(db, "transformer")
+        assert is_consensus is False
+        db.close()
+
+
+def test_check_consensus_false_no_concept():
+    """check_consensus returns False for nonexistent concept."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        is_consensus = check_consensus(db, "nonexistent")
+        assert is_consensus is False
+        db.close()
+
+
+def test_resolve_accept_nonexistent_queue_id():
+    """resolve_accept with nonexistent queue_id is safe."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        # Should not raise
+        resolve_accept(db, "nonexistent")
+        db.close()
