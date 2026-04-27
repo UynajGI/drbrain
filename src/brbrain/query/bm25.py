@@ -1,4 +1,4 @@
-"""BM25 full-text search over paper titles and concept labels."""
+"""BM25 full-text search over paper titles, concept labels, and argument claims."""
 from __future__ import annotations
 
 import re
@@ -14,20 +14,28 @@ def tokenize(text: str) -> list[str]:
 
 
 class BM25Search:
-    """BM25 search index over papers and concepts."""
+    """BM25 search index over papers, concepts, and arguments."""
 
     def __init__(self):
         self._documents: list[dict[str, Any]] = []
         self._bm25: BM25Okapi | None = None
         self._tokenized: list[list[str]] = []
 
-    def add_document(self, local_id: str, doc_type: str, label: str, text: str = "") -> None:
-        """Add a searchable document (paper title or concept label)."""
+    def add_document(
+        self, local_id: str, doc_type: str, label: str,
+        text: str = "", arg_type: str = "", year: int | None = None,
+    ) -> None:
+        """Add a searchable document (paper title, concept label, or argument claim)."""
         search_text = f"{label} {text}".strip()
-        self._documents.append({
+        doc: dict[str, Any] = {
             "local_id": local_id, "type": doc_type,
             "label": label, "text": text,
-        })
+        }
+        if arg_type:
+            doc["arg_type"] = arg_type
+        if year is not None:
+            doc["year"] = year
+        self._documents.append(doc)
 
     def build(self, k1: float = 1.5, b: float = 0.75) -> None:
         """Build the BM25 index from added documents."""
@@ -35,7 +43,10 @@ class BM25Search:
         if self._tokenized:
             self._bm25 = BM25Okapi(self._tokenized, k1=k1, b=b)
 
-    def search(self, query: str, type_filter: str | None = None, limit: int = 20) -> list[dict]:
+    def search(
+        self, query: str, type_filter: str | None = None,
+        arg_type_filter: str | None = None, limit: int = 20,
+    ) -> list[dict]:
         """Search the index. Returns ranked list of matching documents."""
         if not self._bm25 or not self._tokenized:
             return []
@@ -48,30 +59,50 @@ class BM25Search:
             doc = self._documents[i]
             if type_filter and doc["type"] != type_filter:
                 continue
-            if score > 0:
-                results.append({
-                    **doc, "score": round(float(score), 4),
-                })
+            if arg_type_filter and doc.get("arg_type") != arg_type_filter:
+                continue
+            # Include any document that has matching terms (score can be negative with BM25)
+            results.append({
+                **doc, "score": round(float(score), 4),
+            })
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
 
 
 def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
-    """Build a BM25 index from database papers and concepts."""
+    """Build a BM25 index from database papers, concepts, and arguments."""
     index = BM25Search()
 
-    # Add paper titles
+    # Add paper titles + abstracts
     papers = db.get_all_papers()
     for p in papers:
-        index.add_document(p["local_id"], "Paper", p["title"], p.get("status", ""))
+        index.add_document(
+            p["local_id"], "Paper", p["title"],
+            text=p.get("abstract", "") + " " + p.get("status", ""),
+            year=p.get("year"),
+        )
 
     # Add concept labels
     rows = db.conn.execute(
-        "SELECT local_id, type, label FROM concepts"
+        "SELECT c.local_id, c.type, c.label, p.year "
+        "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+        "WHERE p.year IS NOT NULL"
     ).fetchall()
-    for local_id, ctype, label in rows:
-        index.add_document(local_id, ctype, label)
+    for local_id, ctype, label, year in rows:
+        index.add_document(local_id, ctype, label, year=year)
+
+    # Add argument claims
+    args = db.conn.execute(
+        "SELECT a.source_paper, a.claim, a.claim_type, p.year "
+        "FROM arguments a JOIN papers p ON a.source_paper = p.local_id "
+        "WHERE p.year IS NOT NULL"
+    ).fetchall()
+    for local_id, claim, claim_type, year in args:
+        index.add_document(
+            local_id, "Argument", claim,
+            arg_type=claim_type, year=year,
+        )
 
     index.build(k1=k1, b=b)
     return index

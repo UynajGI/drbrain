@@ -9,6 +9,7 @@ SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS papers (
     local_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
+    abstract TEXT DEFAULT '',
     year INTEGER,
     status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -144,6 +145,12 @@ class Database:
             (local_id, doi, arxiv, s2_id, openalex_id),
         )
 
+    def set_paper_abstract(self, local_id: str, abstract: str) -> None:
+        self.conn.execute(
+            "UPDATE papers SET abstract = ? WHERE local_id = ?",
+            (abstract, local_id),
+        )
+
     def upgrade_placeholder(self, local_id: str) -> None:
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
@@ -187,24 +194,24 @@ class Database:
     def get_all_papers(self) -> list[dict]:
         """Return all papers as list of dicts."""
         rows = self.conn.execute(
-            "SELECT p.local_id, p.title, p.year, p.status, p.created_at, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, p.created_at, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
-        cols = ["local_id", "title", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = ["local_id", "title", "abstract", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
         return [dict(zip(cols, row)) for row in rows]
 
     def get_paper(self, local_id: str) -> dict | None:
         """Get a single paper by local_id."""
         row = self.conn.execute(
-            "SELECT p.local_id, p.title, p.year, p.status, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
             "WHERE p.local_id = ?", (local_id,)
         ).fetchone()
         if not row:
             return None
-        cols = ["local_id", "title", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = ["local_id", "title", "abstract", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
         return dict(zip(cols, row))
 
     def get_concepts_by_paper(self, local_id: str) -> list[dict]:
@@ -294,7 +301,18 @@ class Database:
         return [dict(zip(["year", "count", "avg_conf"], row)) for row in rows]
 
     def detect_evolution_signals(self) -> list[dict]:
-        """Detect evolution signals across all concepts."""
+        """Detect evolution signals across all concepts.
+
+        Signals per Spec §15:
+        - emerging: first_seen in last 2 years, paper_count growing (year-over-year increase)
+        - established: paper_count > 10, avg_confidence > 0.8
+        - declining: last_seen > 3 years ago, paper_count plateau (no growth in final period)
+        - contested: avg_confidence < 0.7, paper_count > 5
+        - resurging: dormant > 3 years (gap in timeline), then new papers in last 2 years
+        """
+        from datetime import datetime
+        current_year = datetime.now().year
+
         rows = self.conn.execute(
             "SELECT c.label, c.type, MIN(p.year) as first_seen, MAX(p.year) as last_seen, "
             "COUNT(DISTINCT c.local_id) as paper_count, AVG(c.confidence) as avg_conf "
@@ -303,33 +321,136 @@ class Database:
             "GROUP BY c.label, c.type"
         ).fetchall()
 
-        from datetime import datetime
-        current_year = datetime.now().year
         signals = []
-
         for label, ctype, first_seen, last_seen, paper_count, avg_conf in rows:
-            signal = "established"
-            if first_seen >= current_year - 2 and paper_count >= 2:
-                signal = "emerging"
-            elif paper_count > 10 and avg_conf > 0.8:
-                signal = "established"
-            elif last_seen <= current_year - 3 and paper_count <= 5:
-                signal = "declining"
-            elif avg_conf < 0.7 and paper_count > 5:
-                signal = "contested"
-            elif last_seen <= current_year - 3:
-                recent = self.conn.execute(
-                    "SELECT COUNT(*) FROM concepts c JOIN papers p ON c.local_id = p.local_id "
-                    "WHERE c.label = ? AND p.year >= ?",
-                    (label, current_year - 1),
-                ).fetchone()[0]
-                if recent > 0:
-                    signal = "resurging"
-
+            signal = self._classify_signal(
+                label, ctype, first_seen, last_seen, paper_count, avg_conf, current_year,
+            )
             signals.append({
                 "label": label, "type": ctype, "signal": signal,
                 "first_seen": first_seen, "last_seen": last_seen,
                 "paper_count": paper_count, "avg_confidence": round(avg_conf, 3),
             })
-
         return signals
+
+    def _classify_signal(
+        self, label: str, ctype: str, first_seen: int, last_seen: int,
+        paper_count: int, avg_conf: float, current_year: int,
+    ) -> str:
+        """Classify a single concept's evolution signal."""
+        # Check contested first (overrides established for high-count low-conf)
+        if paper_count > 5 and avg_conf < 0.7:
+            return "contested"
+
+        # Check resurging: dormant > 3 years then recent activity
+        if self._has_resurgence(label, current_year):
+            return "resurging"
+
+        # Check emerging: recent first appearance with growing trend
+        if first_seen >= current_year - 2 and self._is_growing(label, current_year):
+            return "emerging"
+
+        # Check declining: last_seen > 3 years ago (strictly more than 3 year gap)
+        if last_seen < current_year - 3:
+            return "declining"
+
+        # Check established
+        if paper_count > 10 and avg_conf > 0.8:
+            return "established"
+
+        return "unknown"
+
+    def _has_resurgence(self, label: str, current_year: int) -> bool:
+        """Check if concept has a gap > 3 years followed by recent activity."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT p.year FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL ORDER BY p.year",
+            (label,),
+        ).fetchall()
+        years = sorted([r[0] for r in rows])
+        if len(years) < 2:
+            return False
+
+        # Check for gap > 3 years
+        has_gap = False
+        for i in range(1, len(years)):
+            if years[i] - years[i - 1] > 3:
+                has_gap = True
+                break
+        if not has_gap:
+            return False
+
+        # Must have recent activity (last 2 years)
+        return years[-1] >= current_year - 1
+
+    def _is_growing(self, label: str, current_year: int) -> bool:
+        """Check if paper count for concept is growing (recent > early)."""
+        rows = self.conn.execute(
+            "SELECT p.year, COUNT(*) as cnt FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
+            (label,),
+        ).fetchall()
+        if len(rows) < 2:
+            return False  # Need at least 2 years to determine growth trend
+
+        mid = len(rows) // 2
+        early_avg = sum(r[1] for r in rows[:mid]) / mid
+        late_avg = sum(r[1] for r in rows[mid:]) / (len(rows) - mid)
+        return late_avg > early_avg
+
+    def get_concept_signal(self, label: str) -> dict | None:
+        """Detect evolution signal for a specific concept."""
+        from datetime import datetime
+        current_year = datetime.now().year
+
+        row = self.conn.execute(
+            "SELECT c.label, c.type, MIN(p.year), MAX(p.year), "
+            "COUNT(DISTINCT c.local_id), AVG(c.confidence) "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL "
+            "GROUP BY c.label, c.type",
+            (label,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        lbl, ctype, first_seen, last_seen, paper_count, avg_conf = row
+        signal = self._classify_signal(
+            lbl, ctype, first_seen, last_seen, paper_count, avg_conf, current_year,
+        )
+        return {
+            "label": lbl, "type": ctype, "signal": signal,
+            "first_seen": first_seen, "last_seen": last_seen,
+            "paper_count": paper_count, "avg_confidence": round(avg_conf, 3),
+        }
+
+    def get_concept_evolution(self, label: str) -> list[dict]:
+        """Get year-by-year usage stats for a concept label with trend annotation."""
+        rows = self.conn.execute(
+            "SELECT p.year, COUNT(*) as count, AVG(c.confidence) as avg_conf "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL "
+            "GROUP BY p.year ORDER BY p.year",
+            (label,),
+        ).fetchall()
+        result = []
+        prev_count = None
+        for i, row in enumerate(rows):
+            year, count, avg_conf = row
+            entry = {"year": year, "count": count, "avg_conf": round(avg_conf, 2)}
+
+            if i == 0:
+                entry["trend"] = "first_appeared"
+            elif prev_count is not None:
+                if count > prev_count:
+                    entry["trend"] = "growing"
+                elif count < prev_count:
+                    entry["trend"] = "declining"
+                else:
+                    entry["trend"] = "stable"
+            else:
+                entry["trend"] = "stable"
+
+            prev_count = count
+            result.append(entry)
+        return result

@@ -8,6 +8,7 @@ dependencies = [
     "networkx>=3.4",
     "pydantic>=2.10",
     "pyyaml>=6.0",
+    "pypdfium2>=4",
     "rank-bm25>=0.2",
     "requests>=2.31",
     "rich>=13.9",
