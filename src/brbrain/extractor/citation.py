@@ -232,39 +232,59 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
 
     # Process references
     references: list[RefEntry] = []
+    new_ref_placeholders: list[tuple[str, str, int | None, dict]] = []
+    new_ref_edges: list[tuple[str, str, str, str, float]] = []
+
     for ref in data.get("references", [])[:50]:
         parsed = parse_s2_response(ref)
         entry = match_to_local(db, parsed)
         references.append(entry)
         if not entry.in_graph:
             pid = f"p{local_id[1:]}_ref_{len(references)}"
-            db.insert_paper(pid, entry.title or "Unknown", entry.year, "placeholder")
-            db.insert_paper_ids(pid, doi=entry.ids.get("doi"), arxiv=entry.ids.get("arxiv"),
-                               s2_id=entry.ids.get("s2_id"), openalex_id=entry.ids.get("openalex_id"))
+            new_ref_placeholders.append((pid, entry.title or "Unknown", entry.year, entry.ids))
+            new_ref_edges.append((local_id, pid, "cites", local_id, 1.0))
+        time.sleep(delay)
+
+    # Batch insert reference placeholders
+    if new_ref_placeholders:
+        for pid, title, year, ids in new_ref_placeholders:
+            db.insert_paper(pid, title, year, "placeholder")
+            db.insert_paper_ids(pid, doi=ids.get("doi"), arxiv=ids.get("arxiv"),
+                               s2_id=ids.get("s2_id"), openalex_id=ids.get("openalex_id"))
+        for src_id, dst_id, relation, source_paper, weight in new_ref_edges:
             db.conn.execute(
                 "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-                (local_id, pid, "cites", local_id, 1.0),
+                (src_id, dst_id, relation, source_paper, weight),
             )
-            db.commit()
-        time.sleep(delay)
+        db.commit()
 
     # Process citations (papers citing this one)
     citations: list[RefEntry] = []
+    new_cit_placeholders: list[tuple[str, str, int | None, dict]] = []
+    new_cit_edges: list[tuple[str, str, str, str, float]] = []
+
     for cit in data.get("citations", [])[:50]:
         parsed = parse_s2_response(cit)
         entry = match_to_local(db, parsed)
         citations.append(entry)
         if not entry.in_graph:
             pid = f"p{local_id[1:]}_cit_{len(citations)}"
-            db.insert_paper(pid, entry.title or "Unknown", entry.year, "placeholder")
-            db.insert_paper_ids(pid, doi=entry.ids.get("doi"), arxiv=entry.ids.get("arxiv"),
-                               s2_id=entry.ids.get("s2_id"), openalex_id=entry.ids.get("openalex_id"))
+            new_cit_placeholders.append((pid, entry.title or "Unknown", entry.year, entry.ids))
+            new_cit_edges.append((pid, local_id, "cited_by", local_id, 1.0))
+        time.sleep(delay)
+
+    # Batch insert citation placeholders
+    if new_cit_placeholders:
+        for pid, title, year, ids in new_cit_placeholders:
+            db.insert_paper(pid, title, year, "placeholder")
+            db.insert_paper_ids(pid, doi=ids.get("doi"), arxiv=ids.get("arxiv"),
+                               s2_id=ids.get("s2_id"), openalex_id=ids.get("openalex_id"))
+        for src_id, dst_id, relation, source_paper, weight in new_cit_edges:
             db.conn.execute(
                 "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-                (pid, local_id, "cited_by", local_id, 1.0),
+                (src_id, dst_id, relation, source_paper, weight),
             )
-            db.commit()
-        time.sleep(delay)
+        db.commit()
 
     return references, citations
 

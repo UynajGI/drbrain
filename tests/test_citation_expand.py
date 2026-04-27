@@ -250,6 +250,57 @@ def test_expand_citations_handles_citations_direction():
         db.close()
 
 
+def test_expand_citations_batches_placeholder_commits():
+    """expand_citations uses batch commits for multiple placeholders, not one-per-item."""
+    s2_data = {
+        "paperId": "s2_batch",
+        "title": "Seed Paper",
+        "year": 2024,
+        "externalIds": {"DOI": "10.1234/seed"},
+        "citationCount": 10,
+        "references": [
+            {"paperId": f"ref{i}", "title": f"Ref Paper {i}", "year": 2020 + i,
+             "externalIds": None, "citationCount": 0}
+            for i in range(1, 6)
+        ],
+        "citations": [
+            {"paperId": f"cit{i}", "title": f"Citing Paper {i}", "year": 2025,
+             "externalIds": None, "citationCount": 0}
+            for i in range(1, 4)
+        ],
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Seed Paper", 2024, "uploaded")
+        db.insert_paper_ids("p1", doi="10.1234/seed", s2_id="s2_batch")
+        db.commit()
+
+        commit_count = [0]
+        original_commit = db.commit
+
+        def counting_commit():
+            commit_count[0] += 1
+            return original_commit()
+
+        db.commit = counting_commit
+
+        cfg = {"api": {"s2_rate_limit": 100}}
+
+        with unittest.mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+            refs, cits = expand_citations(db, "p1", cfg)
+
+        assert len(refs) == 5
+        assert len(cits) == 3
+
+        # All 8 placeholders should be created with batch commits
+        # Old code: 8 commits (one per item). New code: ~2 commits (one per batch).
+        assert commit_count[0] <= 4, f"Expected <=4 batched commits, got {commit_count[0]}"
+
+        db.close()
+
+
 # -- original non-retry functions --
 
 def test_fetch_s2_paper_success():
