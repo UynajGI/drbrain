@@ -1,4 +1,5 @@
 """Tests for graph engine: closure rules, research seeds, load/persist."""
+
 import tempfile
 from pathlib import Path
 
@@ -149,3 +150,28 @@ def test_load_from_db_and_persist():
         assert g2.graph.number_of_edges() == 2
 
         db.close()
+
+
+def test_closure_transitive_inference():
+    """closure infers A extends C from A extends B, B extends C."""
+    g = GraphEngine()
+    g.add_edge("M1", "M2", "extends", "p1")
+    g.add_edge("M2", "M3", "extends", "p1")
+
+    inferred = g.closure()
+    trans_edges = [e for e in inferred if e["relation"] == "extends"]
+    assert len(trans_edges) == 1
+    assert trans_edges[0]["src"] == "M1"
+    assert trans_edges[0]["dst"] == "M3"
+
+
+def test_closure_transitive_no_duplication():
+    """closure does not infer A extends C if it already exists."""
+    g = GraphEngine()
+    g.add_edge("M1", "M2", "extends", "p1")
+    g.add_edge("M2", "M3", "extends", "p1")
+    g.add_edge("M1", "M3", "extends", "p1")
+
+    inferred = g.closure()
+    trans_edges = [e for e in inferred if e["relation"] == "extends"]
+    assert len(trans_edges) == 0

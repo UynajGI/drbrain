@@ -7,6 +7,9 @@ from datetime import datetime
 
 import networkx as nx
 
+from drbrain.graph.path_reasoning import _apply_path_rules_subgraph, apply_path_rules
+from drbrain.validator.schema import detect_asymmetric_violations, enforce_transitive
+
 
 class GraphEngine:
     """Graph operations and rule-based relationship closure."""
@@ -148,6 +151,29 @@ class GraphEngine:
                                 "via": actor,
                             }
                         )
+
+        # Rule 6: Transitive closure for RBOX transitive relations
+        edge_list = [
+            {"src": u, "dst": v, "relation": data["relation"], "source_paper": data["source"]}
+            for u, v, data in self.graph.edges(data=True)
+        ]
+        transitive_inferred = enforce_transitive(edge_list)
+        for edge in transitive_inferred:
+            inferred.append(
+                {
+                    "src": edge["src"],
+                    "dst": edge["dst"],
+                    "relation": edge["relation"],
+                    "via": edge["via"],
+                }
+            )
+
+        # Rule 7: Asymmetric violation detection (logged, not inferred)
+        detect_asymmetric_violations(edge_list)
+
+        # Rule 8: Multi-hop path rules
+        path_inferred = apply_path_rules(self)
+        inferred.extend(path_inferred)
 
         return inferred
 
@@ -434,3 +460,146 @@ class GraphEngine:
         for u, v, data in self.graph.edges(data=True):
             db.insert_edge(u, v, data["relation"], data["source"], data.get("weight", 1.0))
         db.commit()
+
+    def closure_incremental(self, seed_nodes: set[str]) -> list[dict]:
+        """Run closure rules only for edges touching seed_nodes.
+
+        Instead of scanning the full graph, build a subgraph containing
+        seed nodes and their 2-hop neighborhood, then run the same
+        closure rules on that subgraph.
+        """
+        if not seed_nodes:
+            return []
+
+        # Build subgraph: seed nodes + 2-hop neighborhood
+        relevant_nodes: set[str] = set()
+        for node in seed_nodes:
+            if node not in self.graph:
+                continue
+            relevant_nodes.add(node)
+            relevant_nodes |= self.get_neighbors(node, hops=2)
+
+        if not relevant_nodes:
+            return []
+
+        sub = nx.MultiDiGraph()
+        for u, v, data in self.graph.edges(data=True):
+            if u in relevant_nodes and v in relevant_nodes:
+                sub.add_edge(
+                    u,
+                    v,
+                    relation=data["relation"],
+                    source=data["source"],
+                    weight=data.get("weight", 1.0),
+                )
+
+        if sub.number_of_edges() == 0:
+            return []
+
+        # Build relation indices for the subgraph
+        challenges: dict[str, list[str]] = defaultdict(list)
+        supports: dict[str, list[str]] = defaultdict(list)
+        leaves_open: dict[str, list[str]] = defaultdict(list)
+        addresses: dict[str, list[str]] = defaultdict(list)
+        extends: dict[str, list[str]] = defaultdict(list)
+        replaces: dict[str, list[str]] = defaultdict(list)
+        points_to: dict[str, list[str]] = defaultdict(list)
+        constrains: dict[str, list[str]] = defaultdict(list)
+
+        for u, v, data in sub.edges(data=True):
+            rel = data["relation"]
+            if rel == "challenges":
+                challenges[v].append(u)
+            elif rel == "supports":
+                supports[v].append(u)
+            elif rel == "leaves_open":
+                leaves_open[v].append(u)
+            elif rel == "addresses":
+                addresses[v].append(u)
+            elif rel == "extends":
+                extends[u].append(v)
+            elif rel == "replaces":
+                replaces[u].append(v)
+            elif rel == "points_to":
+                points_to[u].append(v)
+            elif rel == "constrains":
+                constrains[u].append(v)
+
+        inferred: list[dict] = []
+
+        # Rule: creates_debate
+        for conclusion in challenges:
+            if conclusion in supports:
+                for p in challenges[conclusion]:
+                    for q in supports[conclusion]:
+                        if p != q:
+                            inferred.append(
+                                {
+                                    "src": p,
+                                    "dst": q,
+                                    "relation": "creates_debate",
+                                    "via": conclusion,
+                                }
+                            )
+
+        # Rule: gap_addressed
+        for gap in leaves_open:
+            if gap in addresses:
+                for p in leaves_open[gap]:
+                    for q in addresses[gap]:
+                        inferred.append(
+                            {"src": gap, "dst": q, "relation": "gap_addressed", "via": gap}
+                        )
+
+        # Rule: indirect_evolution
+        for m1 in extends:
+            for m2 in extends[m1]:
+                if m2 in replaces:
+                    for m3 in replaces[m2]:
+                        inferred.append(
+                            {"src": m1, "dst": m3, "relation": "indirect_evolution", "via": m2}
+                        )
+
+        # Rule: gap_to_debate
+        for gap in points_to:
+            for target in points_to[gap]:
+                if target in challenges and target in supports:
+                    inferred.append(
+                        {"src": gap, "dst": target, "relation": "gap_to_debate", "via": target}
+                    )
+
+        # Rule: shared_actor
+        actor_papers: dict[str, list[str]] = defaultdict(list)
+        for u, v, data in sub.edges(data=True):
+            if data["relation"] == "affiliated_with":
+                actor_papers[v].append(u)
+        for actor, papers in actor_papers.items():
+            if len(papers) > 1:
+                for i, p1 in enumerate(papers):
+                    for p2 in papers[i + 1 :]:
+                        inferred.append(
+                            {"src": p1, "dst": p2, "relation": "shared_actor", "via": actor}
+                        )
+
+        # Rule: transitive closure
+        edge_list = [
+            {"src": u, "dst": v, "relation": data["relation"], "source_paper": data["source"]}
+            for u, v, data in sub.edges(data=True)
+        ]
+        from drbrain.validator.schema import enforce_transitive
+
+        for edge in enforce_transitive(edge_list):
+            inferred.append(
+                {
+                    "src": edge["src"],
+                    "dst": edge["dst"],
+                    "relation": edge["relation"],
+                    "via": edge["via"],
+                }
+            )
+
+        # Rule: path rules
+        path_inferred = _apply_path_rules_subgraph(sub)
+        inferred.extend(path_inferred)
+
+        return inferred

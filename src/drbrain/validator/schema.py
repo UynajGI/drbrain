@@ -1,15 +1,16 @@
 """Schema-first validation: TBox type constraints + RBox relation restrictions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 TBOX = {
-    "Problem":   {"addresses", "leaves_open", "points_to"},
-    "Method":    {"addresses", "proposes", "extends", "replaces", "solves"},
-    "Conclusion":{"supports", "challenges", "limits"},
-    "Debate":    {"supports", "challenges"},
-    "Gap":       {"leaves_open", "points_to", "constrains"},
-    "Actor":     {"affiliated_with", "proposes"},
+    "Problem": {"addresses", "leaves_open", "points_to"},
+    "Method": {"addresses", "proposes", "extends", "replaces", "solves"},
+    "Conclusion": {"supports", "challenges", "limits"},
+    "Debate": {"supports", "challenges"},
+    "Gap": {"leaves_open", "points_to", "constrains"},
+    "Actor": {"affiliated_with", "proposes"},
 }
 
 RBOX = {
@@ -47,14 +48,14 @@ def validate_rbox(src_label: str, relation: str, dst_label: str) -> ValidationRe
     if relation in RBOX["irreflexive"] and src_label == dst_label:
         return ValidationResult(
             False,
-            f"RBox violation: '{relation}' is irreflexive, cannot relate "
-            f"'{src_label}' to itself.",
+            f"RBox violation: '{relation}' is irreflexive, cannot relate '{src_label}' to itself.",
         )
     return ValidationResult(True)
 
 
-def validate_relation(concept_type: str, relation: str,
-                      src_label: str, dst_label: str) -> ValidationResult:
+def validate_relation(
+    concept_type: str, relation: str, src_label: str, dst_label: str
+) -> ValidationResult:
     """Full validation: TBox + RBox."""
     tbox = validate_tbox(concept_type, relation)
     if not tbox.valid:
@@ -103,3 +104,76 @@ def _find_concept_type(label: str, concepts: dict) -> str | None:
             if item.get("label", "") == label:
                 return ctype
     return None
+
+
+def enforce_transitive(edges: list[dict]) -> list[dict]:
+    """Detect transitive closure gaps for relations declared in RBOX['transitive'].
+
+    For each transitive relation, find A→B and B→C chains. If A→C
+    does not already exist, infer it.
+
+    Returns list of inferred edge dicts with src, dst, relation, via.
+    """
+    transitive_rels = RBOX.get("transitive", set())
+    inferred = []
+
+    for rel in transitive_rels:
+        rel_edges = [e for e in edges if e["relation"] == rel]
+        # Build adjacency for this relation
+        successors: dict[str, list[str]] = {}
+        existing: set[tuple[str, str]] = set()
+        for e in rel_edges:
+            successors.setdefault(e["src"], []).append(e["dst"])
+            existing.add((e["src"], e["dst"]))
+
+        # For each node, compute its transitive closure via BFS
+        for start in successors:
+            visited: set[str] = set()
+            queue = list(successors.get(start, []))
+            for node in queue:
+                visited.add(node)
+            # Expand transitively
+            changed = True
+            while changed:
+                changed = False
+                new_nodes = []
+                for node in list(visited):
+                    for next_node in successors.get(node, []):
+                        if next_node not in visited:
+                            visited.add(next_node)
+                            new_nodes.append(next_node)
+                            changed = True
+
+            for dst in visited:
+                if (start, dst) not in existing:
+                    inferred.append(
+                        {
+                            "src": start,
+                            "dst": dst,
+                            "relation": rel,
+                            "via": "transitive_closure",
+                        }
+                    )
+
+    return inferred
+
+
+def detect_asymmetric_violations(edges: list[dict]) -> list[dict]:
+    """Find asymmetric relation violations: A rel B and B rel A both present.
+
+    Returns list of the backward edge(s) that violate asymmetry.
+    """
+    asymmetric_rels = RBOX.get("asymmetric", set())
+    violations = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for e in edges:
+        if e["relation"] not in asymmetric_rels:
+            continue
+        # Check if the reverse already exists
+        reverse = (e["dst"], e["src"], e["relation"])
+        if reverse in seen:
+            violations.append(e)
+        seen.add((e["src"], e["dst"], e["relation"]))
+
+    return violations

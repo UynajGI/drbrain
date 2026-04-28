@@ -372,10 +372,17 @@ def _ingest_single_paper(
             else:
                 echo("  No DOI found in any source")
 
-        # Stage 8: Closure
+        # Stage 8: Closure (full + incremental for new paper)
         echo("  Running rule closure...")
         graph.load_from_db(db)
         inferred = graph.closure()
+        # Incremental closure from this paper's nodes
+        affected_nodes = {local_id}
+        for ctype, items in all_items:
+            for item in items:
+                affected_nodes.add(item.get("label", ""))
+        incr_inferred = graph.closure_incremental(affected_nodes)
+        inferred.extend(incr_inferred)
         for edge in inferred:
             db.insert_edge(edge["src"], edge["dst"], edge["relation"], local_id)
         db.commit()
