@@ -48,6 +48,7 @@ class ParsedPaper:
     arxiv: str | None = None
     s2_id: str | None = None
     openalex_id: str | None = None
+    authors: list[dict] = field(default_factory=list)
     text_blocks: list[str] = field(default_factory=list)
     raw_md: str = ""
     images_dir: Path | None = None  # extracted images directory
@@ -104,6 +105,11 @@ class MinerUParser:
             if api_year and not year:
                 year = api_year
 
+        # Fetch authorships from OpenAlex
+        from drbrain.extractor.openalex import search_authors_by_work
+
+        authors = search_authors_by_work(doi=doi, title=title)
+
         blocks = filter_sections(raw_md)
 
         images_dir = out_dir / "images" if out_dir and (out_dir / "images").exists() else None
@@ -113,6 +119,7 @@ class MinerUParser:
             year=year,
             doi=doi,
             arxiv=arxiv,
+            authors=authors or [],
             text_blocks=blocks,
             raw_md=raw_md,
             images_dir=images_dir,

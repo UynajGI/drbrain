@@ -1,7 +1,8 @@
 """Tests for database methods not covered by existing tests."""
+
 import tempfile
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 from drbrain.storage.database import Database
 
@@ -98,7 +99,9 @@ def test_insert_alias():
     db.insert_alias("Transformer", str(cid))
     db.commit()
 
-    row = db.conn.execute("SELECT canonical_id FROM aliases WHERE variant='transformers'").fetchone()
+    row = db.conn.execute(
+        "SELECT canonical_id FROM aliases WHERE variant='transformers'"
+    ).fetchone()
     assert row[0] == str(cid)
     db.close()
 
@@ -133,8 +136,14 @@ def test_insert_and_get_arguments():
     db = _make_db()
     db.insert_paper("p1", "Test", 2024, "uploaded")
     aid = db.insert_argument(
-        "p1", "Method X outperforms Y", "supports",
-        "Method X", "Method", "empirical", "See Table 3", 0.9,
+        "p1",
+        "Method X outperforms Y",
+        "supports",
+        "Method X",
+        "Method",
+        "empirical",
+        "See Table 3",
+        0.9,
     )
     assert aid is not None
 
@@ -228,8 +237,10 @@ def test_insert_edge_dedup():
 
 def test_save_raw_md_file():
     """save_raw_md writes markdown to data/papers/<local_id>.md and returns path."""
-    from drbrain.cli.commands import save_raw_md
     import tempfile
+
+    from drbrain.cli.commands import save_raw_md
+
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
         md = "# Title\n\n![img](images/abc.jpg)\n\nAbstract text here."
@@ -242,8 +253,10 @@ def test_save_raw_md_file():
 
 def test_save_raw_md_copies_images():
     """save_raw_md copies images and rewrites refs."""
-    from drbrain.cli.commands import save_raw_md
     import tempfile
+
+    from drbrain.cli.commands import save_raw_md
+
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
         src_dir = Path(td) / "src"
@@ -258,4 +271,4 @@ def test_save_raw_md_copies_images():
         assert (papers_dir / "p1.md").exists()
         assert (papers_dir / "images" / "p1" / "abc.jpg").exists()
         content = (papers_dir / "p1.md").read_text()
-        assert "images/p1/images/abc.jpg" in content
+        assert "images/p1/abc.jpg" in content

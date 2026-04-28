@@ -166,6 +166,19 @@ def _ingest_single_paper(
         db.commit()
         echo(f"  [upgrade] {local_id}")
 
+    # Insert OpenAlex-derived Actor concepts (deduplicated author IDs)
+    from drbrain.extractor.openalex import search_authors_by_work
+
+    oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title)
+    if oa_authors:
+        echo(f"  Authors: {len(oa_authors)} via OpenAlex")
+        for author in oa_authors:
+            actor_label = author["author_id"]
+            db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)
+            db.insert_alias(author["display_name"], actor_label)
+            db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
+        db.commit()
+
     # Save parsed markdown for inspection
     papers_dir = Path(cfg.get("dirs", {}).get("pdfs", "data/pdfs")).parent / "papers"
     save_raw_md(parsed.raw_md, local_id, papers_dir, parsed.images_dir)
@@ -220,7 +233,6 @@ def _ingest_single_paper(
         ("Conclusion", concepts.conclusions),
         ("Debate", concepts.debates),
         ("Gap", concepts.gaps),
-        ("Actor", concepts.actors),
     ]
     for ctype, items in all_items:
         for item in items:
@@ -259,14 +271,6 @@ def _ingest_single_paper(
 
         for rel in valid_relations:
             db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
-
-        # Auto-create edges that LLM may have missed
-        # Paper → Actor (affiliated_with)
-        if concepts.actors:
-            for actor in concepts.actors:
-                actor_label = actor.get("label", "")
-                if actor_label:
-                    db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
 
         # Gap → Problem/Method (points_to) — infer from label overlap
         if concepts.gaps and (concepts.problems or concepts.methods):
@@ -1192,3 +1196,142 @@ def serve_cmd(
         ],
         env=env,
     )
+
+
+def lineage_cmd(
+    author_id: str = typer.Argument(None, help="OpenAlex author ID (e.g., A5023806754)"),
+    list_all: bool = typer.Option(False, "--list", help="List all actors with paper counts"),
+    name: str = typer.Option(None, "--name", "-n", help="Search actors by display name"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Explore author/research lineage via OpenAlex deduplicated IDs."""
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    if list_all:
+        rows = db.conn.execute(
+            "SELECT c.label, COUNT(DISTINCT c.local_id) as paper_count, "
+            "GROUP_CONCAT(DISTINCT a.variant) as aliases "
+            "FROM concepts c "
+            "LEFT JOIN aliases a ON a.canonical_id = c.label "
+            "WHERE c.type = 'Actor' "
+            "GROUP BY c.label "
+            "ORDER BY paper_count DESC, c.label"
+        ).fetchall()
+        db.close()
+
+        if not rows:
+            typer.echo("No actors found.")
+            return
+
+        if json_output:
+            data = [
+                {"author_id": r[0], "paper_count": r[1], "aliases": r[2].split(",") if r[2] else []}
+                for r in rows
+            ]
+            typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+            return
+
+        typer.echo(f"Authors ({len(rows)} total):")
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Author ID", style="cyan")
+        table.add_column("Display Name", style="green")
+        table.add_column("Papers", justify="right")
+        for r in rows:
+            display = r[2].split(",")[0] if r[2] else r[0]
+            table.add_row(r[0], display, str(r[1]))
+        console.print(table)
+
+    elif name:
+        # Search by display name → resolve to author_id(s)
+        rows = db.conn.execute(
+            "SELECT DISTINCT canonical_id FROM aliases WHERE variant LIKE ? COLLATE NOCASE",
+            (f"%{name}%",),
+        ).fetchall()
+        if not rows:
+            db.close()
+            typer.echo(f"No actors matching '{name}'.")
+            return
+        db.close()
+        # Show each matching actor
+        for (matched_id,) in rows:
+            _show_actor(cfg, matched_id)
+
+    elif author_id:
+        _show_actor(cfg, author_id)
+        db.close()
+
+    else:
+        typer.echo(
+            "Usage: drbrain lineage <author_id>\n"
+            "       drbrain lineage --list\n"
+            "       drbrain lineage --name <display_name>",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+def _show_actor(cfg: dict, author_id: str) -> None:
+    """Show detailed info for a single actor."""
+    db = Database(cfg["db"]["path"])
+
+    # Get display names from aliases
+    aliases = db.conn.execute(
+        "SELECT variant FROM aliases WHERE canonical_id = ?", (author_id,)
+    ).fetchall()
+    display_names = [a[0] for a in aliases]
+
+    # Get papers
+    papers = db.conn.execute(
+        "SELECT DISTINCT c.local_id, p.title, p.year "
+        "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+        "WHERE c.type = 'Actor' AND c.label = ? ORDER BY p.year",
+        (author_id,),
+    ).fetchall()
+    paper_ids = [p[0] for p in papers]
+
+    # Get shared_actor connections (edges between papers of this author and other papers)
+    connected_papers: list[str] = []
+    if paper_ids:
+        placeholders = ",".join("?" for _ in paper_ids)
+        rows = db.conn.execute(
+            f"SELECT DISTINCT e.dst_id FROM edges e "
+            f"WHERE e.relation = 'shared_actor' AND e.src_id IN ({placeholders})",
+            paper_ids,
+        ).fetchall()
+        connected_papers = [r[0] for r in rows if r[0] not in paper_ids]
+
+    db.close()
+
+    if not papers:
+        typer.echo(f"Actor '{author_id}' has no associated papers.")
+        return
+
+    typer.echo(f"\nAuthor: {author_id}")
+    if display_names:
+        typer.echo(f"Display: {', '.join(display_names)}")
+    typer.echo(f"Papers: {len(papers)}")
+    for title, year in [(p[1], p[2]) for p in papers]:
+        year_str = f" ({year})" if year else ""
+        typer.echo(f"  - {title}{year_str}")
+
+    if connected_papers:
+        typer.echo(f"\nShared actor connections ({len(connected_papers)}):")
+        # Resolve connected papers to their actors
+        cfg2 = load_config()
+        db2 = Database(cfg2["db"]["path"])
+        for pid in connected_papers:
+            paper = db2.get_paper(pid)
+            title = paper["title"][:80] if paper else pid
+            connected_actors = db2.conn.execute(
+                "SELECT DISTINCT c.label FROM concepts c WHERE c.type = 'Actor' AND c.local_id = ?",
+                (pid,),
+            ).fetchall()
+            actor_names = []
+            for (aid,) in connected_actors:
+                alias_row = db2.conn.execute(
+                    "SELECT variant FROM aliases WHERE canonical_id = ? LIMIT 1", (aid,)
+                ).fetchone()
+                actor_names.append(alias_row[0] if alias_row else aid)
+            typer.echo(f"  - [{', '.join(actor_names)}] {title}")
+        db2.close()

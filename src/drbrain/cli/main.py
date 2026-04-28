@@ -10,6 +10,7 @@ from drbrain.cli.commands import (
     expand_cmd,
     export_cmd,
     ingest_cmd,
+    lineage_cmd,
     list_cmd,
     query_cmd,
     queue_cmd,
@@ -41,6 +42,7 @@ app.command("queue resolve-all")(queue_resolve_all_cmd)
 app.command("timeline")(timeline_cmd)
 app.command("delete")(delete_cmd)
 app.command("serve")(serve_cmd)
+app.command("lineage")(lineage_cmd)
 
 if __name__ == "__main__":
     app()

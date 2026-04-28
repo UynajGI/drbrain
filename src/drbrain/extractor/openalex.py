@@ -189,6 +189,88 @@ def get_work_by_openalex_id(
     return None
 
 
+def _extract_author_short_id(url: str) -> str | None:
+    """Extract short author ID from OpenAlex URL like 'https://openalex.org/A5023806754'."""
+    if not url:
+        return None
+    m = re.search(r"/(A\d{10})$", url)
+    return m.group(1) if m else None
+
+
+def search_authors_by_work(
+    doi: str | None = None,
+    title: str | None = None,
+    token: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """Fetch authorships from OpenAlex for a given work.
+
+    Prefer DOI lookup for accuracy; fallback to title search.
+    Returns list of dicts with: author_id (short), display_name, orcid, raw_affiliation.
+    Returns None if the work cannot be found.
+    """
+    if not doi and not title:
+        return None
+
+    fields = _select_fields(["id", "authorships"])
+
+    work: dict[str, Any] | None = None
+
+    # Try DOI first
+    if doi:
+        clean_doi = re.sub(r"^https?://doi\.org/", "", doi)
+        url = f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(clean_doi)}?select={fields}"
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if token:
+            headers["User-Agent"] = f"DrBrain (mailto:{token})"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read())
+            if data and "error" not in data:
+                work = data
+        except Exception:
+            pass
+
+    # Fallback to title search
+    if work is None and title:
+        url = f"{OPENALEX_BASE}/works?search={urllib.parse.quote(title)}&per_page=1&select={fields}"
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["User-Agent"] = f"DrBrain (mailto:{token})"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read())
+            results = data.get("results", [])
+            if results:
+                work = results[0]
+        except Exception:
+            pass
+
+    if work is None:
+        return None
+
+    authorships = work.get("authorships") or []
+    authors: list[dict[str, Any]] = []
+    for ship in authorships:
+        author = ship.get("author")
+        if not author:
+            continue
+        author_id = _extract_author_short_id(author.get("id", ""))
+        if not author_id:
+            continue
+        authors.append(
+            {
+                "author_id": author_id,
+                "display_name": author.get("display_name", ""),
+                "orcid": author.get("orcid"),
+                "raw_affiliation": ship.get("raw_affiliation_strings") or [],
+            }
+        )
+
+    return authors if authors else None
+
+
 def batch_fetch_works(
     work_ids: list[str], token: str | None = None, max_retries: int = 2, retry_delay: float = 0.5
 ) -> list[dict[str, Any]]:
