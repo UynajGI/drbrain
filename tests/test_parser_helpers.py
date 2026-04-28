@@ -230,7 +230,7 @@ def test_mineru_cli_not_found_uses_fallback():
     parser = MinerUParser()
     with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value=None):
         result = parser._try_mineru_open_api(Path("/tmp/test.pdf"))
-        assert result is None
+        assert result == (None, None)
 
 
 def test_parser_full_extract_flow_with_fallback():

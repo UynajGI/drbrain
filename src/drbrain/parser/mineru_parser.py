@@ -6,11 +6,11 @@ import logging
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 MAX_CHARS = 12_000
 
@@ -83,18 +83,26 @@ class MinerUParser:
         if page_count <= max_pages:
             return self._extract_single(pdf_path)
 
-        # Split and process chunks
-        chunk_paths = self._split_pdf(pdf_path, max_pages)
+        # Split and process chunks under a single temp directory
+        tmp = TemporaryDirectory(prefix="mineru_split_")
+        tmp_path = Path(tmp.name)
+        managed_tmps: list[TemporaryDirectory] = []
         try:
+            chunk_paths = self._split_pdf(pdf_path, max_pages, tmp_path)
             raw_mds: list[str] = []
             image_dirs: list[Path | None] = []
             for chunk in chunk_paths:
-                md, img_dir = self._extract_mineru_only(chunk)
+                chunk_tmp = TemporaryDirectory(prefix="mineru_chunk_", dir=str(tmp_path))
+                out_dir = Path(chunk_tmp.name) / "out"
+                md, img_dir, chunk_managed_tmp = self._extract_mineru_only(chunk, out_dir=out_dir)
+                if chunk_managed_tmp:
+                    managed_tmps.append(chunk_managed_tmp)
                 raw_mds.append(md)
                 image_dirs.append(img_dir)
 
+            merged_tmp = TemporaryDirectory(prefix="mineru_merged_", dir=str(tmp_path))
             merged_md = self._merge_markdown(raw_mds)
-            merged_images = self._merge_images(image_dirs)
+            merged_images = self._merge_images(image_dirs, Path(merged_tmp.name) / "images")
 
             title = self._extract_title(merged_md, str(pdf_path))
             year = self._extract_year(merged_md)
@@ -122,8 +130,9 @@ class MinerUParser:
                 images_dir=merged_images,
             )
         finally:
-            for p in chunk_paths:
-                p.unlink(missing_ok=True)
+            for t in managed_tmps:
+                t.cleanup()
+            tmp.cleanup()
 
     def _count_pages(self, pdf_path: Path) -> int:
         """Count pages in PDF using pypdfium2."""
@@ -135,7 +144,7 @@ class MinerUParser:
         finally:
             doc.close()
 
-    def _split_pdf(self, pdf_path: Path, max_pages: int) -> list[Path]:
+    def _split_pdf(self, pdf_path: Path, max_pages: int, base_dir: Path) -> list[Path]:
         """Split PDF into chunks of max_pages each. Returns list of temp PDF paths."""
         import pypdfium2 as pdfium
 
@@ -144,7 +153,7 @@ class MinerUParser:
         chunks: list[Path] = []
         for start in range(0, total, max_pages):
             end = min(start + max_pages, total)
-            out = Path(tempfile.mkdtemp(prefix="mineru_chunk_")) / f"chunk_{start}-{end}.pdf"
+            out = base_dir / f"chunk_{start}-{end}.pdf"
             out_doc = pdfium.PdfDocument.new()
             for i in range(start, end):
                 out_doc.import_pages(doc, pages=[i])
@@ -154,61 +163,67 @@ class MinerUParser:
         doc.close()
         return chunks
 
-    def _extract_mineru_only(self, pdf_path: Path) -> tuple[str, Path | None]:
-        """Run MinerU CLI on a PDF chunk, return (raw_md, images_dir)."""
-        out_dir = self._try_mineru_open_api(pdf_path)
+    def _extract_mineru_only(
+        self, pdf_path: Path, out_dir: Path | None = None
+    ) -> tuple[str, Path | None, TemporaryDirectory | None]:
+        """Run MinerU CLI on a PDF chunk, return (raw_md, images_dir, managed_tmp)."""
+        out_dir, managed_tmp = self._try_mineru_open_api(pdf_path, out_dir=out_dir)
         if out_dir is not None:
             raw_md = self._read_output_md(out_dir)
             img_dir = out_dir / "images" if (out_dir / "images").exists() else None
         else:
             raw_md = self._fallback_pypdfium2(pdf_path)
             img_dir = None
-        return raw_md, img_dir
+        return raw_md, img_dir, managed_tmp
 
     def _extract_single(self, pdf_path: Path) -> ParsedPaper:
         """Extract a single PDF without splitting (existing logic)."""
         arxiv_from_name = _extract_arxiv_from_filename(pdf_path)
-        out_dir = self._try_mineru_open_api(pdf_path)
-        if out_dir is not None:
-            raw_md = self._read_output_md(out_dir)
-        else:
-            raw_md = self._fallback_pypdfium2(pdf_path)
-            out_dir = None
+        out_dir, managed_tmp = self._try_mineru_open_api(pdf_path)
+        try:
+            if out_dir is not None:
+                raw_md = self._read_output_md(out_dir)
+            else:
+                raw_md = self._fallback_pypdfium2(pdf_path)
+                out_dir = None
 
-        title = self._extract_title(raw_md, str(pdf_path))
-        year = self._extract_year(raw_md)
-        doi, arxiv = self._extract_ids(raw_md)
+            title = self._extract_title(raw_md, str(pdf_path))
+            year = self._extract_year(raw_md)
+            doi, arxiv = self._extract_ids(raw_md)
 
-        if not arxiv and arxiv_from_name:
-            arxiv = arxiv_from_name
+            if not arxiv and arxiv_from_name:
+                arxiv = arxiv_from_name
 
-        # Enrich metadata from arXiv API
-        if arxiv:
-            api_title, api_year = _fetch_arxiv_metadata(arxiv)
-            if api_title:
-                title = api_title
-            if api_year and not year:
-                year = api_year
+            # Enrich metadata from arXiv API
+            if arxiv:
+                api_title, api_year = _fetch_arxiv_metadata(arxiv)
+                if api_title:
+                    title = api_title
+                if api_year and not year:
+                    year = api_year
 
-        # Fetch authorships from OpenAlex
-        from drbrain.extractor.openalex import search_authors_by_work
+            # Fetch authorships from OpenAlex
+            from drbrain.extractor.openalex import search_authors_by_work
 
-        authors = search_authors_by_work(doi=doi, title=title)
+            authors = search_authors_by_work(doi=doi, title=title)
 
-        blocks = filter_sections(raw_md)
+            blocks = filter_sections(raw_md)
 
-        images_dir = out_dir / "images" if out_dir and (out_dir / "images").exists() else None
+            images_dir = out_dir / "images" if out_dir and (out_dir / "images").exists() else None
 
-        return ParsedPaper(
-            title=title,
-            year=year,
-            doi=doi,
-            arxiv=arxiv,
-            authors=authors or [],
-            text_blocks=blocks,
-            raw_md=raw_md,
-            images_dir=images_dir,
-        )
+            return ParsedPaper(
+                title=title,
+                year=year,
+                doi=doi,
+                arxiv=arxiv,
+                authors=authors or [],
+                text_blocks=blocks,
+                raw_md=raw_md,
+                images_dir=images_dir,
+            )
+        finally:
+            if managed_tmp:
+                managed_tmp.cleanup()
 
     def _merge_markdown(self, raw_mds: list[str]) -> str:
         """Merge multiple markdown outputs: keep first chunk fully, append rest with separator."""
@@ -226,27 +241,37 @@ class MinerUParser:
                 result += f"\n\n---\n\n{stripped}"
         return result
 
-    def _merge_images(self, image_dirs: list[Path | None]) -> Path | None:
-        """Copy all images from chunk dirs into a single temp directory."""
-        merged = Path(tempfile.mkdtemp(prefix="mineru_merged_")) / "images"
+    def _merge_images(self, image_dirs: list[Path | None], dest: Path) -> Path | None:
+        """Copy all images from chunk dirs into dest/images."""
+        dest.mkdir(parents=True, exist_ok=True)
         any_images = False
         for img_dir in image_dirs:
             if img_dir and img_dir.exists():
                 for f in img_dir.iterdir():
                     if f.is_file():
-                        shutil.copy2(f, merged / f.name)
+                        shutil.copy2(f, dest / f.name)
                         any_images = True
-        return merged if any_images else None
+        return dest if any_images else None
 
-    def _try_mineru_open_api(self, pdf_path: Path) -> Path | None:
-        """Invoke mineru-open-api CLI with retry. Returns output dir or None on failure."""
+    def _try_mineru_open_api(
+        self, pdf_path: Path, out_dir: Path | None = None
+    ) -> tuple[Path | None, TemporaryDirectory | None]:
+        """Invoke mineru-open-api CLI with retry. Returns (output_dir, managed_tmp).
+
+        If out_dir was provided, managed_tmp is None (caller owns the dir).
+        If a temp dir was created here, managed_tmp must be cleaned up by the caller.
+        """
         cli = _find_cli()
         if cli is None:
-            return None
+            return None, None
 
-        # Use extract if token available, else flash-extract
+        # Create temp dir if not provided
+        managed_tmp: TemporaryDirectory | None = None
+        if out_dir is None:
+            managed_tmp = TemporaryDirectory(prefix="mineru_")
+            out_dir = Path(managed_tmp.name) / "out"
+
         if self.token:
-            out_dir = Path(tempfile.mkdtemp(prefix="mineru_")) / "out"
             cmd = [cli, "extract", str(pdf_path), "--model", self.model, "-o", str(out_dir)]
             if self.is_ocr:
                 cmd.append("--ocr")
@@ -256,7 +281,6 @@ class MinerUParser:
                 cmd.append("--table=false")
             cmd.extend(["--token", self.token])
         else:
-            out_dir = Path(tempfile.mkdtemp(prefix="mineru_")) / "out"
             cmd = [cli, "extract", str(pdf_path), "-o", str(out_dir)]
 
         for attempt in range(self.max_retries):
@@ -279,7 +303,7 @@ class MinerUParser:
                 if not (out_dir / "images").exists():
                     time.sleep(self.retry_delay)
                     continue
-                return out_dir
+                return out_dir, managed_tmp
             except subprocess.TimeoutExpired:
                 log.warning(
                     "mineru-open-api timeout (attempt %d/%d)", attempt + 1, self.max_retries
@@ -287,8 +311,12 @@ class MinerUParser:
                 time.sleep(self.retry_delay)
             except (FileNotFoundError, OSError) as e:
                 log.warning("mineru-open-api error: %s", e)
-                return None
-        return None
+                if managed_tmp:
+                    managed_tmp.cleanup()
+                return None, None
+        if managed_tmp:
+            managed_tmp.cleanup()
+        return None, None
 
     def _read_output_md(self, out_dir: Path) -> str:
         """Read the generated markdown from the output directory."""
