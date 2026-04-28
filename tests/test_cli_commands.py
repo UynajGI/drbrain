@@ -1,20 +1,32 @@
 """Tests for CLI commands: expand, report, closure, seed, list, stats, query, export, queue, timeline."""
+
 import json
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 import typer
+
 from drbrain.storage.database import Database
-from drbrain.graph.engine import GraphEngine
 
 
 def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
     return {
         "db": {"path": db_path},
         "llm": {"models": [{"provider": "openai", "model": "gpt-4", "api_key": "x"}]},
-        "mineru": {"token": "", "model": "vlm", "is_ocr": False, "enable_formula": True, "enable_table": True},
-        "dirs": {"reports": reports_dir, "pdfs": "data/pdfs", "cache": "data/cache", "logs": "data/logs"},
+        "mineru": {
+            "token": "",
+            "model": "vlm",
+            "is_ocr": False,
+            "enable_formula": True,
+            "enable_table": True,
+        },
+        "dirs": {
+            "reports": reports_dir,
+            "pdfs": "data/pdfs",
+            "cache": "data/cache",
+            "logs": "data/logs",
+        },
         "api": {"s2_rate_limit": 100, "cache_ttl": 86400},
         "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
         "bm25": {"k1": 1.5, "b": 0.75},
@@ -27,9 +39,11 @@ def _mock_load_config(cfg: dict):
 
 # -- expand_cmd --
 
+
 def test_expand_cmd_not_found():
     """expand_cmd raises Exit when paper not found."""
     from drbrain.cli.commands import expand_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
@@ -46,6 +60,7 @@ def test_expand_cmd_not_found():
 def test_expand_cmd_success():
     """expand_cmd expands citation neighborhood."""
     from drbrain.cli.commands import expand_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
@@ -58,16 +73,20 @@ def test_expand_cmd_success():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg), \
-             mock.patch("drbrain.extractor.citation.expand_citations", return_value=([], [])):
+        with (
+            _mock_load_config(cfg),
+            mock.patch("drbrain.extractor.citation.expand_citations", return_value=([], [])),
+        ):
             expand_cmd("p1")
 
 
 # -- report_cmd --
 
+
 def test_report_cmd_not_found():
     """report_cmd raises Exit when no report file."""
     from drbrain.cli.commands import report_cmd
+
     with tempfile.TemporaryDirectory() as td:
         cfg = _make_minimal_config("/tmp/x.db", str(Path(td) / "reports"))
         with _mock_load_config(cfg):
@@ -81,21 +100,44 @@ def test_report_cmd_not_found():
 def test_report_cmd_displays_report():
     """report_cmd reads and displays existing report."""
     from drbrain.cli.commands import report_cmd
+
     with tempfile.TemporaryDirectory() as td:
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
 
         report_data = {
-            "paper": {"local_id": "p1", "title": "Test Paper", "year": 2024, "status": "uploaded",
-                      "ids": {"doi": None, "arxiv": None}},
-            "concepts": {"problems": [{"label": "X", "confidence": 0.9}], "methods": [],
-                         "conclusions": [], "debates": [], "gaps": [], "actors": []},
+            "paper": {
+                "local_id": "p1",
+                "title": "Test Paper",
+                "year": 2024,
+                "status": "uploaded",
+                "ids": {"doi": None, "arxiv": None},
+            },
+            "concepts": {
+                "problems": [{"label": "X", "confidence": 0.9}],
+                "methods": [],
+                "conclusions": [],
+                "debates": [],
+                "gaps": [],
+                "actors": [],
+            },
             "arguments": [],
-            "references": [], "citations": [],
-            "summary": {"refs_in_graph": 0, "cits_in_graph": 0, "total_refs": 0, "total_cits": 0,
-                        "graph_coverage": 1.0},
+            "references": [],
+            "citations": [],
+            "summary": {
+                "refs_in_graph": 0,
+                "cits_in_graph": 0,
+                "total_refs": 0,
+                "total_cits": 0,
+                "graph_coverage": 1.0,
+            },
             "boundary_alert": {"low_coverage": False},
-            "validation": {"items_rejected": 0, "items_queued": 0, "tbox_violations": [], "rbox_violations": []},
+            "validation": {
+                "items_rejected": 0,
+                "items_queued": 0,
+                "tbox_violations": [],
+                "rbox_violations": [],
+            },
         }
         (reports_dir / "p1.json").write_text(json.dumps(report_data))
 
@@ -106,9 +148,11 @@ def test_report_cmd_displays_report():
 
 # -- closure_cmd --
 
+
 def test_closure_cmd_empty_graph():
     """closure_cmd runs on empty graph."""
     from drbrain.cli.commands import closure_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -119,6 +163,7 @@ def test_closure_cmd_empty_graph():
 def test_closure_cmd_with_edges():
     """closure_cmd infers edges from existing data."""
     from drbrain.cli.commands import closure_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -137,9 +182,11 @@ def test_closure_cmd_with_edges():
 
 # -- seed_cmd --
 
+
 def test_seed_cmd_empty_graph():
     """seed_cmd runs on empty graph, finds no seeds."""
     from drbrain.cli.commands import seed_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -149,9 +196,11 @@ def test_seed_cmd_empty_graph():
 
 # -- list_cmd --
 
+
 def test_list_cmd_no_papers():
     """list_cmd handles empty database."""
     from drbrain.cli.commands import list_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -162,6 +211,7 @@ def test_list_cmd_no_papers():
 def test_list_cmd_with_papers():
     """list_cmd displays papers in table."""
     from drbrain.cli.commands import list_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -177,9 +227,11 @@ def test_list_cmd_with_papers():
 
 # -- stats_cmd --
 
+
 def test_stats_cmd_empty_db():
     """stats_cmd shows zeros for empty database."""
     from drbrain.cli.commands import stats_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -190,6 +242,7 @@ def test_stats_cmd_empty_db():
 def test_stats_cmd_with_data():
     """stats_cmd shows correct counts."""
     from drbrain.cli.commands import stats_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -207,21 +260,32 @@ def test_stats_cmd_with_data():
 
 # -- query_cmd --
 
+
 def test_query_cmd_no_results():
     """query_cmd handles no results."""
     from drbrain.cli.commands import query_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
         with _mock_load_config(cfg):
-            query_cmd("nonexistent concept", type_filter=None, arg_type=None,
-                      year_start=None, year_end=None, limit=20,
-                      neighbors=0, json_output=False, jsonl=False)
+            query_cmd(
+                "nonexistent concept",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                limit=20,
+                neighbors=0,
+                json_output=False,
+                jsonl=False,
+            )
 
 
 def test_query_cmd_with_results():
     """query_cmd finds concepts via BM25."""
     from drbrain.cli.commands import query_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -233,16 +297,27 @@ def test_query_cmd_with_results():
         db.close()
 
         with _mock_load_config(cfg):
-            query_cmd("transformer", type_filter=None, arg_type=None,
-                      year_start=None, year_end=None, min_confidence=None,
-                      limit=20, neighbors=0, json_output=False, jsonl=False)
+            query_cmd(
+                "transformer",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                neighbors=0,
+                json_output=False,
+                jsonl=False,
+            )
 
 
 # -- export_cmd --
 
+
 def test_export_cmd_json():
     """export_cmd outputs JSON format."""
     from drbrain.cli.commands import export_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -259,6 +334,7 @@ def test_export_cmd_json():
 def test_export_cmd_unsupported_format():
     """export_cmd raises Exit for unsupported format."""
     from drbrain.cli.commands import export_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -272,9 +348,11 @@ def test_export_cmd_unsupported_format():
 
 # -- queue_cmd --
 
+
 def test_queue_cmd_empty():
     """queue_cmd shows empty queue message."""
     from drbrain.cli.commands import queue_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -285,6 +363,7 @@ def test_queue_cmd_empty():
 def test_queue_cmd_with_items():
     """queue_cmd displays pending items."""
     from drbrain.cli.commands import queue_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -301,9 +380,11 @@ def test_queue_cmd_with_items():
 
 # -- queue_resolve_cmd --
 
+
 def test_queue_resolve_accept():
     """queue_resolve_cmd accepts a queue item."""
     from drbrain.cli.commands import queue_resolve_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -321,6 +402,7 @@ def test_queue_resolve_accept():
 def test_queue_resolve_reject():
     """queue_resolve_cmd rejects a queue item."""
     from drbrain.cli.commands import queue_resolve_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -338,6 +420,7 @@ def test_queue_resolve_reject():
 def test_queue_resolve_both_flags():
     """queue_resolve_cmd raises Exit when both accept and reject."""
     from drbrain.cli.commands import queue_resolve_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -352,6 +435,7 @@ def test_queue_resolve_both_flags():
 def test_queue_resolve_neither_flag():
     """queue_resolve_cmd raises Exit when neither accept nor reject."""
     from drbrain.cli.commands import queue_resolve_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -365,9 +449,11 @@ def test_queue_resolve_neither_flag():
 
 # -- timeline_cmd --
 
+
 def test_timeline_cmd_no_data():
     """timeline_cmd handles concept with no data."""
     from drbrain.cli.commands import timeline_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -378,6 +464,7 @@ def test_timeline_cmd_no_data():
 def test_timeline_cmd_with_data():
     """timeline_cmd shows concept evolution."""
     from drbrain.cli.commands import timeline_cmd
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -395,9 +482,11 @@ def test_timeline_cmd_with_data():
 
 # -- JSON output --
 
+
 def test_ingest_json_on_empty_dir():
     """ingest_cmd with json_output=True outputs error JSON when no PDFs found."""
     from drbrain.cli.commands import ingest_cmd
+
     with tempfile.TemporaryDirectory() as td:
         empty_dir = Path(td) / "empty"
         empty_dir.mkdir()
@@ -410,10 +499,12 @@ def test_ingest_json_on_empty_dir():
 
 # -- merged state --
 
+
 def test_check_and_merge_duplicates():
     """_check_and_merge_duplicates finds existing placeholder with same DOI."""
     from drbrain.cli.commands import _check_and_merge_duplicates
     from drbrain.dedup.resolver import PaperIDs
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))
@@ -431,6 +522,7 @@ def test_check_and_merge_duplicates():
 def test_merge_papers():
     """_merge_papers merges concepts, arguments, and edges from one paper to another."""
     from drbrain.cli.commands import _merge_papers
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))
@@ -458,12 +550,13 @@ def test_merge_papers():
         db.close()
 
 
-
 # -- _log_error --
+
 
 def test_log_error_writes_to_file():
     """_log_error creates validation.log in configured logs directory."""
     from drbrain.cli.commands import _log_error
+
     with tempfile.TemporaryDirectory() as td:
         cfg = {"dirs": {"logs": str(Path(td) / "logs")}}
         _log_error(cfg, "Test error message")
@@ -476,6 +569,7 @@ def test_log_error_writes_to_file():
 def test_merge_papers_redirects_edge_source_paper():
     """_merge_papers updates source_paper field in edges."""
     from drbrain.cli.commands import _merge_papers
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))
@@ -492,3 +586,60 @@ def test_merge_papers_redirects_edge_source_paper():
         assert source == "p_keep"
         db.close()
 
+
+# -- check_cmd --
+
+
+def test_check_cmd_all_configured():
+    """check_cmd passes when all dependencies and config are set."""
+    from drbrain.cli.commands import check_cmd
+
+    with (
+        tempfile.TemporaryDirectory() as td,
+        mock.patch("drbrain.cli.commands.load_config") as mock_cfg,
+    ):
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        reports_dir.mkdir()
+        (Path(td) / "config.yaml").touch()
+
+        mock_cfg.return_value = _make_minimal_config(str(db_path), str(reports_dir))
+        check_cmd()  # Should not raise
+
+
+def test_check_cmd_missing_config():
+    """check_cmd exits with code 1 when config.yaml is missing."""
+    from drbrain.cli.commands import check_cmd
+
+    with (
+        mock.patch(
+            "drbrain.cli.commands.load_config", side_effect=FileNotFoundError("Config not found")
+        ),
+        mock.patch("pathlib.Path.exists", return_value=False),
+    ):
+        try:
+            check_cmd()
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
+
+
+def test_check_cmd_missing_llm_key():
+    """check_cmd warns when LLM model has no API key."""
+    from drbrain.cli.commands import check_cmd
+
+    with (
+        tempfile.TemporaryDirectory() as td,
+        mock.patch("drbrain.cli.commands.load_config") as mock_cfg,
+    ):
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        reports_dir.mkdir()
+        (Path(td) / "config.yaml").touch()
+
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+        cfg["llm"]["models"] = [
+            {"provider": "openai", "model": "gpt-4", "api_key": "", "base_url": None}
+        ]
+        mock_cfg.return_value = cfg
+        check_cmd()  # Should warn, not raise
