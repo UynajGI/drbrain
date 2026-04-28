@@ -1,4 +1,5 @@
 """BM25 full-text search over paper titles, concept labels, and argument claims."""
+
 from __future__ import annotations
 
 import re
@@ -22,15 +23,21 @@ class BM25Search:
         self._tokenized: list[list[str]] = []
 
     def add_document(
-        self, local_id: str, doc_type: str, label: str,
-        text: str = "", arg_type: str = "", year: int | None = None,
+        self,
+        local_id: str,
+        doc_type: str,
+        label: str,
+        text: str = "",
+        arg_type: str = "",
+        year: int | None = None,
         confidence: float | None = None,
     ) -> None:
         """Add a searchable document (paper title, concept label, or argument claim)."""
-        search_text = f"{label} {text}".strip()
         doc: dict[str, Any] = {
-            "local_id": local_id, "type": doc_type,
-            "label": label, "text": text,
+            "local_id": local_id,
+            "type": doc_type,
+            "label": label,
+            "text": text,
         }
         if arg_type:
             doc["arg_type"] = arg_type
@@ -47,8 +54,11 @@ class BM25Search:
             self._bm25 = BM25Okapi(self._tokenized, k1=k1, b=b)
 
     def search(
-        self, query: str, type_filter: str | None = None,
-        arg_type_filter: str | None = None, limit: int = 20,
+        self,
+        query: str,
+        type_filter: str | None = None,
+        arg_type_filter: str | None = None,
+        limit: int = 20,
         min_confidence: float | None = None,
     ) -> list[dict]:
         """Search the index. Returns ranked list of matching documents."""
@@ -69,9 +79,12 @@ class BM25Search:
                 conf = doc.get("confidence")
                 if conf is None or conf < min_confidence:
                     continue
-            results.append({
-                **doc, "score": round(float(score), 4),
-            })
+            results.append(
+                {
+                    **doc,
+                    "score": round(float(score), 4),
+                }
+            )
 
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:limit]
@@ -85,7 +98,9 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
     papers = db.get_all_papers()
     for p in papers:
         index.add_document(
-            p["local_id"], "Paper", p["title"],
+            p["local_id"],
+            "Paper",
+            p["title"],
             text=p.get("abstract", "") + " " + p.get("status", ""),
             year=p.get("year"),
         )
@@ -107,8 +122,12 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
     ).fetchall()
     for local_id, claim, claim_type, confidence, year in args:
         index.add_document(
-            local_id, "Argument", claim,
-            arg_type=claim_type, year=year, confidence=confidence,
+            local_id,
+            "Argument",
+            claim,
+            arg_type=claim_type,
+            year=year,
+            confidence=confidence,
         )
 
     index.build(k1=k1, b=b)

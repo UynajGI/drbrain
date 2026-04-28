@@ -1,18 +1,45 @@
 """Concept label normalization and alias table for entity alignment."""
+
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
+from pathlib import Path
 
 from rank_bm25 import BM25Okapi
 
 log = logging.getLogger(__name__)
 
-_ARTICLES = {"the", "a", "an", "of", "for", "in", "on", "with", "to"}
+# Load stopwords from file
+_STOPWORDS_FILE = Path(__file__).parent.parent / "stopwords.txt"
+
+
+def _load_stopwords() -> set[str]:
+    """Load stopwords from stopwords.txt, filtering to usable tokens."""
+    if not _STOPWORDS_FILE.exists():
+        # Fallback to minimal set if file missing
+        return {"the", "a", "an", "of", "for", "in", "on", "with", "to"}
+
+    stopwords: set[str] = set()
+    with open(_STOPWORDS_FILE, encoding="utf-8") as f:
+        for line in f:
+            token = line.strip()
+            if not token:
+                continue
+            # Skip pure symbols, punctuation, single chars (except common Chinese)
+            # Keep: alphabetic words, Chinese characters, hyphenated words
+            if re.match(r"^[a-zA-Z一-鿿]+$", token):
+                stopwords.add(token.lower())
+            elif re.match(r"^[a-zA-Z一-鿿]['-][a-zA-Z一-鿿]+$", token):
+                stopwords.add(token.lower())
+    return stopwords
+
+
+_STOPWORDS = _load_stopwords()
 
 # BM25 alignment thresholds
-BM25_AUTO_ALIGN = 0.8   # score above this → automatic alignment
+BM25_AUTO_ALIGN = 0.8  # score above this → automatic alignment
 BM25_PENDING_MIN = 0.3  # score above this → queue for LLM arbitration
 
 
@@ -27,7 +54,7 @@ def normalize_label(label: str) -> str:
     t = label.lower().strip()
     t = re.sub(r"[^\w\s]", "", t)
     words = t.split()
-    words = [w for w in words if w not in _ARTICLES]
+    words = [w for w in words if w not in _STOPWORDS]
     t = " ".join(words)
     # Simple singularization
     if t.endswith("s") and len(t) > 3:
@@ -94,9 +121,7 @@ class SmartAligner:
 
     def _build_bm25_index(self) -> None:
         """Build BM25 index from existing concepts in DB."""
-        rows = self._db.conn.execute(
-            "SELECT DISTINCT label, type FROM concepts"
-        ).fetchall()
+        rows = self._db.conn.execute("SELECT DISTINCT label, type FROM concepts").fetchall()
         if not rows:
             return
 
@@ -128,12 +153,14 @@ class SmartAligner:
             if score >= BM25_AUTO_ALIGN:
                 return candidate["canonical_id"]
             elif score >= BM25_PENDING_MIN:
-                self._pending.append({
-                    "label": label,
-                    "type": ctype,
-                    "candidates": [candidate["label"]],
-                    "score": score,
-                })
+                self._pending.append(
+                    {
+                        "label": label,
+                        "type": ctype,
+                        "candidates": [candidate["label"]],
+                        "score": score,
+                    }
+                )
                 return candidate["canonical_id"]
 
         # Step 4: No match → create new canonical_id

@@ -1,13 +1,13 @@
 """CrossRef API client for DOI enrichment."""
+
 from __future__ import annotations
 
+import json
 import re
 import time
 import urllib.parse
 import urllib.request
-import json
 from typing import Any
-
 
 CROSSREF_API = "https://api.crossref.org/works"
 
@@ -19,14 +19,17 @@ def _clean_title(title: str) -> str:
     return title
 
 
-def fetch_doi_by_title(title: str, email: str | None = None,
-                       max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def fetch_doi_by_title(
+    title: str, email: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Search CrossRef by title and return DOI + metadata if found."""
     clean = _clean_title(title)
     if not clean:
         return None
 
-    url = f"{CROSSREF_API}?query.title={urllib.parse.quote(clean)}&select=DOI,title,year,link&rows=1"
+    url = (
+        f"{CROSSREF_API}?query.title={urllib.parse.quote(clean)}&select=DOI,title,year,link&rows=1"
+    )
     headers: dict[str, str] = {"Accept": "application/json"}
     if email:
         headers["mailto"] = email
@@ -47,7 +50,7 @@ def fetch_doi_by_title(title: str, email: str | None = None,
                     "doi": best.get("DOI"),
                     "title": cross_title,
                     "year": best.get("published-print", {}).get("date-parts", [[None]])[0][0]
-                             or best.get("published-online", {}).get("date-parts", [[None]])[0][0],
+                    or best.get("published-online", {}).get("date-parts", [[None]])[0][0],
                 }
             return None
         except Exception:
@@ -77,8 +80,9 @@ def _titles_match(a: str, b: str) -> bool:
     return overlap / min_len >= 0.7
 
 
-def fetch_doi_by_doi(doi: str, email: str | None = None,
-                     max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def fetch_doi_by_doi(
+    doi: str, email: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Direct DOI resolution - bypasses title search entirely."""
     if not doi:
         return None
@@ -96,8 +100,10 @@ def fetch_doi_by_doi(doi: str, email: str | None = None,
             msg = data.get("message", {})
             doi_val = msg.get("DOI")
             title = msg.get("title", [""])[0]
-            year = (msg.get("published-print", {}).get("date-parts", [[None]])[0][0]
-                    or msg.get("published-online", {}).get("date-parts", [[None]])[0][0])
+            year = (
+                msg.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                or msg.get("published-online", {}).get("date-parts", [[None]])[0][0]
+            )
             return {"doi": doi_val, "title": title, "year": year}
         except Exception:
             if attempt < max_retries - 1:
@@ -106,8 +112,9 @@ def fetch_doi_by_doi(doi: str, email: str | None = None,
     return None
 
 
-def fetch_doi_by_arxiv(arxiv_id: str, email: str | None = None,
-                       max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def fetch_doi_by_arxiv(
+    arxiv_id: str, email: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Look up DOI via CrossRef using arXiv ID with container-title filter."""
     clean_arxiv = re.sub(r"v\d+$", "", arxiv_id).strip()
     if not clean_arxiv:
@@ -130,16 +137,20 @@ def fetch_doi_by_arxiv(arxiv_id: str, email: str | None = None,
                 item_arxiv = item.get("arxivid", "")
                 if item_arxiv and re.sub(r"v\d+$", "", item_arxiv) == clean_arxiv:
                     doi = item.get("DOI")
-                    year = (item.get("published-print", {}).get("date-parts", [[None]])[0][0]
-                            or item.get("published-online", {}).get("date-parts", [[None]])[0][0])
+                    year = (
+                        item.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                        or item.get("published-online", {}).get("date-parts", [[None]])[0][0]
+                    )
                     title = item.get("title", [""])[0]
                     return {"doi": doi, "title": title, "year": year}
             # Fall back: check DOIs for physical review papers
             for item in items:
                 doi = item.get("DOI", "")
                 if doi and "10.1103" in doi.lower():
-                    year = (item.get("published-print", {}).get("date-parts", [[None]])[0][0]
-                            or item.get("published-online", {}).get("date-parts", [[None]])[0][0])
+                    year = (
+                        item.get("published-print", {}).get("date-parts", [[None]])[0][0]
+                        or item.get("published-online", {}).get("date-parts", [[None]])[0][0]
+                    )
                     title = item.get("title", [""])[0]
                     return {"doi": doi, "title": title, "year": year}
             return None

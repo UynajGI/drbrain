@@ -1,14 +1,15 @@
 """Semantic Scholar API client for citation expansion."""
+
 from __future__ import annotations
 
-import time
 import logging
 import re
+import time
 
 import requests
 
 from drbrain.extractor.cache import ApiCache
-from drbrain.extractor.crossref import fetch_doi_by_title, fetch_doi_by_arxiv
+from drbrain.extractor.crossref import fetch_doi_by_arxiv, fetch_doi_by_title
 from drbrain.report.generator import RefEntry
 
 log = logging.getLogger(__name__)
@@ -27,14 +28,15 @@ def _get_cache(config: dict) -> ApiCache | None:
     cache_ttl = config.get("api", {}).get("cache_ttl")
     if cache_ttl and cache_ttl > 0:
         if _cache is None:
-            from pathlib import Path
             cache_dir = config.get("dirs", {}).get("cache", "data/cache")
             _cache = ApiCache(cache_dir, ttl=cache_ttl)
         return _cache
     return None
 
 
-def fetch_s2_paper(paper_id: str, api_key: str | None = None, cache: ApiCache | None = None) -> dict | None:
+def fetch_s2_paper(
+    paper_id: str, api_key: str | None = None, cache: ApiCache | None = None
+) -> dict | None:
     """Fetch paper details from Semantic Scholar API."""
     headers = {}
     if api_key:
@@ -59,7 +61,9 @@ def fetch_s2_paper(paper_id: str, api_key: str | None = None, cache: ApiCache | 
         return None
 
 
-def search_s2(query: str, limit: int = 50, api_key: str | None = None, cache: ApiCache | None = None) -> list[dict]:
+def search_s2(
+    query: str, limit: int = 50, api_key: str | None = None, cache: ApiCache | None = None
+) -> list[dict]:
     """Search Semantic Scholar."""
     headers = {}
     if api_key:
@@ -97,8 +101,8 @@ def _s2_retry(fn, url: str, headers: dict, max_retries: int) -> dict | None:
             resp = getattr(e, "response", None)
             status = resp.status_code if resp is not None else None
             if status == 429:
-                delay = DEFAULT_BACKOFF * (2 ** attempt)
-                log.warning(f"S2 rate limit (429), retry {attempt+1}/{max_retries} in {delay}s")
+                delay = DEFAULT_BACKOFF * (2**attempt)
+                log.warning(f"S2 rate limit (429), retry {attempt + 1}/{max_retries} in {delay}s")
                 time.sleep(delay)
             else:
                 log.warning(f"S2 API error (status={status}): {e}")
@@ -110,7 +114,8 @@ def _s2_retry(fn, url: str, headers: dict, max_retries: int) -> dict | None:
 
 
 def fetch_s2_with_retry(
-    paper_id: str, api_key: str | None = None,
+    paper_id: str,
+    api_key: str | None = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> dict | None:
     """Fetch paper details from S2 API with retry on 429."""
@@ -123,7 +128,9 @@ def fetch_s2_with_retry(
 
 
 def search_s2_with_retry(
-    query: str, limit: int = 50, api_key: str | None = None,
+    query: str,
+    limit: int = 50,
+    api_key: str | None = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> list[dict]:
     """Search S2 with retry on 429."""
@@ -159,51 +166,63 @@ def match_to_local(db, ref: dict) -> RefEntry:
         local_id = db.get_paper_by_external_id("doi", ref["doi"])
         if local_id:
             return RefEntry(
-                title=ref["title"], year=ref["year"],
+                title=ref["title"],
+                year=ref["year"],
                 ids={"doi": ref["doi"]},
-                in_graph=True, local_id=local_id,
+                in_graph=True,
+                local_id=local_id,
             )
     # Try arXiv
     if ref.get("arxiv"):
         local_id = db.get_paper_by_external_id("arxiv", ref["arxiv"])
         if local_id:
             return RefEntry(
-                title=ref["title"], year=ref["year"],
+                title=ref["title"],
+                year=ref["year"],
                 ids={"arxiv": ref["arxiv"]},
-                in_graph=True, local_id=local_id,
+                in_graph=True,
+                local_id=local_id,
             )
     # Try S2 ID
     if ref.get("s2_id"):
         local_id = db.get_paper_by_external_id("s2_id", ref["s2_id"])
         if local_id:
             return RefEntry(
-                title=ref["title"], year=ref["year"],
+                title=ref["title"],
+                year=ref["year"],
                 ids={"s2_id": ref["s2_id"]},
-                in_graph=True, local_id=local_id,
+                in_graph=True,
+                local_id=local_id,
             )
     # Try OpenAlex ID
     if ref.get("openalex_id"):
         local_id = db.get_paper_by_external_id("openalex_id", ref["openalex_id"])
         if local_id:
             return RefEntry(
-                title=ref["title"], year=ref["year"],
+                title=ref["title"],
+                year=ref["year"],
                 ids={"openalex_id": ref["openalex_id"]},
-                in_graph=True, local_id=local_id,
+                in_graph=True,
+                local_id=local_id,
             )
     # Try title+year
     if ref.get("title") and ref.get("year"):
         local_id = db.fuzzy_match_title_year(ref["title"], ref["year"])
         if local_id:
             return RefEntry(
-                title=ref["title"], year=ref["year"],
-                in_graph=True, local_id=local_id,
+                title=ref["title"],
+                year=ref["year"],
+                in_graph=True,
+                local_id=local_id,
             )
 
     # Not found
     return RefEntry(
-        title=ref.get("title", ""), year=ref.get("year"),
+        title=ref.get("title", ""),
+        year=ref.get("year"),
         ids={k: v for k, v in ref.items() if k in ("doi", "arxiv", "s2_id", "openalex_id") and v},
-        in_graph=False, local_id=None,
+        in_graph=False,
+        local_id=None,
     )
 
 
@@ -265,7 +284,9 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
     return _expand_with_openalex(db, local_id, paper, openalex_token)
 
 
-def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, config: dict, cache: ApiCache | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
+def _process_citations_from_s2(
+    db, local_id: str, data: dict, paper: dict, config: dict, cache: ApiCache | None = None
+) -> tuple[list[RefEntry], list[RefEntry]]:
     """Process citation data from S2 API."""
     # Backfill missing external IDs from S2
     ext_ids = data.get("externalIds") or {}
@@ -277,9 +298,7 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
         existing_doi = paper.get("doi")
         existing_arxiv = paper.get("arxiv")
         if not existing_doi and s2_doi:
-            db.conn.execute(
-                "UPDATE paper_ids SET doi = ? WHERE local_id = ?", (s2_doi, local_id)
-            )
+            db.conn.execute("UPDATE paper_ids SET doi = ? WHERE local_id = ?", (s2_doi, local_id))
             db.commit()
         if not existing_arxiv and s2_arxiv:
             db.conn.execute(
@@ -309,8 +328,13 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
     if new_ref_placeholders:
         for pid, title, year, ids in new_ref_placeholders:
             db.insert_paper(pid, title, year, "placeholder")
-            db.insert_paper_ids(pid, doi=ids.get("doi"), arxiv=ids.get("arxiv"),
-                               s2_id=ids.get("s2_id"), openalex_id=ids.get("openalex_id"))
+            db.insert_paper_ids(
+                pid,
+                doi=ids.get("doi"),
+                arxiv=ids.get("arxiv"),
+                s2_id=ids.get("s2_id"),
+                openalex_id=ids.get("openalex_id"),
+            )
         for src_id, dst_id, relation, source_paper, weight in new_ref_edges:
             db.conn.execute(
                 "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
@@ -337,8 +361,13 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
     if new_cit_placeholders:
         for pid, title, year, ids in new_cit_placeholders:
             db.insert_paper(pid, title, year, "placeholder")
-            db.insert_paper_ids(pid, doi=ids.get("doi"), arxiv=ids.get("arxiv"),
-                               s2_id=ids.get("s2_id"), openalex_id=ids.get("openalex_id"))
+            db.insert_paper_ids(
+                pid,
+                doi=ids.get("doi"),
+                arxiv=ids.get("arxiv"),
+                s2_id=ids.get("s2_id"),
+                openalex_id=ids.get("openalex_id"),
+            )
         for src_id, dst_id, relation, source_paper, weight in new_cit_edges:
             db.conn.execute(
                 "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
@@ -379,15 +408,24 @@ def ext_ids_from_s2(data: dict) -> dict:
     arxiv = ext_ids.get("ArXiv")
     if arxiv:
         arxiv = re.sub(r"v\d+$", "", arxiv)
-    return {"doi": doi, "arxiv": arxiv, "s2_id": data.get("paperId"), "openalex_id": ext_ids.get("OpenAlex")}
+    return {
+        "doi": doi,
+        "arxiv": arxiv,
+        "s2_id": data.get("paperId"),
+        "openalex_id": ext_ids.get("OpenAlex"),
+    }
 
 
-def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
+def _expand_with_openalex(
+    db, local_id: str, paper: dict, token: str | None = None
+) -> tuple[list[RefEntry], list[RefEntry]]:
     """Fallback: expand citations using OpenAlex when S2 fails."""
     from drbrain.extractor.openalex import (
-        search_work_by_title, search_work_by_arxiv, batch_fetch_works,
+        batch_fetch_works,
+        get_work_by_doi,
+        search_work_by_arxiv,
+        search_work_by_title,
     )
-    from drbrain.extractor.openalex import get_work_by_doi
 
     oa_token = token
     title = paper.get("title", "")
@@ -442,8 +480,12 @@ def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = No
             if not entry.in_graph:
                 pid = f"p{local_id[1:]}_ref_{len(references)}"
                 db.insert_paper(pid, entry.title or "Unknown", entry.year, "placeholder")
-                db.insert_paper_ids(pid, doi=entry.ids.get("doi"), arxiv=entry.ids.get("arxiv"),
-                                   openalex_id=entry.ids.get("openalex_id"))
+                db.insert_paper_ids(
+                    pid,
+                    doi=entry.ids.get("doi"),
+                    arxiv=entry.ids.get("arxiv"),
+                    openalex_id=entry.ids.get("openalex_id"),
+                )
                 db.conn.execute(
                     "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
                     (local_id, pid, "cites", local_id, 1.0),

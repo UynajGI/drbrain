@@ -119,7 +119,9 @@ class Database:
 
     def get_paper_by_external_id(self, id_type: str, value: str) -> str | None:
         """Look up local_id by external identifier."""
-        col = {"doi": "doi", "arxiv": "arxiv", "s2_id": "s2_id", "openalex_id": "openalex_id"}[id_type]
+        col = {"doi": "doi", "arxiv": "arxiv", "s2_id": "s2_id", "openalex_id": "openalex_id"}[
+            id_type
+        ]
         row = self.conn.execute(
             f"SELECT local_id FROM paper_ids WHERE {col} = ?", (value,)
         ).fetchone()
@@ -139,7 +141,9 @@ class Database:
             (local_id, title, year, status),
         )
 
-    def insert_paper_ids(self, local_id: str, doi=None, arxiv=None, s2_id=None, openalex_id=None) -> None:
+    def insert_paper_ids(
+        self, local_id: str, doi=None, arxiv=None, s2_id=None, openalex_id=None
+    ) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
             (local_id, doi, arxiv, s2_id, openalex_id),
@@ -159,7 +163,14 @@ class Database:
 
     # -- Concept/edge/alias/seed inserts --
 
-    def insert_concept(self, local_id: str, ctype: str, label: str, confidence: float = 1.0, year: int | None = None) -> int:
+    def insert_concept(
+        self,
+        local_id: str,
+        ctype: str,
+        label: str,
+        confidence: float = 1.0,
+        year: int | None = None,
+    ) -> int:
         """Insert a concept with temporal tracking. Returns concept_id."""
         cur = self.conn.execute(
             "INSERT INTO concepts (local_id, type, label, confidence, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
@@ -167,7 +178,9 @@ class Database:
         )
         return cur.lastrowid
 
-    def insert_edge(self, src_id: str, dst_id: str, relation: str, source_paper: str, weight: float = 1.0) -> None:
+    def insert_edge(
+        self, src_id: str, dst_id: str, relation: str, source_paper: str, weight: float = 1.0
+    ) -> None:
         """Insert an edge between concepts."""
         self.conn.execute(
             "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
@@ -198,7 +211,18 @@ class Database:
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
-        cols = ["local_id", "title", "abstract", "year", "status", "created_at", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = [
+            "local_id",
+            "title",
+            "abstract",
+            "year",
+            "status",
+            "created_at",
+            "doi",
+            "arxiv",
+            "s2_id",
+            "openalex_id",
+        ]
         return [dict(zip(cols, row)) for row in rows]
 
     def get_paper(self, local_id: str) -> dict | None:
@@ -207,18 +231,29 @@ class Database:
             "SELECT p.local_id, p.title, p.abstract, p.year, p.status, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
-            "WHERE p.local_id = ?", (local_id,)
+            "WHERE p.local_id = ?",
+            (local_id,),
         ).fetchone()
         if not row:
             return None
-        cols = ["local_id", "title", "abstract", "year", "status", "doi", "arxiv", "s2_id", "openalex_id"]
+        cols = [
+            "local_id",
+            "title",
+            "abstract",
+            "year",
+            "status",
+            "doi",
+            "arxiv",
+            "s2_id",
+            "openalex_id",
+        ]
         return dict(zip(cols, row))
 
     def get_concepts_by_paper(self, local_id: str) -> list[dict]:
         """Get all concepts for a paper."""
         rows = self.conn.execute(
             "SELECT concept_id, type, label, confidence FROM concepts WHERE local_id = ?",
-            (local_id,)
+            (local_id,),
         ).fetchall()
         return [dict(zip(["concept_id", "type", "label", "confidence"], row)) for row in rows]
 
@@ -234,21 +269,37 @@ class Database:
         """Delete a research seed."""
         self.conn.execute("DELETE FROM research_seeds WHERE seed_id = ?", (seed_id,))
 
-    def insert_argument(self, source_paper: str, claim: str, claim_type: str,
-                        target_label: str, target_type: str,
-                        evidence_type: str | None = None, evidence_detail: str | None = None,
-                        confidence: float = 1.0) -> int:
+    def insert_argument(
+        self,
+        source_paper: str,
+        claim: str,
+        claim_type: str,
+        target_label: str,
+        target_type: str,
+        evidence_type: str | None = None,
+        evidence_detail: str | None = None,
+        confidence: float = 1.0,
+    ) -> int:
         """Insert an argument unit. Returns arg_id."""
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
             "evidence_type, evidence_detail, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (source_paper, claim, claim_type, target_label, target_type,
-             evidence_type, evidence_detail, confidence),
+            (
+                source_paper,
+                claim,
+                claim_type,
+                target_label,
+                target_type,
+                evidence_type,
+                evidence_detail,
+                confidence,
+            ),
         )
         return cur.lastrowid
 
-    def insert_queue_item(self, source_paper: str, item_type: str, item_data: str,
-                          confidence: float) -> int:
+    def insert_queue_item(
+        self, source_paper: str, item_type: str, item_data: str, confidence: float
+    ) -> int:
         """Insert a confidence queue item. Returns queue_id."""
         cur = self.conn.execute(
             "INSERT INTO confidence_queue (source_paper, item_type, item_data, confidence, status) "
@@ -283,22 +334,20 @@ class Database:
         rows = self.conn.execute(
             "SELECT arg_id, claim, claim_type, target_label, target_type, "
             "evidence_type, evidence_detail, confidence "
-            "FROM arguments WHERE source_paper = ?", (local_id,)
+            "FROM arguments WHERE source_paper = ?",
+            (local_id,),
         ).fetchall()
-        cols = ["arg_id", "claim", "claim_type", "target_label", "target_type",
-                "evidence_type", "evidence_detail", "confidence"]
+        cols = [
+            "arg_id",
+            "claim",
+            "claim_type",
+            "target_label",
+            "target_type",
+            "evidence_type",
+            "evidence_detail",
+            "confidence",
+        ]
         return [dict(zip(cols, row)) for row in rows]
-
-    def get_concept_evolution(self, label: str) -> list[dict]:
-        """Get year-by-year usage stats for a concept label."""
-        rows = self.conn.execute(
-            "SELECT p.year, COUNT(*) as count, AVG(c.confidence) as avg_conf "
-            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL "
-            "GROUP BY p.year ORDER BY p.year",
-            (label,),
-        ).fetchall()
-        return [dict(zip(["year", "count", "avg_conf"], row)) for row in rows]
 
     def delete_paper(self, local_id: str) -> dict:
         """Delete a paper and all associated data. Returns counts of deleted items."""
@@ -341,6 +390,7 @@ class Database:
         - resurging: dormant > 3 years (gap in timeline), then new papers in last 2 years
         """
         from datetime import datetime
+
         current_year = datetime.now().year
 
         rows = self.conn.execute(
@@ -354,18 +404,36 @@ class Database:
         signals = []
         for label, ctype, first_seen, last_seen, paper_count, avg_conf in rows:
             signal = self._classify_signal(
-                label, ctype, first_seen, last_seen, paper_count, avg_conf, current_year,
+                label,
+                ctype,
+                first_seen,
+                last_seen,
+                paper_count,
+                avg_conf,
+                current_year,
             )
-            signals.append({
-                "label": label, "type": ctype, "signal": signal,
-                "first_seen": first_seen, "last_seen": last_seen,
-                "paper_count": paper_count, "avg_confidence": round(avg_conf, 3),
-            })
+            signals.append(
+                {
+                    "label": label,
+                    "type": ctype,
+                    "signal": signal,
+                    "first_seen": first_seen,
+                    "last_seen": last_seen,
+                    "paper_count": paper_count,
+                    "avg_confidence": round(avg_conf, 3),
+                }
+            )
         return signals
 
     def _classify_signal(
-        self, label: str, ctype: str, first_seen: int, last_seen: int,
-        paper_count: int, avg_conf: float, current_year: int,
+        self,
+        label: str,
+        ctype: str,
+        first_seen: int,
+        last_seen: int,
+        paper_count: int,
+        avg_conf: float,
+        current_year: int,
     ) -> str:
         """Classify a single concept's evolution signal."""
         # Check contested first (overrides established for high-count low-conf)
@@ -431,6 +499,7 @@ class Database:
     def get_concept_signal(self, label: str) -> dict | None:
         """Detect evolution signal for a specific concept."""
         from datetime import datetime
+
         current_year = datetime.now().year
 
         row = self.conn.execute(
@@ -446,12 +515,22 @@ class Database:
 
         lbl, ctype, first_seen, last_seen, paper_count, avg_conf = row
         signal = self._classify_signal(
-            lbl, ctype, first_seen, last_seen, paper_count, avg_conf, current_year,
+            lbl,
+            ctype,
+            first_seen,
+            last_seen,
+            paper_count,
+            avg_conf,
+            current_year,
         )
         return {
-            "label": lbl, "type": ctype, "signal": signal,
-            "first_seen": first_seen, "last_seen": last_seen,
-            "paper_count": paper_count, "avg_confidence": round(avg_conf, 3),
+            "label": lbl,
+            "type": ctype,
+            "signal": signal,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "paper_count": paper_count,
+            "avg_confidence": round(avg_conf, 3),
         }
 
     def get_concept_evolution(self, label: str) -> list[dict]:

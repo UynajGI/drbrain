@@ -1,4 +1,5 @@
 """MinerU PDF parser via mineru-open-api CLI + pypdfium2 fallback."""
+
 from __future__ import annotations
 
 import logging
@@ -55,10 +56,16 @@ class ParsedPaper:
 class MinerUParser:
     """PDF parser: mineru-open-api CLI (flash-extract/extract) -> pypdfium2 fallback."""
 
-    def __init__(self, token: str = "", model: str = "vlm",
-                 is_ocr: bool = False, enable_formula: bool = True,
-                 enable_table: bool = True, max_retries: int = 3,
-                 retry_delay: float = 2.0):
+    def __init__(
+        self,
+        token: str = "",
+        model: str = "vlm",
+        is_ocr: bool = False,
+        enable_formula: bool = True,
+        enable_table: bool = True,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+    ):
         self.token = token
         self.model = model
         self.is_ocr = is_ocr
@@ -102,8 +109,12 @@ class MinerUParser:
         images_dir = out_dir / "images" if out_dir and (out_dir / "images").exists() else None
 
         return ParsedPaper(
-            title=title, year=year, doi=doi, arxiv=arxiv,
-            text_blocks=blocks, raw_md=raw_md,
+            title=title,
+            year=year,
+            doi=doi,
+            arxiv=arxiv,
+            text_blocks=blocks,
+            raw_md=raw_md,
             images_dir=images_dir,
         )
 
@@ -131,11 +142,18 @@ class MinerUParser:
         for attempt in range(self.max_retries):
             try:
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=600,
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
                 )
                 if result.returncode != 0:
-                    log.warning("mineru-open-api failed (attempt %d/%d): %s",
-                                attempt + 1, self.max_retries, result.stderr[:500])
+                    log.warning(
+                        "mineru-open-api failed (attempt %d/%d): %s",
+                        attempt + 1,
+                        self.max_retries,
+                        result.stderr[:500],
+                    )
                     time.sleep(self.retry_delay)
                     continue
                 if not (out_dir / "images").exists():
@@ -143,8 +161,9 @@ class MinerUParser:
                     continue
                 return out_dir
             except subprocess.TimeoutExpired:
-                log.warning("mineru-open-api timeout (attempt %d/%d)",
-                            attempt + 1, self.max_retries)
+                log.warning(
+                    "mineru-open-api timeout (attempt %d/%d)", attempt + 1, self.max_retries
+                )
                 time.sleep(self.retry_delay)
             except (FileNotFoundError, OSError) as e:
                 log.warning("mineru-open-api error: %s", e)
@@ -208,7 +227,6 @@ class MinerUParser:
 
 def _find_cli() -> str | None:
     """Find mineru-open-api CLI binary."""
-    import shutil
     return shutil.which("mineru-open-api")
 
 
@@ -301,7 +319,7 @@ def filter_sections(raw_md: str) -> list[str]:
                 if m:
                     current_section = m.group(1)
                     # The rest of the line after the marker is content
-                    rest = line.strip()[m.end():]
+                    rest = line.strip()[m.end() :]
                     current_body = [rest] if rest.strip() else []
                 else:
                     current_body.append(line)
@@ -317,7 +335,7 @@ def filter_sections(raw_md: str) -> list[str]:
 
     # If no target sections found, return all text (excluding title line and thinking line)
     if not found_any_target:
-        filtered_lines = [l for l in lines if not l.startswith("Thinking...")]
+        filtered_lines = [line for line in lines if not line.startswith("Thinking...")]
         text = "\n".join(filtered_lines).strip()
         if text:
             # Split into chunks if too large

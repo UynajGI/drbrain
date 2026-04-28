@@ -33,8 +33,15 @@ drbrain = "drbrain.cli.main:app"
 target-version = "py312"
 line-length = 100
 
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    "E501",  # line too long (docstrings, SQL, typer args are naturally long)
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

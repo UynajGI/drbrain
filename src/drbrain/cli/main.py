@@ -1,13 +1,25 @@
 """DrBrain CLI — ingest, query, expand, and more."""
+
 from __future__ import annotations
 
 import typer
 
 from drbrain.cli.commands import (
-    ingest_cmd, expand_cmd, report_cmd, closure_cmd, seed_cmd,
-    list_cmd, stats_cmd, query_cmd, export_cmd,
-    queue_cmd, queue_resolve_cmd, queue_resolve_all_cmd, timeline_cmd,
-    delete_cmd, serve_cmd,
+    closure_cmd,
+    delete_cmd,
+    expand_cmd,
+    export_cmd,
+    ingest_cmd,
+    list_cmd,
+    query_cmd,
+    queue_cmd,
+    queue_resolve_all_cmd,
+    queue_resolve_cmd,
+    report_cmd,
+    seed_cmd,
+    serve_cmd,
+    stats_cmd,
+    timeline_cmd,
 )
 from drbrain.cli.setup import setup_cmd
 

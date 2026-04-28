@@ -1,4 +1,5 @@
 """Full CLI command implementations."""
+
 from __future__ import annotations
 
 import json
@@ -12,20 +13,24 @@ from rich.console import Console
 from rich.table import Table
 
 from drbrain.config import load_config
-from drbrain.parser.mineru_parser import extract_pdf
-from drbrain.extractor.concept import extract_concepts
-from drbrain.extractor.canonical import SmartAligner
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
-from drbrain.storage.database import Database
+from drbrain.extractor.canonical import SmartAligner
+from drbrain.extractor.concept import extract_concepts
 from drbrain.graph.engine import GraphEngine
+from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.report.generator import PaperReport
+from drbrain.storage.database import Database
 
 console = Console()
 
 
 def ingest_cmd(
-    paths: list[str] = typer.Argument(None, help="PDF file(s) or directory. Defaults to data/pdfs/."),
-    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON to stdout"),
+    paths: list[str] = typer.Argument(
+        None, help="PDF file(s) or directory. Defaults to data/pdfs/."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON to stdout"
+    ),
 ):
     """Full ingest pipeline: parse -> identify -> extract -> validate -> queue -> align -> ingest -> expand -> report.
 
@@ -60,6 +65,7 @@ def ingest_cmd(
     dedup = DedupEngine(db)
     llm_models = cfg.get("llm", {}).get("models", [])
     from drbrain.extractor.canonical import SmartAligner
+
     aligner = SmartAligner(db, models=llm_models)
 
     queue_cfg = cfg.get("queue", {})
@@ -69,13 +75,19 @@ def ingest_cmd(
     results = []
     for i, pdf_path in enumerate(pdf_files, 1):
         if not json_output and len(pdf_files) > 1:
-            typer.echo(f"\n{'='*60}")
+            typer.echo(f"\n{'=' * 60}")
             typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
-            typer.echo(f"{'='*60}")
+            typer.echo(f"{'=' * 60}")
 
         result = _ingest_single_paper(
-            pdf_path, cfg, db, graph, dedup, aligner,
-            weak_threshold, auto_accept,
+            pdf_path,
+            cfg,
+            db,
+            graph,
+            dedup,
+            aligner,
+            weak_threshold,
+            auto_accept,
             json_mode=json_output,
         )
         results.append(result)
@@ -86,12 +98,14 @@ def ingest_cmd(
             "successful": sum(1 for r in results if r.get("ok")),
             "failed": sum(1 for r in results if not r.get("ok")),
             "papers": [r.get("report", {}) for r in results if r.get("ok")],
-            "errors": [r.get("error", str(pdf_files[i])) for i, r in enumerate(results) if not r.get("ok")],
+            "errors": [
+                r.get("error", str(pdf_files[i])) for i, r in enumerate(results) if not r.get("ok")
+            ],
         }
         typer.echo(json.dumps(output, indent=2, ensure_ascii=False, default=str))
     else:
         if len(pdf_files) > 1:
-            typer.echo(f"\n{'='*60}")
+            typer.echo(f"\n{'=' * 60}")
             typer.echo(f"Batch complete: {len(results)} papers ingested")
             success = sum(1 for r in results if r.get("ok"))
             typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
@@ -102,15 +116,16 @@ def ingest_cmd(
 def _ingest_single_paper(
     pdf_path: Path,
     cfg: dict,
-    db: "Database",
-    graph: "GraphEngine",
-    dedup: "DedupEngine",
-    aligner: "SmartAligner",
+    db: Database,
+    graph: GraphEngine,
+    dedup: DedupEngine,
+    aligner: SmartAligner,
     weak_threshold: float,
     auto_accept: float,
     json_mode: bool = False,
 ) -> dict:
     """Ingest a single paper. Returns {"ok": bool, "local_id": str|None, "report": dict|None, "error": str|None}."""
+
     def echo(msg: str):
         if not json_mode:
             typer.echo(msg)
@@ -164,6 +179,7 @@ def _ingest_single_paper(
         raise typer.Exit(1)
 
     import asyncio
+
     full_text = "\n\n".join(parsed.text_blocks)
     concepts = asyncio.run(extract_concepts(full_text, llm_models))
     if concepts is None:
@@ -173,11 +189,15 @@ def _ingest_single_paper(
 
     # Stage 3.5: Validate
     from drbrain.validator.schema import validate_extraction
+
     echo("  Validating extraction...")
     concept_data = {
-        "problems": concepts.problems, "methods": concepts.methods,
-        "conclusions": concepts.conclusions, "debates": concepts.debates,
-        "gaps": concepts.gaps, "actors": concepts.actors,
+        "problems": concepts.problems,
+        "methods": concepts.methods,
+        "conclusions": concepts.conclusions,
+        "debates": concepts.debates,
+        "gaps": concepts.gaps,
+        "actors": concepts.actors,
     }
     validation = validate_extraction(concept_data, concepts.relations)
     echo(f"  Valid items: {len(validation['valid'])}")
@@ -190,21 +210,31 @@ def _ingest_single_paper(
 
     # Stage 3.6: Queue low-confidence concepts
     from drbrain.extractor.queue import route_item
+
     typed_count = 0
     queued_count = 0
     weak_count = 0
     all_items = [
-        ("Problem", concepts.problems), ("Method", concepts.methods),
-        ("Conclusion", concepts.conclusions), ("Debate", concepts.debates),
-        ("Gap", concepts.gaps), ("Actor", concepts.actors),
+        ("Problem", concepts.problems),
+        ("Method", concepts.methods),
+        ("Conclusion", concepts.conclusions),
+        ("Debate", concepts.debates),
+        ("Gap", concepts.gaps),
+        ("Actor", concepts.actors),
     ]
     for ctype, items in all_items:
         for item in items:
             label = item.get("label", "")
             conf = item.get("confidence", 1.0)
-            routing = route_item(db, local_id, "concept",
-                               {"label": label, "type": ctype}, conf,
-                               weak_threshold, auto_accept)
+            routing = route_item(
+                db,
+                local_id,
+                "concept",
+                {"label": label, "type": ctype},
+                conf,
+                weak_threshold,
+                auto_accept,
+            )
             if routing["action"] == "queued":
                 queued_count += 1
             elif routing["action"] == "weak":
@@ -232,11 +262,18 @@ def _ingest_single_paper(
 
         # Ingest arguments
         from drbrain.extractor.argument import validate_arguments
+
         valid_args, rejected_args = validate_arguments(concepts.arguments)
         for arg in valid_args:
             db.insert_argument(
-                local_id, arg.claim, arg.claim_type, arg.target, arg.target_type,
-                arg.evidence_type, arg.evidence_detail, arg.confidence,
+                local_id,
+                arg.claim,
+                arg.claim_type,
+                arg.target,
+                arg.target_type,
+                arg.evidence_type,
+                arg.evidence_detail,
+                arg.confidence,
             )
 
         db.commit()
@@ -252,6 +289,7 @@ def _ingest_single_paper(
         # Stage 6: Expand
         echo("  Expanding citations...")
         from drbrain.extractor.citation import expand_citations
+
         refs, cits = expand_citations(db, local_id, cfg)
         refs_in = sum(1 for r in refs if r.in_graph)
         cits_in = sum(1 for c in cits if c.in_graph)
@@ -267,9 +305,26 @@ def _ingest_single_paper(
             doi_info = None
             sources = [
                 ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
-                ("CrossRef arXiv", lambda: _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email) if parsed.arxiv else None),
-                ("CrossRef DOI", lambda: _enrich_doi_from_crossref_doi(parsed.doi, crossref_email) if parsed.doi else None),
-                ("OpenAlex title", lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token)),
+                (
+                    "CrossRef arXiv",
+                    lambda: (
+                        _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email)
+                        if parsed.arxiv
+                        else None
+                    ),
+                ),
+                (
+                    "CrossRef DOI",
+                    lambda: (
+                        _enrich_doi_from_crossref_doi(parsed.doi, crossref_email)
+                        if parsed.doi
+                        else None
+                    ),
+                ),
+                (
+                    "OpenAlex title",
+                    lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token),
+                ),
             ]
             for name, fn in sources:
                 if doi_info and doi_info.get("doi"):
@@ -304,7 +359,9 @@ def _ingest_single_paper(
 
     # Stage 9: Report
     report = PaperReport(
-        local_id=local_id, title=parsed.title, year=parsed.year,
+        local_id=local_id,
+        title=parsed.title,
+        year=parsed.year,
         ids={"doi": parsed.doi, "arxiv": parsed.arxiv},
         status="uploaded",
         concepts=concepts.to_dict(),
@@ -324,7 +381,9 @@ def _ingest_single_paper(
 
     summary = report.summary
     if summary["graph_coverage"] < 0.3:
-        echo(f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]")
+        echo(
+            f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]"
+        )
 
     # Log validation failures
     tbox_violations = [r["reason"] for r in validation["rejected"]]
@@ -338,7 +397,9 @@ def _ingest_single_paper(
     return {"ok": True, "local_id": local_id, "report": report.to_dict()}
 
 
-def _check_and_merge_duplicates(db: "Database", ids: "PaperIDs", title: str, year: int | None) -> str | None:
+def _check_and_merge_duplicates(
+    db: Database, ids: PaperIDs, title: str, year: int | None
+) -> str | None:
     """Find existing placeholders sharing the same external ID and merge. Returns merged local_id or None."""
     target_id = None
 
@@ -356,7 +417,7 @@ def _check_and_merge_duplicates(db: "Database", ids: "PaperIDs", title: str, yea
     return target_id
 
 
-def _merge_papers(db: "Database", keep_id: str, merge_id: str) -> None:
+def _merge_papers(db: Database, keep_id: str, merge_id: str) -> None:
     """Merge merge_id into keep_id: move concepts, edges, update references."""
     # Move concepts
     db.conn.execute(
@@ -393,13 +454,15 @@ def _log_error(cfg: dict, message: str) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / "validation.log"
     import datetime
+
     timestamp = datetime.datetime.now().isoformat()
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {message}\n")
 
 
-def save_raw_md(raw_md: str, local_id: str, papers_dir: Path | None = None,
-                images_src: Path | None = None) -> bool:
+def save_raw_md(
+    raw_md: str, local_id: str, papers_dir: Path | None = None, images_src: Path | None = None
+) -> bool:
     """Save parsed markdown to data/papers/<local_id>.md and images to data/papers/images/<local_id>/."""
     if not raw_md or not local_id:
         return False
@@ -423,6 +486,7 @@ def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | No
     """Try to find DOI for a paper title via CrossRef API."""
     try:
         from drbrain.extractor.crossref import fetch_doi_by_title
+
         return fetch_doi_by_title(title, email=email)
     except Exception:
         return None
@@ -432,6 +496,7 @@ def _enrich_doi_from_crossref_arxiv(arxiv_id: str, email: str | None = None) -> 
     """Fallback: find DOI via arXiv ID in CrossRef."""
     try:
         from drbrain.extractor.crossref import fetch_doi_by_arxiv
+
         return fetch_doi_by_arxiv(arxiv_id, email=email)
     except Exception:
         return None
@@ -441,16 +506,19 @@ def _enrich_doi_from_crossref_doi(doi: str, email: str | None = None) -> dict | 
     """Fallback: resolve DOI directly via CrossRef."""
     try:
         from drbrain.extractor.crossref import fetch_doi_by_doi
+
         return fetch_doi_by_doi(doi, email=email)
     except Exception:
         return None
 
 
-def _enrich_doi_from_openalex(title: str, arxiv: str | None = None,
-                              token: str | None = None) -> dict | None:
+def _enrich_doi_from_openalex(
+    title: str, arxiv: str | None = None, token: str | None = None
+) -> dict | None:
     """Try OpenAlex title search, then arXiv fallback."""
     try:
-        from drbrain.extractor.openalex import search_work_by_title, search_work_by_arxiv
+        from drbrain.extractor.openalex import search_work_by_arxiv, search_work_by_title
+
         result = search_work_by_title(title, token=token)
         if result and result.get("doi"):
             return result
@@ -481,6 +549,7 @@ def expand_cmd(
         raise typer.Exit(1)
 
     from drbrain.extractor.citation import expand_citations
+
     refs, cits = expand_citations(db, local_id, cfg)
     db.close()
 
@@ -520,7 +589,9 @@ def report_cmd(
         if json_output:
             typer.echo(json.dumps(msg))
         else:
-            typer.echo(f"No report found for {local_id}. Run: drbrain ingest or drbrain expand", err=True)
+            typer.echo(
+                f"No report found for {local_id}. Run: drbrain ingest or drbrain expand", err=True
+            )
         raise typer.Exit(1)
 
     data = json.loads(report_path.read_text())
@@ -542,7 +613,9 @@ def report_cmd(
             typer.echo(f"  {ctype}: {len(concepts[ctype])}")
 
     if data["boundary_alert"].get("low_coverage"):
-        typer.echo("  [bold yellow]Alert: Low coverage - consider expanding citation network[/bold yellow]")
+        typer.echo(
+            "  [bold yellow]Alert: Low coverage - consider expanding citation network[/bold yellow]"
+        )
 
 
 def closure_cmd(
@@ -563,12 +636,21 @@ def closure_cmd(
     db.close()
 
     if json_output:
-        typer.echo(json.dumps({"inferred": inferred, "count": len(inferred)}, indent=2, ensure_ascii=False, default=str))
+        typer.echo(
+            json.dumps(
+                {"inferred": inferred, "count": len(inferred)},
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
         return
 
     typer.echo(f"Inferred edges: {len(inferred)}")
     for edge in inferred:
-        typer.echo(f"  {edge['src']} --[{edge['relation']}]--> {edge['dst']} (via {edge.get('via', 'unknown')})")
+        typer.echo(
+            f"  {edge['src']} --[{edge['relation']}]--> {edge['dst']} (via {edge.get('via', 'unknown')})"
+        )
 
 
 def seed_cmd(
@@ -628,7 +710,9 @@ def stats_cmd(
     db = Database(cfg["db"]["path"])
     papers = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
     uploaded = db.conn.execute("SELECT COUNT(*) FROM papers WHERE status='uploaded'").fetchone()[0]
-    placeholders = db.conn.execute("SELECT COUNT(*) FROM papers WHERE status='placeholder'").fetchone()[0]
+    placeholders = db.conn.execute(
+        "SELECT COUNT(*) FROM papers WHERE status='placeholder'"
+    ).fetchone()[0]
     concepts = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
     edges = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
     aliases = db.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
@@ -640,9 +724,15 @@ def stats_cmd(
     db.close()
 
     data = {
-        "papers": papers, "uploaded": uploaded, "placeholders": placeholders,
-        "concepts": concepts, "edges": edges, "aliases": aliases,
-        "research_seeds": seeds, "arguments": arguments, "queue_pending": queue_pending,
+        "papers": papers,
+        "uploaded": uploaded,
+        "placeholders": placeholders,
+        "concepts": concepts,
+        "edges": edges,
+        "aliases": aliases,
+        "research_seeds": seeds,
+        "arguments": arguments,
+        "queue_pending": queue_pending,
     }
 
     if json_output:
@@ -666,13 +756,21 @@ def stats_cmd(
 
 def query_cmd(
     text: str,
-    type_filter: str = typer.Option(None, "--type-filter", help="Filter by concept type (Problem, Method, etc.)"),
-    arg_type: str = typer.Option(None, "--arg-type", help="Filter by argument claim type (supports, challenges, etc.)"),
+    type_filter: str = typer.Option(
+        None, "--type-filter", help="Filter by concept type (Problem, Method, etc.)"
+    ),
+    arg_type: str = typer.Option(
+        None, "--arg-type", help="Filter by argument claim type (supports, challenges, etc.)"
+    ),
     year_start: int = typer.Option(None, "--year-start", help="Filter by minimum year"),
     year_end: int = typer.Option(None, "--year-end", help="Filter by maximum year"),
-    min_confidence: float = typer.Option(None, "--min-confidence", help="Minimum confidence threshold"),
+    min_confidence: float = typer.Option(
+        None, "--min-confidence", help="Minimum confidence threshold"
+    ),
     limit: int = typer.Option(20, "--limit", help="Maximum results"),
-    neighbors: int = typer.Option(0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"),
+    neighbors: int = typer.Option(
+        0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
 ):
@@ -681,8 +779,15 @@ def query_cmd(
     db = Database(cfg["db"]["path"])
 
     from drbrain.query.bm25 import build_bm25_index
+
     bm25 = build_bm25_index(db)
-    results = bm25.search(text, type_filter=type_filter, arg_type_filter=arg_type, limit=limit, min_confidence=min_confidence)
+    results = bm25.search(
+        text,
+        type_filter=type_filter,
+        arg_type_filter=arg_type,
+        limit=limit,
+        min_confidence=min_confidence,
+    )
 
     # Post-filter by year range
     if year_start is not None or year_end is not None:
@@ -702,15 +807,17 @@ def query_cmd(
         for nid in expanded_ids - seed_ids:
             paper = db.get_paper(nid)
             if paper:
-                results.append({
-                    "local_id": nid,
-                    "type": "Paper",
-                    "label": paper["title"],
-                    "text": paper.get("abstract", ""),
-                    "year": paper.get("year"),
-                    "score": 0.0,
-                    "_via_neighbors": True,
-                })
+                results.append(
+                    {
+                        "local_id": nid,
+                        "type": "Paper",
+                        "label": paper["title"],
+                        "text": paper.get("abstract", ""),
+                        "year": paper.get("year"),
+                        "score": 0.0,
+                        "_via_neighbors": True,
+                    }
+                )
         graph.graph = None  # Free memory
         db.close()
     else:
@@ -753,7 +860,9 @@ def query_cmd(
             extra += " [neighbor]"
         year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
         conf_str = f", confidence: {r['confidence']:.2f}" if "confidence" in r else ""
-        typer.echo(f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})")
+        typer.echo(
+            f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})"
+        )
 
 
 def export_cmd(format: str = "json"):
@@ -765,17 +874,13 @@ def export_cmd(format: str = "json"):
 
     if format == "json":
         data = {
-            "nodes": [
-                {"id": n, **d} for n, d in graph.graph.nodes(data=True)
-            ],
-            "edges": [
-                {"source": u, "target": v, **d}
-                for u, v, d in graph.graph.edges(data=True)
-            ],
+            "nodes": [{"id": n, **d} for n, d in graph.graph.nodes(data=True)],
+            "edges": [{"source": u, "target": v, **d} for u, v, d in graph.graph.edges(data=True)],
         }
         typer.echo(json.dumps(data, indent=2, default=str))
     elif format == "graphml":
         import networkx as nx
+
         typer.echo(nx.generate_graphml(graph.graph))
     else:
         typer.echo(f"Unsupported format: {format}", err=True)
@@ -851,6 +956,7 @@ def queue_resolve_cmd(
     db = Database(cfg["db"]["path"])
 
     from drbrain.extractor.queue import resolve_accept, resolve_reject
+
     if accept:
         resolve_accept(db, queue_id)
         action = "accepted"
@@ -870,8 +976,12 @@ def queue_resolve_cmd(
 def queue_resolve_all_cmd(
     accept: bool = typer.Option(False, "--accept", help="Accept all pending items"),
     reject: bool = typer.Option(False, "--reject", help="Reject all pending items"),
-    type_filter: str = typer.Option(None, "--type", help="Filter by item type (concept, alias, relation)"),
-    max_conf: float = typer.Option(None, "--max-conf", help="Only process items with confidence <= this value"),
+    type_filter: str = typer.Option(
+        None, "--type", help="Filter by item type (concept, alias, relation)"
+    ),
+    max_conf: float = typer.Option(
+        None, "--max-conf", help="Only process items with confidence <= this value"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Batch resolve all pending queue items."""
@@ -894,16 +1004,26 @@ def queue_resolve_all_cmd(
     db = Database(cfg["db"]["path"])
 
     from drbrain.extractor.queue import resolve_all
+
     action = "accept" if accept else "reject"
     result = resolve_all(db, action, type_filter=type_filter, max_conf=max_conf)
 
     db.close()
 
     if json_output:
-        typer.echo(json.dumps({"action": action, "count": result["count"], "filters": {
-            "type": type_filter,
-            "max_conf": max_conf,
-        }}, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "action": action,
+                    "count": result["count"],
+                    "filters": {
+                        "type": type_filter,
+                        "max_conf": max_conf,
+                    },
+                },
+                indent=2,
+            )
+        )
         return
 
     if result["count"] == 0:
@@ -1000,8 +1120,10 @@ def delete_cmd(
         return
 
     typer.echo(f"Deleted paper: {paper['title']} ({local_id})")
-    typer.echo(f"  concepts: {counts['concepts']}, arguments: {counts['arguments']}, "
-               f"edges: {counts['edges']}, queue items: {counts['queue_items']}")
+    typer.echo(
+        f"  concepts: {counts['concepts']}, arguments: {counts['arguments']}, "
+        f"edges: {counts['edges']}, queue items: {counts['queue_items']}"
+    )
 
 
 def serve_cmd(
@@ -1025,8 +1147,18 @@ def serve_cmd(
 
     env = {**__import__("os").environ, "DRBRAIN_DB_PATH": cfg["db"]["path"]}
     subprocess.run(
-        [sys.executable, "-m", "streamlit", "run", str(app_path),
-         "--server.address", host, "--server.port", str(port),
-         "--server.headless", "true"],
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(app_path),
+            "--server.address",
+            host,
+            "--server.port",
+            str(port),
+            "--server.headless",
+            "true",
+        ],
         env=env,
     )

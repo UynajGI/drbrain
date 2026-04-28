@@ -1,0 +1,26 @@
+#!/bin/sh
+# Pre-commit hook: lint and format only staged Python files.
+# Registered via core.hooksPath = .githooks
+
+# Collect staged Python files
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
+
+if [ -z "$STAGED_PY" ]; then
+    exit 0
+fi
+
+echo "Running ruff check on staged files..."
+echo "$STAGED_PY" | xargs uv run ruff check --force-exclude
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "Commit blocked. Fix the issues above, then re-stage."
+    exit 1
+fi
+
+echo "Running ruff format on staged files..."
+echo "$STAGED_PY" | xargs uv run ruff format --force-exclude --quiet
+
+# Re-stage only the files we reformatted
+echo "$STAGED_PY" | xargs git add
+
+echo "Ruff OK ($(echo "$STAGED_PY" | wc -l | tr -d ' ') file(s))."

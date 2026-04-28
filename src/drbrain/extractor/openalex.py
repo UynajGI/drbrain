@@ -1,11 +1,12 @@
 """OpenAlex API client for DOI enrichment and citation expansion."""
+
 from __future__ import annotations
 
+import json
 import re
 import time
 import urllib.parse
 import urllib.request
-import json
 from typing import Any
 
 OPENALEX_BASE = "https://api.openalex.org"
@@ -16,8 +17,9 @@ def _select_fields(fields: list[str]) -> str:
     return ",".join(fields)
 
 
-def search_work_by_title(title: str, token: str | None = None,
-                         max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def search_work_by_title(
+    title: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Search OpenAlex by title and return DOI + metadata if found."""
     if not title:
         return None
@@ -53,8 +55,9 @@ def search_work_by_title(title: str, token: str | None = None,
     return None
 
 
-def search_work_by_arxiv(arxiv_id: str, token: str | None = None,
-                         max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def search_work_by_arxiv(
+    arxiv_id: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Search OpenAlex by arXiv ID."""
     clean = re.sub(r"v\d+$", "", arxiv_id).strip()
     if not clean:
@@ -89,15 +92,17 @@ def search_work_by_arxiv(arxiv_id: str, token: str | None = None,
     return None
 
 
-def get_work_by_doi(doi: str, token: str | None = None,
-                    max_retries: int = 2, retry_delay: float = 1.0) -> dict[str, Any] | None:
+def get_work_by_doi(
+    doi: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> dict[str, Any] | None:
     """Fetch work by DOI from OpenAlex."""
     if not doi:
         return None
 
     clean_doi = re.sub(r"^https?://doi\.org/", "", doi)
-    fields = _select_fields(["id", "doi", "title", "publication_year", "ids",
-                              "referenced_works", "cited_by_api_url"])
+    fields = _select_fields(
+        ["id", "doi", "title", "publication_year", "ids", "referenced_works", "cited_by_api_url"]
+    )
     url = f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(clean_doi)}?select={fields}"
     headers: dict[str, str] = {"Accept": "application/json"}
 
@@ -125,8 +130,9 @@ def get_work_by_doi(doi: str, token: str | None = None,
     return None
 
 
-def get_work_references(openalex_id: str, token: str | None = None,
-                        max_retries: int = 2, retry_delay: float = 1.0) -> list[dict[str, Any]]:
+def get_work_references(
+    openalex_id: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
+) -> list[dict[str, Any]]:
     """Fetch referenced works from OpenAlex. Returns list of basic paper info."""
     if not openalex_id:
         return []
@@ -141,7 +147,7 @@ def get_work_references(openalex_id: str, token: str | None = None,
             data = json.loads(resp.read())
             ref_ids = data.get("referenced_works", [])
             for ref_id in ref_ids[:50]:
-                ref_info = _fetch_work_by_id(ref_id, token=token)
+                ref_info = get_work_by_openalex_id(ref_id, token=token)
                 if ref_info:
                     refs.append(ref_info)
             return refs
@@ -152,8 +158,9 @@ def get_work_references(openalex_id: str, token: str | None = None,
     return []
 
 
-def get_work_by_openalex_id(openalex_id: str, token: str | None = None,
-                             max_retries: int = 2, retry_delay: float = 0.5) -> dict[str, Any] | None:
+def get_work_by_openalex_id(
+    openalex_id: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 0.5
+) -> dict[str, Any] | None:
     """Fetch a single work by its OpenAlex ID."""
     fields = _select_fields(["id", "doi", "title", "publication_year", "ids"])
     url = f"{openalex_id}?select={fields}"
@@ -182,8 +189,9 @@ def get_work_by_openalex_id(openalex_id: str, token: str | None = None,
     return None
 
 
-def batch_fetch_works(work_ids: list[str], token: str | None = None,
-                      max_retries: int = 2, retry_delay: float = 0.5) -> list[dict[str, Any]]:
+def batch_fetch_works(
+    work_ids: list[str], token: str | None = None, max_retries: int = 2, retry_delay: float = 0.5
+) -> list[dict[str, Any]]:
     """Batch fetch multiple works from OpenAlex using the bulk endpoint."""
     if not work_ids:
         return []
@@ -205,12 +213,14 @@ def batch_fetch_works(work_ids: list[str], token: str | None = None,
                 doi = r.get("doi", "")
                 if doi:
                     doi = re.sub(r"^https?://doi\.org/", "", doi)
-                works.append({
-                    "doi": doi or None,
-                    "title": r.get("title", ""),
-                    "year": r.get("publication_year"),
-                    "openalex_id": r.get("id", ""),
-                })
+                works.append(
+                    {
+                        "doi": doi or None,
+                        "title": r.get("title", ""),
+                        "year": r.get("publication_year"),
+                        "openalex_id": r.get("id", ""),
+                    }
+                )
             return works
         except Exception:
             if attempt < max_retries - 1:

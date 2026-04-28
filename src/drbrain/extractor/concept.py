@@ -1,10 +1,11 @@
 """Academic concept + argument extraction via LLM with fallback chain."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.extractor.argument import ExtractedArgument, parse_arguments
+from drbrain.extractor.llm_client import acall_with_fallback
 
 PROMPT_TEMPLATE = Path(__file__).parent.parent.parent.parent / "prompts" / "extract_concepts.txt"
 
