@@ -14,7 +14,7 @@ from rich.table import Table
 from drbrain.config import load_config
 from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.extractor.concept import extract_concepts
-from drbrain.extractor.canonical import AliasTable
+from drbrain.extractor.canonical import SmartAligner
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
 from drbrain.storage.database import Database
 from drbrain.graph.engine import GraphEngine
@@ -58,7 +58,9 @@ def ingest_cmd(
     graph = GraphEngine()
     graph.load_from_db(db)
     dedup = DedupEngine(db)
-    alias_table = AliasTable()
+    llm_models = cfg.get("llm", {}).get("models", [])
+    from drbrain.extractor.canonical import SmartAligner
+    aligner = SmartAligner(db, models=llm_models)
 
     queue_cfg = cfg.get("queue", {})
     weak_threshold = queue_cfg.get("weak_threshold", 0.7)
@@ -72,7 +74,7 @@ def ingest_cmd(
             typer.echo(f"{'='*60}")
 
         result = _ingest_single_paper(
-            pdf_path, cfg, db, graph, dedup, alias_table,
+            pdf_path, cfg, db, graph, dedup, aligner,
             weak_threshold, auto_accept,
             json_mode=json_output,
         )
@@ -103,7 +105,7 @@ def _ingest_single_paper(
     db: "Database",
     graph: "GraphEngine",
     dedup: "DedupEngine",
-    alias_table: "AliasTable",
+    aligner: "SmartAligner",
     weak_threshold: float,
     auto_accept: float,
     json_mode: bool = False,
@@ -221,8 +223,9 @@ def _ingest_single_paper(
                 label = item.get("label", "")
                 conf = item.get("confidence", 1.0)
                 if conf >= weak_threshold:
-                    alias_table.get_or_create(label)
+                    canonical_id = aligner.align(label, ctype)
                     db.insert_concept(local_id, ctype, label, conf, year=parsed.year)
+                    db.insert_alias(label, canonical_id)
 
         for rel in valid_relations:
             db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
@@ -327,6 +330,9 @@ def _ingest_single_paper(
     tbox_violations = [r["reason"] for r in validation["rejected"]]
     for reason in tbox_violations:
         _log_error(cfg, f"[{local_id}] TBox violation: {reason}")
+
+    # Flush pending LLM alignments
+    aligner.flush_pending()
 
     echo(f"\nDone: {local_id}")
     return {"ok": True, "local_id": local_id, "report": report.to_dict()}
