@@ -24,6 +24,7 @@ class BM25Search:
     def add_document(
         self, local_id: str, doc_type: str, label: str,
         text: str = "", arg_type: str = "", year: int | None = None,
+        confidence: float | None = None,
     ) -> None:
         """Add a searchable document (paper title, concept label, or argument claim)."""
         search_text = f"{label} {text}".strip()
@@ -35,6 +36,8 @@ class BM25Search:
             doc["arg_type"] = arg_type
         if year is not None:
             doc["year"] = year
+        if confidence is not None:
+            doc["confidence"] = confidence
         self._documents.append(doc)
 
     def build(self, k1: float = 1.5, b: float = 0.75) -> None:
@@ -46,6 +49,7 @@ class BM25Search:
     def search(
         self, query: str, type_filter: str | None = None,
         arg_type_filter: str | None = None, limit: int = 20,
+        min_confidence: float | None = None,
     ) -> list[dict]:
         """Search the index. Returns ranked list of matching documents."""
         if not self._bm25 or not self._tokenized:
@@ -61,7 +65,10 @@ class BM25Search:
                 continue
             if arg_type_filter and doc.get("arg_type") != arg_type_filter:
                 continue
-            # Include any document that has matching terms (score can be negative with BM25)
+            if min_confidence is not None:
+                conf = doc.get("confidence")
+                if conf is None or conf < min_confidence:
+                    continue
             results.append({
                 **doc, "score": round(float(score), 4),
             })
@@ -85,23 +92,23 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
 
     # Add concept labels
     rows = db.conn.execute(
-        "SELECT c.local_id, c.type, c.label, p.year "
+        "SELECT c.local_id, c.type, c.label, c.confidence, p.year "
         "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
         "WHERE p.year IS NOT NULL"
     ).fetchall()
-    for local_id, ctype, label, year in rows:
-        index.add_document(local_id, ctype, label, year=year)
+    for local_id, ctype, label, confidence, year in rows:
+        index.add_document(local_id, ctype, label, year=year, confidence=confidence)
 
     # Add argument claims
     args = db.conn.execute(
-        "SELECT a.source_paper, a.claim, a.claim_type, p.year "
+        "SELECT a.source_paper, a.claim, a.claim_type, a.confidence, p.year "
         "FROM arguments a JOIN papers p ON a.source_paper = p.local_id "
         "WHERE p.year IS NOT NULL"
     ).fetchall()
-    for local_id, claim, claim_type, year in args:
+    for local_id, claim, claim_type, confidence, year in args:
         index.add_document(
             local_id, "Argument", claim,
-            arg_type=claim_type, year=year,
+            arg_type=claim_type, year=year, confidence=confidence,
         )
 
     index.build(k1=k1, b=b)

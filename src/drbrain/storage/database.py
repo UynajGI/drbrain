@@ -300,6 +300,36 @@ class Database:
         ).fetchall()
         return [dict(zip(["year", "count", "avg_conf"], row)) for row in rows]
 
+    def delete_paper(self, local_id: str) -> dict:
+        """Delete a paper and all associated data. Returns counts of deleted items."""
+        concept_count = self.conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE local_id = ?", (local_id,)
+        ).fetchone()[0]
+        arg_count = self.conn.execute(
+            "SELECT COUNT(*) FROM arguments WHERE source_paper = ?", (local_id,)
+        ).fetchone()[0]
+        edge_count = self.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE src_id = ? OR dst_id = ?", (local_id, local_id)
+        ).fetchone()[0]
+        queue_count = self.conn.execute(
+            "SELECT COUNT(*) FROM confidence_queue WHERE source_paper = ?", (local_id,)
+        ).fetchone()[0]
+
+        self.conn.execute("DELETE FROM concepts WHERE local_id = ?", (local_id,))
+        self.conn.execute("DELETE FROM arguments WHERE source_paper = ?", (local_id,))
+        self.conn.execute("DELETE FROM edges WHERE src_id = ? OR dst_id = ?", (local_id, local_id))
+        self.conn.execute("DELETE FROM paper_ids WHERE local_id = ?", (local_id,))
+        self.conn.execute("DELETE FROM confidence_queue WHERE source_paper = ?", (local_id,))
+        self.conn.execute("DELETE FROM papers WHERE local_id = ?", (local_id,))
+        self.commit()
+
+        return {
+            "concepts": concept_count,
+            "arguments": arg_count,
+            "edges": edge_count,
+            "queue_items": queue_count,
+        }
+
     def detect_evolution_signals(self) -> list[dict]:
         """Detect evolution signals across all concepts.
 

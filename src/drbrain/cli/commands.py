@@ -210,84 +210,94 @@ def _ingest_single_paper(
             typed_count += 1
 
     # Stage 4: Align + Stage 5: Ingest
-    for ctype, items in all_items:
-        for item in items:
-            label = item.get("label", "")
-            conf = item.get("confidence", 1.0)
-            if conf >= weak_threshold:
-                alias_table.get_or_create(label)
-                db.insert_concept(local_id, ctype, label, conf, year=parsed.year)
-
-    for rel in valid_relations:
-        db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
-
-    # Ingest arguments
-    from drbrain.extractor.argument import validate_arguments
-    valid_args, rejected_args = validate_arguments(concepts.arguments)
-    for arg in valid_args:
-        db.insert_argument(
-            local_id, arg.claim, arg.claim_type, arg.target, arg.target_type,
-            arg.evidence_type, arg.evidence_detail, arg.confidence,
-        )
-
-    db.commit()
-    echo(f"  Concepts inserted: {typed_count}")
-    echo(f"  Arguments inserted: {len(valid_args)}")
-    if queued_count:
-        echo(f"  Queued for review: {queued_count}")
-    if weak_count:
-        echo(f"  Weak (ingested with marker): {weak_count}")
-    if rejected_args:
-        echo(f"  Arguments rejected: {len(rejected_args)}")
-
     # Stage 6: Expand
-    echo("  Expanding citations...")
-    from drbrain.extractor.citation import expand_citations
-    refs, cits = expand_citations(db, local_id, cfg)
-    refs_in = sum(1 for r in refs if r.in_graph)
-    cits_in = sum(1 for c in cits if c.in_graph)
-    echo(f"  References: {len(refs)} ({refs_in} in graph)")
-    echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
-
-    # Stage 7: DOI enrichment — multi-source fallback chain
-    current_doi = db.get_paper(local_id).get("doi")
-    if not current_doi and parsed.title:
-        crossref_email = cfg.get("api", {}).get("crossref_email")
-        openalex_token = cfg.get("api", {}).get("openalex_token")
-
-        # Try S2-provided DOI first (already backfilled in expand_citations)
-        # Then try: CrossRef title → CrossRef arXiv → CrossRef direct DOI → OpenAlex title → OpenAlex arXiv
-        doi_info = None
-        sources = [
-            ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
-            ("CrossRef arXiv", lambda: _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email) if parsed.arxiv else None),
-            ("CrossRef DOI", lambda: _enrich_doi_from_crossref_doi(parsed.doi, crossref_email) if parsed.doi else None),
-            ("OpenAlex title", lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token)),
-        ]
-        for name, fn in sources:
-            if doi_info and doi_info.get("doi"):
-                break
-            echo(f"  Trying {name}...")
-            doi_info = fn()
-
-        if doi_info and doi_info.get("doi"):
-            db.conn.execute(
-                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                (doi_info["doi"], local_id),
-            )
-            db.commit()
-            echo(f"  Found DOI: {doi_info['doi']}")
-        else:
-            echo("  No DOI found in any source")
-
+    # Stage 7: DOI enrichment
     # Stage 8: Closure
-    echo("  Running rule closure...")
-    graph.load_from_db(db)
-    inferred = graph.closure()
-    for edge in inferred:
-        db.insert_edge(edge["src"], edge["dst"], edge["relation"], local_id)
-    db.commit()
-    echo(f"  Inferred edges: {len(inferred)}")
+    # All wrapped in try/except for transaction rollback (Spec §20)
+    try:
+        # Stage 4: Align + Stage 5: Ingest
+        for ctype, items in all_items:
+            for item in items:
+                label = item.get("label", "")
+                conf = item.get("confidence", 1.0)
+                if conf >= weak_threshold:
+                    alias_table.get_or_create(label)
+                    db.insert_concept(local_id, ctype, label, conf, year=parsed.year)
+
+        for rel in valid_relations:
+            db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
+
+        # Ingest arguments
+        from drbrain.extractor.argument import validate_arguments
+        valid_args, rejected_args = validate_arguments(concepts.arguments)
+        for arg in valid_args:
+            db.insert_argument(
+                local_id, arg.claim, arg.claim_type, arg.target, arg.target_type,
+                arg.evidence_type, arg.evidence_detail, arg.confidence,
+            )
+
+        db.commit()
+        echo(f"  Concepts inserted: {typed_count}")
+        echo(f"  Arguments inserted: {len(valid_args)}")
+        if queued_count:
+            echo(f"  Queued for review: {queued_count}")
+        if weak_count:
+            echo(f"  Weak (ingested with marker): {weak_count}")
+        if rejected_args:
+            echo(f"  Arguments rejected: {len(rejected_args)}")
+
+        # Stage 6: Expand
+        echo("  Expanding citations...")
+        from drbrain.extractor.citation import expand_citations
+        refs, cits = expand_citations(db, local_id, cfg)
+        refs_in = sum(1 for r in refs if r.in_graph)
+        cits_in = sum(1 for c in cits if c.in_graph)
+        echo(f"  References: {len(refs)} ({refs_in} in graph)")
+        echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
+
+        # Stage 7: DOI enrichment — multi-source fallback chain
+        current_doi = db.get_paper(local_id).get("doi")
+        if not current_doi and parsed.title:
+            crossref_email = cfg.get("api", {}).get("crossref_email")
+            openalex_token = cfg.get("api", {}).get("openalex_token")
+
+            doi_info = None
+            sources = [
+                ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
+                ("CrossRef arXiv", lambda: _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email) if parsed.arxiv else None),
+                ("CrossRef DOI", lambda: _enrich_doi_from_crossref_doi(parsed.doi, crossref_email) if parsed.doi else None),
+                ("OpenAlex title", lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token)),
+            ]
+            for name, fn in sources:
+                if doi_info and doi_info.get("doi"):
+                    break
+                echo(f"  Trying {name}...")
+                doi_info = fn()
+
+            if doi_info and doi_info.get("doi"):
+                db.conn.execute(
+                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                    (doi_info["doi"], local_id),
+                )
+                db.commit()
+                echo(f"  Found DOI: {doi_info['doi']}")
+            else:
+                echo("  No DOI found in any source")
+
+        # Stage 8: Closure
+        echo("  Running rule closure...")
+        graph.load_from_db(db)
+        inferred = graph.closure()
+        for edge in inferred:
+            db.insert_edge(edge["src"], edge["dst"], edge["relation"], local_id)
+        db.commit()
+        echo(f"  Inferred edges: {len(inferred)}")
+
+    except Exception as e:
+        db.conn.rollback()
+        echo(f"[red]Error during ingestion, rolled back: {e}[/red]")
+        _log_error(cfg, f"Ingestion rollback for {local_id}: {e}")
+        return {"ok": False, "local_id": local_id, "error": str(e)}
 
     # Stage 9: Report
     report = PaperReport(
@@ -654,6 +664,7 @@ def query_cmd(
     arg_type: str = typer.Option(None, "--arg-type", help="Filter by argument claim type (supports, challenges, etc.)"),
     year_start: int = typer.Option(None, "--year-start", help="Filter by minimum year"),
     year_end: int = typer.Option(None, "--year-end", help="Filter by maximum year"),
+    min_confidence: float = typer.Option(None, "--min-confidence", help="Minimum confidence threshold"),
     limit: int = typer.Option(20, "--limit", help="Maximum results"),
     neighbors: int = typer.Option(0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
@@ -665,7 +676,7 @@ def query_cmd(
 
     from drbrain.query.bm25 import build_bm25_index
     bm25 = build_bm25_index(db)
-    results = bm25.search(text, type_filter=type_filter, arg_type_filter=arg_type, limit=limit)
+    results = bm25.search(text, type_filter=type_filter, arg_type_filter=arg_type, limit=limit, min_confidence=min_confidence)
 
     # Post-filter by year range
     if year_start is not None or year_end is not None:
@@ -721,6 +732,8 @@ def query_cmd(
         filters.append(f"arg_type={arg_type}")
     if year_start or year_end:
         filters.append(f"year={year_start or '...'}-{year_end or '...'}")
+    if min_confidence is not None:
+        filters.append(f"min_confidence={min_confidence}")
     if neighbors:
         filters.append(f"neighbors={neighbors}")
     if filters:
@@ -733,7 +746,8 @@ def query_cmd(
         if r.get("_via_neighbors"):
             extra += " [neighbor]"
         year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
-        typer.echo(f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str})")
+        conf_str = f", confidence: {r['confidence']:.2f}" if "confidence" in r else ""
+        typer.echo(f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})")
 
 
 def export_cmd(format: str = "json"):
@@ -847,6 +861,52 @@ def queue_resolve_cmd(
     typer.echo(f"Queue item {queue_id} {action}.")
 
 
+def queue_resolve_all_cmd(
+    accept: bool = typer.Option(False, "--accept", help="Accept all pending items"),
+    reject: bool = typer.Option(False, "--reject", help="Reject all pending items"),
+    type_filter: str = typer.Option(None, "--type", help="Filter by item type (concept, alias, relation)"),
+    max_conf: float = typer.Option(None, "--max-conf", help="Only process items with confidence <= this value"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Batch resolve all pending queue items."""
+    if accept and reject:
+        msg = {"error": "cannot both accept and reject"}
+        if json_output:
+            typer.echo(json.dumps(msg))
+        else:
+            typer.echo("Error: cannot both accept and reject", err=True)
+        raise typer.Exit(1)
+    if not accept and not reject:
+        msg = {"error": "specify --accept or --reject"}
+        if json_output:
+            typer.echo(json.dumps(msg))
+        else:
+            typer.echo("Error: specify --accept or --reject", err=True)
+        raise typer.Exit(1)
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    from drbrain.extractor.queue import resolve_all
+    action = "accept" if accept else "reject"
+    result = resolve_all(db, action, type_filter=type_filter, max_conf=max_conf)
+
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps({"action": action, "count": result["count"], "filters": {
+            "type": type_filter,
+            "max_conf": max_conf,
+        }}, indent=2))
+        return
+
+    if result["count"] == 0:
+        typer.echo("No matching pending items.")
+        return
+
+    typer.echo(f"{result['count']} item(s) {action}ed.")
+
+
 def timeline_cmd(
     concept: str,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
@@ -906,3 +966,61 @@ def timeline_cmd(
 
     if signal_info:
         typer.echo(f"Status: {signal_info['signal'].upper()}")
+
+
+def delete_cmd(
+    local_id: str,
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Delete a paper and all its associated data from the graph."""
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    paper = db.get_paper(local_id)
+    if paper is None:
+        db.close()
+        if json_output:
+            typer.echo(json.dumps({"error": f"paper {local_id} not found"}))
+        else:
+            typer.echo(f"Paper {local_id} not found.", err=True)
+        raise typer.Exit(1)
+
+    counts = db.delete_paper(local_id)
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps({"deleted": local_id, "title": paper["title"], **counts}, indent=2))
+        return
+
+    typer.echo(f"Deleted paper: {paper['title']} ({local_id})")
+    typer.echo(f"  concepts: {counts['concepts']}, arguments: {counts['arguments']}, "
+               f"edges: {counts['edges']}, queue items: {counts['queue_items']}")
+
+
+def serve_cmd(
+    host: str = typer.Option("127.0.0.1", "--host", help="Server host"),
+    port: int = typer.Option(8501, "--port", help="Server port"),
+):
+    """Launch the Streamlit UI for graph visualization."""
+    import subprocess
+    import sys
+
+    cfg = load_config()
+    app_path = Path(__file__).parent.parent / "api" / "app.py"
+
+    if not app_path.exists():
+        typer.echo(f"Streamlit app not found at {app_path}", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Starting DrBrain UI at http://{host}:{port}")
+    typer.echo(f"DB: {cfg['db']['path']}")
+    typer.echo("Press Ctrl+C to stop.")
+
+    env = {**__import__("os").environ, "DRBRAIN_DB_PATH": cfg["db"]["path"]}
+    subprocess.run(
+        [sys.executable, "-m", "streamlit", "run", str(app_path),
+         "--server.address", host, "--server.port", str(port),
+         "--server.headless", "true"],
+        env=env,
+    )

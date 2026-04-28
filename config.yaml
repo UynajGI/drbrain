@@ -37,3 +37,7 @@ api:
 bm25:
   k1: 1.5
   b: 0.75
+
+queue:
+  weak_threshold: 0.7
+  auto_accept: 0.9

@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 import json
 from drbrain.storage.database import Database
-from drbrain.extractor.queue import route_item, check_consensus, resolve_accept, resolve_reject
+from drbrain.extractor.queue import route_item, check_consensus, resolve_accept, resolve_reject, resolve_all
 
 def test_route_item_below_threshold():
     """Items below weak_threshold go to queue."""
@@ -120,4 +120,64 @@ def test_resolve_accept_nonexistent_queue_id():
         db = Database(Path(td) / "test.db")
         # Should not raise
         resolve_accept(db, "nonexistent")
+        db.close()
+
+
+def test_resolve_all_accept_all():
+    """resolve_all with no filters accepts all pending items."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_queue_item("p1", "concept", '{"label": "a"}', 0.3)
+        db.insert_queue_item("p2", "concept", '{"label": "b"}', 0.5)
+        db.insert_queue_item("p3", "concept", '{"label": "c"}', 0.2)
+        db.commit()
+
+        result = resolve_all(db, "accept")
+        assert result["count"] == 3
+
+        pending = db.get_queue_pending()
+        assert len(pending) == 0
+        db.close()
+
+
+def test_resolve_all_with_type_filter():
+    """resolve_all only processes items matching the type filter."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_queue_item("p1", "concept", '{"label": "a"}', 0.3)
+        db.insert_queue_item("p2", "alias", '{"label": "b"}', 0.5)
+        db.insert_queue_item("p3", "concept", '{"label": "c"}', 0.2)
+        db.commit()
+
+        result = resolve_all(db, "reject", type_filter="alias")
+        assert result["count"] == 1
+
+        pending = db.get_queue_pending()
+        assert len(pending) == 2
+        db.close()
+
+
+def test_resolve_all_with_max_conf():
+    """resolve_all only processes items with confidence <= max_conf."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_queue_item("p1", "concept", '{"label": "a"}', 0.3)
+        db.insert_queue_item("p2", "concept", '{"label": "b"}', 0.5)
+        db.insert_queue_item("p3", "concept", '{"label": "c"}', 0.7)
+        db.commit()
+
+        result = resolve_all(db, "reject", max_conf=0.5)
+        assert result["count"] == 2
+
+        pending = db.get_queue_pending()
+        assert len(pending) == 1
+        db.close()
+
+
+def test_resolve_all_empty_queue():
+    """resolve_all returns count 0 when queue is empty."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        result = resolve_all(db, "accept")
+        assert result["count"] == 0
         db.close()

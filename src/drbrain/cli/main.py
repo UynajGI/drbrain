@@ -6,7 +6,8 @@ import typer
 from drbrain.cli.commands import (
     ingest_cmd, expand_cmd, report_cmd, closure_cmd, seed_cmd,
     list_cmd, stats_cmd, query_cmd, export_cmd,
-    queue_cmd, queue_resolve_cmd, timeline_cmd,
+    queue_cmd, queue_resolve_cmd, queue_resolve_all_cmd, timeline_cmd,
+    delete_cmd, serve_cmd,
 )
 from drbrain.cli.setup import setup_cmd
 
@@ -24,7 +25,10 @@ app.command("query")(query_cmd)
 app.command("export")(export_cmd)
 app.command("queue")(queue_cmd)
 app.command("queue resolve")(queue_resolve_cmd)
+app.command("queue resolve-all")(queue_resolve_all_cmd)
 app.command("timeline")(timeline_cmd)
+app.command("delete")(delete_cmd)
+app.command("serve")(serve_cmd)
 
 if __name__ == "__main__":
     app()

@@ -67,3 +67,34 @@ def resolve_reject(db: Database, queue_id: int) -> None:
     """Reject a queue item."""
     db.reject_queue_item(queue_id)
     db.commit()
+
+
+def resolve_all(
+    db: Database,
+    action: str,
+    type_filter: str | None = None,
+    max_conf: float | None = None,
+) -> dict:
+    """Batch resolve all pending queue items matching filters."""
+    sql = "SELECT queue_id, item_type, confidence FROM confidence_queue WHERE status = 'pending'"
+    params: list = []
+    if type_filter:
+        sql += " AND item_type = ?"
+        params.append(type_filter)
+    if max_conf is not None:
+        sql += " AND confidence <= ?"
+        params.append(max_conf)
+
+    rows = db.conn.execute(sql, params).fetchall()
+    count = 0
+    for qid, _item_type, _conf in rows:
+        if action == "accept":
+            db.accept_queue_item(qid)
+        else:
+            db.reject_queue_item(qid)
+        count += 1
+
+    if count > 0:
+        db.commit()
+
+    return {"count": count}

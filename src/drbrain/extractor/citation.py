@@ -8,6 +8,7 @@ import re
 import requests
 
 from drbrain.extractor.cache import ApiCache
+from drbrain.extractor.crossref import fetch_doi_by_title, fetch_doi_by_arxiv
 from drbrain.report.generator import RefEntry
 
 log = logging.getLogger(__name__)
@@ -235,7 +236,29 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
         s2_data = fetch_s2_paper(s2_id, cache=cache)
 
     if s2_data:
-        return _process_citations_from_s2(db, local_id, s2_data, paper, config, cache)
+        refs, cits = _process_citations_from_s2(db, local_id, s2_data, paper, config, cache)
+        # If S2 returned data but no DOI, try CrossRef as enrichment (Spec §11 Stage 6.5)
+        if not paper.get("doi") and not ext_ids_from_s2(s2_data).get("doi"):
+            crossref_email = config.get("api", {}).get("crossref_email")
+            crossref_result = _crossref_doi_enrich(paper, crossref_email)
+            if crossref_result and crossref_result.get("doi"):
+                db.conn.execute(
+                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                    (crossref_result["doi"], local_id),
+                )
+                db.commit()
+        return refs, cits
+
+    # Fallback: CrossRef DOI enrichment when S2 returns 429/no data (Spec §11 Stage 6.5)
+    if not paper.get("doi"):
+        crossref_email = config.get("api", {}).get("crossref_email")
+        crossref_result = _crossref_doi_enrich(paper, crossref_email)
+        if crossref_result and crossref_result.get("doi"):
+            db.conn.execute(
+                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                (crossref_result["doi"], local_id),
+            )
+            db.commit()
 
     # Fallback: OpenAlex
     openalex_token = config.get("api", {}).get("openalex_token")
@@ -272,7 +295,7 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
     new_ref_placeholders: list[tuple[str, str, int | None, dict]] = []
     new_ref_edges: list[tuple[str, str, str, str, float]] = []
 
-    for ref in data.get("references", [])[:50]:
+    for ref in (data.get("references") or [])[:50]:
         parsed = parse_s2_response(ref)
         entry = match_to_local(db, parsed)
         references.append(entry)
@@ -300,7 +323,7 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
     new_cit_placeholders: list[tuple[str, str, int | None, dict]] = []
     new_cit_edges: list[tuple[str, str, str, str, float]] = []
 
-    for cit in data.get("citations", [])[:50]:
+    for cit in (data.get("citations") or [])[:50]:
         parsed = parse_s2_response(cit)
         entry = match_to_local(db, parsed)
         citations.append(entry)
@@ -324,6 +347,39 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
         db.commit()
 
     return references, citations
+
+
+def _crossref_doi_enrich(paper: dict, email: str | None = None) -> dict | None:
+    """CrossRef DOI enrichment fallback (Spec §11 Stage 6.5).
+
+    Try arXiv ID first if available, then title search.
+    """
+    arxiv = paper.get("arxiv")
+    title = paper.get("title", "")
+
+    if arxiv:
+        result = fetch_doi_by_arxiv(arxiv, email=email)
+        if result and result.get("doi"):
+            log.info("CrossRef DOI via arXiv: %s -> %s", arxiv, result["doi"])
+            return result
+
+    if title:
+        result = fetch_doi_by_title(title, email=email)
+        if result and result.get("doi"):
+            log.info("CrossRef DOI via title: %s -> %s", title, result["doi"])
+            return result
+
+    return None
+
+
+def ext_ids_from_s2(data: dict) -> dict:
+    """Extract parsed external IDs from S2 response."""
+    ext_ids = data.get("externalIds") or {}
+    doi = ext_ids.get("DOI")
+    arxiv = ext_ids.get("ArXiv")
+    if arxiv:
+        arxiv = re.sub(r"v\d+$", "", arxiv)
+    return {"doi": doi, "arxiv": arxiv, "s2_id": data.get("paperId"), "openalex_id": ext_ids.get("OpenAlex")}
 
 
 def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = None) -> tuple[list[RefEntry], list[RefEntry]]:

@@ -234,8 +234,8 @@ def test_query_cmd_with_results():
 
         with _mock_load_config(cfg):
             query_cmd("transformer", type_filter=None, arg_type=None,
-                      year_start=None, year_end=None, limit=20,
-                      neighbors=0, json_output=False, jsonl=False)
+                      year_start=None, year_end=None, min_confidence=None,
+                      limit=20, neighbors=0, json_output=False, jsonl=False)
 
 
 # -- export_cmd --
