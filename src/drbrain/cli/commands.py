@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 import shutil
@@ -1335,3 +1336,197 @@ def _show_actor(cfg: dict, author_id: str) -> None:
                 actor_names.append(alias_row[0] if alias_row else aid)
             typer.echo(f"  - [{', '.join(actor_names)}] {title}")
         db2.close()
+
+
+def check_cmd():
+    """Check dependencies, configuration, and environment variables."""
+    console = Console()
+    warnings = []
+    errors = []
+
+    console.print("\n[bold]DrBrain — Dependency & Configuration Check[/bold]\n")
+
+    # -- Python packages --
+    console.print("[bold]Python Packages[/bold]")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    required_packages = [
+        ("pypdfium2", "pypdfium2"),
+        ("litellm", "litellm"),
+        ("typer", "typer"),
+        ("rich", "rich"),
+        ("pyyaml", "yaml"),
+        ("pydantic", "pydantic"),
+        ("streamlit", "streamlit"),
+    ]
+    for pkg_name, import_name in required_packages:
+        try:
+            mod = importlib.import_module(import_name)
+            version = getattr(mod, "__version__", "installed")
+            table.add_row(f"  {pkg_name}", f"[green]OK[/green] ({version})")
+        except ImportError:
+            table.add_row(f"  {pkg_name}", "[red]MISSING[/red]")
+            errors.append(f"Missing Python package: {pkg_name}")
+    console.print(table)
+
+    # -- External CLI tools --
+    console.print("\n[bold]External Tools[/bold]")
+    table2 = Table(show_header=False, box=None, padding=(0, 2))
+    cli_tools = {
+        "mineru-open-api": "MinerU PDF parser CLI",
+    }
+    for tool, desc in cli_tools.items():
+        found = shutil.which(tool)
+        if found:
+            table2.add_row(f"  {tool}", f"[green]OK[/green] ({found}) — {desc}")
+        else:
+            table2.add_row(
+                f"  {tool}",
+                "[yellow]NOT FOUND[/yellow]",
+                f"{desc} (optional, fallback to pypdfium2)",
+            )
+            warnings.append(f"{tool} not found — PDF parsing will use pypdfium2 fallback only")
+    console.print(table2)
+
+    # -- Config files --
+    console.print("\n[bold]Configuration[/bold]")
+    table3 = Table(show_header=False, box=None, padding=(0, 2))
+
+    base_config = Path("config.yaml")
+    local_config = Path("config.local.yaml")
+
+    if base_config.exists():
+        table3.add_row("  config.yaml", "[green]Found[/green]")
+    else:
+        table3.add_row("  config.yaml", "[red]Missing[/red]")
+        errors.append("config.yaml not found")
+
+    if local_config.exists():
+        table3.add_row("  config.local.yaml", "[green]Found (overrides base)[/green]")
+    else:
+        table3.add_row("  config.local.yaml", "[yellow]Not found[/yellow]")
+        warnings.append(
+            "No config.local.yaml — using base config values (env var placeholders unresolved)"
+        )
+
+    # Load config and check key values
+    try:
+        cfg = load_config()
+
+        console.print("\n[bold]API Keys & Tokens[/bold]")
+        table4 = Table(show_header=False, box=None, padding=(0, 2))
+
+        # LLM models
+        models = cfg.get("llm", {}).get("models", [])
+        for i, m in enumerate(models):
+            label = f"  LLM [{i}] {m.get('provider', '?')}/{m.get('model', '?')}"
+            api_key = m.get("api_key", "")
+            if api_key and not api_key.startswith("${"):
+                masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
+                table4.add_row(label, f"[green]Set[/green] ({masked})")
+            else:
+                table4.add_row(label, "[yellow]Not configured[/yellow]")
+                warnings.append(f"LLM model {m.get('provider')}/{m.get('model')} has no API key")
+
+        # MinerU token
+        mineru_token = cfg.get("mineru", {}).get("token", "")
+        if mineru_token and not mineru_token.startswith("${"):
+            table4.add_row("  MinerU token", "[green]Set[/green]")
+        else:
+            table4.add_row(
+                "  MinerU token", "[yellow]Not set[/yellow]", "(flash mode will be used)"
+            )
+            warnings.append("MinerU token not configured — flash extraction mode only")
+
+        # CrossRef email
+        crossref_email = cfg.get("api", {}).get("crossref_email", "")
+        if crossref_email and not crossref_email.startswith("${"):
+            table4.add_row("  CrossRef email", f"[green]Set[/green] ({crossref_email})")
+        else:
+            table4.add_row(
+                "  CrossRef email", "[yellow]Not set[/yellow]", "(optional, polite pool)"
+            )
+            warnings.append("CrossRef email not set — will use anonymous polite pool access")
+
+        # OpenAlex token
+        oa_token = cfg.get("api", {}).get("openalex_token", "")
+        if oa_token and not oa_token.startswith("${"):
+            table4.add_row("  OpenAlex token", "[green]Set[/green]")
+        else:
+            table4.add_row(
+                "  OpenAlex token",
+                "[yellow]Not set[/yellow]",
+                "(anonymous access, lower rate limit)",
+            )
+            warnings.append("OpenAlex token not set — using anonymous access with lower rate limit")
+
+        console.print(table4)
+
+    except FileNotFoundError as e:
+        console.print(f"  [red]{e}[/red]")
+
+    # -- Directories --
+    console.print("\n[bold]Directories[/bold]")
+    table5 = Table(show_header=False, box=None, padding=(0, 2))
+    try:
+        cfg = load_config()
+        dirs_config = cfg.get("dirs", {})
+        dir_paths = (
+            list(dirs_config.values())
+            if dirs_config
+            else ["data/pdfs", "data/reports", "data/cache", "data/logs"]
+        )
+        for dir_path in dir_paths:
+            p = Path(dir_path)
+            if p.exists():
+                table5.add_row(f"  {dir_path}", "[green]Exists[/green]")
+            else:
+                table5.add_row(f"  {dir_path}", "[yellow]Missing (will be created on use)[/yellow]")
+    except Exception:
+        for d in ["data/pdfs", "data/reports"]:
+            p = Path(d)
+            if p.exists():
+                table5.add_row(f"  {d}", "[green]Exists[/green]")
+            else:
+                table5.add_row(f"  {d}", "[yellow]Missing[/yellow]")
+    console.print(table5)
+
+    # -- Database --
+    console.print("\n[bold]Database[/bold]")
+    table6 = Table(show_header=False, box=None, padding=(0, 2))
+    try:
+        cfg = load_config()
+        db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
+        p = Path(db_path)
+        if p.exists():
+            table6.add_row(f"  {db_path}", "[green]Exists[/green]")
+        else:
+            table6.add_row(
+                f"  {db_path}",
+                "[yellow]Not yet created[/yellow]",
+                "(run `drbrain ingest` to initialize)",
+            )
+    except Exception:
+        table6.add_row("  (config unavailable)", "[yellow]Unknown[/yellow]")
+    console.print(table6)
+
+    # -- Summary --
+    console.print("\n[bold]Summary[/bold]")
+    if errors:
+        console.print(f"\n[bold red]Errors ({len(errors)}):[/bold red]")
+        for e in errors:
+            console.print(f"  [red]✗[/red] {e}")
+    if warnings:
+        console.print(f"\n[bold yellow]Warnings ({len(warnings)}):[/bold yellow]")
+        for w in warnings:
+            console.print(f"  [yellow]![/yellow] {w}")
+    if not errors and not warnings:
+        console.print("\n[bold green]All checks passed![/bold green]")
+    elif not errors:
+        console.print(
+            f"\n[bold green]Ready to use[/bold green] ({len(warnings)} optional warnings)"
+        )
+    else:
+        console.print(f"\n[bold red]Not ready[/bold red] — fix {len(errors)} error(s) above")
+
+    if errors:
+        raise typer.Exit(1)
