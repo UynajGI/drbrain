@@ -7,8 +7,8 @@ import re
 
 import requests
 
-from brbrain.extractor.cache import ApiCache
-from brbrain.report.generator import RefEntry
+from drbrain.extractor.cache import ApiCache
+from drbrain.report.generator import RefEntry
 
 log = logging.getLogger(__name__)
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper"
@@ -328,10 +328,10 @@ def _process_citations_from_s2(db, local_id: str, data: dict, paper: dict, confi
 
 def _expand_with_openalex(db, local_id: str, paper: dict, token: str | None = None) -> tuple[list[RefEntry], list[RefEntry]]:
     """Fallback: expand citations using OpenAlex when S2 fails."""
-    from brbrain.extractor.openalex import (
+    from drbrain.extractor.openalex import (
         search_work_by_title, search_work_by_arxiv, batch_fetch_works,
     )
-    from brbrain.extractor.openalex import get_work_by_doi
+    from drbrain.extractor.openalex import get_work_by_doi
 
     oa_token = token
     title = paper.get("title", "")

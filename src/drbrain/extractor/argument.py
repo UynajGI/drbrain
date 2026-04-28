@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from brbrain.validator.schema import ValidationResult
+from drbrain.validator.schema import ValidationResult
 
 VALID_CLAIM_TYPES = {"supports", "challenges", "extends", "limits", "solves", "proposes"}
 VALID_TARGET_TYPES = {"Method", "Problem", "Conclusion", "Gap", "Debate", "Argument"}

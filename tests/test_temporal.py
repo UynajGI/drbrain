@@ -1,7 +1,7 @@
 """Tests for v1.1 database schema: arguments, confidence_queue, temporal fields."""
 import tempfile
 from pathlib import Path
-from brbrain.storage.database import Database
+from drbrain.storage.database import Database
 
 def test_arguments_table_exists():
     """arguments table is created on Database init."""

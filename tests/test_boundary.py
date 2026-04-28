@@ -2,8 +2,8 @@
 import tempfile
 from pathlib import Path
 
-from brbrain.storage.database import Database
-from brbrain.graph.engine import GraphEngine
+from drbrain.storage.database import Database
+from drbrain.graph.engine import GraphEngine
 
 
 def _seed_full_graph(db, graph):

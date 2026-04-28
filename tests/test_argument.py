@@ -1,5 +1,5 @@
 """Tests for argument extraction from LLM output."""
-from brbrain.extractor.argument import ExtractedArgument, parse_arguments, validate_argument, validate_arguments
+from drbrain.extractor.argument import ExtractedArgument, parse_arguments, validate_argument, validate_arguments
 
 def test_parse_arguments():
     """parse_arguments converts raw LLM dicts to ExtractedArgument objects."""

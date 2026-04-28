@@ -1,5 +1,5 @@
 """Tests for OpenAlex API client."""
-from brbrain.extractor.openalex import (
+from drbrain.extractor.openalex import (
     search_work_by_title, search_work_by_arxiv, get_work_by_doi,
     batch_fetch_works, get_work_by_openalex_id,
 )
@@ -106,7 +106,7 @@ def test_batch_fetch_works():
     mock_resp = mock.Mock()
     mock_resp.read.return_value = json.dumps(mock_response)
 
-    from brbrain.extractor.openalex import batch_fetch_works
+    from drbrain.extractor.openalex import batch_fetch_works
     with mock.patch("urllib.request.urlopen", return_value=mock_resp):
         results = batch_fetch_works(["https://openalex.org/W1", "https://openalex.org/W2"])
 

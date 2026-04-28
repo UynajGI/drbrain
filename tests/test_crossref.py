@@ -1,5 +1,5 @@
 """Tests for CrossRef DOI enrichment."""
-from brbrain.extractor.crossref import (
+from drbrain.extractor.crossref import (
     fetch_doi_by_title, fetch_doi_by_doi, _clean_title, _titles_match
 )
 from unittest import mock

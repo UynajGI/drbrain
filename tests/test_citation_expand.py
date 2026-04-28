@@ -3,12 +3,12 @@ import tempfile
 import unittest.mock
 from pathlib import Path
 
-from brbrain.extractor.citation import (
+from drbrain.extractor.citation import (
     match_to_local, parse_s2_response, expand_citations,
     fetch_s2_paper, search_s2,
 )
-from brbrain.storage.database import Database
-from brbrain.report.generator import RefEntry
+from drbrain.storage.database import Database
+from drbrain.report.generator import RefEntry
 
 
 def _make_db_with_paper(local_id: str, title: str, year: int, doi: str = None, arxiv: str = None, s2_id: str = None) -> Database:
@@ -137,7 +137,7 @@ def test_expand_citations_creates_placeholder_neighbors():
 
         cfg = {"api": {"s2_rate_limit": 100}}
 
-        with unittest.mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with unittest.mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
         # Reference should be created as placeholder
@@ -178,7 +178,7 @@ def test_expand_citations_matches_existing_neighbor():
 
         cfg = {"api": {"s2_rate_limit": 100}}
 
-        with unittest.mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with unittest.mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
         assert len(refs) == 1
@@ -204,8 +204,8 @@ def test_expand_citations_returns_empty_when_no_s2_id():
         db.insert_paper("p1", "No ID Paper", 2024, "uploaded")
         db.commit()
 
-        with unittest.mock.patch("brbrain.extractor.citation.search_s2", return_value=[]), \
-             unittest.mock.patch("brbrain.extractor.citation._expand_with_openalex", return_value=([], [])):
+        with unittest.mock.patch("drbrain.extractor.citation.search_s2", return_value=[]), \
+             unittest.mock.patch("drbrain.extractor.citation._expand_with_openalex", return_value=([], [])):
             refs, cits = expand_citations(db, "p1", {})
 
         assert refs == []
@@ -236,7 +236,7 @@ def test_expand_citations_handles_citations_direction():
 
         cfg = {"api": {"s2_rate_limit": 100}}
 
-        with unittest.mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with unittest.mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
         # cited_by edge: placeholder -> seed
@@ -288,7 +288,7 @@ def test_expand_citations_batches_placeholder_commits():
 
         cfg = {"api": {"s2_rate_limit": 100}}
 
-        with unittest.mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with unittest.mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
         assert len(refs) == 5

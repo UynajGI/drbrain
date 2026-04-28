@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import typer
 
-from brbrain.cli.commands import (
+from drbrain.cli.commands import (
     ingest_cmd, expand_cmd, report_cmd, closure_cmd, seed_cmd,
     list_cmd, stats_cmd, query_cmd, export_cmd,
     queue_cmd, queue_resolve_cmd, timeline_cmd,
 )
-from brbrain.cli.setup import setup_cmd
+from drbrain.cli.setup import setup_cmd
 
 app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 

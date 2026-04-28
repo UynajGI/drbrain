@@ -1,5 +1,5 @@
 """Tests for concept label canonicalization and alias matching."""
-from brbrain.extractor.canonical import normalize_label, AliasTable
+from drbrain.extractor.canonical import normalize_label, AliasTable
 
 def test_normalize_label_lowercase():
     assert normalize_label("Transformer") == "transformer"

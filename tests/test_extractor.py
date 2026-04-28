@@ -1,5 +1,5 @@
 """Tests for LLM client with fallback chain."""
-from brbrain.extractor.llm_client import LLMClient, call_with_fallback
+from drbrain.extractor.llm_client import LLMClient, call_with_fallback
 from unittest.mock import patch, MagicMock
 
 def test_single_model_call():
@@ -8,7 +8,7 @@ def test_single_model_call():
         {"provider": "openai", "model": "gpt-4o", "api_key": "sk-1", "base_url": None},
     ]
     client = LLMClient(models)
-    with patch("brbrain.extractor.llm_client.litellm") as mock_litellm:
+    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
         mock_resp = MagicMock()
         mock_resp.choices[0].message.content = '{"ok": true}'
         mock_litellm.completion.return_value = mock_resp
@@ -32,7 +32,7 @@ def test_fallback_on_failure():
         resp.choices[0].message.content = '{"ok": true}'
         return resp
 
-    with patch("brbrain.extractor.llm_client.litellm") as mock_litellm:
+    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
         mock_litellm.completion.side_effect = side_effect
         result = call_with_fallback("test", models)
         assert result == {"ok": True}
@@ -44,7 +44,7 @@ def test_fallback_all_fail():
         {"provider": "openai", "model": "gpt-4o", "api_key": "sk-1", "base_url": None},
         {"provider": "ollama", "model": "qwen2.5:7b", "api_key": None, "base_url": None},
     ]
-    with patch("brbrain.extractor.llm_client.litellm") as mock_litellm:
+    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
         mock_litellm.completion.side_effect = Exception("fail")
         result = call_with_fallback("test", models)
         assert result is None
@@ -55,7 +55,7 @@ def test_model_name_formatting():
         {"provider": "anthropic", "model": "claude-sonnet-4-20250514", "api_key": "sk-1", "base_url": None},
     ]
     client = LLMClient(models)
-    with patch("brbrain.extractor.llm_client.litellm") as mock_litellm:
+    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
         mock_resp = MagicMock()
         mock_resp.choices[0].message.content = '{"x": 1}'
         mock_litellm.completion.return_value = mock_resp

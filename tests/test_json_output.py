@@ -8,8 +8,8 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from brbrain.cli.main import app
-from brbrain.storage.database import Database
+from drbrain.cli.main import app
+from drbrain.storage.database import Database
 
 runner = CliRunner()
 

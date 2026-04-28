@@ -2,8 +2,8 @@
 import tempfile
 from pathlib import Path
 import json
-from brbrain.storage.database import Database
-from brbrain.extractor.queue import route_item, check_consensus, resolve_accept, resolve_reject
+from drbrain.storage.database import Database
+from drbrain.extractor.queue import route_item, check_consensus, resolve_accept, resolve_reject
 
 def test_route_item_below_threshold():
     """Items below weak_threshold go to queue."""

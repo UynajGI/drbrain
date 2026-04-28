@@ -6,7 +6,7 @@ from unittest import mock
 import json
 from typer.testing import CliRunner
 
-from brbrain.cli.main import app
+from drbrain.cli.main import app
 
 runner = CliRunner()
 
@@ -24,7 +24,7 @@ def _make_config(db_path: str, reports_dir: str) -> dict:
 
 
 def mock_cfg(db_path: str, reports_dir: str):
-    return mock.patch("brbrain.cli.commands.load_config", return_value=_make_config(db_path, reports_dir))
+    return mock.patch("drbrain.cli.commands.load_config", return_value=_make_config(db_path, reports_dir))
 
 
 def test_app_help():
@@ -160,14 +160,14 @@ def test_app_queue_resolve_both_flags():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
-        from brbrain.cli.commands import queue_resolve_cmd
+        from drbrain.cli.commands import queue_resolve_cmd
         from unittest import mock
         cfg = {
             "db": {"path": str(db_path)},
             "llm": {"models": []},
             "dirs": {"reports": str(reports_dir)},
         }
-        with mock.patch("brbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
             try:
                 queue_resolve_cmd(1, accept=True, reject=True)
                 assert False, "Should have raised"

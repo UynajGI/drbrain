@@ -4,7 +4,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from brbrain.extractor.cache import ApiCache
+from drbrain.extractor.cache import ApiCache
 
 
 def _make_cache(cache_dir: str, ttl: int = 86400) -> ApiCache:

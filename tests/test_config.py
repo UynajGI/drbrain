@@ -1,7 +1,7 @@
 """Tests for YAML config loader with local overlay."""
 import tempfile
 from pathlib import Path
-from brbrain.config import load_config, merge_dicts
+from drbrain.config import load_config, merge_dicts
 
 def test_load_defaults():
     """Load config from example YAML only, no local overlay."""

@@ -1,10 +1,10 @@
 """Integration test for v1.1 features: validation, queue, arguments, temporal."""
 import tempfile
 from pathlib import Path
-from brbrain.storage.database import Database
-from brbrain.validator.schema import validate_extraction
-from brbrain.extractor.queue import route_item
-from brbrain.extractor.argument import ExtractedArgument, validate_arguments
+from drbrain.storage.database import Database
+from drbrain.validator.schema import validate_extraction
+from drbrain.extractor.queue import route_item
+from drbrain.extractor.argument import ExtractedArgument, validate_arguments
 
 def test_validation_rejects_invalid_relations():
     """validate_extraction rejects Problem --proposes--> relations."""
@@ -61,7 +61,7 @@ def test_db_insert_argument_with_paper():
 
 def test_report_includes_validation_and_arguments():
     """PaperReport.to_dict includes arguments and validation sections."""
-    from brbrain.report.generator import PaperReport
+    from drbrain.report.generator import PaperReport
     report = PaperReport(
         local_id="p1", title="Test", year=2024,
         concepts={"problems": [], "methods": [], "conclusions": [], "debates": [], "gaps": [], "actors": []},
@@ -76,7 +76,7 @@ def test_report_includes_validation_and_arguments():
 
 def test_extracted_concepts_has_arguments():
     """ExtractedConcepts includes arguments field."""
-    from brbrain.extractor.concept import ExtractedConcepts
+    from drbrain.extractor.concept import ExtractedConcepts
     data = {
         "problems": [], "methods": [], "conclusions": [],
         "debates": [], "gaps": [], "actors": [], "relations": [],

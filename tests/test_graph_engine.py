@@ -2,8 +2,8 @@
 import tempfile
 from pathlib import Path
 
-from brbrain.graph.engine import GraphEngine
-from brbrain.storage.database import Database
+from drbrain.graph.engine import GraphEngine
+from drbrain.storage.database import Database
 
 
 def test_get_neighbors_1hop():

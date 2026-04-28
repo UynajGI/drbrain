@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 from typer.testing import CliRunner
 
-from brbrain.cli.main import app
+from drbrain.cli.main import app
 
 runner = CliRunner()
 
@@ -68,10 +68,10 @@ def test_ingest_real_pdf(pdf_path: str):
 
         cfg = _minimal_cfg(str(db_path), str(reports_dir))
 
-        with mock.patch("brbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
             # Override papers_dir to our temp location
             with mock.patch(
-                "brbrain.cli.commands.save_raw_md",
+                "drbrain.cli.commands.save_raw_md",
                 wraps=_make_temp_save_raw_md(papers_dir),
             ):
                 result = runner.invoke(app, ["ingest", pdf_path])
@@ -97,7 +97,7 @@ def test_ingest_real_pdf(pdf_path: str):
 
 def _make_temp_save_raw_md(papers_dir: Path):
     """Return a save_raw_md wrapper that uses a temp papers_dir."""
-    from brbrain.cli.commands import save_raw_md as _original
+    from drbrain.cli.commands import save_raw_md as _original
 
     def wrapper(raw_md, local_id, _papers_dir=None, images_src=None):
         return _original(raw_md, local_id, papers_dir, images_src)

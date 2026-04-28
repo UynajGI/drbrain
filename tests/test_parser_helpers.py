@@ -3,7 +3,7 @@ import tempfile
 import unittest.mock
 from pathlib import Path
 
-from brbrain.parser.mineru_parser import (
+from drbrain.parser.mineru_parser import (
     normalize_doi, normalize_arxiv, filter_sections,
     _extract_arxiv_from_filename, _fetch_arxiv_metadata,
     MinerUParser, extract_pdf,
@@ -181,7 +181,7 @@ def test_extract_pdf_from_config():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         with unittest.mock.patch.object(MinerUParser, "extract") as mock_extract:
-            from brbrain.parser.mineru_parser import ParsedPaper
+            from drbrain.parser.mineru_parser import ParsedPaper
             mock_extract.return_value = ParsedPaper(title="Test", year=2024)
 
             result = extract_pdf(pdf_path, cfg)
@@ -216,7 +216,7 @@ def test_fallback_pypdfium2():
 def test_mineru_cli_not_found_uses_fallback():
     """When mineru CLI not found, returns None from _try_mineru_open_api."""
     parser = MinerUParser()
-    with unittest.mock.patch("brbrain.parser.mineru_parser._find_cli", return_value=None):
+    with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value=None):
         result = parser._try_mineru_open_api(Path("/tmp/test.pdf"))
         assert result is None
 
@@ -230,10 +230,10 @@ def test_parser_full_extract_flow_with_fallback():
         def mock_fallback(path):
             return "# Test Title\n\nIntroduction.—Test content."
 
-        with unittest.mock.patch("brbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"), \
+        with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"), \
              unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError("not found")), \
              unittest.mock.patch.object(MinerUParser, "_fallback_pypdfium2", side_effect=mock_fallback), \
-             unittest.mock.patch("brbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)):
+             unittest.mock.patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)):
             parser = MinerUParser(max_retries=1, retry_delay=0.01)
             result = parser.extract(pdf_path)
             assert result.title == "Test Title"

@@ -1,5 +1,5 @@
 """Schema validation package."""
-from brbrain.validator.schema import (
+from drbrain.validator.schema import (
     TBOX, RBOX, validate_tbox, validate_rbox, validate_relation,
     validate_extraction, ValidationResult,
 )

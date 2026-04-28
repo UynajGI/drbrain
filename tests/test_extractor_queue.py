@@ -4,8 +4,8 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-from brbrain.extractor.queue import route_item, check_consensus, resolve_accept
-from brbrain.storage.database import Database
+from drbrain.extractor.queue import route_item, check_consensus, resolve_accept
+from drbrain.storage.database import Database
 
 
 def _make_db() -> Database:
@@ -97,10 +97,10 @@ def test_resolve_accept_nonexistent_queue_id():
 
 def test_extract_concepts_returns_none_on_llm_failure():
     """extract_concepts returns None when LLM extraction fails."""
-    from brbrain.extractor.concept import extract_concepts
+    from drbrain.extractor.concept import extract_concepts
 
     async def run():
-        with mock.patch("brbrain.extractor.concept.acall_with_fallback", return_value=None):
+        with mock.patch("drbrain.extractor.concept.acall_with_fallback", return_value=None):
             result = await extract_concepts("some text", [{"provider": "test"}])
             assert result is None
 
@@ -109,7 +109,7 @@ def test_extract_concepts_returns_none_on_llm_failure():
 
 def test_extract_concepts_returns_data_on_success():
     """extract_concepts returns ExtractedConcepts on success."""
-    from brbrain.extractor.concept import extract_concepts
+    from drbrain.extractor.concept import extract_concepts
 
     async def run():
         mock_data = {
@@ -117,7 +117,7 @@ def test_extract_concepts_returns_data_on_success():
             "methods": [], "conclusions": [], "debates": [], "gaps": [],
             "actors": [], "relations": [], "arguments": [],
         }
-        with mock.patch("brbrain.extractor.concept.acall_with_fallback", return_value=mock_data):
+        with mock.patch("drbrain.extractor.concept.acall_with_fallback", return_value=mock_data):
             result = await extract_concepts("some text", [{"provider": "test"}])
             assert result is not None
             assert len(result.problems) == 1

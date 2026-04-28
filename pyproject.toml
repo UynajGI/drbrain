@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-drbrain = "brbrain.cli.main:app"
+drbrain = "drbrain.cli.main:app"
 
 [tool.ruff]
 target-version = "py312"

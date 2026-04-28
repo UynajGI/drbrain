@@ -3,8 +3,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from brbrain.storage.database import Database
-from brbrain.query.bm25 import build_bm25_index, BM25Search, tokenize
+from drbrain.storage.database import Database
+from drbrain.query.bm25 import build_bm25_index, BM25Search, tokenize
 
 
 def test_tokenizer_normalizes():
@@ -68,7 +68,7 @@ def test_query_with_year_range():
             db.insert_concept(pid, "Method", "attention", 0.9, year=year)
         db.commit()
 
-        from brbrain.query.bm25 import build_bm25_index
+        from drbrain.query.bm25 import build_bm25_index
         index = build_bm25_index(db)
         results = index.search("attention", type_filter="Method")
         assert len(results) == 4
@@ -154,8 +154,8 @@ def test_query_neighbors_expansion():
         db.insert_edge("transformer_v1", "transformer_v2", "extends", "p1")
         db.commit()
 
-        from brbrain.query.bm25 import build_bm25_index
-        from brbrain.graph.engine import GraphEngine
+        from drbrain.query.bm25 import build_bm25_index
+        from drbrain.graph.engine import GraphEngine
 
         # BM25 finds v1
         index = build_bm25_index(db)

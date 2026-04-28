@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from brbrain.extractor.llm_client import acall_with_fallback
-from brbrain.extractor.argument import ExtractedArgument, parse_arguments
+from drbrain.extractor.llm_client import acall_with_fallback
+from drbrain.extractor.argument import ExtractedArgument, parse_arguments
 
 PROMPT_TEMPLATE = Path(__file__).parent.parent.parent.parent / "prompts" / "extract_concepts.txt"
 

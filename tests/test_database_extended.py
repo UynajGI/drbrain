@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 
-from brbrain.storage.database import Database
+from drbrain.storage.database import Database
 
 
 def _make_db() -> Database:
@@ -228,7 +228,7 @@ def test_insert_edge_dedup():
 
 def test_save_raw_md_file():
     """save_raw_md writes markdown to data/papers/<local_id>.md and returns path."""
-    from brbrain.cli.commands import save_raw_md
+    from drbrain.cli.commands import save_raw_md
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -242,7 +242,7 @@ def test_save_raw_md_file():
 
 def test_save_raw_md_copies_images():
     """save_raw_md copies images and rewrites refs."""
-    from brbrain.cli.commands import save_raw_md
+    from drbrain.cli.commands import save_raw_md
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"

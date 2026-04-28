@@ -11,14 +11,14 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from brbrain.config import load_config
-from brbrain.parser.mineru_parser import extract_pdf
-from brbrain.extractor.concept import extract_concepts
-from brbrain.extractor.canonical import AliasTable
-from brbrain.dedup.resolver import DedupEngine, PaperIDs
-from brbrain.storage.database import Database
-from brbrain.graph.engine import GraphEngine
-from brbrain.report.generator import PaperReport
+from drbrain.config import load_config
+from drbrain.parser.mineru_parser import extract_pdf
+from drbrain.extractor.concept import extract_concepts
+from drbrain.extractor.canonical import AliasTable
+from drbrain.dedup.resolver import DedupEngine, PaperIDs
+from drbrain.storage.database import Database
+from drbrain.graph.engine import GraphEngine
+from drbrain.report.generator import PaperReport
 
 console = Console()
 
@@ -170,7 +170,7 @@ def _ingest_single_paper(
         raise typer.Exit(1)
 
     # Stage 3.5: Validate
-    from brbrain.validator.schema import validate_extraction
+    from drbrain.validator.schema import validate_extraction
     echo("  Validating extraction...")
     concept_data = {
         "problems": concepts.problems, "methods": concepts.methods,
@@ -187,7 +187,7 @@ def _ingest_single_paper(
     valid_relations = [r["detail"] for r in validation["valid"] if r["type"] == "relation"]
 
     # Stage 3.6: Queue low-confidence concepts
-    from brbrain.extractor.queue import route_item
+    from drbrain.extractor.queue import route_item
     typed_count = 0
     queued_count = 0
     weak_count = 0
@@ -222,7 +222,7 @@ def _ingest_single_paper(
         db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
 
     # Ingest arguments
-    from brbrain.extractor.argument import validate_arguments
+    from drbrain.extractor.argument import validate_arguments
     valid_args, rejected_args = validate_arguments(concepts.arguments)
     for arg in valid_args:
         db.insert_argument(
@@ -242,7 +242,7 @@ def _ingest_single_paper(
 
     # Stage 6: Expand
     echo("  Expanding citations...")
-    from brbrain.extractor.citation import expand_citations
+    from drbrain.extractor.citation import expand_citations
     refs, cits = expand_citations(db, local_id, cfg)
     refs_in = sum(1 for r in refs if r.in_graph)
     cits_in = sum(1 for c in cits if c.in_graph)
@@ -406,7 +406,7 @@ def save_raw_md(raw_md: str, local_id: str, papers_dir: Path | None = None,
 def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | None:
     """Try to find DOI for a paper title via CrossRef API."""
     try:
-        from brbrain.extractor.crossref import fetch_doi_by_title
+        from drbrain.extractor.crossref import fetch_doi_by_title
         return fetch_doi_by_title(title, email=email)
     except Exception:
         return None
@@ -415,7 +415,7 @@ def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | No
 def _enrich_doi_from_crossref_arxiv(arxiv_id: str, email: str | None = None) -> dict | None:
     """Fallback: find DOI via arXiv ID in CrossRef."""
     try:
-        from brbrain.extractor.crossref import fetch_doi_by_arxiv
+        from drbrain.extractor.crossref import fetch_doi_by_arxiv
         return fetch_doi_by_arxiv(arxiv_id, email=email)
     except Exception:
         return None
@@ -424,7 +424,7 @@ def _enrich_doi_from_crossref_arxiv(arxiv_id: str, email: str | None = None) -> 
 def _enrich_doi_from_crossref_doi(doi: str, email: str | None = None) -> dict | None:
     """Fallback: resolve DOI directly via CrossRef."""
     try:
-        from brbrain.extractor.crossref import fetch_doi_by_doi
+        from drbrain.extractor.crossref import fetch_doi_by_doi
         return fetch_doi_by_doi(doi, email=email)
     except Exception:
         return None
@@ -434,7 +434,7 @@ def _enrich_doi_from_openalex(title: str, arxiv: str | None = None,
                               token: str | None = None) -> dict | None:
     """Try OpenAlex title search, then arXiv fallback."""
     try:
-        from brbrain.extractor.openalex import search_work_by_title, search_work_by_arxiv
+        from drbrain.extractor.openalex import search_work_by_title, search_work_by_arxiv
         result = search_work_by_title(title, token=token)
         if result and result.get("doi"):
             return result
@@ -464,7 +464,7 @@ def expand_cmd(
             typer.echo(f"Paper not found: {local_id}", err=True)
         raise typer.Exit(1)
 
-    from brbrain.extractor.citation import expand_citations
+    from drbrain.extractor.citation import expand_citations
     refs, cits = expand_citations(db, local_id, cfg)
     db.close()
 
@@ -663,7 +663,7 @@ def query_cmd(
     cfg = load_config()
     db = Database(cfg["db"]["path"])
 
-    from brbrain.query.bm25 import build_bm25_index
+    from drbrain.query.bm25 import build_bm25_index
     bm25 = build_bm25_index(db)
     results = bm25.search(text, type_filter=type_filter, arg_type_filter=arg_type, limit=limit)
 
@@ -830,7 +830,7 @@ def queue_resolve_cmd(
     cfg = load_config()
     db = Database(cfg["db"]["path"])
 
-    from brbrain.extractor.queue import resolve_accept, resolve_reject
+    from drbrain.extractor.queue import resolve_accept, resolve_reject
     if accept:
         resolve_accept(db, queue_id)
         action = "accepted"

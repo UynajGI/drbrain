@@ -2,7 +2,7 @@
 import tempfile
 from pathlib import Path
 
-from brbrain.cli.setup import generate_local_config
+from drbrain.cli.setup import generate_local_config
 
 
 def test_generate_local_config_creates_file():

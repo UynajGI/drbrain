@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 
 import pytest
-from brbrain.storage.database import Database
+from drbrain.storage.database import Database
 
 
 def _seed_papers_and_concepts(db, label, ctype, year_confidence_pairs):

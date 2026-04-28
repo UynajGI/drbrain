@@ -3,10 +3,10 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
-from brbrain.extractor.concept import ExtractedConcepts
-from brbrain.parser.mineru_parser import ParsedPaper
+from drbrain.extractor.concept import ExtractedConcepts
+from drbrain.parser.mineru_parser import ParsedPaper
 
-from brbrain.cli.commands import ingest_cmd
+from drbrain.cli.commands import ingest_cmd
 
 
 def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
@@ -49,7 +49,7 @@ def _make_concepts(idx: int = 0) -> ExtractedConcepts:
 def _common_mocks(db_path: str, reports_dir: str):
     """Return a context manager that mocks load_config."""
     cfg = _make_minimal_config(db_path, reports_dir)
-    return mock.patch("brbrain.cli.commands.load_config", return_value=cfg)
+    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
 
 
 def test_ingest_single_file():
@@ -63,11 +63,11 @@ def test_ingest_single_file():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("brbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)), \
-             mock.patch("brbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)):
+             mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)), \
+             mock.patch("drbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)):
             ingest_cmd([str(pdf_path)])
 
-        from brbrain.storage.database import Database
+        from drbrain.storage.database import Database
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 1
@@ -99,11 +99,11 @@ def test_ingest_directory():
             return _make_concepts(idx)
 
         with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("brbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
-             mock.patch("brbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
+             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
             ingest_cmd([str(pdfs_dir)])
 
-        from brbrain.storage.database import Database
+        from drbrain.storage.database import Database
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2
@@ -142,14 +142,14 @@ def test_ingest_skips_failed_papers():
             return _make_concepts(idx)
 
         with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("brbrain.cli.commands.extract_pdf", side_effect=side_effect_extract), \
-             mock.patch("brbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract), \
+             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
             ingest_cmd([str(pdfs_dir)])
 
         # Should have attempted all 3 files
         assert call_count == 3
 
-        from brbrain.storage.database import Database
+        from drbrain.storage.database import Database
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         # Only 2 should succeed
@@ -181,11 +181,11 @@ def test_ingest_multiple_files():
             return _make_concepts(idx)
 
         with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("brbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
-             mock.patch("brbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
+             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
             ingest_cmd([str(pdf1), str(pdf2)])
 
-        from brbrain.storage.database import Database
+        from drbrain.storage.database import Database
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2

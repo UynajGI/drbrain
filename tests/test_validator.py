@@ -1,5 +1,5 @@
 """Tests for TBox/RBox schema validation engine."""
-from brbrain.validator.schema import (
+from drbrain.validator.schema import (
     TBOX, RBOX, validate_relation, validate_tbox, validate_rbox, ValidationResult
 )
 

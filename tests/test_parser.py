@@ -1,5 +1,5 @@
 """Tests for MinerU PDF parser integration."""
-from brbrain.parser.mineru_parser import MinerUParser, filter_sections, MAX_CHARS, _extract_arxiv_from_filename, normalize_arxiv
+from drbrain.parser.mineru_parser import MinerUParser, filter_sections, MAX_CHARS, _extract_arxiv_from_filename, normalize_arxiv
 from pathlib import Path
 
 def test_mineru_parser_no_token():

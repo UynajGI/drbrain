@@ -2,11 +2,11 @@
 import tempfile
 from pathlib import Path
 
-from brbrain.dedup.resolver import (
+from drbrain.dedup.resolver import (
     normalize_doi, normalize_arxiv, title_key, title_hash,
     DedupEngine, PaperIDs,
 )
-from brbrain.storage.database import Database
+from drbrain.storage.database import Database
 
 
 def _make_db() -> Database:

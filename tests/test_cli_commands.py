@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest import mock
 
 import typer
-from brbrain.storage.database import Database
-from brbrain.graph.engine import GraphEngine
+from drbrain.storage.database import Database
+from drbrain.graph.engine import GraphEngine
 
 
 def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
@@ -22,14 +22,14 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
 
 
 def _mock_load_config(cfg: dict):
-    return mock.patch("brbrain.cli.commands.load_config", return_value=cfg)
+    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
 
 
 # -- expand_cmd --
 
 def test_expand_cmd_not_found():
     """expand_cmd raises Exit when paper not found."""
-    from brbrain.cli.commands import expand_cmd
+    from drbrain.cli.commands import expand_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
@@ -45,7 +45,7 @@ def test_expand_cmd_not_found():
 
 def test_expand_cmd_success():
     """expand_cmd expands citation neighborhood."""
-    from brbrain.cli.commands import expand_cmd
+    from drbrain.cli.commands import expand_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
@@ -59,7 +59,7 @@ def test_expand_cmd_success():
         db.close()
 
         with _mock_load_config(cfg), \
-             mock.patch("brbrain.extractor.citation.expand_citations", return_value=([], [])):
+             mock.patch("drbrain.extractor.citation.expand_citations", return_value=([], [])):
             expand_cmd("p1")
 
 
@@ -67,7 +67,7 @@ def test_expand_cmd_success():
 
 def test_report_cmd_not_found():
     """report_cmd raises Exit when no report file."""
-    from brbrain.cli.commands import report_cmd
+    from drbrain.cli.commands import report_cmd
     with tempfile.TemporaryDirectory() as td:
         cfg = _make_minimal_config("/tmp/x.db", str(Path(td) / "reports"))
         with _mock_load_config(cfg):
@@ -80,7 +80,7 @@ def test_report_cmd_not_found():
 
 def test_report_cmd_displays_report():
     """report_cmd reads and displays existing report."""
-    from brbrain.cli.commands import report_cmd
+    from drbrain.cli.commands import report_cmd
     with tempfile.TemporaryDirectory() as td:
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
@@ -108,7 +108,7 @@ def test_report_cmd_displays_report():
 
 def test_closure_cmd_empty_graph():
     """closure_cmd runs on empty graph."""
-    from brbrain.cli.commands import closure_cmd
+    from drbrain.cli.commands import closure_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -118,7 +118,7 @@ def test_closure_cmd_empty_graph():
 
 def test_closure_cmd_with_edges():
     """closure_cmd infers edges from existing data."""
-    from brbrain.cli.commands import closure_cmd
+    from drbrain.cli.commands import closure_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -139,7 +139,7 @@ def test_closure_cmd_with_edges():
 
 def test_seed_cmd_empty_graph():
     """seed_cmd runs on empty graph, finds no seeds."""
-    from brbrain.cli.commands import seed_cmd
+    from drbrain.cli.commands import seed_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -151,7 +151,7 @@ def test_seed_cmd_empty_graph():
 
 def test_list_cmd_no_papers():
     """list_cmd handles empty database."""
-    from brbrain.cli.commands import list_cmd
+    from drbrain.cli.commands import list_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -161,7 +161,7 @@ def test_list_cmd_no_papers():
 
 def test_list_cmd_with_papers():
     """list_cmd displays papers in table."""
-    from brbrain.cli.commands import list_cmd
+    from drbrain.cli.commands import list_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -179,7 +179,7 @@ def test_list_cmd_with_papers():
 
 def test_stats_cmd_empty_db():
     """stats_cmd shows zeros for empty database."""
-    from brbrain.cli.commands import stats_cmd
+    from drbrain.cli.commands import stats_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -189,7 +189,7 @@ def test_stats_cmd_empty_db():
 
 def test_stats_cmd_with_data():
     """stats_cmd shows correct counts."""
-    from brbrain.cli.commands import stats_cmd
+    from drbrain.cli.commands import stats_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -209,7 +209,7 @@ def test_stats_cmd_with_data():
 
 def test_query_cmd_no_results():
     """query_cmd handles no results."""
-    from brbrain.cli.commands import query_cmd
+    from drbrain.cli.commands import query_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -221,7 +221,7 @@ def test_query_cmd_no_results():
 
 def test_query_cmd_with_results():
     """query_cmd finds concepts via BM25."""
-    from brbrain.cli.commands import query_cmd
+    from drbrain.cli.commands import query_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -242,7 +242,7 @@ def test_query_cmd_with_results():
 
 def test_export_cmd_json():
     """export_cmd outputs JSON format."""
-    from brbrain.cli.commands import export_cmd
+    from drbrain.cli.commands import export_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -258,7 +258,7 @@ def test_export_cmd_json():
 
 def test_export_cmd_unsupported_format():
     """export_cmd raises Exit for unsupported format."""
-    from brbrain.cli.commands import export_cmd
+    from drbrain.cli.commands import export_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -274,7 +274,7 @@ def test_export_cmd_unsupported_format():
 
 def test_queue_cmd_empty():
     """queue_cmd shows empty queue message."""
-    from brbrain.cli.commands import queue_cmd
+    from drbrain.cli.commands import queue_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -284,7 +284,7 @@ def test_queue_cmd_empty():
 
 def test_queue_cmd_with_items():
     """queue_cmd displays pending items."""
-    from brbrain.cli.commands import queue_cmd
+    from drbrain.cli.commands import queue_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -303,7 +303,7 @@ def test_queue_cmd_with_items():
 
 def test_queue_resolve_accept():
     """queue_resolve_cmd accepts a queue item."""
-    from brbrain.cli.commands import queue_resolve_cmd
+    from drbrain.cli.commands import queue_resolve_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -320,7 +320,7 @@ def test_queue_resolve_accept():
 
 def test_queue_resolve_reject():
     """queue_resolve_cmd rejects a queue item."""
-    from brbrain.cli.commands import queue_resolve_cmd
+    from drbrain.cli.commands import queue_resolve_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -337,7 +337,7 @@ def test_queue_resolve_reject():
 
 def test_queue_resolve_both_flags():
     """queue_resolve_cmd raises Exit when both accept and reject."""
-    from brbrain.cli.commands import queue_resolve_cmd
+    from drbrain.cli.commands import queue_resolve_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -351,7 +351,7 @@ def test_queue_resolve_both_flags():
 
 def test_queue_resolve_neither_flag():
     """queue_resolve_cmd raises Exit when neither accept nor reject."""
-    from brbrain.cli.commands import queue_resolve_cmd
+    from drbrain.cli.commands import queue_resolve_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -367,7 +367,7 @@ def test_queue_resolve_neither_flag():
 
 def test_timeline_cmd_no_data():
     """timeline_cmd handles concept with no data."""
-    from brbrain.cli.commands import timeline_cmd
+    from drbrain.cli.commands import timeline_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -377,7 +377,7 @@ def test_timeline_cmd_no_data():
 
 def test_timeline_cmd_with_data():
     """timeline_cmd shows concept evolution."""
-    from brbrain.cli.commands import timeline_cmd
+    from drbrain.cli.commands import timeline_cmd
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
@@ -397,7 +397,7 @@ def test_timeline_cmd_with_data():
 
 def test_ingest_json_on_empty_dir():
     """ingest_cmd with json_output=True outputs error JSON when no PDFs found."""
-    from brbrain.cli.commands import ingest_cmd
+    from drbrain.cli.commands import ingest_cmd
     with tempfile.TemporaryDirectory() as td:
         empty_dir = Path(td) / "empty"
         empty_dir.mkdir()
@@ -412,8 +412,8 @@ def test_ingest_json_on_empty_dir():
 
 def test_check_and_merge_duplicates():
     """_check_and_merge_duplicates finds existing placeholder with same DOI."""
-    from brbrain.cli.commands import _check_and_merge_duplicates
-    from brbrain.dedup.resolver import PaperIDs
+    from drbrain.cli.commands import _check_and_merge_duplicates
+    from drbrain.dedup.resolver import PaperIDs
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))
@@ -430,7 +430,7 @@ def test_check_and_merge_duplicates():
 
 def test_merge_papers():
     """_merge_papers merges concepts, arguments, and edges from one paper to another."""
-    from brbrain.cli.commands import _merge_papers
+    from drbrain.cli.commands import _merge_papers
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))
@@ -463,7 +463,7 @@ def test_merge_papers():
 
 def test_log_error_writes_to_file():
     """_log_error creates validation.log in configured logs directory."""
-    from brbrain.cli.commands import _log_error
+    from drbrain.cli.commands import _log_error
     with tempfile.TemporaryDirectory() as td:
         cfg = {"dirs": {"logs": str(Path(td) / "logs")}}
         _log_error(cfg, "Test error message")
@@ -475,7 +475,7 @@ def test_log_error_writes_to_file():
 
 def test_merge_papers_redirects_edge_source_paper():
     """_merge_papers updates source_paper field in edges."""
-    from brbrain.cli.commands import _merge_papers
+    from drbrain.cli.commands import _merge_papers
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         db = Database(str(db_path))

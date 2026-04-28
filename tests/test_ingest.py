@@ -1,8 +1,8 @@
 """Integration test for the ingest pipeline database layer."""
 import tempfile
 from pathlib import Path
-from brbrain.storage.database import Database
-from brbrain.graph.engine import GraphEngine
+from drbrain.storage.database import Database
+from drbrain.graph.engine import GraphEngine
 
 def test_ingest_pipeline_with_mock_data():
     """Full pipeline: create paper, insert concepts, edges, verify DB state."""

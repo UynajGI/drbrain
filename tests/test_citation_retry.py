@@ -1,7 +1,7 @@
 """Tests for S2 API retry logic."""
 import unittest.mock
 import requests
-from brbrain.extractor.citation import fetch_s2_with_retry, search_s2_with_retry
+from drbrain.extractor.citation import fetch_s2_with_retry, search_s2_with_retry
 
 
 def _make_429_response():

@@ -1,9 +1,9 @@
 """Tests for Semantic Scholar citation API."""
-from brbrain.extractor.citation import parse_s2_response, match_to_local, expand_citations
+from drbrain.extractor.citation import parse_s2_response, match_to_local, expand_citations
 import tempfile
 from pathlib import Path
 from unittest import mock
-from brbrain.storage.database import Database
+from drbrain.storage.database import Database
 
 def test_parse_s2_response():
     """parse_s2_response extracts title, year, ids from S2 JSON."""
@@ -68,7 +68,7 @@ def test_expand_backfills_doi_from_s2():
         }
 
         cfg = {"api": {"s2_rate_limit": 100}}
-        with mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
         doi = db.conn.execute(
@@ -98,7 +98,7 @@ def test_expand_does_not_overwrite_existing_doi():
         }
 
         cfg = {"api": {"s2_rate_limit": 100}}
-        with mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             expand_citations(db, "p1", cfg)
 
         doi = db.conn.execute(
@@ -128,7 +128,7 @@ def test_expand_backfills_arxiv_if_missing():
         }
 
         cfg = {"api": {"s2_rate_limit": 100}}
-        with mock.patch("brbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
+        with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             expand_citations(db, "p1", cfg)
 
         arxiv = db.conn.execute(
