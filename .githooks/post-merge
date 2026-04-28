@@ -1,0 +1,12 @@
+#!/bin/sh
+# post-merge hook: sync dependencies after merging.
+
+# Check if pyproject.toml or uv.lock changed
+CHANGED=$(git diff-tree -r --name-only --no-commit-id HEAD@{1} HEAD 2>/dev/null | grep -E 'pyproject\.toml|uv\.lock' || true)
+
+if [ -n "$CHANGED" ]; then
+    echo "Dependencies changed after merge, syncing..."
+    uv sync
+else
+    echo "Post-merge: dependencies unchanged, skipping sync."
+fi
