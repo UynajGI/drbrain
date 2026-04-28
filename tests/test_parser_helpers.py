@@ -1,16 +1,21 @@
 """Tests for parser helper functions: normalize, extract_pdf, fallback, arXiv API, sections."""
+
 import tempfile
 import unittest.mock
 from pathlib import Path
 
 from drbrain.parser.mineru_parser import (
-    normalize_doi, normalize_arxiv, filter_sections,
-    _extract_arxiv_from_filename, _fetch_arxiv_metadata,
-    MinerUParser, extract_pdf,
+    MinerUParser,
+    _extract_arxiv_from_filename,
+    _fetch_arxiv_metadata,
+    extract_pdf,
+    filter_sections,
+    normalize_arxiv,
+    normalize_doi,
 )
 
-
 # -- normalize_doi --
+
 
 def test_normalize_doi_strips_url():
     """normalize_doi strips https://doi.org/ prefix."""
@@ -34,6 +39,7 @@ def test_normalize_doi_passthrough():
 
 # -- normalize_arxiv --
 
+
 def test_normalize_arxiv_strips_version():
     """normalize_arxiv strips vN suffix."""
     assert normalize_arxiv("2401.12345v1") == "2401.12345"
@@ -50,6 +56,7 @@ def test_normalize_arxiv_with_context():
 
 
 # -- _extract_arxiv_from_filename --
+
 
 def test_extract_arxiv_from_filename_with_version():
     """Extracts arXiv ID from filename with version suffix."""
@@ -69,16 +76,17 @@ def test_extract_arxiv_from_filename_no_match():
 
 # -- _fetch_arxiv_metadata --
 
+
 def test_fetch_arxiv_metadata_success():
     """_fetch_arxiv_metadata returns title and year from arXiv API."""
-    mock_xml = '''<?xml version="1.0"?>
+    mock_xml = """<?xml version="1.0"?>
 <feed>
   <entry>
     <title>Feed Title</title>
     <title>Real Paper Title</title>
     <published>2024-03-15T00:00:00Z</published>
   </entry>
-</feed>'''
+</feed>"""
 
     with unittest.mock.patch("urllib.request.urlopen") as mock_urlopen:
         mock_resp = unittest.mock.Mock()
@@ -102,13 +110,13 @@ def test_fetch_arxiv_metadata_error_returns_none():
 
 def test_fetch_arxiv_metadata_single_title():
     """Uses single title when only one is present."""
-    mock_xml = '''<?xml version="1.0"?>
+    mock_xml = """<?xml version="1.0"?>
 <feed>
   <entry>
     <title>Only Title</title>
     <published>2023-01-01T00:00:00Z</published>
   </entry>
-</feed>'''
+</feed>"""
 
     with unittest.mock.patch("urllib.request.urlopen") as mock_urlopen:
         mock_resp = unittest.mock.Mock()
@@ -122,6 +130,7 @@ def test_fetch_arxiv_metadata_single_title():
 
 
 # -- filter_sections --
+
 
 def test_filter_sections_markdown_headings():
     """Extracts sections from markdown headings."""
@@ -164,6 +173,7 @@ def test_filter_sections_empty_input():
 
 # -- extract_pdf convenience --
 
+
 def test_extract_pdf_from_config():
     """extract_pdf creates parser from config and extracts."""
     cfg = {
@@ -182,6 +192,7 @@ def test_extract_pdf_from_config():
 
         with unittest.mock.patch.object(MinerUParser, "extract") as mock_extract:
             from drbrain.parser.mineru_parser import ParsedPaper
+
             mock_extract.return_value = ParsedPaper(title="Test", year=2024)
 
             result = extract_pdf(pdf_path, cfg)
@@ -190,6 +201,7 @@ def test_extract_pdf_from_config():
 
 
 # -- pypdfium2 fallback --
+
 
 def test_fallback_pypdfium2():
     """_fallback_pypdfium2 extracts text from PDF."""
@@ -230,10 +242,19 @@ def test_parser_full_extract_flow_with_fallback():
         def mock_fallback(path):
             return "# Test Title\n\nIntroduction.—Test content."
 
-        with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"), \
-             unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError("not found")), \
-             unittest.mock.patch.object(MinerUParser, "_fallback_pypdfium2", side_effect=mock_fallback), \
-             unittest.mock.patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)):
+        with (
+            unittest.mock.patch(
+                "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            ),
+            unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError("not found")),
+            unittest.mock.patch.object(
+                MinerUParser, "_fallback_pypdfium2", side_effect=mock_fallback
+            ),
+            unittest.mock.patch(
+                "drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)
+            ),
+            unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+        ):
             parser = MinerUParser(max_retries=1, retry_delay=0.01)
             result = parser.extract(pdf_path)
             assert result.title == "Test Title"

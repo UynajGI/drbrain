@@ -1,16 +1,18 @@
 """Tests for mineru-open-api CLI retry and skip logic in parser."""
+
 import unittest.mock
-import subprocess
-import tempfile
 from pathlib import Path
 
 from drbrain.parser.mineru_parser import (
-    MinerUParser, filter_sections, _extract_arxiv_from_filename,
-    normalize_arxiv, normalize_doi, _find_cli,
+    MinerUParser,
 )
 
 
-def _mock_mineru_run(captured_cmd=None, fail_count=0, md_content="# Title\n\nIntroduction.—Content here.\n\nConclusion.—Done."):
+def _mock_mineru_run(
+    captured_cmd=None,
+    fail_count=0,
+    md_content="# Title\n\nIntroduction.—Content here.\n\nConclusion.—Done.",
+):
     """Helper to mock mineru-open-api -o behavior."""
     call_count = 0
 
@@ -45,15 +47,21 @@ def test_parser_retries_mineru_on_failure():
     """MinerUParser retries mineru-open-api up to max_retries times."""
     mock_run, get_count = _mock_mineru_run(fail_count=2)
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+    ):
         parser = MinerUParser(token="test", max_retries=3, retry_delay=0.01)
-        result = parser.extract("/tmp/test.pdf")
+        parser.extract("/tmp/test.pdf")
         assert get_count() == 3
 
 
 def test_parser_skips_to_fallback_after_max_retries():
     """MinerUParser falls back to pypdfium2 after max_retries failures."""
+
     def mock_run(*args, **kwargs):
         result = unittest.mock.Mock()
         result.returncode = 1
@@ -64,9 +72,14 @@ def test_parser_skips_to_fallback_after_max_retries():
     def mock_pdfium(path):
         return "No headings, just text."
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"), \
-         unittest.mock.patch.object(MinerUParser, "_fallback_pypdfium2", side_effect=mock_pdfium):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+        unittest.mock.patch.object(MinerUParser, "_fallback_pypdfium2", side_effect=mock_pdfium),
+    ):
         parser = MinerUParser(token="test", max_retries=2, retry_delay=0.01)
         result = parser.extract("/tmp/test.pdf")
         assert result.raw_md == "No headings, just text."
@@ -76,8 +89,13 @@ def test_parser_succeeds_on_first_try():
     """MinerUParser succeeds without retry when mineru-open-api works."""
     mock_run, _ = _mock_mineru_run()
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+    ):
         parser = MinerUParser(token="test", max_retries=3, retry_delay=0.01)
         result = parser.extract("/tmp/test.pdf")
         assert result.title == "Title"
@@ -88,8 +106,13 @@ def test_mineru_open_api_uses_extract_with_token():
     captured = []
     mock_run, _ = _mock_mineru_run(captured_cmd=captured)
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+    ):
         parser = MinerUParser(token="abc123", model="vlm", is_ocr=True)
         parser.extract("/tmp/test.pdf")
         cmd = captured[0]
@@ -104,8 +127,13 @@ def test_mineru_open_api_uses_extract_without_token():
     captured = []
     mock_run, _ = _mock_mineru_run(captured_cmd=captured)
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+    ):
         parser = MinerUParser()
         parser.extract("/tmp/test.pdf")
         cmd = captured[0]
@@ -117,8 +145,13 @@ def test_parser_strips_thinking_header():
     """MinerUParser output from -o doesn't have 'Thinking...' since it's file-based."""
     mock_run, _ = _mock_mineru_run(md_content="# Title\n\nContent.")
 
-    with unittest.mock.patch("subprocess.run", side_effect=mock_run), \
-         unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"):
+    with (
+        unittest.mock.patch("subprocess.run", side_effect=mock_run),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+        ),
+        unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+    ):
         parser = MinerUParser()
         result = parser.extract("/tmp/test.pdf")
         assert not result.raw_md.startswith("Thinking...")

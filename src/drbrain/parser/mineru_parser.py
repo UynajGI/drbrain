@@ -75,14 +75,99 @@ class MinerUParser:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
-    def extract(self, pdf_path: str | Path) -> ParsedPaper:
-        """Extract structured content from PDF."""
+    def extract(self, pdf_path: str | Path, max_pages: int = 150) -> ParsedPaper:
+        """Extract structured content from PDF. Splits into chunks if > max_pages."""
         pdf_path = Path(pdf_path)
+        page_count = self._count_pages(pdf_path)
 
-        # Extract arXiv ID from filename first
+        if page_count <= max_pages:
+            return self._extract_single(pdf_path)
+
+        # Split and process chunks
+        chunk_paths = self._split_pdf(pdf_path, max_pages)
+        try:
+            raw_mds: list[str] = []
+            image_dirs: list[Path | None] = []
+            for chunk in chunk_paths:
+                md, img_dir = self._extract_mineru_only(chunk)
+                raw_mds.append(md)
+                image_dirs.append(img_dir)
+
+            merged_md = self._merge_markdown(raw_mds)
+            merged_images = self._merge_images(image_dirs)
+
+            title = self._extract_title(merged_md, str(pdf_path))
+            year = self._extract_year(merged_md)
+            doi, arxiv = self._extract_ids(merged_md)
+            arxiv_from_name = _extract_arxiv_from_filename(pdf_path)
+            if not arxiv and arxiv_from_name:
+                arxiv = arxiv_from_name
+
+            if arxiv:
+                api_title, api_year = _fetch_arxiv_metadata(arxiv)
+                if api_title:
+                    title = api_title
+                if api_year and not year:
+                    year = api_year
+
+            blocks = filter_sections(merged_md)
+
+            return ParsedPaper(
+                title=title,
+                year=year,
+                doi=doi,
+                arxiv=arxiv,
+                text_blocks=blocks,
+                raw_md=merged_md,
+                images_dir=merged_images,
+            )
+        finally:
+            for p in chunk_paths:
+                p.unlink(missing_ok=True)
+
+    def _count_pages(self, pdf_path: Path) -> int:
+        """Count pages in PDF using pypdfium2."""
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(str(pdf_path))
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+
+    def _split_pdf(self, pdf_path: Path, max_pages: int) -> list[Path]:
+        """Split PDF into chunks of max_pages each. Returns list of temp PDF paths."""
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(str(pdf_path))
+        total = len(doc)
+        chunks: list[Path] = []
+        for start in range(0, total, max_pages):
+            end = min(start + max_pages, total)
+            out = Path(tempfile.mkdtemp(prefix="mineru_chunk_")) / f"chunk_{start}-{end}.pdf"
+            out_doc = pdfium.PdfDocument.new()
+            for i in range(start, end):
+                out_doc.import_pages(doc, pages=[i])
+            out_doc.save(str(out))
+            out_doc.close()
+            chunks.append(out)
+        doc.close()
+        return chunks
+
+    def _extract_mineru_only(self, pdf_path: Path) -> tuple[str, Path | None]:
+        """Run MinerU CLI on a PDF chunk, return (raw_md, images_dir)."""
+        out_dir = self._try_mineru_open_api(pdf_path)
+        if out_dir is not None:
+            raw_md = self._read_output_md(out_dir)
+            img_dir = out_dir / "images" if (out_dir / "images").exists() else None
+        else:
+            raw_md = self._fallback_pypdfium2(pdf_path)
+            img_dir = None
+        return raw_md, img_dir
+
+    def _extract_single(self, pdf_path: Path) -> ParsedPaper:
+        """Extract a single PDF without splitting (existing logic)."""
         arxiv_from_name = _extract_arxiv_from_filename(pdf_path)
-
-        # Try mineru-open-api CLI with -o to get images
         out_dir = self._try_mineru_open_api(pdf_path)
         if out_dir is not None:
             raw_md = self._read_output_md(out_dir)
@@ -124,6 +209,34 @@ class MinerUParser:
             raw_md=raw_md,
             images_dir=images_dir,
         )
+
+    def _merge_markdown(self, raw_mds: list[str]) -> str:
+        """Merge multiple markdown outputs: keep first chunk fully, append rest with separator."""
+        result = raw_mds[0]
+        for md in raw_mds[1:]:
+            # Strip duplicate title from subsequent chunks
+            lines = md.splitlines()
+            content_start = 0
+            for i, line in enumerate(lines[:10]):
+                if line.startswith("# ") and i < 3:
+                    content_start = i + 1
+                    break
+            stripped = "\n".join(lines[content_start:]).strip()
+            if stripped:
+                result += f"\n\n---\n\n{stripped}"
+        return result
+
+    def _merge_images(self, image_dirs: list[Path | None]) -> Path | None:
+        """Copy all images from chunk dirs into a single temp directory."""
+        merged = Path(tempfile.mkdtemp(prefix="mineru_merged_")) / "images"
+        any_images = False
+        for img_dir in image_dirs:
+            if img_dir and img_dir.exists():
+                for f in img_dir.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, merged / f.name)
+                        any_images = True
+        return merged if any_images else None
 
     def _try_mineru_open_api(self, pdf_path: Path) -> Path | None:
         """Invoke mineru-open-api CLI with retry. Returns output dir or None on failure."""
@@ -357,6 +470,7 @@ def filter_sections(raw_md: str) -> list[str]:
 def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
     """Convenience function: create parser from config and extract."""
     mineru_cfg = config.get("mineru", {})
+    max_pages = mineru_cfg.get("max_pages", 150)
     parser = MinerUParser(
         token=mineru_cfg.get("token", ""),
         model=mineru_cfg.get("model", "vlm"),
@@ -364,4 +478,4 @@ def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
         enable_formula=mineru_cfg.get("enable_formula", True),
         enable_table=mineru_cfg.get("enable_table", True),
     )
-    return parser.extract(pdf_path)
+    return parser.extract(pdf_path, max_pages=max_pages)

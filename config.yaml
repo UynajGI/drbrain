@@ -18,6 +18,7 @@ mineru:
   is_ocr: false
   enable_formula: true
   enable_table: true
+  max_pages: 150  # split threshold for large PDFs (MinerU limit: 200)
 
 db:
   path: "data/drbrain.db"
