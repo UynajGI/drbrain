@@ -50,12 +50,19 @@ def _tokenize(text: str) -> list[str]:
 
 
 def normalize_label(label: str) -> str:
-    """Normalize a concept label for canonical matching."""
+    """Normalize a concept label for canonical matching.
+
+    If all words are filtered out by stopwords, returns the original label
+    lowercased to prevent empty strings from breaking alignment.
+    """
     t = label.lower().strip()
     t = re.sub(r"[^\w\s]", "", t)
     words = t.split()
-    words = [w for w in words if w not in _STOPWORDS]
-    t = " ".join(words)
+    filtered = [w for w in words if w not in _STOPWORDS]
+    # Guard: if stopwords removed everything, keep original
+    if not filtered:
+        return t
+    t = " ".join(filtered)
     # Simple singularization
     if t.endswith("s") and len(t) > 3:
         t = t[:-1]
