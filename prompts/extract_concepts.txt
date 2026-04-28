@@ -9,7 +9,7 @@ Output schema (no markdown wrapping, no extra text):
   "gaps": [{"label": "limitation or open question", "confidence": 0.0-1.0}],
   "actors": [{"label": "author/lab/institution", "confidence": 0.0-1.0}],
   "relations": [
-    {"head": "this_paper" | concept_label, "rel": "addresses"|"proposes"|"challenges"|"supports"|"leaves_open"|"extends"|"replaces", "tail": concept_label}
+    {"head": "this_paper" | concept_label, "rel": "addresses"|"proposes"|"challenges"|"supports"|"leaves_open"|"extends"|"replaces"|"affiliated_with"|"points_to"|"constrains", "tail": concept_label}
   ],
   "arguments": [
     {
@@ -32,6 +32,9 @@ Rules:
 - gaps: limitations, unresolved questions, future work directions
 - actors: authors, labs, research groups central to the work
 - relations: connect concepts using exact relation types listed above
+  - "affiliated_with": link this_paper → actor (author/lab/institution)
+  - "points_to": link gap → problem/method (which area the gap falls in)
+  - "constrains": link gap → method (limitation on an approach)
 - arguments: structured claims with evidence — what the paper argues, not just what it mentions
 - claim_type: "proposes" for new contributions, "challenges"/"supports" for existing claims, "limits" for constraints, "solves" for problem resolution, "extends" for improvements
 - Keep labels concise (3-8 words), use consistent terminology

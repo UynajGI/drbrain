@@ -14,7 +14,9 @@ class GraphEngine:
     def __init__(self):
         self.graph = nx.MultiDiGraph()
 
-    def add_edge(self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0) -> None:
+    def add_edge(
+        self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0
+    ) -> None:
         self.graph.add_edge(src, dst, relation=relation, source=source_paper, weight=weight)
 
     def get_neighbors(self, node: str, hops: int = 2) -> set[str]:
@@ -51,6 +53,8 @@ class GraphEngine:
         addresses: dict[str, list[str]] = defaultdict(list)
         extends: dict[str, list[str]] = defaultdict(list)
         replaces: dict[str, list[str]] = defaultdict(list)
+        points_to: dict[str, list[str]] = defaultdict(list)
+        constrains: dict[str, list[str]] = defaultdict(list)
 
         for u, v, data in self.graph.edges(data=True):
             rel = data["relation"]
@@ -66,6 +70,10 @@ class GraphEngine:
                 extends[u].append(v)
             elif rel == "replaces":
                 replaces[u].append(v)
+            elif rel == "points_to":
+                points_to[u].append(v)
+            elif rel == "constrains":
+                constrains[u].append(v)
 
         # Rule 1: creates_debate
         for conclusion in challenges:
@@ -73,30 +81,73 @@ class GraphEngine:
                 for p in challenges[conclusion]:
                     for q in supports[conclusion]:
                         if p != q:
-                            inferred.append({
-                                "src": p, "dst": q, "relation": "creates_debate",
-                                "via": conclusion,
-                            })
+                            inferred.append(
+                                {
+                                    "src": p,
+                                    "dst": q,
+                                    "relation": "creates_debate",
+                                    "via": conclusion,
+                                }
+                            )
 
         # Rule 2: gap_addressed
         for gap in leaves_open:
             if gap in addresses:
                 for p in leaves_open[gap]:
                     for q in addresses[gap]:
-                        inferred.append({
-                            "src": gap, "dst": q, "relation": "gap_addressed",
-                            "via": gap,
-                        })
+                        inferred.append(
+                            {
+                                "src": gap,
+                                "dst": q,
+                                "relation": "gap_addressed",
+                                "via": gap,
+                            }
+                        )
 
         # Rule 3: indirect_evolution
         for m1 in extends:
             for m2 in extends[m1]:
                 if m2 in replaces:
                     for m3 in replaces[m2]:
-                        inferred.append({
-                            "src": m1, "dst": m3, "relation": "indirect_evolution",
-                            "via": m2,
-                        })
+                        inferred.append(
+                            {
+                                "src": m1,
+                                "dst": m3,
+                                "relation": "indirect_evolution",
+                                "via": m2,
+                            }
+                        )
+
+        # Rule 4: gap_to_debate — Gap points_to a target that has challenges/supports
+        for gap in points_to:
+            for target in points_to[gap]:
+                if target in challenges and target in supports:
+                    inferred.append(
+                        {
+                            "src": gap,
+                            "dst": target,
+                            "relation": "gap_to_debate",
+                            "via": target,
+                        }
+                    )
+
+        # Rule 5: actor_network — Papers sharing an Actor form a research lineage
+        actor_papers: dict[str, list[str]] = defaultdict(list)
+        for u, v, data in self.graph.edges(data=True):
+            if data["relation"] == "affiliated_with":
+                actor_papers[v].append(u)
+        for actor, papers in actor_papers.items():
+            if len(papers) > 1:
+                for i, p1 in enumerate(papers):
+                    for p2 in papers[i + 1 :]:
+                        inferred.append(
+                            {
+                                "src": p1,
+                                "dst": p2,
+                                "relation": "shared_actor",
+                                "via": actor,
+                            }
+                        )
 
         return inferred
 
@@ -129,12 +180,14 @@ class GraphEngine:
                 problem_in_degree[dst] += 1
             for problem, deg in problem_in_degree.items():
                 if deg >= 3:
-                    seeds.append({
-                        "type": "stale_problem",
-                        "concept": problem,
-                        "description": f"High attention ({deg} edges), check for recent solutions",
-                        "confidence": 0.6,
-                    })
+                    seeds.append(
+                        {
+                            "type": "stale_problem",
+                            "concept": problem,
+                            "description": f"High attention ({deg} edges), check for recent solutions",
+                            "confidence": 0.6,
+                        }
+                    )
 
         # --- Pattern 2: Unaddressed gap ---
         gap_nodes: set[str] = set()
@@ -148,19 +201,23 @@ class GraphEngine:
             if gap not in addressed_gaps:
                 count = len([v for _, v in edges_by_rel["leaves_open"] if v == gap])
                 if db:
-                    seeds.append({
-                        "type": "unaddressed_gap",
-                        "concept": gap,
-                        "description": f"Gap '{gap}' identified by {count} papers but no proposed solution exists",
-                        "confidence": 0.8,
-                    })
+                    seeds.append(
+                        {
+                            "type": "unaddressed_gap",
+                            "concept": gap,
+                            "description": f"Gap '{gap}' identified by {count} papers but no proposed solution exists",
+                            "confidence": 0.8,
+                        }
+                    )
                 else:
-                    seeds.append({
-                        "type": "unaddressed_gap",
-                        "concept": gap,
-                        "description": f"Gap identified but no method addresses it ({count} leaves_open edges)",
-                        "confidence": 0.6,
-                    })
+                    seeds.append(
+                        {
+                            "type": "unaddressed_gap",
+                            "concept": gap,
+                            "description": f"Gap identified but no method addresses it ({count} leaves_open edges)",
+                            "confidence": 0.6,
+                        }
+                    )
 
         # --- Pattern 3: Debate zone ---
         supports_targets = {v for _, v in edges_by_rel.get("supports", [])}
@@ -170,19 +227,23 @@ class GraphEngine:
             n_support = len([v for _, v in edges_by_rel["supports"] if v == target])
             n_challenge = len([v for _, v in edges_by_rel["challenges"] if v == target])
             if db:
-                seeds.append({
-                    "type": "debate_zone",
-                    "concept": target,
-                    "description": f"{n_support} papers support '{target}', {n_challenge} challenge it — active debate",
-                    "confidence": 0.75,
-                })
+                seeds.append(
+                    {
+                        "type": "debate_zone",
+                        "concept": target,
+                        "description": f"{n_support} papers support '{target}', {n_challenge} challenge it — active debate",
+                        "confidence": 0.75,
+                    }
+                )
             else:
-                seeds.append({
-                    "type": "debate_zone",
-                    "concept": target,
-                    "description": f"Active debate: {n_support + n_challenge} papers with conflicting views",
-                    "confidence": 0.6,
-                })
+                seeds.append(
+                    {
+                        "type": "debate_zone",
+                        "concept": target,
+                        "description": f"Active debate: {n_support + n_challenge} papers with conflicting views",
+                        "confidence": 0.6,
+                    }
+                )
 
         # --- New DB-augmented patterns ---
         if db:
@@ -211,12 +272,14 @@ class GraphEngine:
                 (problem, current - 2),
             ).fetchone()[0]
             if recent == 0:
-                seeds.append({
-                    "type": "stale_problem",
-                    "concept": problem,
-                    "description": f"Problem '{problem}' addressed by {len(sources)} papers but no progress since {current - 3}",
-                    "confidence": 0.85,
-                })
+                seeds.append(
+                    {
+                        "type": "stale_problem",
+                        "concept": problem,
+                        "description": f"Problem '{problem}' addressed by {len(sources)} papers but no progress since {current - 3}",
+                        "confidence": 0.85,
+                    }
+                )
         return seeds
 
     def _detect_technology_cliffs(self, db) -> list[dict]:
@@ -251,15 +314,17 @@ class GraphEngine:
                 ).fetchone()
                 year_str = str(last_active[0]) if last_active and last_active[0] else "unknown"
 
-                seeds.append({
-                    "type": "technology_cliff",
-                    "concept": method,
-                    "description": (
-                        f"Method '{method}' stalled after {year_str} due to constraint "
-                        f"'{gap_label}' — current conditions may enable revival"
-                    ),
-                    "confidence": 0.7,
-                })
+                seeds.append(
+                    {
+                        "type": "technology_cliff",
+                        "concept": method,
+                        "description": (
+                            f"Method '{method}' stalled after {year_str} due to constraint "
+                            f"'{gap_label}' — current conditions may enable revival"
+                        ),
+                        "confidence": 0.7,
+                    }
+                )
 
         return seeds
 
@@ -291,16 +356,18 @@ class GraphEngine:
                         disconnected_pairs += 1
 
             if disconnected_pairs > 0:
-                seeds.append({
-                    "type": "cross_domain_isomorphism",
-                    "concept": problem,
-                    "description": (
-                        f"Multiple disconnected approaches address '{problem}' "
-                        f"({len(methods)} methods, {disconnected_pairs} disconnected pairs) "
-                        f"— potential transfer opportunity"
-                    ),
-                    "confidence": 0.65,
-                })
+                seeds.append(
+                    {
+                        "type": "cross_domain_isomorphism",
+                        "concept": problem,
+                        "description": (
+                            f"Multiple disconnected approaches address '{problem}' "
+                            f"({len(methods)} methods, {disconnected_pairs} disconnected pairs) "
+                            f"— potential transfer opportunity"
+                        ),
+                        "confidence": 0.65,
+                    }
+                )
 
         return seeds
 
@@ -340,15 +407,17 @@ class GraphEngine:
             late_avg = sum(late_confs) / len(late_confs)
 
             if early_avg - late_avg > 0.2:
-                seeds.append({
-                    "type": "confidence_collapse",
-                    "concept": label,
-                    "description": (
-                        f"Concept '{label}' confidence dropped from {early_avg:.2f} to "
-                        f"{late_avg:.2f} — paradigm shift detected"
-                    ),
-                    "confidence": 0.8,
-                })
+                seeds.append(
+                    {
+                        "type": "confidence_collapse",
+                        "concept": label,
+                        "description": (
+                            f"Concept '{label}' confidence dropped from {early_avg:.2f} to "
+                            f"{late_avg:.2f} — paradigm shift detected"
+                        ),
+                        "confidence": 0.8,
+                    }
+                )
 
         return seeds
 

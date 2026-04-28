@@ -260,6 +260,31 @@ def _ingest_single_paper(
         for rel in valid_relations:
             db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
 
+        # Auto-create edges that LLM may have missed
+        # Paper → Actor (affiliated_with)
+        if concepts.actors:
+            for actor in concepts.actors:
+                actor_label = actor.get("label", "")
+                if actor_label:
+                    db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
+
+        # Gap → Problem/Method (points_to) — infer from label overlap
+        if concepts.gaps and (concepts.problems or concepts.methods):
+            gap_labels = {g["label"] for g in concepts.gaps}
+            prob_labels = {p["label"] for p in concepts.problems}
+            method_labels = {m["label"] for m in concepts.methods}
+            for gap in gap_labels:
+                # Simple keyword overlap heuristic
+                gap_words = set(gap.lower().split())
+                for prob in prob_labels:
+                    prob_words = set(prob.lower().split())
+                    if gap_words & prob_words:
+                        db.insert_edge(gap, prob, "points_to", local_id)
+                for method in method_labels:
+                    method_words = set(method.lower().split())
+                    if gap_words & method_words:
+                        db.insert_edge(gap, method, "points_to", local_id)
+
         # Ingest arguments
         from drbrain.extractor.argument import validate_arguments
 
