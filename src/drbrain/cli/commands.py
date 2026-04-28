@@ -499,8 +499,13 @@ def save_raw_md(
     if images_src and images_src.exists():
         img_dst = papers_dir / "images" / local_id
         shutil.copytree(images_src, img_dst, dirs_exist_ok=True)
-        # Rewrite image refs in MD to point to local copies
-        raw_md = re.sub(r"!\[(.*?)\]\((images/[^)]+)\)", rf"![\1](images/{local_id}/\2)", raw_md)
+        # Rewrite image refs: MinerU outputs "images/<hash>/file.jpg"
+        # We copy to "images/<local_id>/<hash>/file.jpg", so strip the leading "images/"
+        raw_md = re.sub(
+            r"!\[(.*?)\]\(images/([^)]+)\)",
+            rf"![\1](images/{local_id}/\2)",
+            raw_md,
+        )
 
     md_path = papers_dir / f"{local_id}.md"
     md_path.write_text(raw_md, encoding="utf-8")

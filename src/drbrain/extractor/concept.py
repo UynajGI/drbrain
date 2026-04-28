@@ -43,7 +43,7 @@ async def extract_concepts(
     """Extract academic concepts + arguments from paper text using LLM fallback chain."""
     system_prompt = PROMPT_TEMPLATE.read_text(encoding="utf-8")
     data = await acall_with_fallback(
-        prompt=text[:12000],
+        prompt=text[:8000],
         models=models,
         system_prompt=system_prompt,
     )

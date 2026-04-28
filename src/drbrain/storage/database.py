@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE TABLE IF NOT EXISTS aliases (
     variant TEXT PRIMARY KEY,
-    canonical_id TEXT NOT NULL REFERENCES concepts(concept_id)
+    canonical_id TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS confidence_queue (
