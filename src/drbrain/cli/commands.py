@@ -303,6 +303,7 @@ def _ingest_single_paper(
                 arg.target_type,
                 arg.evidence_type,
                 arg.evidence_detail,
+                arg.mechanism,
                 arg.confidence,
             )
 

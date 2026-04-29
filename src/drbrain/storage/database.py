@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     target_type TEXT NOT NULL CHECK(target_type IN ('Method', 'Problem', 'Conclusion', 'Gap', 'Debate', 'Argument')),
     evidence_type TEXT CHECK(evidence_type IN ('empirical', 'theoretical', 'case_study', 'survey')),
     evidence_detail TEXT,
+    mechanism TEXT DEFAULT '',
     confidence REAL DEFAULT 1.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -278,12 +279,13 @@ class Database:
         target_type: str,
         evidence_type: str | None = None,
         evidence_detail: str | None = None,
+        mechanism: str = "",
         confidence: float = 1.0,
     ) -> int:
         """Insert an argument unit. Returns arg_id."""
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
-            "evidence_type, evidence_detail, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "evidence_type, evidence_detail, mechanism, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 source_paper,
                 claim,
@@ -292,6 +294,7 @@ class Database:
                 target_type,
                 evidence_type,
                 evidence_detail,
+                mechanism,
                 confidence,
             ),
         )
@@ -333,7 +336,7 @@ class Database:
         """Get all arguments for a paper."""
         rows = self.conn.execute(
             "SELECT arg_id, claim, claim_type, target_label, target_type, "
-            "evidence_type, evidence_detail, confidence "
+            "evidence_type, evidence_detail, mechanism, confidence "
             "FROM arguments WHERE source_paper = ?",
             (local_id,),
         ).fetchall()
@@ -345,6 +348,7 @@ class Database:
             "target_type",
             "evidence_type",
             "evidence_detail",
+            "mechanism",
             "confidence",
         ]
         return [dict(zip(cols, row)) for row in rows]

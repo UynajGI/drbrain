@@ -1,4 +1,5 @@
 """Argument unit extraction and validation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,12 +13,14 @@ VALID_TARGET_TYPES = {"Method", "Problem", "Conclusion", "Gap", "Debate", "Argum
 @dataclass
 class ExtractedArgument:
     """A single argument unit from LLM extraction."""
+
     claim: str
     claim_type: str
     target: str
     target_type: str
     evidence_type: str | None = None
     evidence_detail: str | None = None
+    mechanism: str = ""
     confidence: float = 1.0
 
     def to_dict(self) -> dict:
@@ -28,6 +31,7 @@ class ExtractedArgument:
             "target_type": self.target_type,
             "evidence_type": self.evidence_type,
             "evidence_detail": self.evidence_detail,
+            "mechanism": self.mechanism,
             "confidence": self.confidence,
         }
 
@@ -36,15 +40,18 @@ def parse_arguments(raw: list[dict]) -> list[ExtractedArgument]:
     """Parse raw LLM argument dicts into ExtractedArgument objects."""
     args = []
     for item in raw:
-        args.append(ExtractedArgument(
-            claim=item.get("claim", ""),
-            claim_type=item.get("claim_type", ""),
-            target=item.get("target", ""),
-            target_type=item.get("target_type", ""),
-            evidence_type=item.get("evidence_type"),
-            evidence_detail=item.get("evidence_detail"),
-            confidence=item.get("confidence", 1.0),
-        ))
+        args.append(
+            ExtractedArgument(
+                claim=item.get("claim", ""),
+                claim_type=item.get("claim_type", ""),
+                target=item.get("target", ""),
+                target_type=item.get("target_type", ""),
+                evidence_type=item.get("evidence_type"),
+                evidence_detail=item.get("evidence_detail"),
+                mechanism=item.get("mechanism", ""),
+                confidence=item.get("confidence", 1.0),
+            )
+        )
     return args
 
 

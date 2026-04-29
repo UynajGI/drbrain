@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 .pytest_cache/
+.ruff_cache/
 *.egg
 
 # Virtual environments
@@ -40,3 +41,6 @@ mineru_*/
 docs/superpowers/plans/
 docs/superpowers/skills/
 !docs/superpowers/specs/
+
+# Learning notes (open source project studies)
+docs/learn/
