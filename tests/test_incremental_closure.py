@@ -105,8 +105,9 @@ def test_ingest_auto_closure():
                 "enable_table": True,
             },
             "dirs": {
+                "inbox": str(papers_dir),
+                "papers": str(papers_dir),
                 "reports": str(reports_dir),
-                "pdfs": str(papers_dir),
                 "cache": str(td),
                 "logs": str(logs_dir),
             },

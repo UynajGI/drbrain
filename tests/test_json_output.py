@@ -1,10 +1,10 @@
 """Tests for --json flag on all CLI commands."""
+
 import json
 import os
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -23,22 +23,56 @@ def _make_db(td: str) -> Database:
     db.insert_concept("p1", "Problem", "Long-range dependency", 0.8, year=2024)
     db.insert_edge("p1", "p2", "extends", "p1", 1.0)
     db.insert_argument(
-        "p1", "Transformer outperforms RNN on sequence tasks",
-        "proposes", "Transformer", "Method", "empirical", "WMT14", 0.95,
+        "p1",
+        "Transformer outperforms RNN on sequence tasks",
+        "proposes",
+        "Transformer",
+        "Method",
+        "empirical",
+        "WMT14",
+        0.95,
     )
     db.insert_seed("stale_problem", "Test seed", 0.5)
-    db.insert_queue_item("p1", "concept", json.dumps({"label": "weak_concept", "type": "Method"}), 0.4)
+    db.insert_queue_item(
+        "p1", "concept", json.dumps({"label": "weak_concept", "type": "Method"}), 0.4
+    )
     db.commit()
     return db
 
 
 def _write_config(td: str, db_path: str) -> None:
     cfg = {
-        "llm": {"models": [{"provider": "ollama", "model": "qwen2.5:7b", "api_key": None, "base_url": "http://localhost:11434"}]},
-        "mineru": {"token": "", "model": "vlm", "is_ocr": False, "enable_formula": True, "enable_table": True},
+        "llm": {
+            "models": [
+                {
+                    "provider": "ollama",
+                    "model": "qwen2.5:7b",
+                    "api_key": None,
+                    "base_url": "http://localhost:11434",
+                }
+            ]
+        },
+        "mineru": {
+            "token": "",
+            "model": "vlm",
+            "is_ocr": False,
+            "enable_formula": True,
+            "enable_table": True,
+        },
         "db": {"path": db_path},
-        "dirs": {"pdfs": "data/pdfs", "reports": "data/reports", "cache": "data/cache", "logs": "data/logs"},
-        "api": {"s2_rate_limit": 100, "cache_ttl": 86400, "crossref_email": "", "openalex_token": ""},
+        "dirs": {
+            "inbox": "data/inbox",
+            "papers": "data/papers",
+            "reports": "data/reports",
+            "cache": "data/cache",
+            "logs": "data/logs",
+        },
+        "api": {
+            "s2_rate_limit": 100,
+            "cache_ttl": 86400,
+            "crossref_email": "",
+            "openalex_token": "",
+        },
         "bm25": {"k1": 1.5, "b": 0.75},
         "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
     }
@@ -130,7 +164,9 @@ class TestQueryJson:
             old = os.getcwd()
             os.chdir(td)
             try:
-                result = runner.invoke(app, ["query", "Transformer", "--json", "--type-filter=Method"])
+                result = runner.invoke(
+                    app, ["query", "Transformer", "--json", "--type-filter=Method"]
+                )
                 assert result.exit_code == 0
                 data = json.loads(result.output)
                 for item in data:

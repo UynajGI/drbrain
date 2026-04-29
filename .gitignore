@@ -23,13 +23,8 @@ wheels/
 htmlcov/
 coverage.xml
 
-# DrBrain data (generated at runtime)
-data/reports/
-data/papers/
-data/logs/
-data/cache/*
-!data/cache/.gitkeep
-data/drbrain.db
+# DrBrain data (all generated at runtime)
+data/
 
 # Local config (contains secrets)
 config.local.yaml

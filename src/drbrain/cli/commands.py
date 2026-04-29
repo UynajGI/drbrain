@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import re
@@ -27,7 +28,7 @@ console = Console()
 
 def ingest_cmd(
     paths: list[str] = typer.Argument(
-        None, help="PDF file(s) or directory. Defaults to data/pdfs/."
+        None, help="PDF file(s) or directory. Defaults to data/inbox/."
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
@@ -36,10 +37,10 @@ def ingest_cmd(
     """Full ingest pipeline: parse -> identify -> extract -> validate -> queue -> align -> ingest -> expand -> report.
 
     Accepts single file, multiple files, or a directory of PDFs.
-    Defaults to data/pdfs/ when no paths provided.
+    Defaults to data/inbox/ when no paths provided.
     """
     if not paths:
-        paths = ["data/pdfs/"]
+        paths = ["data/inbox/"]
 
     pdf_files: list[Path] = []
     for p in paths:
@@ -65,7 +66,6 @@ def ingest_cmd(
     graph.load_from_db(db)
     dedup = DedupEngine(db)
     llm_models = cfg.get("llm", {}).get("models", [])
-    from drbrain.extractor.canonical import SmartAligner
 
     aligner = SmartAligner(db, models=llm_models)
 
@@ -180,20 +180,43 @@ def _ingest_single_paper(
             db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
         db.commit()
 
-    # Save parsed markdown for inspection
-    papers_dir = Path(cfg.get("dirs", {}).get("pdfs", "data/pdfs")).parent / "papers"
-    save_raw_md(parsed.raw_md, local_id, papers_dir, parsed.images_dir)
+    # Save parsed markdown and source PDF into per-paper directory
+    papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    paper_dir = papers_base / local_id
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)
 
-    # Stage 3: Extract
-    echo("  Extracting concepts + arguments...")
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
         echo("Error: no LLM models configured. Run: drbrain setup")
         _log_error(cfg, "No LLM models configured")
         raise typer.Exit(1)
 
-    import asyncio
+    # Stage 2.5: Structure markdown into tree (PageIndex)
+    md_path = paper_dir / "raw.md"
+    tree_json_path = paper_dir / "tree.json"
+    echo("  Structuring document tree...")
+    try:
+        from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
 
+        pageindex_cfg = TreeConfig(
+            if_thinning=True,
+            min_token_threshold=5000,
+            if_add_node_summary=True,
+            if_add_doc_description=True,
+            if_add_node_text=False,  # Content loaded on demand, not embedded
+            if_add_node_id=True,
+            max_node_tokens=10000,
+        )
+        doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
+        tree_json_path.write_text(doc_tree.to_json(), encoding="utf-8")
+        echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_json_path.name}")
+    except Exception as e:
+        echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
+        _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
+
+    # Stage 3: Extract
+    echo("  Extracting concepts + arguments...")
     full_text = "\n\n".join(parsed.text_blocks)
     concepts = asyncio.run(extract_concepts(full_text, llm_models))
     if concepts is None:
@@ -498,31 +521,35 @@ def _log_error(cfg: dict, message: str) -> None:
         f.write(f"[{timestamp}] {message}\n")
 
 
-def save_raw_md(
-    raw_md: str, local_id: str, papers_dir: Path | None = None, images_src: Path | None = None
-) -> bool:
-    """Save parsed markdown to data/papers/<local_id>.md and images to data/papers/images/<local_id>/."""
-    if not raw_md or not local_id:
-        return False
-    if papers_dir is None:
-        papers_dir = Path("data/papers")
-    papers_dir.mkdir(parents=True, exist_ok=True)
+def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Path) -> None:
+    """Save all paper artifacts into a per-paper directory.
 
-    # Copy images to data/papers/images/<local_id>/
-    if images_src and images_src.exists():
-        img_dst = papers_dir / "images" / local_id
-        shutil.copytree(images_src, img_dst, dirs_exist_ok=True)
-        # Rewrite image refs: MinerU outputs "images/<hash>/file.jpg"
-        # We copy to "images/<local_id>/<hash>/file.jpg", so strip the leading "images/"
+    Layout:
+        data/papers/<local_id>/
+            source.pdf   — original PDF (copied from inbox)
+            raw.md       — MinerU markdown output
+            images/      — extracted images
+    """
+    # Copy source PDF
+    dst_pdf = paper_dir / "source.pdf"
+    if not dst_pdf.exists():
+        shutil.copy2(source_pdf, dst_pdf)
+
+    # Copy images and rewrite refs
+    raw_md = parsed.raw_md
+    if parsed.images_dir and parsed.images_dir.exists():
+        img_dst = paper_dir / "images"
+        shutil.copytree(parsed.images_dir, img_dst, dirs_exist_ok=True)
+        # MinerU outputs "images/<hash>/file.jpg", rewrite to "images/<hash>/file.jpg"
+        # (no local_id prefix needed — images/ is already inside paper_dir)
         raw_md = re.sub(
             r"!\[(.*?)\]\(images/([^)]+)\)",
-            rf"![\1](images/{local_id}/\2)",
+            r"![\1](images/\2)",
             raw_md,
         )
 
-    md_path = papers_dir / f"{local_id}.md"
+    md_path = paper_dir / "raw.md"
     md_path.write_text(raw_md, encoding="utf-8")
-    return True
 
 
 def _enrich_doi_from_crossref(title: str, email: str | None = None) -> dict | None:
@@ -1481,7 +1508,7 @@ def check_cmd():
         dir_paths = (
             list(dirs_config.values())
             if dirs_config
-            else ["data/pdfs", "data/reports", "data/cache", "data/logs"]
+            else ["data/inbox", "data/papers", "data/reports", "data/cache", "data/logs"]
         )
         for dir_path in dir_paths:
             p = Path(dir_path)
@@ -1490,7 +1517,7 @@ def check_cmd():
             else:
                 table5.add_row(f"  {dir_path}", "[yellow]Missing (will be created on use)[/yellow]")
     except Exception:
-        for d in ["data/pdfs", "data/reports"]:
+        for d in ["data/inbox", "data/papers"]:
             p = Path(d)
             if p.exists():
                 table5.add_row(f"  {d}", "[green]Exists[/green]")
@@ -1503,7 +1530,7 @@ def check_cmd():
     table6 = Table(show_header=False, box=None, padding=(0, 2))
     try:
         cfg = load_config()
-        db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
+        db_path = cfg.get("db", {}).get("path", "data/db/drbrain.db")
         p = Path(db_path)
         if p.exists():
             table6.add_row(f"  {db_path}", "[green]Exists[/green]")

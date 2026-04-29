@@ -1,9 +1,9 @@
 """Tests for CLI entry point (cli/main.py) via typer CliRunner."""
+
 import tempfile
 from pathlib import Path
 from unittest import mock
 
-import json
 from typer.testing import CliRunner
 
 from drbrain.cli.main import app
@@ -15,8 +15,20 @@ def _make_config(db_path: str, reports_dir: str) -> dict:
     return {
         "db": {"path": db_path},
         "llm": {"models": [{"provider": "openai", "model": "gpt-4", "api_key": "x"}]},
-        "mineru": {"token": "", "model": "vlm", "is_ocr": False, "enable_formula": True, "enable_table": True},
-        "dirs": {"reports": reports_dir, "pdfs": "data/pdfs", "cache": "data/cache", "logs": "data/logs"},
+        "mineru": {
+            "token": "",
+            "model": "vlm",
+            "is_ocr": False,
+            "enable_formula": True,
+            "enable_table": True,
+        },
+        "dirs": {
+            "inbox": "data/inbox",
+            "papers": "data/papers",
+            "reports": reports_dir,
+            "cache": "data/cache",
+            "logs": "data/logs",
+        },
         "api": {"s2_rate_limit": 100, "cache_ttl": 86400},
         "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
         "bm25": {"k1": 1.5, "b": 0.75},
@@ -24,7 +36,9 @@ def _make_config(db_path: str, reports_dir: str) -> dict:
 
 
 def mock_cfg(db_path: str, reports_dir: str):
-    return mock.patch("drbrain.cli.commands.load_config", return_value=_make_config(db_path, reports_dir))
+    return mock.patch(
+        "drbrain.cli.commands.load_config", return_value=_make_config(db_path, reports_dir)
+    )
 
 
 def test_app_help():
@@ -160,8 +174,10 @@ def test_app_queue_resolve_both_flags():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
-        from drbrain.cli.commands import queue_resolve_cmd
         from unittest import mock
+
+        from drbrain.cli.commands import queue_resolve_cmd
+
         cfg = {
             "db": {"path": str(db_path)},
             "llm": {"models": []},

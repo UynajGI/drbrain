@@ -1,7 +1,10 @@
 """Tests for YAML config loader with local overlay."""
+
 import tempfile
 from pathlib import Path
+
 from drbrain.config import load_config, merge_dicts
+
 
 def test_load_defaults():
     """Load config from example YAML only, no local overlay."""
@@ -21,9 +24,10 @@ mineru:
   enable_formula: true
   enable_table: true
 db:
-  path: data/drbrain.db
+  path: data/db/drbrain.db
 dirs:
-  pdfs: data/pdfs
+  inbox: data/inbox
+  papers: data/papers
   reports: data/reports
   cache: data/cache
   logs: data/logs
@@ -37,8 +41,9 @@ bm25:
         cfg = load_config(base_path=base, local_path=Path(td) / "nonexistent.yaml")
         assert cfg["llm"]["models"][0]["model"] == "gpt-4o"
         assert cfg["mineru"]["model"] == "vlm"
-        assert cfg["db"]["path"] == "data/drbrain.db"
+        assert cfg["db"]["path"] == "data/db/drbrain.db"
         assert cfg["bm25"]["k1"] == 1.5
+
 
 def test_load_with_local_overlay():
     """Local overlay overrides base config values."""
@@ -69,6 +74,7 @@ db:
         assert cfg["llm"]["models"][0]["provider"] == "anthropic"
         assert cfg["llm"]["models"][0]["api_key"] == "sk-test123"
         assert cfg["db"]["path"] == "/custom/path.db"
+
 
 def test_merge_dicts_nested():
     """merge_dicts does deep merge of nested dicts."""

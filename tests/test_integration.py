@@ -1,4 +1,4 @@
-"""Integration tests using real PDFs from data/pdfs/.
+"""Integration tests using real PDFs from data/inbox/.
 
 These tests are slow (MinerU API + LLM calls) and are marked with the
 ``integration`` pytest marker.  Run them explicitly when you want to
@@ -6,6 +6,7 @@ validate the full pipeline end-to-end::
 
     pytest tests/test_integration.py -v -m integration
 """
+
 import json
 import tempfile
 from pathlib import Path
@@ -19,11 +20,11 @@ from drbrain.cli.main import app
 runner = CliRunner()
 
 # All PDFs available in the repo
-PDF_DIR = Path("data/pdfs")
+PDF_DIR = Path("data/inbox")
 TEST_PDFS = sorted(str(p) for p in PDF_DIR.glob("*.pdf"))
 
 
-def _minimal_cfg(db_path: str, reports_dir: str) -> dict:
+def _minimal_cfg(db_path: str, reports_dir: str, papers_dir: str) -> dict:
     """Config that mocks load_config but leaves MinerU/LLM calls untouched."""
     return {
         "db": {"path": str(db_path)},
@@ -45,8 +46,9 @@ def _minimal_cfg(db_path: str, reports_dir: str) -> dict:
             "enable_table": True,
         },
         "dirs": {
+            "inbox": "data/inbox",
+            "papers": str(papers_dir),
             "reports": str(reports_dir),
-            "pdfs": "data/pdfs",
             "cache": "data/cache",
             "logs": "data/logs",
         },
@@ -59,22 +61,17 @@ def _minimal_cfg(db_path: str, reports_dir: str) -> dict:
 @pytest.mark.integration
 @pytest.mark.parametrize("pdf_path", TEST_PDFS)
 def test_ingest_real_pdf(pdf_path: str):
-    """Ingest a real PDF end-to-end: parse → extract → store → report."""
+    """Ingest a real PDF end-to-end: parse -> extract -> store -> report."""
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
         papers_dir = Path(td) / "papers"
 
-        cfg = _minimal_cfg(str(db_path), str(reports_dir))
+        cfg = _minimal_cfg(str(db_path), str(reports_dir), str(papers_dir))
 
         with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-            # Override papers_dir to our temp location
-            with mock.patch(
-                "drbrain.cli.commands.save_raw_md",
-                wraps=_make_temp_save_raw_md(papers_dir),
-            ):
-                result = runner.invoke(app, ["ingest", pdf_path])
+            result = runner.invoke(app, ["ingest", pdf_path])
 
         assert result.exit_code == 0, f"Ingest failed for {pdf_path}: {result.output}"
 
@@ -86,20 +83,12 @@ def test_ingest_real_pdf(pdf_path: str):
             report = json.load(f)
 
         assert report["paper"]["status"] == "uploaded"
-        assert len(report["concepts"].get("problems", [])) > 0 or \
-               len(report["concepts"].get("methods", [])) > 0, \
-               "Expected at least some concepts"
+        assert (
+            len(report["concepts"].get("problems", [])) > 0
+            or len(report["concepts"].get("methods", [])) > 0
+        ), "Expected at least some concepts"
 
-        # Verify raw MD was saved
-        md_files = list(papers_dir.glob("*.md"))
-        assert len(md_files) == 1, "Expected saved markdown file"
-
-
-def _make_temp_save_raw_md(papers_dir: Path):
-    """Return a save_raw_md wrapper that uses a temp papers_dir."""
-    from drbrain.cli.commands import save_raw_md as _original
-
-    def wrapper(raw_md, local_id, _papers_dir=None, images_src=None):
-        return _original(raw_md, local_id, papers_dir, images_src)
-
-    return wrapper
+        # Verify per-paper directory with raw.md was created
+        paper_dirs = [d for d in papers_dir.iterdir() if d.is_dir()]
+        assert len(paper_dirs) == 1, "Expected one per-paper directory"
+        assert (paper_dirs[0] / "raw.md").exists(), "Expected raw.md in paper dir"

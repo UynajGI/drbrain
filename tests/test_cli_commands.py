@@ -22,8 +22,9 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
             "enable_table": True,
         },
         "dirs": {
+            "inbox": "data/inbox",
+            "papers": "data/papers",
             "reports": reports_dir,
-            "pdfs": "data/pdfs",
             "cache": "data/cache",
             "logs": "data/logs",
         },

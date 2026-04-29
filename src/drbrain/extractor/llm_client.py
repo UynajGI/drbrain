@@ -1,4 +1,5 @@
 """LLM client with YAML-configured fallback chain."""
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,9 @@ class LLMClient:
         return call_with_fallback(prompt, self.models, system_prompt, max_tokens)
 
 
-def _build_litellm_kwargs(model_cfg: dict, prompt: str, system_prompt: str, max_tokens: int) -> dict:
+def _build_litellm_kwargs(
+    model_cfg: dict, prompt: str, system_prompt: str, max_tokens: int
+) -> dict:
     """Build litellm completion kwargs from model config."""
     name = f"{model_cfg['provider']}/{model_cfg['model']}"
     messages = []
@@ -58,7 +61,7 @@ def call_with_fallback(
             return json.loads(content)
         except Exception as e:
             name = f"{model_cfg['provider']}/{model_cfg['model']}"
-            log.warning(f"Model {name} failed (attempt {i+1}/{len(models)}): {e}")
+            log.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
     log.error(f"All {len(models)} models failed")
     return None
@@ -79,7 +82,41 @@ async def acall_with_fallback(
             return json.loads(content)
         except Exception as e:
             name = f"{model_cfg['provider']}/{model_cfg['model']}"
-            log.warning(f"Model {name} failed (attempt {i+1}/{len(models)}): {e}")
+            log.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            continue
+    log.error(f"All {len(models)} models failed")
+    return None
+
+
+async def acall_text_with_fallback(
+    prompt: str,
+    models: list[dict],
+    system_prompt: str = "",
+    max_tokens: int = 1024,
+) -> str | None:
+    """Async text call with fallback. Returns raw text (not JSON)."""
+    for i, model_cfg in enumerate(models):
+        try:
+            name = f"{model_cfg['provider']}/{model_cfg['model']}"
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            kwargs = {
+                "model": name,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": max_tokens,
+            }
+            if model_cfg.get("api_key"):
+                kwargs["api_key"] = model_cfg["api_key"]
+            if model_cfg.get("base_url"):
+                kwargs["api_base"] = model_cfg["base_url"]
+            response = await litellm.acompletion(**kwargs)
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            name = f"{model_cfg['provider']}/{model_cfg['model']}"
+            log.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
     log.error(f"All {len(models)} models failed")
     return None

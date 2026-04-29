@@ -235,40 +235,55 @@ def test_insert_edge_dedup():
     db.close()
 
 
-def test_save_raw_md_file():
-    """save_raw_md writes markdown to data/papers/<local_id>.md and returns path."""
+def test_save_paper_artifacts():
+    """_save_paper_artifacts writes raw.md, source.pdf, and images into per-paper dir."""
     import tempfile
+    from types import SimpleNamespace
 
-    from drbrain.cli.commands import save_raw_md
+    from drbrain.cli.commands import _save_paper_artifacts
 
     with tempfile.TemporaryDirectory() as td:
-        papers_dir = Path(td) / "papers"
-        md = "# Title\n\n![img](images/abc.jpg)\n\nAbstract text here."
-        result = save_raw_md(md, "p1", papers_dir)
-        assert result is True
-        assert (papers_dir / "p1.md").exists()
-        content = (papers_dir / "p1.md").read_text()
-        assert content == md
+        paper_dir = Path(td) / "papers" / "p1"
+        paper_dir.mkdir(parents=True)
+        # Create a fake source PDF
+        src_pdf = Path(td) / "input.pdf"
+        src_pdf.write_bytes(b"fake pdf content")
+
+        parsed = SimpleNamespace(
+            raw_md="# Title\n\nAbstract text here.",
+            images_dir=None,
+        )
+        _save_paper_artifacts(parsed, "p1", paper_dir, src_pdf)
+        assert (paper_dir / "raw.md").exists()
+        assert (paper_dir / "source.pdf").exists()
+        content = (paper_dir / "raw.md").read_text()
+        assert "Title" in content
 
 
-def test_save_raw_md_copies_images():
-    """save_raw_md copies images and rewrites refs."""
+def test_save_paper_artifacts_copies_images():
+    """_save_paper_artifacts copies images into per-paper dir."""
     import tempfile
+    from types import SimpleNamespace
 
-    from drbrain.cli.commands import save_raw_md
+    from drbrain.cli.commands import _save_paper_artifacts
 
     with tempfile.TemporaryDirectory() as td:
-        papers_dir = Path(td) / "papers"
-        src_dir = Path(td) / "src"
-        src_dir.mkdir()
-        img_dir = src_dir / "images"
+        paper_dir = Path(td) / "papers" / "p1"
+        paper_dir.mkdir(parents=True)
+        src_pdf = Path(td) / "input.pdf"
+        src_pdf.write_bytes(b"fake pdf")
+
+        # Create source images dir
+        img_dir = Path(td) / "src_images"
         img_dir.mkdir()
-        (img_dir / "abc.jpg").write_bytes(b"fake")
+        (img_dir / "abc.jpg").write_bytes(b"fake image")
 
-        md = "# Title\n\n![img](images/abc.jpg)\n\nAbstract text here."
-        save_raw_md(md, "p1", papers_dir, img_dir)  # img_dir is the images dir
+        parsed = SimpleNamespace(
+            raw_md="# Title\n\n![img](images/abc.jpg)\n\nAbstract.",
+            images_dir=img_dir,
+        )
+        _save_paper_artifacts(parsed, "p1", paper_dir, src_pdf)
 
-        assert (papers_dir / "p1.md").exists()
-        assert (papers_dir / "images" / "p1" / "abc.jpg").exists()
-        content = (papers_dir / "p1.md").read_text()
-        assert "images/p1/abc.jpg" in content
+        assert (paper_dir / "images" / "abc.jpg").exists()
+        content = (paper_dir / "raw.md").read_text()
+        assert "images/abc.jpg" in content

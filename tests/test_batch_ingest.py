@@ -1,12 +1,12 @@
 """Tests for batch ingest functionality."""
+
 import tempfile
 from pathlib import Path
 from unittest import mock
 
+from drbrain.cli.commands import ingest_cmd
 from drbrain.extractor.concept import ExtractedConcepts
 from drbrain.parser.mineru_parser import ParsedPaper
-
-from drbrain.cli.commands import ingest_cmd
 
 
 def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
@@ -14,8 +14,20 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
     return {
         "db": {"path": db_path},
         "llm": {"models": [{"provider": "openai", "model": "gpt-4", "api_key": "x"}]},
-        "mineru": {"token": "", "model": "vlm", "is_ocr": False, "enable_formula": True, "enable_table": True},
-        "dirs": {"reports": reports_dir, "pdfs": "data/pdfs", "cache": "data/cache", "logs": "data/logs"},
+        "mineru": {
+            "token": "",
+            "model": "vlm",
+            "is_ocr": False,
+            "enable_formula": True,
+            "enable_table": True,
+        },
+        "dirs": {
+            "inbox": "data/inbox",
+            "papers": "data/papers",
+            "reports": reports_dir,
+            "cache": "data/cache",
+            "logs": "data/logs",
+        },
         "api": {"s2_rate_limit": 100, "cache_ttl": 86400},
         "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
         "bm25": {"k1": 1.5, "b": 0.75},
@@ -39,8 +51,13 @@ def _make_concepts(idx: int = 0) -> ExtractedConcepts:
     data = {
         "problems": [{"label": f"Test Problem {idx}", "confidence": 0.9}],
         "methods": [{"label": f"Test Method {idx}", "confidence": 0.9}],
-        "conclusions": [], "debates": [], "gaps": [], "actors": [],
-        "relations": [{"head": f"Test Method {idx}", "rel": "addresses", "tail": f"Test Problem {idx}"}],
+        "conclusions": [],
+        "debates": [],
+        "gaps": [],
+        "actors": [],
+        "relations": [
+            {"head": f"Test Method {idx}", "rel": "addresses", "tail": f"Test Problem {idx}"}
+        ],
         "arguments": [],
     }
     return ExtractedConcepts(data)
@@ -62,12 +79,15 @@ def test_ingest_single_file():
         pdf_path = Path(td) / "test.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
-        with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)), \
-             mock.patch("drbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)):
+        with (
+            _common_mocks(str(db_path), str(reports_dir)),
+            mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)),
+            mock.patch("drbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)),
+        ):
             ingest_cmd([str(pdf_path)])
 
         from drbrain.storage.database import Database
+
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 1
@@ -98,12 +118,15 @@ def test_ingest_directory():
             idx = call_idx[0] - 1  # Use the last assigned index
             return _make_concepts(idx)
 
-        with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
-             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+        with (
+            _common_mocks(str(db_path), str(reports_dir)),
+            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
+            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
+        ):
             ingest_cmd([str(pdfs_dir)])
 
         from drbrain.storage.database import Database
+
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2
@@ -141,15 +164,18 @@ def test_ingest_skips_failed_papers():
             idx = paper_idx[0] - 1
             return _make_concepts(idx)
 
-        with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract), \
-             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+        with (
+            _common_mocks(str(db_path), str(reports_dir)),
+            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract),
+            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
+        ):
             ingest_cmd([str(pdfs_dir)])
 
         # Should have attempted all 3 files
         assert call_count == 3
 
         from drbrain.storage.database import Database
+
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         # Only 2 should succeed
@@ -180,12 +206,15 @@ def test_ingest_multiple_files():
             idx = call_idx[0] - 1
             return _make_concepts(idx)
 
-        with _common_mocks(str(db_path), str(reports_dir)), \
-             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect), \
-             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect):
+        with (
+            _common_mocks(str(db_path), str(reports_dir)),
+            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
+            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
+        ):
             ingest_cmd([str(pdf1), str(pdf2)])
 
         from drbrain.storage.database import Database
+
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
         assert len(papers) == 2
@@ -195,6 +224,7 @@ def test_ingest_multiple_files():
 def test_ingest_exits_when_no_pdfs():
     """ingest_cmd raises Exit when no PDF files found."""
     import click
+
     with tempfile.TemporaryDirectory() as td:
         empty_dir = Path(td) / "empty"
         empty_dir.mkdir()
