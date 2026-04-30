@@ -21,6 +21,7 @@ class ExtractedArgument:
     evidence_type: str | None = None
     evidence_detail: str | None = None
     mechanism: str = ""
+    section: str = ""
     confidence: float = 1.0
 
     def to_dict(self) -> dict:
@@ -32,6 +33,7 @@ class ExtractedArgument:
             "evidence_type": self.evidence_type,
             "evidence_detail": self.evidence_detail,
             "mechanism": self.mechanism,
+            "section": self.section,
             "confidence": self.confidence,
         }
 
@@ -49,6 +51,7 @@ def parse_arguments(raw: list[dict]) -> list[ExtractedArgument]:
                 evidence_type=item.get("evidence_type"),
                 evidence_detail=item.get("evidence_detail"),
                 mechanism=item.get("mechanism", ""),
+                section=item.get("section", ""),
                 confidence=item.get("confidence", 1.0),
             )
         )

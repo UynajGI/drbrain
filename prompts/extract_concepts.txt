@@ -19,6 +19,8 @@ Output schema (no markdown wrapping, no extra text):
       "target_type": "Method|Problem|Conclusion|Gap|Debate",
       "evidence_type": "empirical|theoretical|case_study|survey",
       "evidence_detail": "brief description of supporting evidence",
+      "mechanism": "causal mechanism explaining how/why (e.g. 'X improves Y by reducing Z')",
+      "section": "section title where this claim appears",
       "confidence": 0.0-1.0
     }
   ]
@@ -36,6 +38,8 @@ Rules:
   - "points_to": link gap → problem/method (which area the gap falls in)
   - "constrains": link gap → method (limitation on an approach)
 - arguments: structured claims with evidence — what the paper argues, not just what it mentions
+  - mechanism: explain the causal pathway ("X improves Y by reducing Z", "A enables B through C")
+  - section: which document section the claim comes from (e.g. "Abstract", "Methods", "Results", "Discussion", "Conclusion")
 - claim_type: "proposes" for new contributions, "challenges"/"supports" for existing claims, "limits" for constraints, "solves" for problem resolution, "extends" for improvements
 - Keep labels concise (3-8 words), use consistent terminology
 - If nothing to extract for a category, return empty array []

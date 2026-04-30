@@ -150,3 +150,52 @@ def test_extracted_argument_to_dict_includes_mechanism():
     d = arg.to_dict()
     assert "mechanism" in d
     assert d["mechanism"] == "faster convergence via gradient flow"
+
+
+def test_parse_arguments_section():
+    """parse_arguments extracts section field for provenance tracking."""
+    raw = [
+        {
+            "claim": "Self-attention replaces RNN",
+            "claim_type": "proposes",
+            "target": "Transformer",
+            "target_type": "Method",
+            "mechanism": "parallel computation",
+            "section": "Methods",
+        }
+    ]
+    args = parse_arguments(raw)
+    assert args[0].section == "Methods"
+    assert args[0].mechanism == "parallel computation"
+
+
+def test_parse_arguments_section_default():
+    """parse_arguments defaults section to empty string."""
+    raw = [{"claim": "Simple", "claim_type": "proposes", "target": "X", "target_type": "Method"}]
+    args = parse_arguments(raw)
+    assert args[0].section == ""
+
+
+def test_extracted_argument_to_dict_includes_section():
+    """ExtractedArgument.to_dict() includes section field."""
+    arg = ExtractedArgument(
+        claim="X replaces Y",
+        claim_type="proposes",
+        target="Method Z",
+        target_type="Method",
+        mechanism="faster convergence",
+        section="Results",
+    )
+    d = arg.to_dict()
+    assert "section" in d
+    assert d["section"] == "Results"
+
+
+def test_prompt_template_includes_mechanism_and_section():
+    """The extraction prompt template includes mechanism and section fields."""
+    from pathlib import Path
+
+    prompt_path = Path(__file__).resolve().parent.parent / "prompts" / "extract_concepts.txt"
+    content = prompt_path.read_text()
+    assert "mechanism" in content
+    assert "section" in content
