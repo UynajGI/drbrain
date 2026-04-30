@@ -1,5 +1,7 @@
 """Tests for PageIndex markdown tree extraction."""
 
+from unittest import mock
+
 from drbrain.parser.pageindex_parser import (
     DocumentTree,
     TreeConfig,
@@ -277,6 +279,213 @@ def test_get_node_content_by_title(tmp_path):
     content = get_node_content_by_title(md, result.structure, "Methods")
     assert content is not None
     assert "Method details" in content
+
+
+# -- TOC fallback --
+
+
+def test_md_to_tree_with_fallback_header(tmp_path):
+    """When markdown has headers, fallback returns tree directly without trying PDF/LLM."""
+    import asyncio
+
+    from drbrain.parser.pageindex_parser import md_to_tree_with_fallback
+
+    md = tmp_path / "test.md"
+    md.write_text("# Title\n\n## Section A\n\nContent A.\n")
+
+    config = TreeConfig(
+        if_thinning=False,
+        if_add_node_summary=False,
+        if_add_doc_description=False,
+        if_add_node_id=True,
+    )
+    result = asyncio.run(md_to_tree_with_fallback(md, config=config))
+    assert len(result.structure) >= 1
+    # Should NOT call PDF or LLM fallbacks
+    assert result.doc_name == "test"
+
+
+@mock.patch("drbrain.parser.pageindex_parser._extract_pdf_outline")
+def test_md_to_tree_with_fallback_outline(mock_outline, tmp_path):
+    """When markdown has no headers but PDF has outline, builds tree from TOC."""
+    import asyncio
+
+    from drbrain.parser.pageindex_parser import md_to_tree_with_fallback
+
+    # No headers in markdown
+    md = tmp_path / "test.md"
+    md.write_text("Some plain text without any headers.\nMore content here.\n")
+
+    pdf_path = tmp_path / "test.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4")  # dummy
+
+    # Mock PDF outline: level, title, page_index
+    mock_outline.return_value = [
+        (1, "Introduction", 0),
+        (2, "Background", 0),
+        (1, "Methods", 1),
+        (1, "Results", 2),
+    ]
+
+    config = TreeConfig(
+        if_thinning=False,
+        if_add_node_summary=False,
+        if_add_doc_description=False,
+        if_add_node_id=True,
+    )
+    result = asyncio.run(md_to_tree_with_fallback(md, config=config, pdf_path=pdf_path))
+    assert len(result.structure) >= 2
+    titles = [n["title"] for n in result.structure]
+    assert "Introduction" in titles
+    assert "Methods" in titles
+
+
+@mock.patch("drbrain.parser.pageindex_parser.acall_text_with_fallback")
+def test_md_to_tree_with_fallback_llm(mock_llm, tmp_path):
+    """When no headers and no PDF outline, falls back to LLM segmentation."""
+    import asyncio
+    import json
+
+    from drbrain.parser.pageindex_parser import md_to_tree_with_fallback
+
+    md = tmp_path / "test.md"
+    md.write_text(
+        "Plain text document with no headers at all.\nJust paragraphs of content.\nAnother paragraph here.\n"
+    )
+
+    # LLM returns section boundaries as JSON
+    mock_llm.return_value = json.dumps(
+        [
+            {"title": "Opening", "start_line": 1, "end_line": 2},
+            {"title": "Details", "start_line": 3, "end_line": 3},
+        ]
+    )
+
+    config = TreeConfig(
+        if_thinning=False,
+        if_add_node_summary=False,
+        if_add_doc_description=False,
+        if_add_node_id=True,
+    )
+    models = [{"provider": "openai", "model": "gpt-4", "api_key": "x"}]
+    result = asyncio.run(md_to_tree_with_fallback(md, config=config, models=models))
+    assert len(result.structure) >= 1
+
+
+# -- Tree validation --
+
+
+def test_validate_removes_empty_leaves():
+    """Leaf nodes with no text, no summary, and no children are removed."""
+    from drbrain.parser.pageindex_parser import validate_and_fix_tree
+
+    structure = [
+        {
+            "title": "A",
+            "node_id": "0000",
+            "line_num": 1,
+            "text": "Has content.",
+            "nodes": [],
+        },
+        {
+            "title": "B",
+            "node_id": "0001",
+            "line_num": 5,
+            "text": "",
+            "nodes": [],  # empty leaf
+        },
+    ]
+    result = validate_and_fix_tree(structure)
+    assert len(result) == 1
+    assert result[0]["title"] == "A"
+
+
+def test_validate_flattens_single_chain():
+    """A parent with a single child and no text of its own is collapsed."""
+    from drbrain.parser.pageindex_parser import validate_and_fix_tree
+
+    structure = [
+        {
+            "title": "Parent",
+            "node_id": "0000",
+            "line_num": 1,
+            "text": "",
+            "nodes": [
+                {
+                    "title": "Child",
+                    "node_id": "0001",
+                    "line_num": 1,
+                    "text": "Real content.",
+                    "nodes": [],
+                },
+            ],
+        },
+    ]
+    result = validate_and_fix_tree(structure)
+    assert len(result) == 1
+    assert result[0]["title"] == "Child"
+    assert result[0]["text"] == "Real content."
+
+
+def test_validate_caps_depth():
+    """Nodes deeper than 5 levels are merged into level 5."""
+    from drbrain.parser.pageindex_parser import validate_and_fix_tree
+
+    # Build a 6-level deep chain
+    deep_node = {
+        "title": "Level 6",
+        "node_id": "0005",
+        "line_num": 6,
+        "text": "Deep content.",
+        "nodes": [],
+    }
+    for i in range(4, -1, -1):
+        deep_node = {
+            "title": f"Level {i + 1}",
+            "node_id": f"000{i}",
+            "line_num": i + 1,
+            "text": "",
+            "nodes": [deep_node],
+        }
+    structure = [deep_node]
+    result = validate_and_fix_tree(structure)
+
+    # Count max depth
+    def _depth(nodes, d=1):
+        if not nodes:
+            return d
+        return max(_depth(n.get("nodes", []), d + 1) for n in nodes)
+
+    assert _depth(result) <= 5
+
+
+def test_validate_splits_single_leaf():
+    """A tree with only one leaf node gets that node split by paragraphs."""
+    from drbrain.parser.pageindex_parser import validate_and_fix_tree
+
+    text = "Paragraph one.\n\nParagraph two.\n\nParagraph three.\n\nParagraph four."
+    structure = [
+        {
+            "title": "OnlySection",
+            "node_id": "0000",
+            "line_num": 1,
+            "text": text,
+            "nodes": [],
+        },
+    ]
+    result = validate_and_fix_tree(structure)
+
+    # Should have more than 1 leaf now
+    def _count_leaves(nodes):
+        total = 0
+        for n in nodes:
+            if not n.get("nodes"):
+                total += 1
+            else:
+                total += _count_leaves(n["nodes"])
+        return total
+
+    assert _count_leaves(result) >= 2
 
 
 def test_get_document_structure_json():
