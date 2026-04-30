@@ -39,8 +39,13 @@ class GraphEngine:
             current = next_layer
         return visited
 
-    def closure(self) -> list[dict]:
+    def closure(self, section_map: dict[str, str] | None = None) -> list[dict]:
         """Run rule-based closure, return inferred edges.
+
+        Args:
+            section_map: Optional mapping of node label → section title.
+                When provided, each inferred edge gets a ``confidence`` field
+                computed via section-aware decay.
 
         Rules:
         - challenges(P, C) & supports(Q, C) => creates_debate(P, Q, C)
@@ -174,6 +179,17 @@ class GraphEngine:
         # Rule 8: Multi-hop path rules
         path_inferred = apply_path_rules(self)
         inferred.extend(path_inferred)
+
+        # Section-aware confidence propagation
+        if section_map:
+            from drbrain.extractor.confidence_propagation import propagate_confidence_with_section
+
+            for edge in inferred:
+                src_section = section_map.get(edge["src"], "")
+                edge["confidence"] = propagate_confidence_with_section(
+                    confidence=1.0,
+                    section=src_section,
+                )
 
         return inferred
 

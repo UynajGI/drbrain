@@ -43,6 +43,42 @@ def score_hypothesis(hyp: Hypothesis) -> float:
     return round(min(hyp.base_confidence + bonus, 1.0), 3)
 
 
+def detect_section_contradictions(
+    graph: GraphEngine,
+    section_map: dict[str, str],
+) -> list[dict]:
+    """Find conclusions supported in one section but challenged in another.
+
+    Returns list of dicts with conclusion, supporting_sections, challenging_sections.
+    """
+    # Build: conclusion → set of (section, relation_type)
+    conclusion_evidence: dict[str, list[tuple[str, str]]] = defaultdict(list)
+
+    for u, v, data in graph.graph.edges(data=True):
+        rel = data.get("relation", "")
+        if rel in ("supports", "challenges"):
+            section = section_map.get(u, "")
+            if section:
+                conclusion_evidence[v].append((section, rel))
+
+    contradictions = []
+    for conclusion, entries in conclusion_evidence.items():
+        supporting = {s for s, r in entries if r == "supports"}
+        challenging = {s for s, r in entries if r == "challenges"}
+
+        # Only report if supports and challenges come from DIFFERENT sections
+        if supporting and challenging and supporting != challenging:
+            contradictions.append(
+                {
+                    "conclusion": conclusion,
+                    "supporting_sections": sorted(supporting),
+                    "challenging_sections": sorted(challenging),
+                }
+            )
+
+    return contradictions
+
+
 def generate_hypotheses(
     graph: GraphEngine,
     section_map: dict[str, str] | None = None,

@@ -2,6 +2,7 @@
 
 from drbrain.extractor.hypothesis import (
     Hypothesis,
+    detect_section_contradictions,
     generate_hypotheses,
     score_hypothesis,
 )
@@ -150,3 +151,46 @@ def test_generate_hypotheses_without_section_map():
     assert len(gap_hyps) >= 1
     evidence_text = " ".join(gap_hyps[0].evidence)
     assert "section" not in evidence_text
+
+
+# -- Section contradiction detection --
+
+
+def test_detect_contradictions_found():
+    """Supports and challenges from different sections are detected."""
+    g = _make_graph(
+        [
+            ("P1", "Conclusion_Z", "supports", "p1"),
+            ("P2", "Conclusion_Z", "challenges", "p2"),
+        ]
+    )
+    section_map = {"P1": "Results", "P2": "Discussion"}
+    contradictions = detect_section_contradictions(g, section_map)
+    assert len(contradictions) >= 1
+    assert contradictions[0]["conclusion"] == "Conclusion_Z"
+    assert "Results" in contradictions[0]["supporting_sections"]
+    assert "Discussion" in contradictions[0]["challenging_sections"]
+
+
+def test_detect_contradictions_same_section_ignored():
+    """Supports and challenges from the same section are not reported."""
+    g = _make_graph(
+        [
+            ("P1", "Conclusion_Z", "supports", "p1"),
+            ("P2", "Conclusion_Z", "challenges", "p2"),
+        ]
+    )
+    section_map = {"P1": "Discussion", "P2": "Discussion"}
+    contradictions = detect_section_contradictions(g, section_map)
+    assert len(contradictions) == 0
+
+
+def test_detect_contradictions_empty():
+    """No contradictions returns empty list."""
+    g = _make_graph(
+        [
+            ("P1", "Conclusion_Z", "supports", "p1"),
+        ]
+    )
+    contradictions = detect_section_contradictions(g, {"P1": "Results"})
+    assert contradictions == []
