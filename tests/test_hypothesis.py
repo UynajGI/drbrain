@@ -99,3 +99,54 @@ def test_hypothesis_to_dict():
     assert d["description"] == "Test"
     assert d["type"] == "gap_filling"
     assert "score" in d
+
+
+# -- Section-aware hypothesis generation --
+
+
+def test_generate_hypotheses_with_section_map():
+    """Section map adds provenance to evidence strings."""
+    g = _make_graph(
+        [
+            ("G1", "Gap_X", "leaves_open", "p1"),
+            ("M1", "Other_Gap", "addresses", "p2"),
+        ]
+    )
+    section_map = {"M1": "Methods"}
+    hyps = generate_hypotheses(g, section_map=section_map)
+    gap_hyps = [h for h in hyps if "Gap_X" in h.description]
+    assert len(gap_hyps) >= 1
+    # Evidence should mention Methods section
+    evidence_text = " ".join(gap_hyps[0].evidence)
+    assert "Methods" in evidence_text
+
+
+def test_generate_hypotheses_debate_with_sections():
+    """Debate hypotheses include section info when available."""
+    g = _make_graph(
+        [
+            ("P1", "Conclusion_Z", "supports", "p1"),
+            ("P2", "Conclusion_Z", "challenges", "p2"),
+        ]
+    )
+    section_map = {"P1": "Results", "P2": "Discussion"}
+    hyps = generate_hypotheses(g, section_map=section_map)
+    debate_hyps = [h for h in hyps if "Conclusion_Z" in h.description]
+    assert len(debate_hyps) >= 1
+    evidence_text = " ".join(debate_hyps[0].evidence)
+    assert "Results" in evidence_text or "Discussion" in evidence_text
+
+
+def test_generate_hypotheses_without_section_map():
+    """Without section_map, evidence strings have no section info."""
+    g = _make_graph(
+        [
+            ("G1", "Gap_X", "leaves_open", "p1"),
+            ("M1", "Other_Gap", "addresses", "p2"),
+        ]
+    )
+    hyps = generate_hypotheses(g)
+    gap_hyps = [h for h in hyps if "Gap_X" in h.description]
+    assert len(gap_hyps) >= 1
+    evidence_text = " ".join(gap_hyps[0].evidence)
+    assert "section" not in evidence_text

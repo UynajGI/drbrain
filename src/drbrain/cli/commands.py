@@ -17,7 +17,7 @@ from rich.table import Table
 from drbrain.config import load_config
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
 from drbrain.extractor.canonical import SmartAligner
-from drbrain.extractor.concept import extract_concepts
+from drbrain.extractor.concept import extract_concepts, extract_concepts_from_tree
 from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.report.generator import PaperReport
@@ -217,8 +217,18 @@ def _ingest_single_paper(
 
     # Stage 3: Extract
     echo("  Extracting concepts + arguments...")
-    full_text = "\n\n".join(parsed.text_blocks)
-    concepts = asyncio.run(extract_concepts(full_text, llm_models))
+    if tree_json_path.exists():
+        tree_data = json.loads(tree_json_path.read_text(encoding="utf-8"))
+        concepts = asyncio.run(
+            extract_concepts_from_tree(md_path, tree_data["structure"], llm_models)
+        )
+    else:
+        concepts = None
+
+    if concepts is None:
+        # Fallback: flat text extraction (no tree or tree extraction failed)
+        full_text = "\n\n".join(parsed.text_blocks)
+        concepts = asyncio.run(extract_concepts(full_text, llm_models))
     if concepts is None:
         echo("Error: LLM extraction failed. All models exhausted.")
         _log_error(cfg, f"LLM extraction failed for {local_id}")
@@ -290,7 +300,14 @@ def _ingest_single_paper(
                 conf = item.get("confidence", 1.0)
                 if conf >= weak_threshold:
                     canonical_id = aligner.align(label, ctype)
-                    db.insert_concept(local_id, ctype, label, conf, year=parsed.year)
+                    db.insert_concept(
+                        local_id,
+                        ctype,
+                        label,
+                        conf,
+                        year=parsed.year,
+                        section=item.get("section", ""),
+                    )
                     db.insert_alias(label, canonical_id)
 
         for rel in valid_relations:
@@ -328,6 +345,7 @@ def _ingest_single_paper(
                 arg.evidence_detail,
                 arg.mechanism,
                 arg.confidence,
+                section=arg.section,
             )
 
         db.commit()
@@ -1565,3 +1583,50 @@ def check_cmd():
 
     if errors:
         raise typer.Exit(1)
+
+
+def clean_cmd(
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config file path"),
+) -> None:
+    """Clear data directories (db, cache, logs, papers, reports). Keeps inbox (PDFs) intact."""
+    cfg = load_config(config_path)
+    dirs = cfg.get("dirs", {})
+
+    targets = [
+        dirs.get("db", "data/db"),
+        dirs.get("cache", "data/cache"),
+        dirs.get("logs", "data/logs"),
+        dirs.get("papers", "data/papers"),
+        dirs.get("reports", "data/reports"),
+    ]
+
+    existing = [t for t in targets if Path(t).exists()]
+    if not existing:
+        typer.echo("Nothing to clean — data directories are already empty.")
+        return
+
+    if not force:
+        typer.echo("Will clear these directories:")
+        for d in existing:
+            count = sum(1 for _ in Path(d).rglob("*") if _.is_file())
+            typer.echo(f"  {d}/ ({count} files)")
+        confirm = typer.confirm("Proceed?", default=False)
+        if not confirm:
+            typer.echo("Cancelled.")
+            return
+
+    for d in existing:
+        p = Path(d)
+        for item in p.iterdir():
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        typer.echo(f"  Cleared {d}/")
+
+    # Ensure directories still exist
+    for t in targets:
+        Path(t).mkdir(parents=True, exist_ok=True)
+
+    typer.echo("Done. Inbox (PDFs) untouched.")

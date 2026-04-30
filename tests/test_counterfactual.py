@@ -3,6 +3,7 @@
 from drbrain.extractor.counterfactual import (
     CounterfactualImpact,
     find_critical_nodes,
+    find_critical_nodes_weighted,
     run_counterfactual,
 )
 from drbrain.graph.engine import GraphEngine
@@ -116,3 +117,45 @@ def test_find_critical_nodes_empty():
     """find_critical_nodes returns empty list for empty graph."""
     g = GraphEngine()
     assert find_critical_nodes(g) == []
+
+
+# -- Section-weighted critical nodes --
+
+
+def test_find_critical_nodes_weighted():
+    """Section-weighted scoring boosts nodes from grounded sections."""
+    g = _make_graph(
+        [
+            ("A", "B", "extends", "p1"),
+            ("B", "C", "addresses", "p1"),
+            ("B", "D", "proposes", "p1"),
+            ("E", "F", "cites", "p2"),
+        ]
+    )
+    # B is from Methods (weight 1.5), E is from Introduction (weight 0.8)
+    section_map = {"B": "Methods", "E": "Introduction"}
+    critical = find_critical_nodes_weighted(g, section_map)
+    assert len(critical) > 0
+    b_score = next((c["impact"] for c in critical if c["node"] == "B"), 0)
+    e_score = next((c["impact"] for c in critical if c["node"] == "E"), 0)
+    # B has higher base impact AND higher section weight
+    assert b_score > e_score
+
+
+def test_find_critical_nodes_weighted_empty():
+    """Weighted critical nodes returns empty list for empty graph."""
+    g = GraphEngine()
+    assert find_critical_nodes_weighted(g, {}) == []
+
+
+def test_find_critical_nodes_weighted_unknown_section():
+    """Unknown section uses default weight 1.0."""
+    g = _make_graph(
+        [
+            ("A", "B", "extends", "p1"),
+        ]
+    )
+    critical = find_critical_nodes_weighted(g, {"B": "Appendix"})
+    assert len(critical) > 0
+    # Should still work with unknown section
+    assert critical[0]["impact"] > 0

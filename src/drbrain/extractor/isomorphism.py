@@ -24,14 +24,36 @@ class IsomorphicMapping:
     confidence: float = 0.0
 
 
-def _relation_signature(graph: GraphEngine, node: str) -> dict[str, int]:
-    """Build a relation signature for a node: {relation_type: count}."""
+def _relation_signature(
+    graph: GraphEngine,
+    node: str,
+    section_map: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Build a relation signature for a node: {relation_type: count}.
+
+    Args:
+        graph: The knowledge graph engine.
+        node: Node label to build signature for.
+        section_map: Optional mapping of node label → section title.
+            If provided, signature keys include section info
+            (e.g. "in:supports@Methods").
+    """
     sig: dict[str, int] = defaultdict(int)
     for u, v, data in graph.graph.edges(data=True):
         if v == node:
-            sig[f"in:{data['relation']}"] += 1
+            key = f"in:{data['relation']}"
+            if section_map:
+                section = section_map.get(u, "")
+                if section:
+                    key = f"{key}@{section}"
+            sig[key] += 1
         elif u == node:
-            sig[f"out:{data['relation']}"] += 1
+            key = f"out:{data['relation']}"
+            if section_map:
+                section = section_map.get(v, "")
+                if section:
+                    key = f"{key}@{section}"
+            sig[key] += 1
     return dict(sig)
 
 

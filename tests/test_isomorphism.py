@@ -4,6 +4,7 @@ import pytest
 
 from drbrain.extractor.isomorphism import (
     IsomorphicMapping,
+    _relation_signature,
     find_isomorphic_patterns,
     find_similar_problems,
 )
@@ -92,3 +93,47 @@ def test_find_similar_problems_different_patterns():
     similar = find_similar_problems(g, "P1")
     # P2 has only 1 addressing method vs P1's 3
     assert all("P2" not in s for s in similar)
+
+
+# -- Section-aware signature --
+
+
+def test_relation_signature_without_section():
+    """Default signature has no section info."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+            ("M1", "P1", "supports", "p1"),
+        ]
+    )
+    sig = _relation_signature(g, "P1")
+    assert "in:addresses" in sig
+    assert "in:supports" in sig
+    assert "@" not in str(sig)
+
+
+def test_relation_signature_with_section():
+    """Section-aware signature includes section dimension."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+            ("M2", "P1", "supports", "p1"),
+        ]
+    )
+    section_map = {"M1": "Methods", "M2": "Results"}
+    sig = _relation_signature(g, "P1", section_map=section_map)
+    assert "in:addresses@Methods" in sig
+    assert "in:supports@Results" in sig
+
+
+def test_relation_signature_section_unknown():
+    """Unknown section in map doesn't add section suffix."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+        ]
+    )
+    section_map = {"M1": ""}
+    sig = _relation_signature(g, "P1", section_map=section_map)
+    assert "in:addresses" in sig
+    assert "@" not in str(sig)

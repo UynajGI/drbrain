@@ -94,3 +94,50 @@ def find_critical_nodes(graph: GraphEngine, top_n: int = 10) -> list[dict]:
 
     sorted_nodes = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [{"node": n, "impact": s} for n, s in sorted_nodes[:top_n]]
+
+
+# Section weight: grounded sections contribute more to impact
+_SECTION_WEIGHT = {
+    "methods": 1.5,
+    "methodology": 1.5,
+    "results": 1.5,
+    "experiments": 1.3,
+    "evaluation": 1.3,
+    "conclusion": 1.2,
+    "discussion": 1.0,
+    "introduction": 0.8,
+    "related work": 0.7,
+    "background": 0.8,
+    "abstract": 0.9,
+    "future work": 0.6,
+}
+
+
+def find_critical_nodes_weighted(
+    graph: GraphEngine,
+    section_map: dict[str, str],
+    top_n: int = 10,
+) -> list[dict]:
+    """Rank nodes by section-weighted counterfactual impact.
+
+    Nodes from grounded sections (Methods, Results) contribute more
+    to the impact score than those from speculative sections.
+
+    Args:
+        graph: The knowledge graph engine.
+        section_map: Mapping of node label → section title.
+        top_n: Number of top nodes to return.
+    """
+    if graph.graph.number_of_nodes() == 0:
+        return []
+
+    scores: dict[str, float] = {}
+    for node in graph.graph.nodes():
+        impact = run_counterfactual(graph, node)
+        base_score = impact.removed_edges + impact.affected_concepts + len(impact.lost_inferences)
+        section = section_map.get(node, "")
+        weight = _SECTION_WEIGHT.get(section.strip().lower(), 1.0)
+        scores[node] = base_score * weight
+
+    sorted_nodes = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [{"node": n, "impact": s} for n, s in sorted_nodes[:top_n]]

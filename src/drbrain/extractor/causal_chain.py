@@ -12,6 +12,30 @@ from dataclasses import dataclass
 
 from drbrain.extractor.argument import ExtractedArgument
 
+# Standard academic section ordering for adjacency-based chain sorting
+_SECTION_ORDER = {
+    "abstract": 0,
+    "introduction": 1,
+    "related work": 2,
+    "background": 3,
+    "methods": 4,
+    "methodology": 4,
+    "approach": 4,
+    "experiments": 5,
+    "results": 5,
+    "evaluation": 5,
+    "discussion": 6,
+    "conclusion": 7,
+    "future work": 8,
+}
+
+
+def _section_order(section: str) -> int:
+    """Map section title to document order weight. Unknown sections get 99."""
+    if not section:
+        return 99
+    return _SECTION_ORDER.get(section.strip().lower(), 99)
+
 
 @dataclass
 class CausalChain:
@@ -110,6 +134,12 @@ def build_causal_chains(args: list[ExtractedArgument]) -> list[CausalChain]:
             chains.append(chain)
             global_visited.update(path)
             return
+        # Sort by section adjacency: prefer nodes whose section follows
+        # the current node's section in document order
+        current_section = _section_order(mech_args[node].section)
+        next_nodes.sort(
+            key=lambda n: abs(_section_order(mech_args[n].section) - current_section - 1)
+        )
         for n in next_nodes:
             _dfs(n, path + [n])
 
@@ -145,6 +175,10 @@ def find_chains_from(args: list[ExtractedArgument], concept: str) -> list[Causal
         if not next_nodes:
             chains.append(CausalChain(links=[mech_args[i] for i in path]))
             return
+        current_section = _section_order(mech_args[node].section)
+        next_nodes.sort(
+            key=lambda n: abs(_section_order(mech_args[n].section) - current_section - 1)
+        )
         for n in next_nodes:
             _dfs(n, path + [n])
 

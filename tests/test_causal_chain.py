@@ -3,6 +3,7 @@
 from drbrain.extractor.argument import ExtractedArgument
 from drbrain.extractor.causal_chain import (
     CausalChain,
+    _section_order,
     build_causal_chains,
     find_chains_from,
     find_path,
@@ -165,3 +166,48 @@ def test_empty_arguments():
     assert build_causal_chains([]) == []
     assert find_chains_from([], "X") == []
     assert find_path([], "A", "B") is None
+
+
+# -- Section ordering --
+
+
+def test_section_order_known():
+    """_section_order maps known sections to correct order."""
+    assert _section_order("Abstract") < _section_order("Introduction")
+    assert _section_order("Introduction") < _section_order("Methods")
+    assert _section_order("Methods") < _section_order("Results")
+    assert _section_order("Results") < _section_order("Discussion")
+    assert _section_order("Discussion") < _section_order("Conclusion")
+
+
+def test_section_order_unknown():
+    """Unknown sections get order 99."""
+    assert _section_order("Appendix") == 99
+    assert _section_order("") == 99
+
+
+def test_section_order_case_insensitive():
+    """Section order is case-insensitive."""
+    assert _section_order("methods") == _section_order("Methods")
+    assert _section_order("METHODS") == _section_order("Methods")
+
+
+def test_build_causal_chains_section_adjacency():
+    """Chain building prefers section-adjacent arguments."""
+    # Three args targeting the same concept X, from different sections
+    arg_intro = _make_arg("A proposes X", "X", "mechanism 1")
+    arg_intro.section = "Introduction"
+    arg_methods = _make_arg("B implements X", "X", "mechanism 2")
+    arg_methods.section = "Methods"
+    arg_results = _make_arg("C validates X", "X", "mechanism 3")
+    arg_results.section = "Results"
+
+    args = [arg_intro, arg_methods, arg_results]
+    chains = build_causal_chains(args)
+    assert len(chains) >= 1
+
+    # The longest chain should follow document order: Intro → Methods → Results
+    longest = max(chains, key=lambda c: len(c.links))
+    assert len(longest.links) == 3
+    sections = [a.section for a in longest.links]
+    assert sections == ["Introduction", "Methods", "Results"]

@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS concepts (
     type TEXT NOT NULL CHECK(type IN ('Problem', 'Method', 'Conclusion', 'Debate', 'Gap', 'Actor')),
     label TEXT NOT NULL,
     confidence REAL DEFAULT 1.0,
+    section TEXT DEFAULT '',
     first_seen INTEGER,
     last_seen INTEGER
 );
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     evidence_type TEXT CHECK(evidence_type IN ('empirical', 'theoretical', 'case_study', 'survey')),
     evidence_detail TEXT,
     mechanism TEXT DEFAULT '',
+    section TEXT DEFAULT '',
     confidence REAL DEFAULT 1.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -171,11 +173,12 @@ class Database:
         label: str,
         confidence: float = 1.0,
         year: int | None = None,
+        section: str = "",
     ) -> int:
         """Insert a concept with temporal tracking. Returns concept_id."""
         cur = self.conn.execute(
-            "INSERT INTO concepts (local_id, type, label, confidence, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)",
-            (local_id, ctype, label, confidence, year, year),
+            "INSERT INTO concepts (local_id, type, label, confidence, section, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (local_id, ctype, label, confidence, section, year, year),
         )
         return cur.lastrowid
 
@@ -281,11 +284,12 @@ class Database:
         evidence_detail: str | None = None,
         mechanism: str = "",
         confidence: float = 1.0,
+        section: str = "",
     ) -> int:
         """Insert an argument unit. Returns arg_id."""
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
-            "evidence_type, evidence_detail, mechanism, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "evidence_type, evidence_detail, mechanism, section, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 source_paper,
                 claim,
@@ -295,6 +299,7 @@ class Database:
                 evidence_type,
                 evidence_detail,
                 mechanism,
+                section,
                 confidence,
             ),
         )

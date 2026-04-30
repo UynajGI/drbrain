@@ -43,9 +43,23 @@ def score_hypothesis(hyp: Hypothesis) -> float:
     return round(min(hyp.base_confidence + bonus, 1.0), 3)
 
 
-def generate_hypotheses(graph: GraphEngine) -> list[Hypothesis]:
-    """Generate research hypotheses from graph patterns."""
+def generate_hypotheses(
+    graph: GraphEngine,
+    section_map: dict[str, str] | None = None,
+) -> list[Hypothesis]:
+    """Generate research hypotheses from graph patterns.
+
+    Args:
+        graph: The knowledge graph engine.
+        section_map: Optional mapping of node label → section title.
+            When provided, evidence strings include section provenance.
+    """
     hyps: list[Hypothesis] = []
+    section_map = section_map or {}
+
+    def _section_suffix(node: str) -> str:
+        section = section_map.get(node, "")
+        return f" (found in: {section} section)" if section else ""
 
     # Build relation indices
     edges_by_rel: dict[str, list[tuple[str, str]]] = defaultdict(list)
@@ -72,7 +86,9 @@ def generate_hypotheses(graph: GraphEngine) -> list[Hypothesis]:
 
         top_methods = list(methods)[:3]
         if top_methods:
-            evidence = [f"Method {m} addresses related concepts" for m in top_methods]
+            evidence = [
+                f"Method {m} addresses related concepts{_section_suffix(m)}" for m in top_methods
+            ]
             hyps.append(
                 Hypothesis(
                     description=f"One of [{', '.join(top_methods)}] could address Gap '{gap}'",
@@ -100,12 +116,21 @@ def generate_hypotheses(graph: GraphEngine) -> list[Hypothesis]:
     for target in debate_targets:
         n_support = len([v for _, v in edges_by_rel["supports"] if v == target])
         n_challenge = len([v for _, v in edges_by_rel["challenges"] if v == target])
+        # Collect section info from supporting/challenging papers
+        support_sections = [
+            section_map.get(u, "") for u, v in edges_by_rel["supports"] if v == target
+        ]
+        challenge_sections = [
+            section_map.get(u, "") for u, v in edges_by_rel["challenges"] if v == target
+        ]
+        all_sections = [s for s in support_sections + challenge_sections if s]
+        section_info = f" (sections: {', '.join(set(all_sections))})" if all_sections else ""
         hyps.append(
             Hypothesis(
                 description=f"'{target}' has conflicting evidence ({n_support} support, {n_challenge} challenge) — resolution needed",
                 type="debate_resolution",
                 base_confidence=0.6,
-                evidence=[f"{n_support + n_challenge} papers engaged in debate"],
+                evidence=[f"{n_support + n_challenge} papers engaged in debate{section_info}"],
             )
         )
 
@@ -127,7 +152,9 @@ def generate_hypotheses(graph: GraphEngine) -> list[Hypothesis]:
                     description=f"Method '{method}' may be revivable if constraint '{gap}' is relaxed",
                     type="technology_revival",
                     base_confidence=0.4,
-                    evidence=[f"Method '{method}' was actively extended before stalling"],
+                    evidence=[
+                        f"Method '{method}' was actively extended before stalling{_section_suffix(method)}"
+                    ],
                 )
             )
 

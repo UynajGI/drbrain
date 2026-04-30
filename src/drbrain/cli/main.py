@@ -6,6 +6,7 @@ import typer
 
 from drbrain.cli.commands import (
     check_cmd,
+    clean_cmd,
     closure_cmd,
     delete_cmd,
     expand_cmd,
@@ -45,6 +46,7 @@ app.command("delete")(delete_cmd)
 app.command("serve")(serve_cmd)
 app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
+app.command("clean")(clean_cmd)
 
 if __name__ == "__main__":
     app()
