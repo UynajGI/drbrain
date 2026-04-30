@@ -1,4 +1,8 @@
-"""Academic concept + argument extraction via LLM with fallback chain."""
+"""Academic concept + argument extraction via LLM with fallback chain.
+
+Tree-based extraction adapted from PageIndex (https://github.com/vectify-ai/pageindex).
+Original code Copyright (c) 2025 Vectify AI, MIT License.
+"""
 
 from __future__ import annotations
 

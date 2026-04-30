@@ -1,5 +1,8 @@
 """Structure-first retrieval using PageIndex tree.
 
+Adapted from PageIndex (https://github.com/vectify-ai/pageindex).
+Original code Copyright (c) 2025 Vectify AI, MIT License.
+
 Implements the PageIndex retrieval approach:
 1. Read tree skeleton (summaries without text)
 2. LLM reasons about which sections are relevant to a question
