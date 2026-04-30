@@ -69,11 +69,23 @@ async def _ask_llm_for_relevant_nodes(
     return []
 
 
+def _get_node_title(structure: list[dict], node_id: str) -> str:
+    """Find a node's title by node_id in the tree structure (recursive search)."""
+    for node in structure:
+        if node.get("node_id") == node_id:
+            return node.get("title", "")
+        if node.get("nodes"):
+            result = _get_node_title(node["nodes"], node_id)
+            if result:
+                return result
+    return ""
+
+
 async def query_by_structure(
     question: str,
     paper_dir: Path,
     models: list[dict],
-) -> str | None:
+) -> list[dict] | None:
     """PageIndex-style retrieval: read tree skeleton, reason, load content.
 
     Args:
@@ -82,7 +94,8 @@ async def query_by_structure(
         models: LLM model configs for section selection.
 
     Returns:
-        Concatenated content from relevant sections, or None if retrieval fails.
+        List of dicts with node_id, title, content for each relevant section,
+        or None if retrieval fails.
     """
     tree_path = paper_dir / "tree.json"
     md_path = paper_dir / "raw.md"
@@ -106,13 +119,14 @@ async def query_by_structure(
         return None
 
     # Load content on-demand
-    contents = []
+    sections = []
     for nid in relevant_ids:
         content = get_node_content(md_path, structure, nid)
         if content and content.strip():
-            contents.append(content)
+            title = _get_node_title(structure, nid)
+            sections.append({"node_id": nid, "title": title or "", "content": content.strip()})
 
-    if not contents:
+    if not sections:
         return None
 
-    return "\n\n---\n\n".join(contents)
+    return sections

@@ -20,6 +20,7 @@ from drbrain.extractor.canonical import SmartAligner
 from drbrain.extractor.concept import extract_concepts, extract_concepts_from_tree
 from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
+from drbrain.query.tree_retrieval import query_by_structure
 from drbrain.report.generator import PaperReport
 from drbrain.storage.database import Database
 
@@ -861,9 +862,74 @@ def query_cmd(
     ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
+    paper: str = typer.Option(
+        None,
+        "--paper",
+        help="Paper local_id for PageIndex tree retrieval (bypasses BM25 when set)",
+    ),
 ):
-    """Query concepts and arguments with BM25 + filters."""
+    """Query concepts and arguments with BM25 + filters, or use PageIndex tree retrieval."""
     cfg = load_config()
+
+    # --- Tree retrieval path ---
+    # Normalize: when called directly (not through typer CLI), OptionInfo is still the default
+    _paper = paper if not isinstance(paper, typer.models.OptionInfo) else paper.default
+
+    if _paper:
+        papers_dir = Path(cfg["dirs"]["papers"])
+        paper_dir = papers_dir / _paper
+        if not paper_dir.exists():
+            typer.echo(f"Paper not found: {_paper}", err=True)
+            raise typer.Exit(1)
+        if not (paper_dir / "tree.json").exists():
+            typer.echo(f"tree.json not found for {_paper}. Run 'drbrain ingest' first.", err=True)
+            raise typer.Exit(1)
+
+        llm_models = cfg.get("llm", {}).get("models", [])
+        sections = asyncio.run(query_by_structure(text, paper_dir, llm_models))
+
+        if sections is None:
+            if json_output:
+                typer.echo(
+                    json.dumps(
+                        {"query": text, "paper": _paper, "mode": "pageindex", "sections": []},
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                typer.echo(f"No relevant sections found for: {text}")
+            return
+
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"query": text, "paper": _paper, "mode": "pageindex", "sections": sections},
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+
+        # Rich text output
+        typer.echo(f"Query: {text}")
+        typer.echo(f"  Paper: {_paper}")
+        typer.echo("  Mode: pageindex")
+        typer.echo(f"  Sections found: {len(sections)}")
+        typer.echo()
+
+        for i, sec in enumerate(sections):
+            title_tag = (
+                f" [{sec['node_id']}] {sec['title']}"
+                if sec.get("title")
+                else f" [{sec['node_id']}]"
+            )
+            typer.echo(f"  {title_tag}")
+            content = sec["content"]
+            typer.echo(content[:500] + ("..." if len(content) > 500 else ""))
+            if i < len(sections) - 1:
+                typer.echo()
+        return
+
     db = Database(cfg["db"]["path"])
 
     from drbrain.query.bm25 import build_bm25_index
