@@ -24,27 +24,30 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
 2. **Identify** (`dedup/resolver.py`): Resolve paper identity via priority chain: DOI → arXiv → S2 ID → OpenAlex ID → title+year fuzzy match. Creates or upgrades paper record.
 
-3. **Extract** (`extractor/concept.py`, `extractor/llm_client.py`): LLM extracts structured concepts (Problem, Method, Conclusion, Debate, Gap, Actor) and typed arguments with mechanism fields. Uses a fallback chain across configured models. Prompt template lives in `prompts/extract_concepts.txt`.
+3. **Extract** (`extractor/concept.py`, `extractor/llm_client.py`): LLM extracts structured concepts (Problem, Method, Conclusion, Debate, Gap, Actor) and typed arguments with `mechanism` and `section` fields. Uses a fallback chain across configured models. Prompt template lives in `prompts/extract_concepts.txt`.
 
-4. **Validate** (`validator/schema.py`): **TBox** enforces which relations each concept type can use (e.g., Problem can `addresses`/`leaves_open`/`points_to`). **RBox** enforces transitivity, asymmetry, irreflexivity on specific relations. Rejected items go to `validation.log`.
+   **PageIndex tree extraction** (`parser/pageindex_parser.py`): Documents are first structured into a tree (`tree.json` in Stage 2.5). `extract_concepts_from_tree()` then extracts per-leaf-node with the tree skeleton as LLM context, replacing flat `text[:8000]` truncation. Concurrency is capped via `asyncio.Semaphore(max_concurrent=3)`. Content quality gate (`_is_quality_content()`) filters short text and reference lists before LLM calls. After merge, `_link_cross_section_arguments()` links arguments sharing targets across sections.
+
+4. **Validate** (`validator/schema.py`): **TBox** enforces which relations each concept type can use (e.g., Problem can `addresses`/`leaves_open`/`points_to`). **RBox** enforces transitivity, asymmetry, irreflexivity on specific relations. Pre-insertion TBox check via `validate_extraction()` in concept.py. Rejected items go to `validation.log`.
 
 5. **Queue** (`extractor/queue.py`): Low-confidence concepts (< `weak_threshold`, default 0.7) are routed to `confidence_queue` table for manual review via `drbrain queue` / `drbrain queue resolve`.
 
 6. **Align** (`extractor/canonical.py`): Canonical ID alignment — BM25 similarity match with LLM arbitration for ambiguous cases (score 0.3-0.8).
 
-7. **Ingest** (`storage/database.py`): Inserts concepts, arguments (with `mechanism` field for causal chains), edges into SQLite. Basic SQLite wrapper with auto-schema init — no ORM.
+7. **Ingest** (`storage/database.py`): Inserts concepts, arguments (with `mechanism` and `section` fields), edges into SQLite. Basic SQLite wrapper with auto-schema init — no ORM.
 
 8. **Expand** (`extractor/citation.py`): Fetches references and citations from Semantic Scholar / CrossRef / OpenAlex. Creates placeholder papers for external references.
 
-9. **Closure** (`graph/engine.py`): NetworkX MultiDiGraph in-memory. Rule-based relationship inference (8 rules): `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, transitive closure, asymmetric detection, multi-hop path rules. Supports both full-graph and incremental (2-hop subgraph) closure.
+9. **Closure** (`graph/engine.py`): NetworkX MultiDiGraph in-memory. Rule-based relationship inference (8 rules): `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, transitive closure, asymmetric detection, multi-hop path rules. Supports both full-graph and incremental (2-hop subgraph) closure. When `section_map` is provided, inferred edges get section-aware confidence via `propagate_confidence_with_section()`.
 
 ### Reasoning & Discovery Modules (post-ingestion)
 
-- **Causal Chain** (`extractor/causal_chain.py`): Builds X→Y(via Z) chains from argument mechanism fields. `build_causal_chains()`, `find_chains_from()`, `find_path()`.
-- **Confidence Propagation** (`extractor/confidence_propagation.py`): Multi-hop confidence decay (default 0.85 per hop), multi-path merging via probabilistic OR: `P = 1 - prod(1 - p_i)`.
-- **Counterfactual Queries** (`extractor/counterfactual.py`): "What if X didn't exist?" — measures node removal impact on closure inferences. `run_counterfactual()`, `find_critical_nodes()`.
-- **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Finds structurally similar subgraphs via relation signature Jaccard similarity. `find_similar_problems()`, `find_isomorphic_patterns()`.
-- **Hypothesis Generation** (`extractor/hypothesis.py`): Generates research hypotheses from unaddressed gaps, debate zones, and technology cliffs. `generate_hypotheses()`, `score_hypothesis()`.
+- **Causal Chain** (`extractor/causal_chain.py`): Builds X→Y(via Z) chains from argument mechanism fields. DFS chain discovery sorts candidates by section adjacency (Introduction→Methods→Results→Discussion). `build_causal_chains()`, `find_chains_from()`, `find_path()`.
+- **Confidence Propagation** (`extractor/confidence_propagation.py`): Multi-hop confidence decay (default 0.85 per hop), multi-path merging via probabilistic OR: `P = 1 - prod(1 - p_i)`. Section-aware variant: `propagate_confidence_with_section()` — Methods/Results decay 0.90, Discussion/Related Work 0.80.
+- **Counterfactual Queries** (`extractor/counterfactual.py`): "What if X didn't exist?" — measures node removal impact on closure inferences. Section-weighted variant: `find_critical_nodes_weighted()`. `run_counterfactual()`, `find_critical_nodes()`.
+- **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Finds structurally similar subgraphs via relation signature Jaccard similarity. Section-aware signatures: `"in:supports@Methods"`. `find_similar_problems()`, `find_isomorphic_patterns()`.
+- **Hypothesis Generation** (`extractor/hypothesis.py`): Generates research hypotheses from unaddressed gaps, debate zones, and technology cliffs. Evidence strings include section provenance. `detect_section_contradictions()` finds supports/challenges from different sections. `generate_hypotheses()`, `score_hypothesis()`.
+- **Structure-first Retrieval** (`query/tree_retrieval.py`): PageIndex-style retrieval via `query --paper`. Reads tree skeleton → LLM selects relevant node_ids → loads content on-demand. Returns structured `[{"node_id", "title", "content"}]`.
 
 ### Key Design Points
 
@@ -54,11 +57,13 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
 - **Ecosystem enrichment**: CrossRef, Semantic Scholar, OpenAlex APIs for citation expansion, DOI resolution, author identity. Rate-limited with configurable cache TTL.
 - **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
+- **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
 - **Streamlit UI**: `drbrain serve` launches interactive graph visualization at `http://127.0.0.1:8501`.
+- **Clean command**: `drbrain clean --force` removes all data files except PDFs.
 
 ### Testing
 
 - Tests use pytest with `asyncio_mode = "auto"`.
 - Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 401 tests total (356 base + 45 from L1-L4 features). TDD: tests-first for all new modules.
+- 490 tests total. TDD: tests-first for all new modules.
