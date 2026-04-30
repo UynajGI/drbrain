@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 
 from drbrain.extractor.argument import ExtractedArgument, parse_arguments
@@ -77,6 +78,112 @@ def _collect_leaf_nodes(nodes: list[dict]) -> list[dict]:
         else:
             leaves.extend(_collect_leaf_nodes(children))
     return leaves
+
+
+def _is_quality_content(text: str, min_chars: int = 100) -> bool:
+    """Check if content is worth sending to LLM.
+
+    Rejects short text, reference lists, and low-alpha-ratio content.
+    """
+    if len(text.strip()) < min_chars:
+        return False
+    # Filter reference lists (lines starting with [数字])
+    lines = text.strip().split("\n")
+    ref_lines = sum(1 for line in lines if re.match(r"^\[\d+\]", line.strip()))
+    if ref_lines > len(lines) * 0.6:
+        return False
+    # Filter pages that are mostly numbers/captions
+    alpha_ratio = sum(c.isalpha() for c in text) / max(len(text), 1)
+    return alpha_ratio > 0.3
+
+
+def validate_extraction(concepts: ExtractedConcepts) -> list[str]:
+    """Validate extracted concepts against TBox rules before DB insertion.
+
+    Returns a list of error strings. Empty list means valid.
+    """
+    from drbrain.validator.schema import TBOX
+
+    errors = []
+
+    # Build label → type lookup from concept categories
+    label_type: dict[str, str] = {}
+    for cat_name in ("problems", "methods", "conclusions", "debates", "gaps", "actors"):
+        cat_type = cat_name.rstrip("s").capitalize()  # "problems" → "Problem"
+        if cat_type == "Conclusion":
+            cat_type = "Conclusion"
+        for item in getattr(concepts, cat_name, []):
+            label = item.get("label", "").strip()
+            if label:
+                label_type[label.lower()] = cat_type
+
+    # Check each relation against TBox
+    for rel in concepts.relations:
+        head = rel.get("head", "").strip()
+        rel_name = rel.get("rel", "").strip()
+        if not head or not rel_name:
+            continue
+        head_type = label_type.get(head.lower())
+        if not head_type:
+            continue
+        allowed = TBOX.get(head_type, set())
+        if allowed and rel_name not in allowed:
+            errors.append(
+                f"TBox violation: {head_type} '{head}' cannot use relation '{rel_name}'. "
+                f"Allowed: {sorted(allowed)}"
+            )
+
+    return errors
+
+
+def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConcepts:
+    """Link arguments across sections that share targets.
+
+    For arguments with the same target but different sections, adds
+    synthetic relations (cross_section_support / cross_section_challenge).
+    """
+    from collections import defaultdict
+
+    # Group arguments by target
+    by_target: dict[str, list[ExtractedArgument]] = defaultdict(list)
+    for arg in concepts.arguments:
+        target = arg.target.strip()
+        if target:
+            by_target[target].append(arg)
+
+    new_relations = []
+    for target, args in by_target.items():
+        # Collect unique sections
+        sections_seen: dict[str, str] = {}  # section -> claim_type
+        for arg in args:
+            section = arg.section.strip()
+            claim_type = arg.claim_type.strip().lower()
+            if section and section not in sections_seen:
+                sections_seen[section] = claim_type
+
+        # Only link if args come from 2+ different sections
+        if len(sections_seen) < 2:
+            continue
+
+        # Determine relation type: challenge if opposing claim_types exist
+        claim_types = set(sections_seen.values())
+        has_opposition = ("limitation" in claim_types and "advantage" in claim_types) or (
+            "challenges" in claim_types and "supports" in claim_types
+        )
+        rel_type = "cross_section_challenge" if has_opposition else "cross_section_support"
+
+        new_relations.append(
+            {
+                "head": target,
+                "rel": rel_type,
+                "tail": f"{len(sections_seen)}_sections",
+                "evidence": f"Arguments from: {', '.join(sections_seen.keys())}",
+            }
+        )
+
+    if new_relations:
+        concepts.relations.extend(new_relations)
+    return concepts
 
 
 def _merge_concepts(
@@ -176,6 +283,7 @@ async def extract_concepts_from_tree(
     md_path: str | Path,
     structure: list[dict],
     models: list[dict],
+    max_concurrent: int = 3,
 ) -> ExtractedConcepts | None:
     """Extract concepts using PageIndex tree structure (structure-first, content-on-demand).
 
@@ -198,14 +306,20 @@ async def extract_concepts_from_tree(
 
     md_path = Path(md_path)
 
-    # Extract from each leaf node
+    # Extract from each leaf node with concurrency limit
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def _extract_one(title: str, content: str):
+        async with semaphore:
+            return await extract_section_concepts(title, content, structure_json, models)
+
     tasks = []
     section_names = []
     for leaf in leaves:
         content = get_node_content(md_path, structure, leaf["node_id"])
-        if not content or len(content.strip()) < 50:
+        if not content or not _is_quality_content(content):
             continue
-        tasks.append(extract_section_concepts(leaf["title"], content, structure_json, models))
+        tasks.append(_extract_one(leaf["title"], content))
         section_names.append(leaf["title"])
 
     if not tasks:
@@ -220,4 +334,5 @@ async def extract_concepts_from_tree(
 
     valid = [r for r, _ in valid_with_sections]
     sections = [s for _, s in valid_with_sections]
-    return _merge_concepts(valid, sections=sections)
+    merged = _merge_concepts(valid, sections=sections)
+    return _link_cross_section_arguments(merged)
