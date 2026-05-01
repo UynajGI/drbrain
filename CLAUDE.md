@@ -14,7 +14,7 @@ uv run ruff check .             # lint
 uv run ruff format .            # format
 ```
 
-Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`.
+Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`.
 
 ## Architecture
 
@@ -55,6 +55,8 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Library Management** (`storage/inbox.py`, `storage/workspace.py`, `storage/export.py`, `storage/backup.py`): Inbox scanning (with pending queue), workspace CRUD, BibTeX/RIS/Markdown export, tar.gz backup.
 - **Paper Type Detection** (`extractor/detection.py`): Heuristic + LLM classification into paper/review/thesis/preprint/book/document.
 - **Knowledge Frontier Analysis** (`report/analyzer.py`): Orchestrates all reasoning modules into unified report via `drbrain analyze`.
+- **Metadata Repair** (`services/repair.py`): Auto-fix paper metadata via CrossRef/arXiv APIs. Title normalization, missing DOI resolution, author/journal backfill.
+- **Zotero Import** (`services/zotero_import.py`): Import papers from Zotero SQLite databases and BibTeX `.bib` files.
 
 ### Data Directory Layout
 
@@ -88,7 +90,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - Tests use pytest with `asyncio_mode = "auto"`.
 - Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 542 tests total. TDD: tests-first for all new modules.
+- 551 tests total. TDD: tests-first for all new modules.
 
 ### Gotchas
 

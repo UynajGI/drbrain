@@ -16,6 +16,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Check command enhancements**: Library stats, disk space monitoring, MinerU API connectivity test, parser path recommendation
 - **PDF parser fallback**: Replaced pypdfium2 with PyMuPDF (fitz) for richer markdown extraction
 - **Agent skills**: 5 knowledge frontier skills (research-analysis, paper-ingest, paper-query, citation-tracking, workspace-analysis)
+- **Metadata repair**: `drbrain repair` auto-fixes titles, years, DOIs, authors via CrossRef/arXiv
+- **Zotero import**: `drbrain import zotero` and `drbrain import bibtex` for external library migration
 - Pre-commit hook: ruff check + format on staged Python files
 - Commit-msg hook: enforce conventional commit message format
 - Pre-push hook: run tests before pushing to main
