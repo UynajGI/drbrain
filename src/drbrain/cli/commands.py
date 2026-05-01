@@ -1980,6 +1980,79 @@ def check_cmd():
         table6.add_row("  (config unavailable)", "[yellow]Unknown[/yellow]")
     console.print(table6)
 
+    # -- Paper count --
+    console.print("\n[bold]Library[/bold]")
+    table_lib = Table(show_header=False, box=None, padding=(0, 2))
+    try:
+        cfg = load_config()
+        db = Database(cfg["db"]["path"])
+        paper_count = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+        concept_count = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
+        table_lib.add_row("  Papers", f"[green]{paper_count}[/green]")
+        table_lib.add_row("  Concepts", f"[green]{concept_count}[/green]")
+        db.close()
+    except Exception:
+        table_lib.add_row("  (db unavailable)", "[yellow]Unknown[/yellow]")
+    console.print(table_lib)
+
+    # -- Disk space --
+    console.print("\n[bold]Disk Space[/bold]")
+    table_disk = Table(show_header=False, box=None, padding=(0, 2))
+    data_path = Path("data")
+    if data_path.exists():
+        usage = shutil.disk_usage(data_path)
+        free_gb = usage.free / (1024**3)
+        total_gb = usage.total / (1024**3)
+        if free_gb < 1:
+            table_disk.add_row(
+                "  data/ free space",
+                f"[red]{free_gb:.1f} GB[/red]",
+                f"(total {total_gb:.0f} GB) — critically low",
+            )
+            warnings.append(f"Low disk space: {free_gb:.1f} GB free on data/ partition")
+        elif free_gb < 10:
+            table_disk.add_row(
+                "  data/ free space",
+                f"[yellow]{free_gb:.1f} GB[/yellow]",
+                f"(total {total_gb:.0f} GB)",
+            )
+        else:
+            table_disk.add_row(
+                "  data/ free space",
+                f"[green]{free_gb:.1f} GB[/green]",
+                f"(total {total_gb:.0f} GB)",
+            )
+    console.print(table_disk)
+
+    # -- MinerU API connectivity --
+    console.print("\n[bold]API Connectivity[/bold]")
+    table_api = Table(show_header=False, box=None, padding=(0, 2))
+    try:
+        cfg = load_config()
+        mineru_token = cfg.get("mineru", {}).get("token", "")
+        if mineru_token and not mineru_token.startswith("${"):
+            import urllib.request as _urllib
+
+            try:
+                req = _urllib.request.Request(
+                    "https://api.mineru.com/api/v1/status",
+                    headers={"Authorization": f"Bearer {mineru_token}"},
+                )
+                _urllib.request.urlopen(req, timeout=5)
+                table_api.add_row("  MinerU API", "[green]Reachable[/green]")
+            except Exception:
+                table_api.add_row(
+                    "  MinerU API", "[yellow]Unreachable[/yellow]", "(check token/network)"
+                )
+                warnings.append("MinerU API unreachable — PDF parsing will use PyMuPDF fallback")
+        else:
+            table_api.add_row(
+                "  MinerU API", "[yellow]Not configured[/yellow]", "(flash mode will be used)"
+            )
+    except Exception:
+        table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
+    console.print(table_api)
+
     # -- Summary --
     console.print("\n[bold]Summary[/bold]")
     if errors:
