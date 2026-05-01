@@ -28,6 +28,7 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain backup` | Create tar.gz backup |
 | `drbrain repair` | Auto-fix metadata via CrossRef/arXiv |
 | `drbrain import` | Import from Zotero or BibTeX |
+| `drbrain translate` | Translate paper markdown via LLM |
 | `drbrain check` | Full environment diagnostics |
 | `drbrain serve` | Web UI at http://127.0.0.1:8501 |
 

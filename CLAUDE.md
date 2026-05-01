@@ -14,7 +14,7 @@ uv run ruff check .             # lint
 uv run ruff format .            # format
 ```
 
-Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`.
+Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`.
 
 ## Architecture
 
@@ -57,6 +57,8 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Knowledge Frontier Analysis** (`report/analyzer.py`): Orchestrates all reasoning modules into unified report via `drbrain analyze`.
 - **Metadata Repair** (`services/repair.py`): Auto-fix paper metadata via CrossRef/arXiv APIs. Title normalization, missing DOI resolution, author/journal backfill.
 - **Zotero Import** (`services/zotero_import.py`): Import papers from Zotero SQLite databases and BibTeX `.bib` files.
+- **Paper Translation** (`services/translate.py`): LLM-powered paper translation with section-aware chunking.
+- **Logging** (`log.py`, `metrics.py`): loguru-based structured logging with rotating files. SQLite-backed LLM token usage tracking in `data/metrics.db`.
 
 ### Data Directory Layout
 
@@ -65,8 +67,9 @@ data/
 ├── spool/inbox/       # PDFs awaiting ingest (auto-classified)
 ├── spool/pending/     # Failed ingests + pending.jsonl
 ├── papers/<id>/       # Per-paper: source.pdf, raw.md, images/, tree.json
-├── db/drbrain.db      # SQLite database
-├── backups/           # tar.gz backups
+├── drbrain.db          # SQLite database
+├── metrics.db          # LLM token tracking
+├── backups/            # tar.gz backups
 ├── cache/             # API cache (rebuildable)
 ├── logs/              # validation.log
 └── reports/           # Per-paper JSON reports
@@ -90,7 +93,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - Tests use pytest with `asyncio_mode = "auto"`.
 - Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 551 tests total. TDD: tests-first for all new modules.
+- 567 tests total. TDD: tests-first for all new modules.
 
 ### Gotchas
 
