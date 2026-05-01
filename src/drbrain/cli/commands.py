@@ -2076,6 +2076,95 @@ def check_cmd():
         raise typer.Exit(1)
 
 
+def analyze_cmd(
+    local_id: str = typer.Argument(None, help="Paper local_id"),
+    full: bool = typer.Option(False, "--full", "-f", help="Full analysis (slower)"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace boundary scan"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Analyze knowledge frontier: seeds, causal chains, hypotheses, and more."""
+    from drbrain.report.analyzer import analyze_paper
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+
+    if workspace:
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
+    else:
+        graph.load_from_db(db)
+
+    if local_id:
+        report = analyze_paper(db, graph, local_id, full=full)
+    elif workspace:
+        # Workspace boundary scan: analyze all papers in workspace
+        papers = db.get_all_papers()
+        ws_ids = _resolve_workspace_papers(workspace)
+        ws_papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
+        reports = [analyze_paper(db, graph, p["local_id"], full=full) for p in ws_papers]
+
+        if json_output:
+            typer.echo(json.dumps(reports, indent=2, ensure_ascii=False, default=str))
+        else:
+            typer.echo(f"Workspace: {workspace} ({len(ws_papers)} papers)")
+            for r in reports:
+                _print_analyze_report(r)
+        db.close()
+        return
+    else:
+        db.close()
+        typer.echo("Specify a paper local_id or --workspace", err=True)
+        raise typer.Exit(1)
+
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    else:
+        _print_analyze_report(report)
+
+
+def _print_analyze_report(report: dict) -> None:
+    """Print a formatted analysis report."""
+    if "error" in report:
+        typer.echo(f"Error: {report['error']}", err=True)
+        return
+
+    p = report["paper"]
+    s = report["summary"]
+    typer.echo(f"\n[bold]Knowledge Frontier: {p['title']} ({p['year']})[/bold]")
+
+    typer.echo(f"\n[bold]── Research Seeds ({s['seeds']})[/bold]")
+    for seed in report.get("seeds", []):
+        typer.echo(
+            f"  [{seed.get('type', '?')}] {seed.get('node', '?')}: {seed.get('signal', '?')}"
+        )
+
+    typer.echo(f"\n[bold]── Causal Chains ({s['causal_chains']})[/bold]")
+    for chain in report.get("causal_chains", []):
+        typer.echo(f"  {chain['source']} → {chain['target']} (via: {chain['via']})")
+
+    typer.echo(f"\n[bold]── Inferred Edges ({s['inferred_edges']})[/bold]")
+
+    if report.get("critical_nodes"):
+        typer.echo(f"\n[bold]── Critical Nodes ({s['critical_nodes']})[/bold]")
+        for node in report["critical_nodes"]:
+            typer.echo(f"  {node}")
+
+    if report.get("hypotheses"):
+        typer.echo(f"\n[bold]── Hypotheses ({s['hypotheses']})[/bold]")
+        for hyp in report["hypotheses"]:
+            typer.echo(f"  [{hyp['type']}] {hyp['description']} ({hyp['confidence']:.2f})")
+
+    if report.get("isomorphisms"):
+        typer.echo(f"\n[bold]── Isomorphisms ({s['isomorphisms']})[/bold]")
+        for iso in report["isomorphisms"]:
+            typer.echo(f"  {iso['pattern']} ({iso['similarity']:.2f})")
+
+    typer.echo()
+
+
 def clean_cmd(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config file path"),

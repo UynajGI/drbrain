@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from drbrain.cli.commands import (
+    analyze_cmd,
     backup_cmd,
     check_citations_cmd,
     check_cmd,
@@ -57,6 +58,7 @@ app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
+app.command("analyze")(analyze_cmd)
 
 # Workspace subcommands
 ws_app = typer.Typer(help="Manage paper workspaces")
