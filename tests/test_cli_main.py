@@ -118,14 +118,25 @@ def test_app_report_not_found():
             assert result.exit_code == 1
 
 
-def test_app_expand_not_found():
-    """CLI expand exits when paper not found."""
+def test_app_citations_not_found():
+    """CLI citations exits when paper not found."""
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
         with mock_cfg(str(db_path), str(reports_dir)):
-            result = runner.invoke(app, ["expand", "nonexistent"])
+            result = runner.invoke(app, ["citations", "nonexistent"])
+            assert result.exit_code == 1
+
+
+def test_app_check_citations_no_input():
+    """CLI check-citations exits when no text provided."""
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        reports_dir.mkdir()
+        with mock_cfg(str(db_path), str(reports_dir)):
+            result = runner.invoke(app, ["check-citations"])
             assert result.exit_code == 1
 
 

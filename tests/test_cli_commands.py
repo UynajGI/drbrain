@@ -1,4 +1,4 @@
-"""Tests for CLI commands: expand, report, closure, seed, list, stats, query, export, queue, timeline."""
+"""Tests for CLI commands: citations, check-citations, report, closure, seed, list, stats, query, export, queue, timeline."""
 
 import json
 import tempfile
@@ -38,12 +38,12 @@ def _mock_load_config(cfg: dict):
     return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
 
 
-# -- expand_cmd --
+# -- citations_cmd --
 
 
-def test_expand_cmd_not_found():
-    """expand_cmd raises Exit when paper not found."""
-    from drbrain.cli.commands import expand_cmd
+def test_citations_cmd_not_found():
+    """citations_cmd raises Exit when paper not found."""
+    from drbrain.cli.commands import citations_cmd
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
@@ -52,15 +52,44 @@ def test_expand_cmd_not_found():
 
         with _mock_load_config(cfg):
             try:
-                expand_cmd("nonexistent")
+                citations_cmd("nonexistent")
                 assert False, "Should have raised Exit"
             except typer.Exit as e:
                 assert e.exit_code == 1
 
 
-def test_expand_cmd_success():
-    """expand_cmd expands citation neighborhood."""
-    from drbrain.cli.commands import expand_cmd
+def test_citations_cmd_invalid_type():
+    """citations_cmd raises Exit for invalid ctype."""
+    from drbrain.cli.commands import citations_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                citations_cmd("nonexistent", "bogus")
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+def test_citations_cmd_success():
+    """citations_cmd queries citation graph."""
+    from drbrain.cli.commands import citations_cmd
+
+    fake_result = {
+        "paper": {"local_id": "p1", "title": "Test Paper", "year": 2024},
+        "refs": [
+            {"title": "Ref A", "year": 2020, "doi": "10.0/1", "local_id": "p2"},
+        ],
+        "citing": [
+            {"title": "Cite B", "year": 2025, "doi": "10.0/2"},
+        ],
+        "shared_refs": [],
+        "counts": {"references": 1, "citing": 1},
+    }
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
@@ -76,9 +105,153 @@ def test_expand_cmd_success():
 
         with (
             _mock_load_config(cfg),
-            mock.patch("drbrain.extractor.citation.expand_citations", return_value=([], [])),
+            mock.patch(
+                "drbrain.storage.citation_graph.query_citation_graph",
+                return_value=fake_result,
+            ),
         ):
-            expand_cmd("p1")
+            citations_cmd("p1")
+
+
+def test_citations_cmd_json_output():
+    """citations_cmd outputs JSON when --json is set."""
+    from drbrain.cli.commands import citations_cmd
+
+    fake_result = {
+        "paper": {"local_id": "p1", "title": "Test Paper", "year": 2024},
+        "refs": [],
+        "citing": [],
+        "shared_refs": [],
+        "counts": {"references": 0, "citing": 0},
+    }
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        reports_dir.mkdir()
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.insert_paper_ids("p1", s2_id="s2_123")
+        db.commit()
+        db.close()
+
+        with (
+            _mock_load_config(cfg),
+            mock.patch(
+                "drbrain.storage.citation_graph.query_citation_graph",
+                return_value=fake_result,
+            ),
+        ):
+            citations_cmd("p1", "all", json_output=True)
+
+
+# -- check_citations_cmd --
+
+
+def test_check_citations_cmd_no_input():
+    """check_citations_cmd raises Exit when no text provided."""
+    from drbrain.cli.commands import check_citations_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                check_citations_cmd()
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+def test_check_citations_cmd_from_file():
+    """check_citations_cmd reads text from --file."""
+    from drbrain.cli.commands import check_citations_cmd
+    from drbrain.extractor.citation_check import CitationMatch
+
+    fake_citations = [
+        CitationMatch(
+            author="Smith",
+            year="2020",
+            raw="Smith (2020)",
+            found=True,
+            matched_id="p2",
+            matched_title="A Paper",
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.commit()
+        db.close()
+
+        tf = Path(td) / "test.txt"
+        tf.write_text("According to Smith (2020)...")
+
+        with (
+            _mock_load_config(cfg),
+            mock.patch(
+                "drbrain.extractor.citation_check.extract_citations",
+                return_value=[
+                    CitationMatch(author="Smith", year="2020", raw="Smith (2020)"),
+                ],
+            ),
+            mock.patch(
+                "drbrain.extractor.citation_check.match_citations",
+                return_value=fake_citations,
+            ),
+        ):
+            check_citations_cmd(file=str(tf))
+
+
+def test_check_citations_cmd_json_output():
+    """check_citations_cmd outputs JSON when --json is set."""
+    from drbrain.cli.commands import check_citations_cmd
+    from drbrain.extractor.citation_check import CitationMatch
+
+    fake_citations = [
+        CitationMatch(
+            author="Smith",
+            year="2020",
+            raw="Smith (2020)",
+            found=True,
+            matched_id="p2",
+            matched_title="A Paper",
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.commit()
+        db.close()
+
+        with (
+            _mock_load_config(cfg),
+            mock.patch(
+                "drbrain.extractor.citation_check.extract_citations",
+                return_value=[
+                    CitationMatch(author="Smith", year="2020", raw="Smith (2020)"),
+                ],
+            ),
+            mock.patch(
+                "drbrain.extractor.citation_check.match_citations",
+                return_value=fake_citations,
+            ),
+        ):
+            check_citations_cmd("Smith (2020)", json_output=True)
 
 
 # -- report_cmd --

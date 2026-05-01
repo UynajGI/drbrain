@@ -669,49 +669,130 @@ def _enrich_doi_from_openalex(
         return None
 
 
-def expand_cmd(
-    local_id: str,
-    depth: int = typer.Option(2, "--depth", help="Expansion depth"),
-    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+def citations_cmd(
+    local_id: str = typer.Argument(..., help="Paper local_id"),
+    ctype: str = typer.Option(
+        "all", "--type", "-t", help="Query type: refs, citing, shared-refs, all"
+    ),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
-    """Expand a paper's citation neighborhood."""
-    cfg = load_config()
-    db = Database(cfg["db"]["path"])
-    paper = db.get_paper(local_id)
-    if not paper:
-        msg = {"error": f"Paper not found: {local_id}"}
-        if json_output:
-            typer.echo(json.dumps(msg))
-        else:
-            typer.echo(f"Paper not found: {local_id}", err=True)
+    """Query citation graph for a paper: refs, citing, shared-refs."""
+    # Normalize typer params when called directly (not through CLI)
+    if isinstance(ctype, typer.models.OptionInfo):
+        ctype = ctype.default
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+
+    if ctype not in ("refs", "citing", "shared-refs", "all"):
+        typer.echo("Type must be: refs, citing, shared-refs, all", err=True)
         raise typer.Exit(1)
 
-    from drbrain.extractor.citation import expand_citations
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
 
-    refs, cits = expand_citations(db, local_id, cfg)
+    paper = db.get_paper(local_id)
+    if not paper:
+        db.close()
+        typer.echo(f"Paper not found: {local_id}", err=True)
+        raise typer.Exit(1)
+
+    from drbrain.storage.citation_graph import query_citation_graph
+
+    result = query_citation_graph(local_id, db.conn, ctype=ctype)
+
+    if workspace:
+        paper_ids = _resolve_workspace_papers(workspace)
+        if paper_ids and result.get("refs"):
+            result["refs"] = [r for r in result["refs"] if r.get("local_id", "") in paper_ids]
+
     db.close()
-
-    result = {
-        "paper": {"local_id": local_id, "title": paper["title"]},
-        "references": {
-            "total": len(refs),
-            "in_graph": sum(1 for r in refs if r.in_graph),
-            "papers": [{"title": r.title, "year": r.year, "in_graph": r.in_graph} for r in refs],
-        },
-        "citations": {
-            "total": len(cits),
-            "in_graph": sum(1 for c in cits if c.in_graph),
-            "papers": [{"title": c.title, "year": c.year, "in_graph": c.in_graph} for c in cits],
-        },
-    }
 
     if json_output:
         typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return
 
-    typer.echo(f"Expanded: {paper['title']}")
-    typer.echo(f"  References: {len(refs)} ({sum(1 for r in refs if r.in_graph)} in graph)")
-    typer.echo(f"  Citations: {len(cits)} ({sum(1 for c in cits if c.in_graph)} in graph)")
+    p = result["paper"]
+    c = result.get("counts", {})
+    typer.echo(f"\nCitation Graph: {p['title']} ({p['year']})")
+    typer.echo(f"  References: {c.get('references', 0)} | Cited by: {c.get('citing', 0)}")
+
+    if result.get("refs"):
+        typer.echo("\nReferences:")
+        for r in result["refs"]:
+            year_str = f" ({r['year']})" if r.get("year") else ""
+            typer.echo(f"  - {r['title']}{year_str}")
+
+    if result.get("citing"):
+        typer.echo("\nCited by:")
+        for cit in result["citing"]:
+            year_str = f" ({cit['year']})" if cit.get("year") else ""
+            typer.echo(f"  - {cit['title']}{year_str}")
+
+    if result.get("shared_refs"):
+        typer.echo("\nShared References:")
+        for sr in result["shared_refs"]:
+            tag = " [unlinked]" if sr["status"] == "unlinked" else ""
+            typer.echo(f"  - {sr['shared_with_title']} ({sr['shared_count']} shared){tag}")
+
+
+def check_citations_cmd(
+    text: str = typer.Argument(None, help="Text to check citations in"),
+    file: str = typer.Option(None, "--file", "-f", help="Read text from file"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Verify in-text citations against local library."""
+    # Normalize typer params when called directly (not through CLI)
+    if isinstance(text, typer.models.ArgumentInfo):
+        text = text.default
+    if isinstance(file, typer.models.OptionInfo):
+        file = file.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+
+    if file:
+        text = Path(file).read_text(encoding="utf-8")
+
+    if not text:
+        typer.echo("Provide text or use --file", err=True)
+        raise typer.Exit(1)
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    from drbrain.extractor.citation_check import extract_citations, match_citations
+
+    citations = extract_citations(text)
+    citations = match_citations(citations, db)
+    db.close()
+
+    if json_output:
+        result = [
+            {
+                "author": c.author,
+                "year": c.year,
+                "raw": c.raw,
+                "found": c.found,
+                "matched_id": c.matched_id,
+                "matched_title": c.matched_title,
+            }
+            for c in citations
+        ]
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+
+    if not citations:
+        typer.echo("No citations found in text.")
+        return
+
+    typer.echo(f"Found {len(citations)} citations:")
+    for c in citations:
+        if c.found:
+            typer.echo(f'  ✓ {c.author} ({c.year}) → {c.matched_id} "{c.matched_title}"')
+        else:
+            typer.echo(f"  ✗ {c.author} ({c.year}) → no match")
 
 
 def report_cmd(

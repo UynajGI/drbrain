@@ -6,11 +6,12 @@ import typer
 
 from drbrain.cli.commands import (
     backup_cmd,
+    check_citations_cmd,
     check_cmd,
+    citations_cmd,
     clean_cmd,
     closure_cmd,
     delete_cmd,
-    expand_cmd,
     export_cmd,
     ingest_cmd,
     lineage_cmd,
@@ -37,7 +38,8 @@ app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 
 app.command("setup")(setup_cmd)
 app.command("ingest")(ingest_cmd)
-app.command("expand")(expand_cmd)
+app.command("citations")(citations_cmd)
+app.command("check-citations")(check_citations_cmd)
 app.command("report")(report_cmd)
 app.command("closure")(closure_cmd)
 app.command("seed")(seed_cmd)
