@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import shutil
 import subprocess
@@ -11,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+from loguru import logger as _parse_log
 
 MAX_CHARS = 12_000
 
@@ -34,8 +35,6 @@ INLINE_SECTION = re.compile(
 ID_PATTERN = re.compile(r"(10\.\d{4,}/[\S]+|arxiv[:\s]+(\d{4}\.\d{4,5}))", re.IGNORECASE)
 YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
 ARXIV_FILENAME = re.compile(r"(\d{4}\.\d{4,5})v\d*\.pdf$", re.IGNORECASE)
-
-log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -292,7 +291,7 @@ class MinerUParser:
                     timeout=600,
                 )
                 if result.returncode != 0:
-                    log.warning(
+                    _parse_log.warning(
                         "mineru-open-api failed (attempt %d/%d): %s",
                         attempt + 1,
                         self.max_retries,
@@ -305,12 +304,12 @@ class MinerUParser:
                     continue
                 return out_dir, managed_tmp
             except subprocess.TimeoutExpired:
-                log.warning(
+                _parse_log.warning(
                     "mineru-open-api timeout (attempt %d/%d)", attempt + 1, self.max_retries
                 )
                 time.sleep(self.retry_delay)
             except (FileNotFoundError, OSError) as e:
-                log.warning("mineru-open-api error: %s", e)
+                _parse_log.warning("mineru-open-api error: %s", e)
                 if managed_tmp:
                     managed_tmp.cleanup()
                 return None, None

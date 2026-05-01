@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import time
 
 import requests
+from loguru import logger as _cit_log
 
 from drbrain.extractor.cache import ApiCache
 from drbrain.extractor.crossref import fetch_doi_by_arxiv, fetch_doi_by_title
 from drbrain.report.generator import RefEntry
 
-log = logging.getLogger(__name__)
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper"
 S2_FIELDS = "title,year,externalIds,authors,citationCount,references,citations"
 
@@ -57,7 +56,7 @@ def fetch_s2_paper(
             cache.set(f"s2_paper:{paper_id}", data)
         return data
     except Exception as e:
-        log.warning(f"S2 API error for {paper_id}: {e}")
+        _cit_log.warning(f"S2 API error for {paper_id}: {e}")
         return None
 
 
@@ -86,7 +85,7 @@ def search_s2(
             cache.set(cache_key, result)
         return result
     except Exception as e:
-        log.warning(f"S2 search error: {e}")
+        _cit_log.warning(f"S2 search error: {e}")
         return []
 
 
@@ -102,13 +101,15 @@ def _s2_retry(fn, url: str, headers: dict, max_retries: int) -> dict | None:
             status = resp.status_code if resp is not None else None
             if status == 429:
                 delay = DEFAULT_BACKOFF * (2**attempt)
-                log.warning(f"S2 rate limit (429), retry {attempt + 1}/{max_retries} in {delay}s")
+                _cit_log.warning(
+                    f"S2 rate limit (429), retry {attempt + 1}/{max_retries} in {delay}s"
+                )
                 time.sleep(delay)
             else:
-                log.warning(f"S2 API error (status={status}): {e}")
+                _cit_log.warning(f"S2 API error (status={status}): {e}")
                 return None
         except Exception as e:
-            log.warning(f"S2 API error: {e}")
+            _cit_log.warning(f"S2 API error: {e}")
             return None
     return None
 
@@ -407,13 +408,13 @@ def _crossref_doi_enrich(paper: dict, email: str | None = None) -> dict | None:
     if arxiv:
         result = fetch_doi_by_arxiv(arxiv, email=email)
         if result and result.get("doi"):
-            log.info("CrossRef DOI via arXiv: %s -> %s", arxiv, result["doi"])
+            _cit_log.debug("CrossRef DOI via arXiv: %s -> %s", arxiv, result["doi"])
             return result
 
     if title:
         result = fetch_doi_by_title(title, email=email)
         if result and result.get("doi"):
-            log.info("CrossRef DOI via title: %s -> %s", title, result["doi"])
+            _cit_log.debug("CrossRef DOI via title: %s -> %s", title, result["doi"])
             return result
 
     return None

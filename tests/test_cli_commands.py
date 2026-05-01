@@ -726,17 +726,15 @@ def test_merge_papers():
 # -- _log_error --
 
 
-def test_log_error_writes_to_file():
-    """_log_error creates validation.log in configured logs directory."""
+def test_log_error_logs_via_loguru():
+    """_log_error logs an error via loguru."""
+    from unittest import mock
+
     from drbrain.cli.commands import _log_error
 
-    with tempfile.TemporaryDirectory() as td:
-        cfg = {"dirs": {"logs": str(Path(td) / "logs")}}
-        _log_error(cfg, "Test error message")
-        log_path = Path(td) / "logs" / "validation.log"
-        assert log_path.exists()
-        content = log_path.read_text()
-        assert "Test error message" in content
+    with mock.patch("loguru.logger.error") as mock_error:
+        _log_error({}, "Test error message")
+        mock_error.assert_called_once_with("Test error message")
 
 
 def test_merge_papers_redirects_edge_source_paper():

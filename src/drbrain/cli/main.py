@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+
 import typer
+from loguru import logger
 
 from drbrain.cli.commands import (
     analyze_cmd,
@@ -36,8 +39,19 @@ from drbrain.cli.commands import (
     ws_show_cmd,
 )
 from drbrain.cli.setup import setup_cmd
+from drbrain.log import setup_logging
 
 app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
+
+
+@app.callback()
+def _main_callback() -> None:
+    """Called before every command. Sets up logging."""
+    setup_logging()
+    # Log command invocation from argv
+    cmd = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(no args)"
+    logger.info(f"CLI invoked: {cmd}")
+
 
 app.command("setup")(setup_cmd)
 app.command("ingest")(ingest_cmd)

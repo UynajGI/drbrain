@@ -134,11 +134,15 @@ def _ingest_single_paper(
         if not json_mode:
             typer.echo(msg)
 
+    from loguru import logger as _ingest_log
+
     # Stage 1: Parse
     echo(f"Parsing: {pdf_path}")
+    _ingest_log.info(f"Stage 1: Parse {pdf_path}")
     try:
         parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
+        _ingest_log.error(f"Parse failed for {pdf_path}: {e}")
         echo(f"Error parsing PDF: {e}")
         _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
         return {"ok": False, "local_id": None, "error": str(e)}
@@ -554,15 +558,10 @@ def _merge_papers(db: Database, keep_id: str, merge_id: str) -> None:
 
 
 def _log_error(cfg: dict, message: str) -> None:
-    """Append error message to data/logs/validation.log."""
-    logs_dir = Path(cfg.get("dirs", {}).get("logs", "data/logs"))
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / "validation.log"
-    import datetime
+    """Log error via loguru."""
+    from loguru import logger
 
-    timestamp = datetime.datetime.now().isoformat()
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(f"[{timestamp}] {message}\n")
+    logger.error(message)
 
 
 def _resolve_workspace_papers(workspace: str | None) -> set[str] | None:
