@@ -317,6 +317,15 @@ def _process_citations_from_s2(
     for ref in (data.get("references") or [])[:50]:
         parsed = parse_s2_response(ref)
         entry = match_to_local(db, parsed)
+        _cache_citation(
+            db,
+            local_id,
+            parsed["title"],
+            parsed["year"],
+            "references",
+            target_doi=parsed["doi"],
+            target_s2_id=parsed["s2_id"],
+        )
         references.append(entry)
         if not entry.in_graph:
             pid = f"p{local_id[1:]}_ref_{len(references)}"
@@ -350,6 +359,15 @@ def _process_citations_from_s2(
     for cit in (data.get("citations") or [])[:50]:
         parsed = parse_s2_response(cit)
         entry = match_to_local(db, parsed)
+        _cache_citation(
+            db,
+            local_id,
+            parsed["title"],
+            parsed["year"],
+            "citing",
+            target_doi=parsed["doi"],
+            target_s2_id=parsed["s2_id"],
+        )
         citations.append(entry)
         if not entry.in_graph:
             pid = f"p{local_id[1:]}_cit_{len(citations)}"
@@ -493,3 +511,20 @@ def _expand_with_openalex(
                 db.commit()
 
     return references, []
+
+
+def _cache_citation(
+    db,
+    source_paper: str,
+    target_title: str,
+    target_year: int | None,
+    relation: str,
+    target_doi: str | None = None,
+    target_s2_id: str | None = None,
+) -> None:
+    db.conn.execute(
+        "INSERT OR IGNORE INTO citation_cache "
+        "(source_paper, target_title, target_year, relation, target_doi, target_s2_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (source_paper, target_title, target_year, relation, target_doi, target_s2_id),
+    )

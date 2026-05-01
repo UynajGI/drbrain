@@ -91,6 +91,17 @@ CREATE TABLE IF NOT EXISTS research_seeds (
     confidence REAL DEFAULT 0.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS citation_cache (
+    source_paper TEXT NOT NULL,
+    target_title TEXT NOT NULL,
+    target_year INTEGER,
+    relation TEXT NOT NULL CHECK(relation IN ('references','citing')),
+    target_doi TEXT,
+    target_s2_id TEXT,
+    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_paper, target_title)
+);
 """
 
 
