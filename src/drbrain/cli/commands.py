@@ -41,7 +41,9 @@ def ingest_cmd(
     Defaults to data/inbox/ when no paths provided.
     """
     if not paths:
-        paths = ["data/inbox/"]
+        cfg = load_config()
+        inbox_path = cfg.get("dirs", {}).get("inbox", "data/spool/inbox")
+        paths = [inbox_path]
 
     pdf_files: list[Path] = []
     for p in paths:
@@ -138,6 +140,7 @@ def _ingest_single_paper(
         parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
         echo(f"Error parsing PDF: {e}")
+        _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
         return {"ok": False, "local_id": None, "error": str(e)}
     echo(f"  Title: {parsed.title}")
     echo(f"  Year: {parsed.year}")
@@ -193,6 +196,27 @@ def _ingest_single_paper(
         _log_error(cfg, "No LLM models configured")
         raise typer.Exit(1)
 
+    # Stage 2.1: Detect paper type
+    from drbrain.extractor.detection import detect_paper_type_async
+
+    echo("  Detecting paper type...")
+    first_page = parsed.text_blocks[0] if parsed.text_blocks else getattr(parsed, "abstract", None)
+    paper_type = asyncio.run(
+        detect_paper_type_async(
+            title=parsed.title,
+            abstract=getattr(parsed, "abstract", None),
+            first_page=first_page,
+            models=llm_models,
+        )
+    )
+    echo(f"  Paper type: {paper_type}")
+    # Update paper_type in DB (already inserted as 'paper' default)
+    db.conn.execute(
+        "UPDATE papers SET paper_type = ? WHERE local_id = ?",
+        (paper_type, local_id),
+    )
+    db.commit()
+
     # Stage 2.5: Structure markdown into tree (PageIndex)
     md_path = paper_dir / "raw.md"
     tree_json_path = paper_dir / "tree.json"
@@ -233,6 +257,7 @@ def _ingest_single_paper(
     if concepts is None:
         echo("Error: LLM extraction failed. All models exhausted.")
         _log_error(cfg, f"LLM extraction failed for {local_id}")
+        _move_to_pending(pdf_path, cfg, "LLM extraction failed")
         raise typer.Exit(1)
 
     # Stage 3.5: Validate
@@ -538,6 +563,17 @@ def _log_error(cfg: dict, message: str) -> None:
     timestamp = datetime.datetime.now().isoformat()
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"[{timestamp}] {message}\n")
+
+
+def _move_to_pending(pdf_path: Path, cfg: dict, reason: str) -> None:
+    """Move a failed PDF to the pending directory."""
+    from drbrain.storage.inbox import move_to_pending
+
+    pending_dir = Path(cfg.get("dirs", {}).get("pending", "data/spool/pending"))
+    try:
+        move_to_pending(pdf_path, pending_dir, reason=reason)
+    except Exception:
+        pass  # Best-effort; don't block the error path
 
 
 def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Path) -> None:
