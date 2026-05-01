@@ -1055,28 +1055,86 @@ def query_cmd(
         )
 
 
-def export_cmd(format: str = "json"):
-    """Export graph data."""
+def export_cmd(
+    local_id: str = typer.Argument(None, help="Paper local_id"),
+    format: str = typer.Option("bib", "--format", "-f", help="Export format: bib, ris, md"),
+    all: bool = typer.Option(False, "--all", help="Export all papers"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Export paper metadata to BibTeX, RIS, or Markdown."""
+    from drbrain.storage.export import (
+        batch_export,
+        meta_to_bibtex,
+        meta_to_markdown,
+        meta_to_ris,
+    )
+
+    if format not in ("bib", "ris", "md"):
+        typer.echo(f"Unknown format: {format}. Use bib, ris, or md.", err=True)
+        raise typer.Exit(1)
+
     cfg = load_config()
     db = Database(cfg["db"]["path"])
-    graph = GraphEngine()
-    graph.load_from_db(db)
 
-    if format == "json":
-        data = {
-            "nodes": [{"id": n, **d} for n, d in graph.graph.nodes(data=True)],
-            "edges": [{"source": u, "target": v, **d} for u, v, d in graph.graph.edges(data=True)],
-        }
-        typer.echo(json.dumps(data, indent=2, default=str))
-    elif format == "graphml":
-        import networkx as nx
-
-        typer.echo(nx.generate_graphml(graph.graph))
+    if all:
+        papers = db.get_all_papers()
+        metas = [_export_paper_to_meta(db, p["local_id"]) for p in papers]
+        result = batch_export(metas, format)
+    elif local_id:
+        paper = db.get_paper(local_id)
+        if not paper:
+            db.close()
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            raise typer.Exit(1)
+        meta = _export_paper_to_meta(db, local_id)
+        formatters = {"bib": meta_to_bibtex, "ris": meta_to_ris, "md": meta_to_markdown}
+        result = formatters[format](meta)
     else:
-        typer.echo(f"Unsupported format: {format}", err=True)
+        db.close()
+        typer.echo("Specify a paper local_id or use --all", err=True)
         raise typer.Exit(1)
 
     db.close()
+
+    if json_output:
+        typer.echo(json.dumps({"format": format, "result": result}, ensure_ascii=False))
+        return
+
+    if output:
+        Path(output).write_text(result + "\n", encoding="utf-8")
+        typer.echo(f"Exported to {output}")
+    else:
+        typer.echo(result)
+
+
+def _export_paper_to_meta(db: Database, local_id: str) -> dict:
+    """Build export-ready metadata dict from DB."""
+    paper = db.get_paper(local_id)
+    if not paper:
+        return {}
+
+    authors = db.conn.execute(
+        "SELECT GROUP_CONCAT(a.variant, ' and ') "
+        "FROM concepts c JOIN aliases a ON a.canonical_id = c.label "
+        "WHERE c.local_id = ? AND c.type = 'Actor'",
+        (local_id,),
+    ).fetchone()
+
+    author_list = authors[0] if authors and authors[0] else ""
+    first_author = author_list.split(" and ")[0].strip() if author_list else ""
+    lastname = first_author.split()[-1] if first_author else ""
+
+    return {
+        "local_id": local_id,
+        "title": paper.get("title", ""),
+        "year": paper.get("year"),
+        "doi": paper.get("doi", ""),
+        "arxiv": paper.get("arxiv", ""),
+        "authors": author_list,
+        "first_author_lastname": lastname,
+        "paper_type": paper.get("paper_type", "paper"),
+    }
 
 
 def queue_cmd(

@@ -315,8 +315,8 @@ def test_query_cmd_with_results():
 # -- export_cmd --
 
 
-def test_export_cmd_json():
-    """export_cmd outputs JSON format."""
+def test_export_cmd_bibtex():
+    """export_cmd outputs BibTeX format by default."""
     from drbrain.cli.commands import export_cmd
 
     with tempfile.TemporaryDirectory() as td:
@@ -324,12 +324,12 @@ def test_export_cmd_json():
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
 
         db = Database(str(db_path))
-        db.insert_paper("p1", "A", 2024, "uploaded")
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
         db.commit()
         db.close()
 
         with _mock_load_config(cfg):
-            export_cmd("json")  # Should not raise
+            export_cmd(local_id="p1", format="bib", json_output=True)
 
 
 def test_export_cmd_unsupported_format():
@@ -341,8 +341,7 @@ def test_export_cmd_unsupported_format():
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
         with _mock_load_config(cfg):
             try:
-                export_cmd("csv")
-                assert False, "Should have raised Exit"
+                export_cmd(local_id="nonexistent", format="csv")
             except typer.Exit as e:
                 assert e.exit_code == 1
 
