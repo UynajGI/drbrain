@@ -55,7 +55,7 @@ class ParsedPaper:
 
 
 class MinerUParser:
-    """PDF parser: mineru-open-api CLI (flash-extract/extract) -> pypdfium2 fallback."""
+    """PDF parser: mineru-open-api CLI -> PyMuPDF fallback."""
 
     def __init__(
         self,
@@ -172,7 +172,7 @@ class MinerUParser:
             raw_md = self._read_output_md(out_dir)
             img_dir = out_dir / "images" if (out_dir / "images").exists() else None
         else:
-            raw_md = self._fallback_pypdfium2(pdf_path)
+            raw_md = self._fallback_pymupdf(pdf_path)
             img_dir = None
         return raw_md, img_dir, managed_tmp
 
@@ -184,7 +184,7 @@ class MinerUParser:
             if out_dir is not None:
                 raw_md = self._read_output_md(out_dir)
             else:
-                raw_md = self._fallback_pypdfium2(pdf_path)
+                raw_md = self._fallback_pymupdf(pdf_path)
                 out_dir = None
 
             title = self._extract_title(raw_md, str(pdf_path))
@@ -325,16 +325,24 @@ class MinerUParser:
             return ""
         return md_files[0].read_text(encoding="utf-8")
 
-    def _fallback_pypdfium2(self, pdf_path: Path) -> str:
-        """Extract text via pypdfium2 as fallback."""
-        import pypdfium2 as pdfium
+    def _fallback_pymupdf(self, pdf_path: Path) -> str:
+        """Extract markdown via PyMuPDF. Returns raw text on failure."""
+        import fitz
 
+        doc = fitz.open(str(pdf_path))
         try:
-            doc = pdfium.PdfDocument(str(pdf_path))
             lines = []
             for page in doc:
-                text_page = page.get_textpage()
-                text = text_page.get_text_bounded()
+                text = page.get_text("markdown")
+                if text.strip():
+                    lines.append(text)
+            result = "\n\n".join(lines)
+            if result.strip():
+                return result
+            # Fallback to plain text if markdown output is empty
+            lines = []
+            for page in doc:
+                text = page.get_text("text")
                 if text.strip():
                     lines.append(text)
             return "\n\n".join(lines)

@@ -1803,7 +1803,7 @@ def check_cmd():
     console.print("[bold]Python Packages[/bold]")
     table = Table(show_header=False, box=None, padding=(0, 2))
     required_packages = [
-        ("pypdfium2", "pypdfium2"),
+        ("pymupdf", "fitz"),
         ("litellm", "litellm"),
         ("typer", "typer"),
         ("rich", "rich"),
@@ -1824,21 +1824,39 @@ def check_cmd():
     # -- External CLI tools --
     console.print("\n[bold]External Tools[/bold]")
     table2 = Table(show_header=False, box=None, padding=(0, 2))
+    mineru_found = shutil.which("mineru-open-api")
+    pymupdf_found = False
+    try:
+        importlib.import_module("fitz")
+        pymupdf_found = True
+    except ImportError:
+        pass
+
     cli_tools = {
-        "mineru-open-api": "MinerU PDF parser CLI",
+        "mineru-open-api": ("MinerU PDF parser CLI", mineru_found),
+        "PyMuPDF (fitz)": ("PDF fallback parser", pymupdf_found),
     }
-    for tool, desc in cli_tools.items():
-        found = shutil.which(tool)
+    for tool, (desc, found) in cli_tools.items():
         if found:
-            table2.add_row(f"  {tool}", f"[green]OK[/green] ({found}) — {desc}")
+            label = f"  {tool}"
+            if isinstance(found, str):
+                table2.add_row(label, f"[green]OK[/green] ({found}) — {desc}")
+            else:
+                table2.add_row(label, f"[green]OK[/green] — {desc}")
         else:
-            table2.add_row(
-                f"  {tool}",
-                "[yellow]NOT FOUND[/yellow]",
-                f"{desc} (optional, fallback to pypdfium2)",
-            )
-            warnings.append(f"{tool} not found — PDF parsing will use pypdfium2 fallback only")
+            table2.add_row(f"  {tool}", "[yellow]NOT FOUND[/yellow]", f"{desc} (optional)")
+            if tool == "mineru-open-api":
+                warnings.append("mineru-open-api not found — using PyMuPDF fallback")
+
     console.print(table2)
+    # Parser path
+    console.print("\n[bold]Parser Path[/bold]")
+    if mineru_found:
+        console.print("  MinerU CLI → [green]PyMuPDF[/green]")
+    elif pymupdf_found:
+        console.print("  [yellow]MinerU not found[/yellow], using: [green]PyMuPDF[/green]")
+    else:
+        console.print("  [red]No PDF parser available[/red] — install pymupdf")
 
     # -- Config files --
     console.print("\n[bold]Configuration[/bold]")

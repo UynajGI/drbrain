@@ -200,29 +200,45 @@ def test_extract_pdf_from_config():
             mock_extract.assert_called_once()
 
 
-# -- pypdfium2 fallback --
+# -- PyMuPDF fallback --
 
 
-def test_fallback_pypdfium2():
-    """_fallback_pypdfium2 extracts text from PDF."""
+def test_fallback_pymupdf():
+    """_fallback_pymupdf extracts markdown from PDF via PyMuPDF."""
     with tempfile.TemporaryDirectory() as td:
         pdf_path = Path(td) / "test.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
-        # Mock pypdfium2
         mock_page = unittest.mock.Mock()
-        mock_textpage = unittest.mock.Mock()
-        mock_textpage.get_text_bounded.return_value = "Extracted text content."
-        mock_page.get_textpage.return_value = mock_textpage
+        mock_page.get_text.return_value = "# Extracted markdown content."
 
         mock_doc = unittest.mock.Mock()
         mock_doc.__iter__ = unittest.mock.Mock(return_value=iter([mock_page]))
         mock_doc.close = unittest.mock.Mock()
 
-        with unittest.mock.patch("pypdfium2.PdfDocument", return_value=mock_doc):
+        with unittest.mock.patch("fitz.open", return_value=mock_doc):
             parser = MinerUParser()
-            result = parser._fallback_pypdfium2(pdf_path)
-            assert "Extracted text content." in result
+            result = parser._fallback_pymupdf(pdf_path)
+            assert "Extracted markdown content." in result
+
+
+def test_fallback_pymupdf_empty_markdown_uses_text():
+    """_fallback_pymupdf falls back to plain text when markdown is empty."""
+    with tempfile.TemporaryDirectory() as td:
+        pdf_path = Path(td) / "test.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4 dummy")
+
+        mock_page = unittest.mock.Mock()
+        mock_page.get_text.side_effect = ["", "plain text content"]
+
+        mock_doc = unittest.mock.Mock()
+        mock_doc.close = unittest.mock.Mock()
+        mock_doc.__iter__ = unittest.mock.MagicMock(side_effect=lambda: iter([mock_page]))
+
+        with unittest.mock.patch("fitz.open", return_value=mock_doc):
+            parser = MinerUParser()
+            result = parser._fallback_pymupdf(pdf_path)
+            assert "plain text content" in result
 
 
 def test_mineru_cli_not_found_uses_fallback():
@@ -234,7 +250,7 @@ def test_mineru_cli_not_found_uses_fallback():
 
 
 def test_parser_full_extract_flow_with_fallback():
-    """extract() falls back to pypdfium2 when mineru CLI fails."""
+    """extract() falls back to PyMuPDF when mineru CLI fails."""
     with tempfile.TemporaryDirectory() as td:
         pdf_path = Path(td) / "2401.00001v1.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
@@ -248,7 +264,7 @@ def test_parser_full_extract_flow_with_fallback():
             ),
             unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError("not found")),
             unittest.mock.patch.object(
-                MinerUParser, "_fallback_pypdfium2", side_effect=mock_fallback
+                MinerUParser, "_fallback_pymupdf", side_effect=mock_fallback
             ),
             unittest.mock.patch(
                 "drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)

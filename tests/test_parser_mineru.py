@@ -60,7 +60,7 @@ def test_parser_retries_mineru_on_failure():
 
 
 def test_parser_skips_to_fallback_after_max_retries():
-    """MinerUParser falls back to pypdfium2 after max_retries failures."""
+    """MinerUParser falls back to PyMuPDF after max_retries failures."""
 
     def mock_run(*args, **kwargs):
         result = unittest.mock.Mock()
@@ -69,7 +69,7 @@ def test_parser_skips_to_fallback_after_max_retries():
         result.stderr = "error"
         return result
 
-    def mock_pdfium(path):
+    def mock_fallback(path):
         return "No headings, just text."
 
     with (
@@ -78,7 +78,7 @@ def test_parser_skips_to_fallback_after_max_retries():
             "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
-        unittest.mock.patch.object(MinerUParser, "_fallback_pypdfium2", side_effect=mock_pdfium),
+        unittest.mock.patch.object(MinerUParser, "_fallback_pymupdf", side_effect=mock_fallback),
     ):
         parser = MinerUParser(token="test", max_retries=2, retry_delay=0.01)
         result = parser.extract("/tmp/test.pdf")
