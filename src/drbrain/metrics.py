@@ -8,8 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-DB_DIR = Path("data/metrics")
-DB_PATH = DB_DIR / "metrics.db"
+DB_PATH = Path("data/metrics.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS llm_calls (

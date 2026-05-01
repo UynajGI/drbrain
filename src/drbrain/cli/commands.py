@@ -1580,7 +1580,7 @@ def backup_cmd(
 
     cfg = load_config()
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    db_path = Path(cfg.get("db", {}).get("path", "data/db/drbrain.db"))
+    db_path = Path(cfg.get("db", {}).get("path", "data/drbrain.db"))
     backup_dir = Path(cfg.get("dirs", {}).get("backups", "data/backups"))
     workspace_dir = Path("workspace")
     reports_dir = Path(cfg.get("dirs", {}).get("reports", "data/reports"))
@@ -1965,7 +1965,7 @@ def check_cmd():
     table6 = Table(show_header=False, box=None, padding=(0, 2))
     try:
         cfg = load_config()
-        db_path = cfg.get("db", {}).get("path", "data/db/drbrain.db")
+        db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
         p = Path(db_path)
         if p.exists():
             table6.add_row(f"  {db_path}", "[green]Exists[/green]")
@@ -2173,7 +2173,7 @@ def clean_cmd(
     dirs = cfg.get("dirs", {})
 
     targets = [
-        dirs.get("db", "data/db"),
+        str(Path(cfg.get("db", {}).get("path", "data/drbrain.db")).parent),
         dirs.get("cache", "data/cache"),
         dirs.get("logs", "data/logs"),
         dirs.get("papers", "data/papers"),
@@ -2488,3 +2488,68 @@ def import_cmd(
     typer.echo(
         "Run 'drbrain ingest' to process them, or 'drbrain repair --all' to fix metadata first."
     )
+
+
+def translate_cmd(
+    local_id: str = typer.Argument(..., help="Paper local_id"),
+    target_lang: str = typer.Option("zh", "--lang", "-l", help="Target language: zh, en, ja, etc."),
+    source_lang: str = typer.Option("en", "--from", help="Source language (default: en)"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Translate a paper's markdown via LLM."""
+    _lang_map = {
+        "zh": "Chinese",
+        "en": "English",
+        "ja": "Japanese",
+        "ko": "Korean",
+        "de": "German",
+        "fr": "French",
+    }
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    paper = db.get_paper(local_id)
+    db.close()
+
+    if not paper:
+        typer.echo(f"Paper not found: {local_id}", err=True)
+        raise typer.Exit(1)
+
+    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    md_path = papers_dir / local_id / "raw.md"
+
+    if not md_path.exists():
+        typer.echo(f"No raw.md found for {local_id}. Run 'drbrain ingest' first.", err=True)
+        raise typer.Exit(1)
+
+    llm_models = cfg.get("llm", {}).get("models", [])
+    if not llm_models:
+        typer.echo("No LLM models configured.", err=True)
+        raise typer.Exit(1)
+
+    tgt = _lang_map.get(target_lang, target_lang)
+    src = _lang_map.get(source_lang, source_lang)
+
+    typer.echo(f"Translating: {paper['title']} ({src} → {tgt})")
+
+    from drbrain.services.translate import translate_paper
+
+    result = translate_paper(
+        md_path,
+        models=llm_models,
+        target_lang=tgt,
+        source_lang=src,
+    )
+
+    if result is None:
+        if json_output:
+            typer.echo(json.dumps({"error": "Translation failed"}))
+        else:
+            typer.echo("Translation failed.", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps({"paper": local_id, "output": str(result)}, ensure_ascii=False))
+    else:
+        typer.echo(f"Translated: {result}")

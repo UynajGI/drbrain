@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS citation_cache (
 class Database:
     """Thin SQLite wrapper with schema auto-init."""
 
-    def __init__(self, db_path: str | Path = "data/db/drbrain.db"):
+    def __init__(self, db_path: str | Path = "data/drbrain.db"):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))

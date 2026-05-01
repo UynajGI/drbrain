@@ -21,7 +21,7 @@ mineru:
   max_pages: 150  # split threshold for large PDFs (MinerU limit: 200)
 
 db:
-  path: "data/db/drbrain.db"
+  path: "data/drbrain.db"
 
 dirs:
   inbox: "data/spool/inbox"   # PDFs awaiting ingest

@@ -31,6 +31,7 @@ from drbrain.cli.commands import (
     serve_cmd,
     stats_cmd,
     timeline_cmd,
+    translate_cmd,
     ws_add_cmd,
     ws_create_cmd,
     ws_delete_cmd,
@@ -77,6 +78,7 @@ app.command("backup")(backup_cmd)
 app.command("analyze")(analyze_cmd)
 app.command("repair")(repair_cmd)
 app.command("import")(import_cmd)
+app.command("translate")(translate_cmd)
 
 # Workspace subcommands
 ws_app = typer.Typer(help="Manage paper workspaces")
