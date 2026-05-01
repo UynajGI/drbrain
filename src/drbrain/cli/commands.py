@@ -1345,9 +1345,12 @@ def timeline_cmd(
 def delete_cmd(
     local_id: str,
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    rm_files: bool = typer.Option(False, "--rm-files", help="Also delete paper directory"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Delete a paper and all its associated data from the graph."""
+    import shutil as _shutil
+
     cfg = load_config()
     db = Database(cfg["db"]["path"])
 
@@ -1363,8 +1366,26 @@ def delete_cmd(
     counts = db.delete_paper(local_id)
     db.close()
 
+    file_deleted = False
+    if rm_files:
+        papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+        paper_dir = papers_dir / local_id
+        if paper_dir.exists():
+            _shutil.rmtree(paper_dir)
+            file_deleted = True
+
     if json_output:
-        typer.echo(json.dumps({"deleted": local_id, "title": paper["title"], **counts}, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "deleted": local_id,
+                    "title": paper["title"],
+                    "files_deleted": file_deleted,
+                    **counts,
+                },
+                indent=2,
+            )
+        )
         return
 
     typer.echo(f"Deleted paper: {paper['title']} ({local_id})")
@@ -1372,6 +1393,8 @@ def delete_cmd(
         f"  concepts: {counts['concepts']}, arguments: {counts['arguments']}, "
         f"edges: {counts['edges']}, queue items: {counts['queue_items']}"
     )
+    if file_deleted:
+        typer.echo(f"  files: removed data/papers/{local_id}/")
 
 
 def serve_cmd(
