@@ -2342,3 +2342,150 @@ def ws_delete_cmd(
         typer.echo(json.dumps({"deleted": name}))
     else:
         typer.echo(f"Workspace deleted: {name}")
+
+
+# -- repair + import commands --
+
+
+def repair_cmd(
+    local_id: str = typer.Argument(None, help="Paper local_id"),
+    all: bool = typer.Option(False, "--all", help="Repair all papers"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only, no changes"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Repair paper metadata via CrossRef, arXiv, and OpenAlex."""
+    from drbrain.services.repair import repair_paper
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    if all or workspace:
+        papers = db.get_all_papers()
+        if workspace:
+            ws_ids = _resolve_workspace_papers(workspace)
+            papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
+    elif local_id:
+        paper = db.get_paper(local_id)
+        papers = [paper] if paper else []
+    else:
+        db.close()
+        typer.echo("Specify a paper, --all, or --workspace", err=True)
+        raise typer.Exit(1)
+
+    all_repairs = []
+    for paper in papers:
+        if not paper:
+            continue
+        repairs = repair_paper(db, paper["local_id"], dry_run=dry_run)
+        if repairs:
+            all_repairs.append(
+                {"paper": paper["local_id"], "title": paper.get("title", ""), "repairs": repairs}
+            )
+
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps(all_repairs, indent=2, ensure_ascii=False, default=str))
+        return
+
+    total_fixed = sum(len(r["repairs"]) for r in all_repairs)
+    if dry_run:
+        typer.echo(
+            f"[DRY RUN] Would repair {total_fixed} fields across {len(all_repairs)} papers:\n"
+        )
+    else:
+        typer.echo(f"Repaired {total_fixed} fields across {len(all_repairs)} papers:\n")
+
+    for r in all_repairs:
+        typer.echo(f'  {r["paper"]} "{r["title"][:60]}"')
+        for repair in r["repairs"]:
+            old_str = str(repair.get("old", "")) if repair.get("old") is not None else "(empty)"
+            new_str = str(repair.get("new", "")) if repair.get("new") is not None else "(empty)"
+            typer.echo(f"    {repair['field']}: {old_str} → {new_str} ({repair.get('source')})")
+
+
+def import_cmd(
+    source: str = typer.Argument(..., help="Source type: zotero or bibtex"),
+    path: str = typer.Argument(..., help="Path to zotero.sqlite or .bib file"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Import papers from Zotero or BibTeX."""
+    import uuid
+
+    if source not in ("zotero", "bibtex"):
+        typer.echo("Source must be: zotero or bibtex", err=True)
+        raise typer.Exit(1)
+
+    p = Path(path)
+    if not p.exists():
+        typer.echo(f"File not found: {path}", err=True)
+        raise typer.Exit(1)
+
+    if source == "zotero":
+        import sqlite3
+
+        from drbrain.services.zotero_import import import_zotero_db
+
+        conn = sqlite3.connect(str(p))
+        papers = import_zotero_db(conn)
+        conn.close()
+    else:
+        from drbrain.services.zotero_import import import_bibtex_file
+
+        papers = import_bibtex_file(p)
+
+    if dry_run:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"dry_run": True, "count": len(papers), "papers": papers},
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            typer.echo(f"[DRY RUN] Would import {len(papers)} papers:")
+            for paper in papers:
+                typer.echo(
+                    f"  - {paper['title'][:80]} ({paper.get('year', '?')}) [{paper['paper_type']}]"
+                )
+        return
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+    imported = []
+    for paper in papers:
+        local_id = f"p{uuid.uuid4().hex[:6]}"
+        db.insert_paper(
+            local_id,
+            paper["title"],
+            paper.get("year"),
+            "placeholder",
+            paper_type=paper.get("paper_type", "paper"),
+        )
+        if paper.get("doi"):
+            db.insert_paper_ids(local_id, doi=paper["doi"])
+        if paper.get("authors"):
+            for author in paper["authors"].split(" and "):
+                author = author.strip()
+                if author:
+                    db.insert_concept(local_id, "Actor", author, 1.0, year=paper.get("year"))
+                    db.insert_alias(author, author)
+        imported.append({"local_id": local_id, "title": paper["title"]})
+    db.commit()
+    db.close()
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"imported": len(imported), "papers": imported}, indent=2, ensure_ascii=False
+            )
+        )
+        return
+
+    typer.echo(f"Imported {len(imported)} papers as placeholders.")
+    typer.echo(
+        "Run 'drbrain ingest' to process them, or 'drbrain repair --all' to fix metadata first."
+    )

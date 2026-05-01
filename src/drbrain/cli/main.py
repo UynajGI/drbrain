@@ -14,6 +14,7 @@ from drbrain.cli.commands import (
     closure_cmd,
     delete_cmd,
     export_cmd,
+    import_cmd,
     ingest_cmd,
     lineage_cmd,
     list_cmd,
@@ -21,6 +22,7 @@ from drbrain.cli.commands import (
     queue_cmd,
     queue_resolve_all_cmd,
     queue_resolve_cmd,
+    repair_cmd,
     report_cmd,
     seed_cmd,
     serve_cmd,
@@ -59,6 +61,8 @@ app.command("check")(check_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
 app.command("analyze")(analyze_cmd)
+app.command("repair")(repair_cmd)
+app.command("import")(import_cmd)
 
 # Workspace subcommands
 ws_app = typer.Typer(help="Manage paper workspaces")
