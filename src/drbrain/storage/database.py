@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS papers (
     title TEXT NOT NULL,
     abstract TEXT DEFAULT '',
     year INTEGER,
+    paper_type TEXT NOT NULL DEFAULT 'paper'
+        CHECK(paper_type IN ('paper','review','thesis','preprint','book','document')),
     status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -104,7 +106,16 @@ class Database:
 
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_SQL)
+        self._migrate_add_paper_type()
         self.conn.commit()
+
+    def _migrate_add_paper_type(self) -> None:
+        """Add paper_type column if missing (pre-v2 DBs)."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "paper_type" not in cols:
+            self.conn.execute(
+                "ALTER TABLE papers ADD COLUMN paper_type TEXT NOT NULL DEFAULT 'paper'"
+            )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -138,10 +149,18 @@ class Database:
         ).fetchone()
         return row[0] if row else None
 
-    def insert_paper(self, local_id: str, title: str, year: int | None, status: str) -> None:
+    def insert_paper(
+        self,
+        local_id: str,
+        title: str,
+        year: int | None,
+        status: str,
+        paper_type: str = "paper",
+    ) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO papers (local_id, title, year, status) VALUES (?, ?, ?, ?)",
-            (local_id, title, year, status),
+            "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (local_id, title, year, status, paper_type),
         )
 
     def insert_paper_ids(
@@ -211,7 +230,7 @@ class Database:
     def get_all_papers(self) -> list[dict]:
         """Return all papers as list of dicts."""
         rows = self.conn.execute(
-            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, p.created_at, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, p.created_at, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
@@ -220,6 +239,7 @@ class Database:
             "title",
             "abstract",
             "year",
+            "paper_type",
             "status",
             "created_at",
             "doi",
@@ -232,7 +252,7 @@ class Database:
     def get_paper(self, local_id: str) -> dict | None:
         """Get a single paper by local_id."""
         row = self.conn.execute(
-            "SELECT p.local_id, p.title, p.abstract, p.year, p.status, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
             "WHERE p.local_id = ?",
@@ -245,6 +265,7 @@ class Database:
             "title",
             "abstract",
             "year",
+            "paper_type",
             "status",
             "doi",
             "arxiv",
