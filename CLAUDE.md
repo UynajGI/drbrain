@@ -8,11 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 uv sync                        # install all deps (including dev)
 uv run drbrain <command>       # CLI entry point
 uv run pytest                   # run all tests
-uv run pytest tests/test_xxx.py             # single test file
+uv run pytest -m "not integration"  # skip slow integration tests
 uv run pytest tests/test_xxx.py::test_name  # single test case
 uv run ruff check .             # lint
 uv run ruff format .            # format
 ```
+
+Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`.
 
 ## Architecture
 
@@ -48,6 +50,26 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Finds structurally similar subgraphs via relation signature Jaccard similarity. Section-aware signatures: `"in:supports@Methods"`. `find_similar_problems()`, `find_isomorphic_patterns()`.
 - **Hypothesis Generation** (`extractor/hypothesis.py`): Generates research hypotheses from unaddressed gaps, debate zones, and technology cliffs. Evidence strings include section provenance. `detect_section_contradictions()` finds supports/challenges from different sections. `generate_hypotheses()`, `score_hypothesis()`.
 - **Structure-first Retrieval** (`query/tree_retrieval.py`): PageIndex-style retrieval via `query --paper`. Reads tree skeleton → LLM selects relevant node_ids → loads content on-demand. Returns structured `[{"node_id", "title", "content"}]`.
+- **Citation Graph** (`storage/citation_graph.py`): Shared-reference analysis, ref/citing/shared-refs queries. `find_shared_refs()` detects papers sharing references but not citing each other (knowledge frontier signal).
+- **Citation Verification** (`extractor/citation_check.py`): Extracts (Author, Year) patterns from text and matches against the local library.
+- **Library Management** (`storage/inbox.py`, `storage/workspace.py`, `storage/export.py`, `storage/backup.py`): Inbox scanning (with pending queue), workspace CRUD, BibTeX/RIS/Markdown export, tar.gz backup.
+- **Paper Type Detection** (`extractor/detection.py`): Heuristic + LLM classification into paper/review/thesis/preprint/book/document.
+- **Knowledge Frontier Analysis** (`report/analyzer.py`): Orchestrates all reasoning modules into unified report via `drbrain analyze`.
+
+### Data Directory Layout
+
+```
+data/
+├── spool/inbox/       # PDFs awaiting ingest (auto-classified)
+├── spool/pending/     # Failed ingests + pending.jsonl
+├── papers/<id>/       # Per-paper: source.pdf, raw.md, images/, tree.json
+├── db/drbrain.db      # SQLite database
+├── backups/           # tar.gz backups
+├── cache/             # API cache (rebuildable)
+├── logs/              # validation.log
+└── reports/           # Per-paper JSON reports
+workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
+```
 
 ### Key Design Points
 
@@ -68,13 +90,16 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
 - 542 tests total. TDD: tests-first for all new modules.
 
+### Gotchas
+
+- **Editable install**: After `uv sync`, run `uv pip install -e .` once if `ModuleNotFoundError: No module named 'drbrain'` appears. The src-layout package needs an editable install for imports to resolve.
+- **typer OptionInfo in tests**: When calling command functions directly (not via CLI), typer `Option` default values appear as `OptionInfo` objects. Use `isinstance(param, typer.models.OptionInfo)` to extract `.default`. All commands use the `_resolve_workspace_papers()` or equivalent normalization.
+
 ### Skills
 
 Project skills in `skills/` directory. Available skills: `research-analysis` (knowledge frontier analysis), `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`.
 
-### Behavioral Guidelines
-
-From Karpathy guidelines — bias toward caution over speed.
+## Behavioral Guidelines (from Karpathy)
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
