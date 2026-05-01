@@ -24,7 +24,8 @@ db:
   path: "data/db/drbrain.db"
 
 dirs:
-  inbox: "data/inbox"       # raw PDFs awaiting ingest
+  inbox: "data/spool/inbox"   # PDFs awaiting ingest
+  pending: "data/spool/pending"  # failed ingest PDFs
   papers: "data/papers"     # per-paper directories (after ingest)
   reports: "data/reports"
   cache: "data/cache"
