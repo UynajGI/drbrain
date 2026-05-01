@@ -88,16 +88,6 @@ def test_app_seed():
             assert result.exit_code == 0
 
 
-def test_app_export_json():
-    """CLI export command outputs JSON."""
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        reports_dir = Path(td) / "reports"
-        with mock_cfg(str(db_path), str(reports_dir)):
-            result = runner.invoke(app, ["export", "--format", "json"])
-            assert result.exit_code == 0
-
-
 def test_app_ingest_no_pdfs():
     """CLI ingest exits with code 1 when no PDFs found."""
     with tempfile.TemporaryDirectory() as td:

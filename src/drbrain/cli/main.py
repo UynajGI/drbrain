@@ -24,6 +24,12 @@ from drbrain.cli.commands import (
     serve_cmd,
     stats_cmd,
     timeline_cmd,
+    ws_add_cmd,
+    ws_create_cmd,
+    ws_delete_cmd,
+    ws_list_cmd,
+    ws_remove_cmd,
+    ws_show_cmd,
 )
 from drbrain.cli.setup import setup_cmd
 
@@ -49,6 +55,16 @@ app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
+
+# Workspace subcommands
+ws_app = typer.Typer(help="Manage paper workspaces")
+ws_app.command("create")(ws_create_cmd)
+ws_app.command("add")(ws_add_cmd)
+ws_app.command("remove")(ws_remove_cmd)
+ws_app.command("list")(ws_list_cmd)
+ws_app.command("show")(ws_show_cmd)
+ws_app.command("delete")(ws_delete_cmd)
+app.add_typer(ws_app, name="ws")
 
 if __name__ == "__main__":
     app()

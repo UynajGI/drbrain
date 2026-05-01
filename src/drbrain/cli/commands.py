@@ -1875,3 +1875,135 @@ def clean_cmd(
         Path(t).mkdir(parents=True, exist_ok=True)
 
     typer.echo("Done. Inbox (PDFs) untouched.")
+
+
+# -- Workspace commands --
+
+
+def ws_create_cmd(
+    name: str = typer.Argument(..., help="Workspace name"),
+    description: str = typer.Option("", "--description", "-d", help="Description"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Create a new workspace."""
+    from drbrain.storage.workspace import WorkspaceError, create_workspace
+
+    try:
+        create_workspace(name, description=description)
+        if json_output:
+            typer.echo(json.dumps({"created": name, "description": description}))
+        else:
+            typer.echo(f"Workspace created: {name}")
+    except WorkspaceError as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+def ws_add_cmd(
+    name: str = typer.Argument(..., help="Workspace name"),
+    local_ids: list[str] = typer.Argument(..., help="Paper local_id(s) to add"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Add papers to a workspace."""
+    from drbrain.storage.workspace import WorkspaceError, add_papers, get_workspace
+
+    try:
+        add_papers(name, local_ids)
+        ws = get_workspace(name)
+        if json_output:
+            typer.echo(json.dumps(ws, indent=2))
+        else:
+            typer.echo(f"Added {len(local_ids)} paper(s) to '{name}' ({ws['paper_count']} total)")
+    except WorkspaceError as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
+def ws_remove_cmd(
+    name: str = typer.Argument(..., help="Workspace name"),
+    local_ids: list[str] = typer.Argument(..., help="Paper local_id(s) to remove"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Remove papers from a workspace."""
+    from drbrain.storage.workspace import get_workspace, remove_papers
+
+    remove_papers(name, local_ids)
+    ws = get_workspace(name)
+    if json_output:
+        typer.echo(json.dumps(ws, indent=2))
+    else:
+        typer.echo(f"Removed {len(local_ids)} paper(s) from '{name}' ({ws['paper_count']} total)")
+
+
+def ws_list_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """List all workspaces."""
+    from drbrain.storage.workspace import list_workspaces
+
+    names = list_workspaces()
+    if json_output:
+        typer.echo(json.dumps({"workspaces": names}))
+    elif not names:
+        typer.echo("No workspaces. Create one with: drbrain ws create <name>")
+    else:
+        typer.echo(f"Workspaces ({len(names)}):")
+        for n in names:
+            typer.echo(f"  {n}")
+
+
+def ws_show_cmd(
+    name: str = typer.Argument(..., help="Workspace name"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Show workspace details and paper list."""
+    from drbrain.storage.workspace import get_workspace
+
+    ws = get_workspace(name)
+    if ws is None:
+        msg = f"Workspace not found: {name}"
+        if json_output:
+            typer.echo(json.dumps({"error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(ws, indent=2, default=str))
+        return
+
+    typer.echo(f"Workspace: {ws['name']}")
+    typer.echo(f"  Description: {ws['description']}")
+    typer.echo(f"  Created: {ws['created']}")
+    typer.echo(f"  Papers: {ws['paper_count']}")
+    for pid in ws["papers"]:
+        typer.echo(f"    - {pid}")
+
+
+def ws_delete_cmd(
+    name: str = typer.Argument(..., help="Workspace name"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Delete a workspace."""
+    from drbrain.storage.workspace import delete_workspace, get_workspace
+
+    ws = get_workspace(name)
+    if ws is None:
+        msg = f"Workspace not found: {name}"
+        if json_output:
+            typer.echo(json.dumps({"error": msg}))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(1)
+
+    delete_workspace(name)
+    if json_output:
+        typer.echo(json.dumps({"deleted": name}))
+    else:
+        typer.echo(f"Workspace deleted: {name}")
