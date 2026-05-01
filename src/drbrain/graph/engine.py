@@ -463,11 +463,24 @@ class GraphEngine:
 
         return seeds
 
-    def load_from_db(self, db) -> None:
-        """Load all edges from database into NetworkX graph."""
-        rows = db.conn.execute(
-            "SELECT src_id, dst_id, relation, source_paper, weight FROM edges"
-        ).fetchall()
+    def load_from_db(self, db, paper_ids: set[str] | None = None) -> None:
+        """Load all edges from database into NetworkX graph.
+
+        Args:
+            db: Database instance.
+            paper_ids: Optional set of local_ids to filter edges by source_paper.
+        """
+        if paper_ids:
+            placeholders = ",".join("?" for _ in paper_ids)
+            rows = db.conn.execute(
+                f"SELECT src_id, dst_id, relation, source_paper, weight FROM edges "
+                f"WHERE source_paper IN ({placeholders})",
+                tuple(paper_ids),
+            ).fetchall()
+        else:
+            rows = db.conn.execute(
+                "SELECT src_id, dst_id, relation, source_paper, weight FROM edges"
+            ).fetchall()
         for src, dst, rel, src_paper, weight in rows:
             self.graph.add_edge(src, dst, relation=rel, source=src_paper, weight=weight)
 

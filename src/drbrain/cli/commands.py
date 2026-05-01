@@ -565,6 +565,19 @@ def _log_error(cfg: dict, message: str) -> None:
         f.write(f"[{timestamp}] {message}\n")
 
 
+def _resolve_workspace_papers(workspace: str | None) -> set[str] | None:
+    """Resolve --workspace flag to a set of paper IDs, or None."""
+    # Normalize: when called directly (not via typer CLI), OptionInfo is the default
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    if not workspace:
+        return None
+    from drbrain.storage.workspace import load_workspace_papers
+
+    ids = load_workspace_papers(workspace)
+    return set(ids) if ids else None
+
+
 def _move_to_pending(pdf_path: Path, cfg: dict, reason: str) -> None:
     """Move a failed PDF to the pending directory."""
     from drbrain.storage.inbox import move_to_pending
@@ -745,12 +758,14 @@ def report_cmd(
 
 def closure_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Run rule-based closure on the full graph."""
     cfg = load_config()
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
-    graph.load_from_db(db)
+    paper_ids = _resolve_workspace_papers(workspace)
+    graph.load_from_db(db, paper_ids=paper_ids)
 
     inferred = graph.closure()
 
@@ -780,12 +795,14 @@ def closure_cmd(
 
 def seed_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Detect research seeds from graph patterns."""
     cfg = load_config()
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
-    graph.load_from_db(db)
+    paper_ids = _resolve_workspace_papers(workspace)
+    graph.load_from_db(db, paper_ids=paper_ids)
 
     seeds = graph.detect_research_seeds(db)
     db.close()
@@ -829,15 +846,65 @@ def list_cmd(
 
 def stats_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Database statistics."""
     cfg = load_config()
     db = Database(cfg["db"]["path"])
-    papers = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
-    uploaded = db.conn.execute("SELECT COUNT(*) FROM papers WHERE status='uploaded'").fetchone()[0]
-    placeholders = db.conn.execute(
-        "SELECT COUNT(*) FROM papers WHERE status='placeholder'"
-    ).fetchone()[0]
+    ph_counts = 0
+    if workspace:
+        paper_ids = _resolve_workspace_papers(workspace)
+        if paper_ids:
+            ph = ",".join("?" for _ in paper_ids)
+            params = tuple(paper_ids)
+            papers = db.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            uploaded = db.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE status='uploaded' AND local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            ph_counts = db.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE status='placeholder' AND local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            concepts = db.conn.execute(
+                f"SELECT COUNT(*) FROM concepts WHERE local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            edges = db.conn.execute(
+                f"SELECT COUNT(*) FROM edges WHERE source_paper IN ({ph})",
+                params,
+            ).fetchone()[0]
+            arguments = db.conn.execute(
+                f"SELECT COUNT(*) FROM arguments WHERE source_paper IN ({ph})",
+                params,
+            ).fetchone()[0]
+            aliases = db.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
+            seeds = db.conn.execute("SELECT COUNT(*) FROM research_seeds").fetchone()[0]
+            queue_pending = db.conn.execute(
+                "SELECT COUNT(*) FROM confidence_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+        else:
+            papers = 0
+            uploaded = 0
+            ph_counts = 0
+            concepts = 0
+            edges = 0
+            aliases = 0
+            seeds = 0
+            arguments = 0
+            queue_pending = 0
+        placeholders = ph_counts
+    else:
+        papers = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+        uploaded = db.conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE status='uploaded'"
+        ).fetchone()[0]
+        placeholders = db.conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE status='placeholder'"
+        ).fetchone()[0]
     concepts = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
     edges = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
     aliases = db.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
@@ -903,6 +970,7 @@ def query_cmd(
         "--paper",
         help="Paper local_id for PageIndex tree retrieval (bypasses BM25 when set)",
     ),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Query concepts and arguments with BM25 + filters, or use PageIndex tree retrieval."""
     cfg = load_config()
@@ -984,6 +1052,12 @@ def query_cmd(
         y_start = year_start or 0
         y_end = year_end or 9999
         results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
+
+    # Post-filter by workspace
+    if workspace:
+        ws_paper_ids = _resolve_workspace_papers(workspace)
+        if ws_paper_ids is not None:
+            results = [r for r in results if r["local_id"] in ws_paper_ids]
 
     # Expand by graph traversal
     if neighbors > 0 and results:
