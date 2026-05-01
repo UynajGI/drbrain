@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from drbrain.cli.commands import (
+    backup_cmd,
     check_cmd,
     clean_cmd,
     closure_cmd,
@@ -47,6 +48,7 @@ app.command("serve")(serve_cmd)
 app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
 app.command("clean")(clean_cmd)
+app.command("backup")(backup_cmd)
 
 if __name__ == "__main__":
     app()

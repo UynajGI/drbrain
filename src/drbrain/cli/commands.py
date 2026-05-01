@@ -1397,6 +1397,68 @@ def delete_cmd(
         typer.echo(f"  files: removed data/papers/{local_id}/")
 
 
+def backup_cmd(
+    output: str = typer.Option(None, "--output", "-o", help="Custom output path"),
+    list_only: bool = typer.Option(False, "--list", help="List existing backups"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Create or list tar.gz backups of papers, DB, and workspace."""
+    from drbrain.storage.backup import create_backup, list_backups
+
+    if list_only:
+        backups = list_backups()
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"backups": [{"name": b.name, "path": str(b)} for b in backups]},
+                    indent=2,
+                )
+            )
+            return
+        if not backups:
+            typer.echo("No backups found.")
+            return
+        typer.echo(f"Backups ({len(backups)}):")
+        for b in backups:
+            size_mb = b.stat().st_size / (1024 * 1024)
+            typer.echo(f"  {b.name} ({size_mb:.1f} MB)")
+        return
+
+    cfg = load_config()
+    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    db_path = Path(cfg.get("db", {}).get("path", "data/db/drbrain.db"))
+    backup_dir = Path(cfg.get("dirs", {}).get("backups", "data/backups"))
+    workspace_dir = Path("workspace")
+    reports_dir = Path(cfg.get("dirs", {}).get("reports", "data/reports"))
+
+    if output:
+        path = create_backup(
+            papers_dir=papers_dir,
+            db_path=db_path,
+            backup_dir=Path(output).parent,
+            workspace_dir=workspace_dir if workspace_dir.exists() else None,
+            reports_dir=reports_dir if reports_dir.exists() else None,
+        )
+        dest = Path(output)
+        path.rename(dest)
+        path = dest
+    else:
+        path = create_backup(
+            papers_dir=papers_dir,
+            db_path=db_path,
+            backup_dir=backup_dir,
+            workspace_dir=workspace_dir if workspace_dir.exists() else None,
+            reports_dir=reports_dir if reports_dir.exists() else None,
+        )
+
+    if json_output:
+        typer.echo(json.dumps({"backup": str(path), "size_bytes": path.stat().st_size}))
+        return
+
+    size_mb = path.stat().st_size / (1024 * 1024)
+    typer.echo(f"Backup created: {path} ({size_mb:.1f} MB)")
+
+
 def serve_cmd(
     host: str = typer.Option("127.0.0.1", "--host", help="Server host"),
     port: int = typer.Option(8501, "--port", help="Server port"),
