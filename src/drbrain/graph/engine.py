@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 
 import networkx as nx
 
 from drbrain.graph.path_reasoning import _apply_path_rules_subgraph, apply_path_rules
 from drbrain.validator.schema import detect_asymmetric_violations, enforce_transitive
+
+
+@dataclass
+class TraverseStep:
+    src: str
+    relation: str
+    dst: str
+    hop: int
+
+
+@dataclass
+class TraverseResult:
+    target: str
+    target_type: str
+    source: str
+    distance: int
+    path: list[TraverseStep]
 
 
 class GraphEngine:
@@ -38,6 +56,68 @@ class GraphEngine:
             visited |= next_layer
             current = next_layer
         return visited
+
+    def traverse(
+        self,
+        start_nodes: set[str],
+        hops: int = 2,
+        relations: set[str] | None = None,
+        direction: str = "both",
+    ) -> list[TraverseResult]:
+        """BFS from start_nodes with relation filtering and directional control.
+
+        Args:
+            start_nodes: Seed node labels to start traversal from.
+            hops: Maximum number of hops to traverse.
+            relations: Edge types to follow (None = all types).
+            direction: "forward" (out-edges), "backward" (in-edges), or "both".
+
+        Returns:
+            List of TraverseResult with full path from seed to target.
+        """
+        results: list[TraverseResult] = []
+        visited: set[tuple[str, str]] = set()  # (node, seed) dedup
+
+        for seed in start_nodes:
+            if seed not in self.graph:
+                continue
+            visited.add((seed, seed))
+            # Queue: (current_node, seed_origin, path_so_far)
+            queue: list[tuple[str, str, list[TraverseStep]]] = [(seed, seed, [])]
+
+            for hop in range(1, hops + 1):
+                next_queue: list[tuple[str, str, list[TraverseStep]]] = []
+                for current, origin, path_so_far in queue:
+                    neighbors: list[tuple[str, str]] = []
+
+                    if direction in ("forward", "both"):
+                        for _, dst, data in self.graph.out_edges(current, data=True):
+                            if relations is None or data["relation"] in relations:
+                                neighbors.append((dst, data["relation"]))
+
+                    if direction in ("backward", "both"):
+                        for src, _, data in self.graph.in_edges(current, data=True):
+                            if relations is None or data["relation"] in relations:
+                                neighbors.append((src, data["relation"]))
+
+                    for neighbor, rel in neighbors:
+                        if (neighbor, origin) not in visited:
+                            visited.add((neighbor, origin))
+                            step = TraverseStep(src=current, relation=rel, dst=neighbor, hop=hop)
+                            new_path = path_so_far + [step]
+                            results.append(
+                                TraverseResult(
+                                    target=neighbor,
+                                    target_type="unknown",
+                                    source=origin,
+                                    distance=hop,
+                                    path=new_path,
+                                )
+                            )
+                            next_queue.append((neighbor, origin, new_path))
+                queue = next_queue
+
+        return results
 
     def closure(self, section_map: dict[str, str] | None = None) -> list[dict]:
         """Run rule-based closure, return inferred edges.

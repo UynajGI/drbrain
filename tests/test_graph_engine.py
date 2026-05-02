@@ -175,3 +175,173 @@ def test_closure_transitive_no_duplication():
     inferred = g.closure()
     trans_edges = [e for e in inferred if e["relation"] == "extends"]
     assert len(trans_edges) == 0
+
+
+# ── TraverseStep, TraverseResult, traverse() — RED phase (do not exist yet) ──
+
+
+def test_traverse_step_creation():
+    from drbrain.graph.engine import TraverseStep
+
+    step = TraverseStep(src="A", relation="addresses", dst="B", hop=1)
+    assert step.src == "A"
+    assert step.relation == "addresses"
+    assert step.dst == "B"
+    assert step.hop == 1
+
+
+def test_traverse_result_creation():
+    from drbrain.graph.engine import TraverseResult, TraverseStep
+
+    path = [TraverseStep(src="seed", relation="addresses", dst="gap", hop=1)]
+    result = TraverseResult(
+        target="gap",
+        target_type="Gap",
+        source="seed",
+        distance=1,
+        path=path,
+    )
+    assert result.target == "gap"
+    assert result.target_type == "Gap"
+    assert result.source == "seed"
+    assert result.distance == 1
+    assert len(result.path) == 1
+
+
+def test_traverse_no_filter():
+    """traverse without relations filter returns all neighbors."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    g.add_edge("B", "C", "cites", "p1")
+
+    results = g.traverse(start_nodes={"B"}, hops=1)
+    targets = {r.target for r in results}
+    assert "A" in targets  # predecessor
+    assert "C" in targets  # successor
+    assert len(results) == 2
+
+
+def test_traverse_forward_only():
+    """direction=forward only follows out-edges."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    g.add_edge("B", "C", "cites", "p1")
+
+    results = g.traverse(start_nodes={"B"}, hops=1, direction="forward")
+    assert {r.target for r in results} == {"C"}
+
+
+def test_traverse_backward_only():
+    """direction=backward only follows in-edges."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    g.add_edge("B", "C", "cites", "p1")
+
+    results = g.traverse(start_nodes={"B"}, hops=1, direction="backward")
+    assert {r.target for r in results} == {"A"}
+
+
+def test_traverse_relation_filter():
+    """relations filter limits which edges are followed."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "addresses", "p1")
+    g.add_edge("A", "C", "challenges", "p1")
+
+    results = g.traverse(start_nodes={"A"}, hops=1, relations={"addresses"})
+    assert {r.target for r in results} == {"B"}
+
+
+def test_traverse_hops_2():
+    """Multi-hop traversal follows paths correctly."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "extends", "p1")
+    g.add_edge("B", "C", "extends", "p1")
+
+    results = g.traverse(start_nodes={"A"}, hops=2, direction="forward")
+    targets = {r.target for r in results}
+    assert "B" in targets  # hop 1
+    assert "C" in targets  # hop 2
+    # Verify C has distance 2 and path through B
+    c_result = [r for r in results if r.target == "C"][0]
+    assert c_result.distance == 2
+    assert c_result.path[0].dst == "B"
+    assert c_result.path[1].dst == "C"
+
+
+def test_traverse_empty_start_nodes():
+    """empty start_nodes returns []."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    results = g.traverse(start_nodes=set(), hops=2)
+    assert results == []
+
+
+def test_traverse_node_not_in_graph():
+    """start node not in graph returns []."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    results = g.traverse(start_nodes={"Z"}, hops=2)
+    assert results == []
+
+
+def test_traverse_multiple_seeds():
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "X", "addresses", "p1")
+    g.add_edge("B", "X", "addresses", "p2")
+
+    results = g.traverse(start_nodes={"A", "B"}, hops=1, direction="forward")
+    x_results = [r for r in results if r.target == "X"]
+    assert len(x_results) == 2
+    sources = {r.source for r in x_results}
+    assert sources == {"A", "B"}
+
+
+def test_traverse_path_tracking():
+    """Path contains correct intermediate nodes and relations."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("seed", "M1", "extends", "p1")
+    g.add_edge("M1", "M2", "replaces", "p2")
+
+    results = g.traverse(start_nodes={"seed"}, hops=2, direction="forward")
+    m2_results = [r for r in results if r.target == "M2"]
+    assert len(m2_results) == 1
+    r = m2_results[0]
+    assert r.distance == 2
+    assert r.source == "seed"
+    assert r.path[0].src == "seed"
+    assert r.path[0].relation == "extends"
+    assert r.path[0].dst == "M1"
+    assert r.path[1].src == "M1"
+    assert r.path[1].relation == "replaces"
+    assert r.path[1].dst == "M2"
+
+
+def test_traverse_default_direction_is_both():
+    """Default direction='both' traverses in-edges and out-edges."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.add_edge("A", "B", "cites", "p1")
+    g.add_edge("C", "B", "cites", "p1")
+
+    results = g.traverse(start_nodes={"B"}, hops=1)  # default both
+    targets = {r.target for r in results}
+    assert targets == {"A", "C"}

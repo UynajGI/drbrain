@@ -1,8 +1,15 @@
 """Tests for query command enhancements: arg-type filter, year-range, BM25 argument claims."""
 
+import io
+import json
+import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
+import typer
+
+from drbrain.cli.commands import query_cmd
 from drbrain.query.bm25 import build_bm25_index, tokenize
 from drbrain.storage.database import Database
 
@@ -192,3 +199,380 @@ def test_query_neighbors_expansion():
         assert "transformer_v1" in neighbors  # includes start
         assert "transformer_v2" in neighbors  # connected node
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Graph-enhanced query CLI integration tests (RED phase)
+# ---------------------------------------------------------------------------
+
+
+def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
+    return {
+        "db": {"path": db_path},
+        "llm": {"models": [{"provider": "openai", "model": "gpt-4", "api_key": "x"}]},
+        "dirs": {
+            "inbox": "data/inbox",
+            "papers": papers_dir,
+            "reports": "/tmp/reports",
+            "cache": "data/cache",
+            "logs": "data/logs",
+        },
+        "bm25": {"k1": 1.5, "b": 0.75},
+        "queue": {"weak_threshold": 0.7, "auto_accept": 0.9},
+        "api": {"s2_rate_limit": 100, "cache_ttl": 86400},
+    }
+
+
+def _mock_load_config(cfg: dict):
+    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
+
+
+def test_query_cmd_graph_relation_invalid():
+    """--relation with invalid relation type raises Exit(1)."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                query_cmd(
+                    text="test",
+                    neighbors=2,
+                    relation="bogus_relation",
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=False,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+def test_query_cmd_graph_direction_invalid():
+    """--direction with invalid value raises Exit(1)."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                query_cmd(
+                    text="test",
+                    neighbors=2,
+                    relation=None,
+                    direction="sideways",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=False,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+def test_query_cmd_graph_expansion_includes_concepts():
+    """--neighbors with traverse returns concept nodes with _via_graph fields."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.insert_concept("paper_a", "Gap", "gap_y", 0.8, year=2023)
+        db.insert_edge("method_x", "gap_y", "addresses", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=2,
+                    relation=None,
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        output = capture.getvalue()
+
+        results = json.loads(output)
+        graph_results = [r for r in results if r.get("_via_graph")]
+        graph_ids = {r["local_id"] for r in graph_results}
+
+        assert "gap_y" in graph_ids
+        gap_result = [r for r in graph_results if r["local_id"] == "gap_y"][0]
+        assert gap_result["type"] == "Gap"
+        assert "_source_seed" in gap_result
+        assert "_distance" in gap_result
+        assert "_path" in gap_result
+        relations_in_path = [step["relation"] for step in gap_result["_path"]]
+        assert "addresses" in relations_in_path
+
+
+def test_query_cmd_graph_relation_filter():
+    """--relation limits which edges are followed in graph expansion."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.insert_concept("paper_a", "Gap", "gap_y", 0.8, year=2023)
+        db.insert_concept("paper_a", "Problem", "problem_w", 0.7, year=2023)
+        db.insert_edge("method_x", "gap_y", "addresses", "paper_a", 1.0)
+        db.insert_edge("method_x", "problem_w", "challenges", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=1,
+                    relation="addresses",
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        output = capture.getvalue()
+
+        results = json.loads(output)
+        graph_results = [r for r in results if r.get("_via_graph")]
+        graph_ids = {r["local_id"] for r in graph_results}
+        assert "gap_y" in graph_ids
+        assert "problem_w" not in graph_ids
+
+
+def test_query_cmd_graph_backward_compat():
+    """--neighbors 2 without --relation/--direction still works."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.insert_concept("paper_a", "Method", "method_y", 0.85, year=2023)
+        db.insert_edge("method_x", "method_y", "extends", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=2,
+                    relation=None,
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        output = capture.getvalue()
+
+        results = json.loads(output)
+        assert any(r["local_id"] == "method_x" for r in results)
+        graph_results = [r for r in results if r.get("_via_graph")]
+        assert any(r["local_id"] == "method_y" for r in graph_results)
+
+
+def test_query_cmd_hybrid_boost():
+    """--hybrid adds _hybrid_boost field and re-ranks by boosted score."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "hub_method", 0.9, year=2023)
+        db.insert_concept("paper_a", "Gap", "leaf_gap", 0.8, year=2023)
+        # hub_method connected to many things -> high PageRank
+        db.insert_concept("paper_a", "Method", "m2", 0.85, year=2023)
+        db.insert_concept("paper_a", "Method", "m3", 0.85, year=2023)
+        db.insert_concept("paper_a", "Problem", "p1", 0.7, year=2023)
+        db.insert_edge("hub_method", "leaf_gap", "addresses", "paper_a", 1.0)
+        db.insert_edge("hub_method", "m2", "extends", "paper_a", 1.0)
+        db.insert_edge("hub_method", "m3", "extends", "paper_a", 1.0)
+        db.insert_edge("hub_method", "p1", "addresses", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="hub",
+                    neighbors=0,
+                    hybrid=True,
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    relation=None,
+                    direction="both",
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        results = json.loads(capture.getvalue())
+        # Every result should have _hybrid_boost
+        for r in results:
+            assert "_hybrid_boost" in r
+            assert 1.0 <= r["_hybrid_boost"] <= 2.0
+        # hub_method should have higher boost than leaf_gap (more connections)
+        hub = [r for r in results if r["local_id"] == "hub_method"]
+        leaf = [r for r in results if r["local_id"] == "leaf_gap"]
+        if hub and leaf:
+            assert hub[0]["_hybrid_boost"] >= leaf[0]["_hybrid_boost"]
+        # Results should be sorted by score descending
+        scores = [r["score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
+
+
+def test_query_cmd_hybrid_off_by_default():
+    """Without --hybrid, results do not have _hybrid_boost."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=0,
+                    hybrid=False,
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    relation=None,
+                    direction="both",
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        results = json.loads(capture.getvalue())
+        for r in results:
+            assert "_hybrid_boost" not in r

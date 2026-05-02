@@ -19,9 +19,13 @@ uv run drbrain serve                # launch Streamlit UI
 | Command | Purpose |
 |---------|---------|
 | `drbrain ingest` | Parse and ingest PDFs into knowledge graph |
-| `drbrain query` | Search concepts/arguments (BM25 + PageIndex tree retrieval) |
+| `drbrain query` | Search concepts/arguments (BM25 + hybrid graph boost + PageIndex tree retrieval) |
 | `drbrain analyze` | Generate knowledge frontier report (seeds, chains, hypotheses) |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) |
+| `drbrain graph neighbors <node>` | Direct graph traversal (no text search) |
+| `drbrain graph path <src> <dst>` | Shortest path between two graph nodes |
+| `drbrain graph related <id...>` | Shared concept analysis across papers (3 modes) |
+| `drbrain closure` | Rule-based graph inference (supports `--dry-run`, `--rule`) |
 | `drbrain check-citations <text>` | Verify in-text citations against library |
 | `drbrain ws` | Manage paper workspaces |
 | `drbrain export` | Export to BibTeX/RIS/Markdown |
@@ -37,6 +41,6 @@ uv run drbrain serve                # launch Streamlit UI
 - **Parser**: MinerU CLI → PyMuPDF fallback, PDF → Markdown
 - **Extractor**: LLM structured extraction with PageIndex tree-based concurrency
 - **Dedup**: DOI → arXiv → S2 → OpenAlex → title+year fuzzy match
-- **Graph**: NetworkX in-memory + SQLite, rule-based closure with 8 inference rules
+- **Graph**: NetworkX in-memory + SQLite, rule-based closure with 8+4 inference rules, directed BFS traversal with relation filtering, shortest-path queries
 - **Reasoning**: Causal chains, counterfactual analysis, isomorphism detection, hypothesis generation
 - **Skills**: 5 AgentSkills.io-compatible skills in `skills/`

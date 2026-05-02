@@ -15,7 +15,7 @@ uv run ruff format .            # format
 uv run pytest --cov=drbrain --cov-report=term  # coverage report
 ```
 
-Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`.
+Key user commands: `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
 8. **Expand** (`extractor/citation.py`): Fetches references and citations from Semantic Scholar / CrossRef / OpenAlex. Creates placeholder papers for external references.
 
-9. **Closure** (`graph/engine.py`): NetworkX MultiDiGraph in-memory. Rule-based relationship inference (8 rules): `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, transitive closure, asymmetric detection, multi-hop path rules. Supports both full-graph and incremental (2-hop subgraph) closure. When `section_map` is provided, inferred edges get section-aware confidence via `propagate_confidence_with_section()`.
+9. **Closure** (`graph/engine.py`): NetworkX MultiDiGraph in-memory. Rule-based relationship inference (8 original rules + 4 path rules): `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, transitive closure, asymmetric detection, plus `method_supersedes_problem`, `challenge_chain`, `gap_inheritance`, `indirect_support` from `path_reasoning.py`. Also provides `traverse()` — directed BFS with relation filtering, path tracking, and direction control (forward/backward/both). Supports both full-graph and incremental (2-hop subgraph) closure.
 
 ### Reasoning & Discovery Modules (post-ingestion)
 
@@ -50,7 +50,8 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Counterfactual Queries** (`extractor/counterfactual.py`): "What if X didn't exist?" — measures node removal impact on closure inferences. Section-weighted variant: `find_critical_nodes_weighted()`. `run_counterfactual()`, `find_critical_nodes()`.
 - **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Finds structurally similar subgraphs via relation signature Jaccard similarity. Section-aware signatures: `"in:supports@Methods"`. `find_similar_problems()`, `find_isomorphic_patterns()`.
 - **Hypothesis Generation** (`extractor/hypothesis.py`): Generates research hypotheses from unaddressed gaps, debate zones, and technology cliffs. Evidence strings include section provenance. `detect_section_contradictions()` finds supports/challenges from different sections. `generate_hypotheses()`, `score_hypothesis()`.
-- **Structure-first Retrieval** (`query/tree_retrieval.py`): PageIndex-style retrieval via `query --paper`. Reads tree skeleton → LLM selects relevant node_ids → loads content on-demand. Returns structured `[{"node_id", "title", "content"}]`.
+- **Structure-first Retrieval** (`query/tree_retrieval.py`): PageIndex-style retrieval via `query --paper`. Returns structured `[{"node_id", "title", "content"}]`.
+- **Graph-Enhanced Search** (`query` + `graph/engine.py`): `query --neighbors` for directed graph expansion from BM25 results. `query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank results by graph centrality. Returns concept nodes with `_via_graph`, `_source_seed`, `_distance`, `_path` fields.
 - **Citation Graph** (`storage/citation_graph.py`): Shared-reference analysis, ref/citing/shared-refs queries. `find_shared_refs()` detects papers sharing references but not citing each other (knowledge frontier signal).
 - **Citation Verification** (`extractor/citation_check.py`): Extracts (Author, Year) patterns from text and matches against the local library.
 - **Library Management** (`storage/inbox.py`, `storage/workspace.py`, `storage/export.py`, `storage/backup.py`): Inbox scanning (with pending queue), workspace CRUD, BibTeX/RIS/Markdown export, tar.gz backup.
@@ -59,6 +60,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 - **Metadata Repair** (`services/repair.py`): Auto-fix paper metadata via CrossRef/arXiv APIs. Title normalization, missing DOI resolution, author/journal backfill.
 - **Zotero Import** (`services/zotero_import.py`): Import papers from Zotero SQLite databases and BibTeX `.bib` files.
 - **Paper Translation** (`services/translate.py`): LLM-powered paper translation with section-aware chunking.
+- **Graph Query** (`cli/graph_commands.py`): Direct graph traversal without BM25. `drbrain graph neighbors <node>` traverses with direction/relation filtering via `GraphEngine.traverse()`. `drbrain graph path <src> <dst>` finds shortest path using `nx.shortest_path()` on undirected copy, recovers edge direction/relation from original directed graph. `drbrain closure` supports `--rule` (filter by inference rule name) and `--dry-run` (read-only, no DB persist). `drbrain graph related <paper_id...>` analyzes shared concepts across papers in 3 modes: `concepts` (SQL label intersection), `graph` (1-hop neighbor intersection via traverse), `edges` (shared edge patterns).
 - **Logging** (`log.py`, `metrics.py`): loguru-based structured logging with rotating files. SQLite-backed LLM token usage tracking in `data/metrics.db`.
 
 ### Data Directory Layout
@@ -94,7 +96,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - Tests use pytest with `asyncio_mode = "auto"`.
 - Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 780 tests total. TDD: tests-first for all new modules. 84% coverage.
+- 1094 tests total. TDD: tests-first for all new modules. 84% coverage.
 
 ### Gotchas
 
