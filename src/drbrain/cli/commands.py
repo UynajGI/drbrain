@@ -1134,36 +1134,37 @@ def query_cmd(
 
     db = Database(cfg["db"]["path"])
 
-    # Parse and validate graph traversal flags
+    # Parse and validate graph traversal flags (only when expansion is active)
     _relations: set[str] | None = None
-    if _relation is not None:
-        _relations = {r.strip() for r in _relation.split(",") if r.strip()}
-        valid_relations = {
-            "addresses",
-            "leaves_open",
-            "points_to",
-            "proposes",
-            "extends",
-            "replaces",
-            "solves",
-            "supports",
-            "challenges",
-            "limits",
-            "constrains",
-            "affiliated_with",
-        }
-        invalid = _relations - valid_relations
-        if invalid:
-            typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
-            typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
-            raise typer.Exit(1)
+    if neighbors > 0:
+        if _relation is not None:
+            _relations = {r.strip() for r in _relation.split(",") if r.strip()}
+            valid_relations = {
+                "addresses",
+                "leaves_open",
+                "points_to",
+                "proposes",
+                "extends",
+                "replaces",
+                "solves",
+                "supports",
+                "challenges",
+                "limits",
+                "constrains",
+                "affiliated_with",
+            }
+            invalid = _relations - valid_relations
+            if invalid:
+                typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
+                typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+                raise typer.Exit(1)
 
-    if _direction not in ("forward", "backward", "both"):
-        typer.echo(
-            f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
-            err=True,
-        )
-        raise typer.Exit(1)
+        if _direction not in ("forward", "backward", "both"):
+            typer.echo(
+                f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
+                err=True,
+            )
+            raise typer.Exit(1)
 
     from drbrain.query.bm25 import build_bm25_index
 
