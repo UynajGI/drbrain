@@ -1,0 +1,62 @@
+# config.example.yaml — DrBrain configuration template
+#
+# Copy this file to config.yaml and edit, or run `drbrain setup` to generate
+# config.local.yaml interactively.  Priority: config.local.yaml > config.yaml > env vars.
+#
+# Secret values (API keys, tokens) should go in config.local.yaml (gitignored),
+# NOT in config.yaml.  Use "${ENV_VAR}" syntax to pull from environment.
+
+# ── LLM Models ──────────────────────────────────────────────────
+# First model in the list is primary; others serve as fallback chain.
+# Supported providers: openai, anthropic, ollama, deepseek, zhipu, etc.
+# (any provider litellm supports)
+llm:
+  models:
+    - provider: openai              # primary
+      model: gpt-4o
+      api_key: "${OPENAI_API_KEY}"  # or paste your key directly
+      base_url: null                # null = default, or custom endpoint
+    - provider: ollama              # optional fallback
+      model: qwen2.5:7b
+      api_key: null
+      base_url: "http://localhost:11434"
+
+# ── PDF Parser ───────────────────────────────────────────────────
+# Primary: MinerU API (high quality). Fallback: PyMuPDF (always available).
+mineru:
+  token: "${MINERU_TOKEN}"          # free: leave empty. token-tier: https://mineru.net/apiManage/token
+  model: "vlm"                      # pipeline | vlm | MinerU-HTML
+  is_ocr: false                     # enable OCR extraction
+  enable_formula: true              # parse LaTeX formulas
+  enable_table: true                # parse tables
+  max_pages: 150                    # split threshold for large PDFs (MinerU limit: 200)
+
+# ── Database ─────────────────────────────────────────────────────
+db:
+  path: "data/drbrain.db"
+
+# ── Data Directories ─────────────────────────────────────────────
+dirs:
+  inbox: "data/spool/inbox"         # PDFs awaiting ingest
+  pending: "data/spool/pending"     # failed ingest PDFs
+  papers: "data/papers"             # per-paper directories (after ingest)
+  reports: "data/reports"           # JSON analysis reports
+  cache: "data/cache"               # API response cache (rebuildable)
+  logs: "data/logs"                 # validation.log + app logs
+
+# ── External APIs ────────────────────────────────────────────────
+api:
+  s2_rate_limit: 100                # Semantic Scholar requests/minute
+  cache_ttl: 86400                  # API cache TTL in seconds (24h)
+  crossref_email: "${CROSSREF_EMAIL}"  # optional, for polite pool
+  openalex_token: "${OPENALEX_TOKEN}"  # optional, for higher rate limits
+
+# ── Search ───────────────────────────────────────────────────────
+bm25:
+  k1: 1.5                           # term frequency saturation (0.5-2.0)
+  b: 0.75                           # document length normalization (0-1)
+
+# ── Quality Control ──────────────────────────────────────────────
+queue:
+  weak_threshold: 0.7               # confidence below this → review queue
+  auto_accept: 0.9                  # confidence above this → auto-accept
