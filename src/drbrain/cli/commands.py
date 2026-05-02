@@ -2384,7 +2384,8 @@ def clean_cmd(
     dirs = cfg.get("dirs", {})
 
     targets = [
-        str(Path(cfg.get("db", {}).get("path", "data/drbrain.db")).parent),
+        cfg.get("db", {}).get("path", "data/drbrain.db"),
+        "data/metrics.db",
         dirs.get("cache", "data/cache"),
         dirs.get("logs", "data/logs"),
         dirs.get("papers", "data/papers"),
@@ -2408,16 +2409,22 @@ def clean_cmd(
 
     for d in existing:
         p = Path(d)
-        for item in p.iterdir():
-            if item.is_dir():
-                shutil.rmtree(item)
-            else:
-                item.unlink()
-        typer.echo(f"  Cleared {d}/")
+        if p.is_file():
+            p.unlink()
+            typer.echo(f"  Removed {d}")
+        elif p.is_dir():
+            for item in p.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            typer.echo(f"  Cleared {d}/")
 
-    # Ensure directories still exist
+    # Recreate directories (skip file paths)
     for t in targets:
-        Path(t).mkdir(parents=True, exist_ok=True)
+        p = Path(t)
+        if not p.suffix:  # directory path (no extension)
+            p.mkdir(parents=True, exist_ok=True)
 
     typer.echo("Done. Inbox (PDFs) untouched.")
 
