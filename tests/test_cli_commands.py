@@ -1135,7 +1135,10 @@ def test_closure_cmd_backward_compat():
         db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
         db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
         db.insert_concept("paper_a", "Method", "method_y", 0.85, year=2023)
+        db.insert_concept("paper_a", "Method", "method_z", 0.8, year=2023)
+        # Transitive chain: x->y, y->z => x->z (transitive closure on extends)
         db.insert_edge("method_x", "method_y", "extends", "paper_a", 1.0)
+        db.insert_edge("method_y", "method_z", "extends", "paper_a", 1.0)
         db.commit()
         edge_count_before = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
         db.close()
