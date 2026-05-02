@@ -39,7 +39,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ### Fixed
 - `seed_cmd` dict key access: `seed['node']`→`seed['concept']`, `seed['signal']`→`seed['description']`
 - `test_closure_cmd_backward_compat`: insufficient test data (single extends edge produces no inferred edges; use 3-node transitive chain)
-- Missing Python package check in `drbrain check` updated from pypdfium2 to pymupdf
+- `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory (which nuked everything including spool, then crashed on missing subdirs)
 
 ## [v0.1.0] - 2026-04-28
 
