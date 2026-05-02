@@ -93,7 +93,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - Tests use pytest with `asyncio_mode = "auto"`.
 - Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
 - Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 660 tests total. TDD: tests-first for all new modules. 81% coverage.
+- 780 tests total. TDD: tests-first for all new modules. 84% coverage.
 
 ### Gotchas
 
