@@ -8,18 +8,62 @@
 
 # ── LLM Models ──────────────────────────────────────────────────
 # First model in the list is primary; others serve as fallback chain.
-# Supported providers: openai, anthropic, ollama, deepseek, zhipu, etc.
-# (any provider litellm supports)
+# Uncomment the provider(s) you need.  All providers supported by litellm work.
 llm:
   models:
-    - provider: openai              # primary
-      model: gpt-4o
-      api_key: "${OPENAI_API_KEY}"  # or paste your key directly
-      base_url: null                # null = default, or custom endpoint
-    - provider: ollama              # optional fallback
-      model: qwen2.5:7b
-      api_key: null
-      base_url: "http://localhost:11434"
+    # ── OpenAI ──
+    - provider: openai
+      model: gpt-4o                  # gpt-4o / gpt-4.1 / gpt-4.1-mini / o4-mini
+      api_key: "${OPENAI_API_KEY}"   # https://platform.openai.com/api-keys
+      base_url: null                 # null = default, or https://api.openai.com/v1
+
+    # ── Anthropic (Claude) ──
+    # - provider: anthropic
+    #   model: claude-sonnet-4-6     # claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5
+    #   api_key: "${ANTHROPIC_API_KEY}"  # https://console.anthropic.com/keys
+    #   base_url: null
+
+    # ── DeepSeek ──
+    # - provider: openai             # DeepSeek uses OpenAI-compatible API
+    #   model: deepseek-v4-pro       # deepseek-v4-pro / deepseek-v4-flash / deepseek-chat
+    #   api_key: "${DEEPSEEK_API_KEY}"   # https://platform.deepseek.com/api_keys
+    #   base_url: "https://api.deepseek.com"
+
+    # ── Zhipu (智谱 / GLM) ──
+    # - provider: openai             # Zhipu uses OpenAI-compatible API
+    #   model: glm-4.5               # glm-4.5 / glm-4 / glm-4-flash
+    #   api_key: "${ZHIPU_API_KEY}"  # https://open.bigmodel.cn/
+    #   base_url: "https://open.bigmodel.cn/api/paas/v4"
+
+    # ── Bailian (阿里云百炼 / Qwen) ──
+    # - provider: openai             # Bailian uses OpenAI-compatible API
+    #   model: qwen3-235b-a22b       # qwen3-235b-a22b / qwen-max / qwen-plus
+    #   api_key: "${BAILIAN_API_KEY}"    # https://bailian.console.aliyun.com/
+    #   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    # ── MiniMax ──
+    # - provider: openai             # MiniMax uses OpenAI-compatible API
+    #   model: minimax-m2.1          # minimax-m2.1 / minimax-m1
+    #   api_key: "${MINIMAX_API_KEY}"    # https://platform.minimaxi.com/
+    #   base_url: "https://api.minimax.chat/v1"
+
+    # ── Moonshot (月之暗面 / Kimi) ──
+    # - provider: openai             # Moonshot uses OpenAI-compatible API
+    #   model: kimi-k2               # kimi-k2 / moonshot-v1-8k
+    #   api_key: "${MOONSHOT_API_KEY}"   # https://platform.moonshot.cn/
+    #   base_url: "https://api.moonshot.cn/v1"
+
+    # ── Ollama (local) ──
+    # - provider: ollama
+    #   model: qwen2.5:7b            # any model you have pulled: ollama pull <model>
+    #   api_key: null                # not needed for local Ollama
+    #   base_url: "http://localhost:11434"
+
+    # ── vLLM / SGLang / LocalAI (self-hosted) ──
+    # - provider: openai             # any OpenAI-compatible server
+    #   model: meta-llama/Llama-4-Scout-17B-16E-Instruct
+    #   api_key: "not-needed"        # usually not needed for self-hosted
+    #   base_url: "http://localhost:8000/v1"
 
 # ── PDF Parser ───────────────────────────────────────────────────
 # Primary: MinerU API (high quality). Fallback: PyMuPDF (always available).
