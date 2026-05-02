@@ -615,10 +615,14 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             raw.md       — MinerU markdown output
             images/      — extracted images
     """
-    # Copy source PDF
+    # Move source PDF from inbox to paper directory
     dst_pdf = paper_dir / "source.pdf"
     if not dst_pdf.exists():
         shutil.copy2(source_pdf, dst_pdf)
+        try:
+            source_pdf.unlink()
+        except OSError:
+            pass
 
     # Copy images and rewrite refs
     raw_md = parsed.raw_md
