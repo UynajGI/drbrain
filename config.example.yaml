@@ -13,10 +13,9 @@ llm:
   models:
     # ── OpenAI ──
     - provider: openai
-      model: gpt-4o                  # gpt-4o / gpt-4.1 / gpt-4.1-mini / o4-mini
-      api_key: "${OPENAI_API_KEY}"   # https://platform.openai.com/api-keys
-      base_url: null                 # null = default, or https://api.openai.com/v1
-
+      model: gpt-4o # gpt-4o / gpt-4.1 / gpt-4.1-mini / o4-mini
+      api_key: "${OPENAI_API_KEY}" # https://platform.openai.com/api-keys
+      base_url: null # null = default, or https://api.openai.com/v1
     # ── Anthropic (Claude) ──
     # - provider: anthropic
     #   model: claude-sonnet-4-6     # claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5
@@ -25,7 +24,7 @@ llm:
 
     # ── DeepSeek ──
     # - provider: openai             # DeepSeek uses OpenAI-compatible API
-    #   model: deepseek-v4-pro       # deepseek-v4-pro / deepseek-v4-flash / deepseek-chat
+    #   model: deepseek-v4-pro       # deepseek-v4-pro / deepseek-v4-flash
     #   api_key: "${DEEPSEEK_API_KEY}"   # https://platform.deepseek.com/api_keys
     #   base_url: "https://api.deepseek.com"
 
@@ -65,15 +64,15 @@ llm:
     #   api_key: "not-needed"        # usually not needed for self-hosted
     #   base_url: "http://localhost:8000/v1"
 
-# ── PDF Parser ───────────────────────────────────────────────────
-# Primary: MinerU API (high quality). Fallback: PyMuPDF (always available).
+    # ── PDF Parser ───────────────────────────────────────────────────
+    # Primary: MinerU API (high quality). Fallback: PyMuPDF (always available).
 mineru:
-  token: "${MINERU_TOKEN}"          # free: leave empty. token-tier: https://mineru.net/apiManage/token
-  model: "vlm"                      # pipeline | vlm | MinerU-HTML
-  is_ocr: false                     # enable OCR extraction
-  enable_formula: true              # parse LaTeX formulas
-  enable_table: true                # parse tables
-  max_pages: 150                    # split threshold for large PDFs (MinerU limit: 200)
+  token: "${MINERU_TOKEN}" # free: leave empty. token-tier: https://mineru.net/apiManage/token
+  model: "vlm" # pipeline | vlm | MinerU-HTML
+  is_ocr: false # enable OCR extraction
+  enable_formula: true # parse LaTeX formulas
+  enable_table: true # parse tables
+  max_pages: 150 # split threshold for large PDFs (MinerU limit: 200)
 
 # ── Database ─────────────────────────────────────────────────────
 db:
@@ -81,26 +80,26 @@ db:
 
 # ── Data Directories ─────────────────────────────────────────────
 dirs:
-  inbox: "data/spool/inbox"         # PDFs awaiting ingest
-  pending: "data/spool/pending"     # failed ingest PDFs
-  papers: "data/papers"             # per-paper directories (after ingest)
-  reports: "data/reports"           # JSON analysis reports
-  cache: "data/cache"               # API response cache (rebuildable)
-  logs: "data/logs"                 # validation.log + app logs
+  inbox: "data/spool/inbox" # PDFs awaiting ingest
+  pending: "data/spool/pending" # failed ingest PDFs
+  papers: "data/papers" # per-paper directories (after ingest)
+  reports: "data/reports" # JSON analysis reports
+  cache: "data/cache" # API response cache (rebuildable)
+  logs: "data/logs" # validation.log + app logs
 
 # ── External APIs ────────────────────────────────────────────────
 api:
-  s2_rate_limit: 100                # Semantic Scholar requests/minute
-  cache_ttl: 86400                  # API cache TTL in seconds (24h)
-  crossref_email: "${CROSSREF_EMAIL}"  # optional, for polite pool
-  openalex_token: "${OPENALEX_TOKEN}"  # optional, for higher rate limits
+  s2_rate_limit: 100 # Semantic Scholar requests/minute
+  cache_ttl: 86400 # API cache TTL in seconds (24h)
+  crossref_email: "${CROSSREF_EMAIL}" # optional, for polite pool
+  openalex_token: "${OPENALEX_TOKEN}" # optional, for higher rate limits
 
 # ── Search ───────────────────────────────────────────────────────
 bm25:
-  k1: 1.5                           # term frequency saturation (0.5-2.0)
-  b: 0.75                           # document length normalization (0-1)
+  k1: 1.5 # term frequency saturation (0.5-2.0)
+  b: 0.75 # document length normalization (0-1)
 
 # ── Quality Control ──────────────────────────────────────────────
 queue:
-  weak_threshold: 0.7               # confidence below this → review queue
-  auto_accept: 0.9                  # confidence above this → auto-accept
+  weak_threshold: 0.7 # confidence below this → review queue
+  auto_accept: 0.9 # confidence above this → auto-accept
