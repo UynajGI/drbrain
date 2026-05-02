@@ -838,9 +838,43 @@ def report_cmd(
 
 def closure_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Output inferred edges but do not persist to database"
+    ),
+    rule: list[str] = typer.Option(
+        None, "--rule", help="Run only the named rule(s). Repeatable. Omit for all."
+    ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Run rule-based closure on the full graph."""
+    # Normalize typer OptionInfo objects when calling directly (not via CLI)
+    if isinstance(rule, typer.models.OptionInfo):
+        rule = rule.default
+    if isinstance(dry_run, typer.models.OptionInfo):
+        dry_run = dry_run.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+
+    valid_rules = {
+        "creates_debate",
+        "gap_addressed",
+        "indirect_evolution",
+        "gap_to_debate",
+        "shared_actor",
+        "transitive_closure",
+        "asymmetric_violations",
+        "method_supersedes_problem",
+        "challenge_chain",
+        "gap_inheritance",
+        "indirect_support",
+    }
+    if rule is not None:
+        invalid = set(rule) - valid_rules
+        if invalid:
+            typer.echo(f"Invalid rule(s): {', '.join(sorted(invalid))}", err=True)
+            typer.echo(f"Valid rules: {', '.join(sorted(valid_rules))}", err=True)
+            raise typer.Exit(1)
+
     cfg = load_config()
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
@@ -849,10 +883,14 @@ def closure_cmd(
 
     inferred = graph.closure()
 
-    # Persist new edges
-    for edge in inferred:
-        db.insert_edge(edge["src"], edge["dst"], edge["relation"], "closure")
-    db.commit()
+    if rule is not None:
+        rule_set = set(rule)
+        inferred = [e for e in inferred if e["relation"] in rule_set]
+
+    if not dry_run:
+        for edge in inferred:
+            db.insert_edge(edge["src"], edge["dst"], edge["relation"], "closure")
+        db.commit()
     db.close()
 
     if json_output:
