@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import typer
+
 from drbrain.cli.graph_commands import neighbors_cmd
 
 
@@ -85,14 +87,17 @@ def test_graph_neighbors_node_not_found():
         sys.stdout = capture
         try:
             with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                neighbors_cmd(
-                    node_label="nonexistent",
-                    hops=1,
-                    relation=None,
-                    direction="both",
-                    json_output=False,
-                    workspace=None,
-                )
+                try:
+                    neighbors_cmd(
+                        node_label="nonexistent",
+                        hops=1,
+                        relation=None,
+                        direction="both",
+                        json_output=False,
+                        workspace=None,
+                    )
+                except typer.Exit:
+                    pass
         finally:
             sys.stdout = old_stdout
 

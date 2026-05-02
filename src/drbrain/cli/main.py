@@ -39,6 +39,7 @@ from drbrain.cli.commands import (
     ws_remove_cmd,
     ws_show_cmd,
 )
+from drbrain.cli.graph_commands import graph_app
 from drbrain.cli.setup import setup_cmd
 from drbrain.log import setup_logging
 
@@ -79,6 +80,9 @@ app.command("analyze")(analyze_cmd)
 app.command("repair")(repair_cmd)
 app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
+
+# Graph subcommands
+app.add_typer(graph_app, name="graph")
 
 # Workspace subcommands
 ws_app = typer.Typer(help="Manage paper workspaces")
