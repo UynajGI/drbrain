@@ -324,14 +324,14 @@ class MinerUParser:
         return md_files[0].read_text(encoding="utf-8")
 
     def _fallback_pymupdf(self, pdf_path: Path) -> str:
-        """Extract markdown via PyMuPDF. Returns raw text on failure."""
+        """Extract text via PyMuPDF. Returns raw text on failure."""
         import fitz
 
         doc = fitz.open(str(pdf_path))
         try:
             lines = []
             for page in doc:
-                text = page.get_text("markdown")
+                text = page.get_text("text")
                 if text.strip():
                     lines.append(text)
             result = "\n\n".join(lines)
