@@ -227,7 +227,7 @@ def _mock_load_config(cfg: dict):
     return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
 
 
-def testquery_cmd_graph_relation_invalid():
+def test_query_cmd_graph_relation_invalid():
     """--relation with invalid relation type raises Exit(1)."""
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -264,7 +264,7 @@ def testquery_cmd_graph_relation_invalid():
                 assert e.exit_code == 1
 
 
-def testquery_cmd_graph_direction_invalid():
+def test_query_cmd_graph_direction_invalid():
     """--direction with invalid value raises Exit(1)."""
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -301,7 +301,7 @@ def testquery_cmd_graph_direction_invalid():
                 assert e.exit_code == 1
 
 
-def testquery_cmd_graph_expansion_includes_concepts():
+def test_query_cmd_graph_expansion_includes_concepts():
     """--neighbors with traverse returns concept nodes with _via_graph fields."""
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -321,28 +321,30 @@ def testquery_cmd_graph_expansion_includes_concepts():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=2,
+                    relation=None,
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
 
-        with _mock_load_config(cfg):
-            query_cmd(
-                text="method_x",
-                neighbors=2,
-                relation=None,
-                direction="both",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                json_output=True,
-                jsonl=False,
-                paper=None,
-                workspace=None,
-            )
-
-        output = sys.stdout.getvalue()
-        sys.stdout = old_stdout
+        output = capture.getvalue()
 
         results = json.loads(output)
         graph_results = [r for r in results if r.get("_via_graph")]
@@ -358,7 +360,7 @@ def testquery_cmd_graph_expansion_includes_concepts():
         assert "addresses" in relations_in_path
 
 
-def testquery_cmd_graph_relation_filter():
+def test_query_cmd_graph_relation_filter():
     """--relation limits which edges are followed in graph expansion."""
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -380,28 +382,30 @@ def testquery_cmd_graph_relation_filter():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=1,
+                    relation="addresses",
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
 
-        with _mock_load_config(cfg):
-            query_cmd(
-                text="method_x",
-                neighbors=1,
-                relation="addresses",
-                direction="both",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                json_output=True,
-                jsonl=False,
-                paper=None,
-                workspace=None,
-            )
-
-        output = sys.stdout.getvalue()
-        sys.stdout = old_stdout
+        output = capture.getvalue()
 
         results = json.loads(output)
         graph_results = [r for r in results if r.get("_via_graph")]
@@ -410,7 +414,7 @@ def testquery_cmd_graph_relation_filter():
         assert "problem_w" not in graph_ids
 
 
-def testquery_cmd_graph_backward_compat():
+def test_query_cmd_graph_backward_compat():
     """--neighbors 2 without --relation/--direction still works."""
     with tempfile.TemporaryDirectory() as td:
         papers_dir = Path(td) / "papers"
@@ -430,28 +434,30 @@ def testquery_cmd_graph_backward_compat():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=2,
+                    relation=None,
+                    direction="both",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
 
-        with _mock_load_config(cfg):
-            query_cmd(
-                text="method_x",
-                neighbors=2,
-                relation=None,
-                direction="both",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                json_output=True,
-                jsonl=False,
-                paper=None,
-                workspace=None,
-            )
-
-        output = sys.stdout.getvalue()
-        sys.stdout = old_stdout
+        output = capture.getvalue()
 
         results = json.loads(output)
         assert any(r["local_id"] == "method_x" for r in results)
