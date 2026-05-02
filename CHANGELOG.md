@@ -14,6 +14,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Multi-paper concept analysis**: `drbrain graph related <id...>` with 3 modes — `concepts` (SQL label intersection + coverage), `graph` (1-hop neighbor intersection via traverse), `edges` (shared relation-target patterns).
 - **Hybrid ranking**: `drbrain query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank BM25 results by graph centrality. Pure Python PageRank, no scipy dependency.
 - **Config example**: `config.example.yaml` with 9 LLM provider templates (OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, MiniMax, Moonshot, Ollama, vLLM) — uncomment the one you need.
+- **Extraction concurrency**: `extract.max_concurrent` in config.yaml controls parallel LLM calls during concept extraction (default 10)
 - **Library management**: Inbox auto-classification (paper/thesis/preprint/book/review/document), spool/pending queue, workspace CRUD (`drbrain ws`), BibTeX/RIS/Markdown export, tar.gz backup, delete with `--rm-files`
 - **Citation graph**: Shared-reference analysis (`drbrain citations --type shared-refs`), citation verification against library (`drbrain check-citations`), citation_cache table with S2 write-through
 - **Knowledge frontier analysis**: `drbrain analyze` command orchestrating seeds, causal chains, counterfactual, hypotheses, and isomorphism detection
@@ -38,6 +39,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - CLI: `expand` command replaced by `citations`
 
 ### Fixed
+- PDF parsing: replaced pypdfium2 with PyMuPDF (fitz); use `pymupdf4llm` for markdown extraction with proper heading/table structure; plain text fallback
+- LLM client: 60s timeout prevents indefinite hangs; `drbrain check` now tests LLM API connectivity
+- Ingest: PDF removed from inbox after successful ingest (was left behind)
 - `seed_cmd` dict key access: `seed['node']`→`seed['concept']`, `seed['signal']`→`seed['description']`
 - `test_closure_cmd_backward_compat`: insufficient test data (single extends edge produces no inferred edges; use 3-node transitive chain)
 - `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory

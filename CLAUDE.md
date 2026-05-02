@@ -23,7 +23,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
 ### Ingestion Pipeline (9 stages)
 
-1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF → Markdown. Falls back to PyMuPDF markdown extraction. Chapter-filtered to high-signal sections (abstract, intro, methods, conclusion, etc.). PDFs >150 pages are split into chunks.
+1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF → Markdown. Falls back to `pymupdf4llm.to_markdown()` for structured output (headings, tables, bold/italic). Plain text as last resort. Chapter-filtered to high-signal sections. PDFs >150 pages are split into chunks.
 
 2. **Identify** (`dedup/resolver.py`): Resolve paper identity via priority chain: DOI → arXiv → S2 ID → OpenAlex ID → title+year fuzzy match. Creates or upgrades paper record.
 
