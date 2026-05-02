@@ -577,6 +577,22 @@ def _resolve_workspace_papers(workspace: str | None) -> set[str] | None:
     return set(ids) if ids else None
 
 
+def _resolve_node_type(db: Database, node_id: str) -> tuple[str, dict | None]:
+    """Determine node type (Problem/Method/Gap/.../Paper) and optional paper data.
+
+    Returns (type_str, paper_dict_or_None).
+    """
+    row = db.conn.execute(
+        "SELECT type FROM concepts WHERE label = ? LIMIT 1", (node_id,)
+    ).fetchone()
+    if row:
+        return row[0], None
+    paper = db.get_paper(node_id)
+    if paper:
+        return "Paper", paper
+    return "Unknown", None
+
+
 def _move_to_pending(pdf_path: Path, cfg: dict, reason: str) -> None:
     """Move a failed PDF to the pending directory."""
     from drbrain.storage.inbox import move_to_pending
