@@ -990,3 +990,171 @@ def test_query_cmd_no_results_message():
                     jsonl=False,
                 )
                 mock_echo.assert_any_call("No results for: xyzzy_nonexistent_concept")
+
+
+def test_closure_cmd_dry_run_does_not_persist():
+    """--dry-run outputs edges but does not write to DB."""
+    import io
+    import sys
+
+    from drbrain.cli.commands import closure_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.insert_concept("paper_a", "Method", "method_y", 0.85, year=2023)
+        db.insert_edge("method_x", "method_y", "extends", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = {
+            "db": {"path": db_path},
+            "dirs": {"papers": str(papers_dir)},
+            "bm25": {"k1": 1.5, "b": 0.75},
+        }
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+                closure_cmd(dry_run=True, json_output=True, workspace=None, rule=None)
+        finally:
+            sys.stdout = old_stdout
+
+        output = capture.getvalue()
+        result = json.loads(output)
+        assert "inferred" in result
+        assert result["count"] >= 0
+
+        # DB should NOT have new closure edges
+        db = Database(db_path)
+        edge_count_after = db.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE source_paper = 'closure'"
+        ).fetchone()[0]
+        db.close()
+        assert edge_count_after == 0
+
+
+def test_closure_cmd_rule_filter():
+    """--rule gap_addressed only returns gap_addressed edges."""
+    import io
+    import sys
+
+    from drbrain.cli.commands import closure_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Problem", "problem_p", 0.9, year=2023)
+        db.insert_concept("paper_a", "Gap", "gap_g", 0.8, year=2023)
+        db.insert_concept("paper_a", "Method", "method_m", 0.85, year=2023)
+        # leaves_open(problem_p, gap_g) + addresses(method_m, gap_g) => gap_addressed
+        db.insert_edge("problem_p", "gap_g", "leaves_open", "paper_a", 1.0)
+        db.insert_edge("method_m", "gap_g", "addresses", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = {
+            "db": {"path": db_path},
+            "dirs": {"papers": str(papers_dir)},
+            "bm25": {"k1": 1.5, "b": 0.75},
+        }
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+                closure_cmd(
+                    rule=["gap_addressed"],
+                    dry_run=True,
+                    json_output=True,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        output = capture.getvalue()
+        result = json.loads(output)
+        # All edges should be gap_addressed
+        for edge in result["inferred"]:
+            assert edge["relation"] == "gap_addressed"
+
+
+def test_closure_cmd_rule_invalid():
+    """--rule with invalid name raises Exit(1)."""
+    from drbrain.cli.commands import closure_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        db = Database(db_path)
+        db.close()
+
+        cfg = {
+            "db": {"path": db_path},
+            "dirs": {"papers": str(papers_dir)},
+            "bm25": {"k1": 1.5, "b": 0.75},
+        }
+
+        try:
+            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+                closure_cmd(
+                    rule=["nonexistent_rule"],
+                    dry_run=True,
+                    json_output=False,
+                    workspace=None,
+                )
+            assert False, "Should have raised Exit"
+        except Exception as e:
+            assert hasattr(e, "exit_code") and e.exit_code == 1
+
+
+def test_closure_cmd_backward_compat():
+    """closure without new flags persists edges (existing behavior)."""
+    from drbrain.cli.commands import closure_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.insert_concept("paper_a", "Method", "method_y", 0.85, year=2023)
+        db.insert_edge("method_x", "method_y", "extends", "paper_a", 1.0)
+        db.commit()
+        edge_count_before = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        db.close()
+
+        cfg = {
+            "db": {"path": db_path},
+            "dirs": {"papers": str(papers_dir)},
+            "bm25": {"k1": 1.5, "b": 0.75},
+        }
+
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+            closure_cmd(
+                rule=None,
+                dry_run=False,
+                json_output=False,
+                workspace=None,
+            )
+
+        db = Database(db_path)
+        edge_count_after = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        db.close()
+        assert edge_count_after > edge_count_before
