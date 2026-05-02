@@ -234,6 +234,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
         return [], []
 
     cache = _get_cache(config)
+    s2_api_key = config.get("api", {}).get("s2_api_key") or None
 
     # Try S2 first
     s2_id = paper.get("s2_id")
@@ -241,7 +242,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
     if not s2_id:
         title = paper.get("title", "")
         if title:
-            results = search_s2(title, limit=1, cache=cache)
+            results = search_s2(title, limit=1, api_key=s2_api_key, cache=cache)
             if results:
                 parsed = parse_s2_response(results[0])
                 s2_id = parsed.get("s2_id")
@@ -253,7 +254,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
                     db.commit()
 
     if s2_id:
-        s2_data = fetch_s2_paper(s2_id, cache=cache)
+        s2_data = fetch_s2_paper(s2_id, api_key=s2_api_key, cache=cache)
 
     if s2_data:
         refs, cits = _process_citations_from_s2(db, local_id, s2_data, paper, config, cache)

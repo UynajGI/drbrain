@@ -191,7 +191,7 @@ def setup_cmd(
 
     # ── Quick mode: skip prompts, use defaults ──
     if quick:
-        config: dict = {
+        config = {
             "llm": {
                 "models": [
                     {
@@ -202,16 +202,8 @@ def setup_cmd(
                     }
                 ],
             },
-            "mineru": {
-                "token": "",
-                "model": "vlm",
-                "is_ocr": False,
-                "enable_formula": True,
-                "enable_table": True,
-            },
-            "db": {"path": "data/drbrain.db"},
-            "api": {"s2_rate_limit": 100},
-            "bm25": {"k1": 1.5, "b": 0.75},
+            "mineru": {"token": ""},
+            "api": {"s2_api_key": "", "crossref_email": "", "openalex_token": ""},
         }
         out = Path("config.local.yaml")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -232,37 +224,39 @@ def setup_cmd(
             typer.echo(f"  [!]  {line}")
         typer.echo()
         typer.echo("Ready. Next step: drbrain ingest")
-        typer.echo("Edit config.local.yaml to customize LLM and API keys.")
+        typer.echo("Edit config.local.yaml to set your API keys and model.")
         return
 
     typer.echo("=" * 60)
     typer.echo("DrBrain Setup")
     typer.echo("=" * 60)
+    typer.echo("  Settings in config.yaml (db, dirs, bm25, queue) are already configured.")
+    typer.echo("  This wizard only writes secrets to config.local.yaml.")
+    typer.echo()
 
-    # ── Step 1: LLM ──
-    typer.echo("\n── LLM Configuration ──")
-    typer.echo("  Primary model (required)")
-    provider = typer.prompt("    Provider (openai/anthropic/ollama)", default="openai")
-    model = typer.prompt("    Model name", default="gpt-4o")
-    api_key = typer.prompt("    API key (leave empty for ollama)", default="", hide_input=True)
-    base_url = typer.prompt("    Base URL (empty for default)", default="", show_default=False)
+    # ── LLM ──
+    typer.echo("── LLM ──")
+    provider = typer.prompt("  Provider (openai/anthropic/ollama)", default="openai")
+    model = typer.prompt("  Model", default="gpt-4o")
+    api_key = typer.prompt("  API key (leave empty for ollama)", default="", hide_input=True)
+    base_url = typer.prompt("  Base URL (empty for default)", default="", show_default=False)
     base_url = base_url if base_url else None
-    llm_primary = {
-        "provider": provider,
-        "model": model,
-        "api_key": api_key,
-        "base_url": base_url,
-    }
+    models: list[dict] = [
+        {
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+    ]
 
-    typer.echo("  Fallback model (optional)")
-    has_fallback = typer.confirm("    Add fallback?", default=False)
-    fallback_models: list[dict] = []
+    has_fallback = typer.confirm("  Add fallback model?", default=False)
     if has_fallback:
-        fb_provider = typer.prompt("    Provider", default="ollama")
-        fb_model = typer.prompt("    Model", default="qwen2.5:7b")
-        fb_key = typer.prompt("    API key", default="", hide_input=True)
-        fb_url = typer.prompt("    Base URL", default="http://localhost:11434")
-        fallback_models.append(
+        fb_provider = typer.prompt("    Fallback provider", default="ollama")
+        fb_model = typer.prompt("    Fallback model", default="qwen2.5:7b")
+        fb_key = typer.prompt("    Fallback API key", default="", hide_input=True)
+        fb_url = typer.prompt("    Fallback base URL", default="http://localhost:11434")
+        models.append(
             {
                 "provider": fb_provider,
                 "model": fb_model,
@@ -271,71 +265,55 @@ def setup_cmd(
             }
         )
 
-    # ── Step 2: MinerU ──
-    typer.echo("\n── PDF Parser ──")
-    typer.echo("  MinerU: high-quality PDF→Markdown extraction")
-    typer.echo("  Fallback: PyMuPDF (always available, no config needed)")
-    mineru_mode = typer.prompt("  MinerU mode (flash/token)", default="flash")
+    # ── MinerU ──
+    typer.echo()
+    typer.echo("── MinerU (PDF Parser) ──")
+    typer.echo("  Settings in config.yaml. Only the token is secret.")
+    mineru_mode = typer.prompt("  Mode (flash/token)", default="flash")
     mineru_token = ""
     if mineru_mode == "token":
         typer.echo("  Get token: https://mineru.net/apiManage/token")
         mineru_token = typer.prompt("  Token", hide_input=True)
-    mineru_model = typer.prompt("  Model (pipeline/vlm/MinerU-HTML)", default="vlm")
-    mineru_is_ocr = typer.confirm("  Enable OCR?", default=False)
-    mineru_enable_formula = typer.confirm("  Parse formulas?", default=True)
-    mineru_enable_table = typer.confirm("  Parse tables?", default=True)
 
-    # ── Step 3: Paths & APIs ──
-    typer.echo("\n── Storage & APIs ──")
-    db_path = typer.prompt("  Database path", default="data/drbrain.db")
-    s2_rate_limit = typer.prompt("  Semantic Scholar rate limit (req/min)", default=100)
-    crossref_email = typer.prompt(
-        "  CrossRef email (optional, for polite pool)", default="", show_default=False
-    )
+    # ── API Keys ──
+    typer.echo()
+    typer.echo("── API Keys ──")
+    s2_api_key = typer.prompt("  Semantic Scholar API key (optional)", default="", hide_input=True)
+    crossref_email = typer.prompt("  CrossRef email (optional)", default="", show_default=False)
     openalex_token = typer.prompt("  OpenAlex token (optional)", default="", hide_input=True)
-    bm25_k1 = typer.prompt("  BM25 k1 (term frequency)", default=1.5)
-    bm25_b = typer.prompt("  BM25 b (length normalization)", default=0.75)
 
-    # ── Step 4: Review ──
-    typer.echo("\n── Review ──")
-    typer.echo(f"  LLM:      {provider}/{model}")
-    if fallback_models:
-        typer.echo(f"  Fallback: {fallback_models[0]['provider']}/{fallback_models[0]['model']}")
+    # ── Review ──
+    typer.echo()
+    typer.echo("── Review ──")
     typer.echo(
-        f"  PDF:      MinerU {mineru_mode} (model={mineru_model}, ocr={mineru_is_ocr}) "
-        f"+ PyMuPDF fallback"
+        f"  LLM:      {provider}/{model}" + (f" + {fb_provider}/{fb_model}" if has_fallback else "")
     )
-    typer.echo(f"  DB:       {db_path}")
+    typer.echo(f"  MinerU:   {mineru_mode}" + (" (token set)" if mineru_token else " (free tier)"))
     typer.echo(
-        f"  APIs:     S2({s2_rate_limit}/min) CrossRef({crossref_email or 'none'}) "
-        f"OpenAlex({'configured' if openalex_token else 'none'})"
+        f"  APIs:     S2({'key set' if s2_api_key else 'anonymous'})  "
+        f"CrossRef({crossref_email or 'none'})  "
+        f"OpenAlex({'key set' if openalex_token else 'anonymous'})"
     )
 
-    if not typer.confirm("\n  Write config?", default=True):
+    if not typer.confirm("\n  Write config.local.yaml?", default=True):
         typer.echo("Cancelled.")
         return
 
-    # ── Write config ──
-    models = [llm_primary] + fallback_models
-    config: dict = {
-        "llm": {"models": models},
-        "mineru": {
-            "token": mineru_token,
-            "model": mineru_model,
-            "is_ocr": mineru_is_ocr,
-            "enable_formula": mineru_enable_formula,
-            "enable_table": mineru_enable_table,
-        },
-        "db": {"path": db_path},
-        "api": {
-            "s2_rate_limit": s2_rate_limit,
-        },
-        "bm25": {"k1": float(bm25_k1), "b": float(bm25_b)},
-    }
+    # ── Write config.local.yaml (secrets only) ──
+    api_cfg: dict = {}
+    if s2_api_key:
+        api_cfg["s2_api_key"] = s2_api_key
     if crossref_email:
-        config["api"]["crossref_email"] = crossref_email
+        api_cfg["crossref_email"] = crossref_email
     if openalex_token:
-        config["api"]["openalex_token"] = openalex_token
+        api_cfg["openalex_token"] = openalex_token
+
+    config = {
+        "llm": {"models": models},
+        "mineru": {"token": mineru_token},
+    }
+    if api_cfg:
+        config["api"] = api_cfg
 
     out = Path("config.local.yaml")
     out.parent.mkdir(parents=True, exist_ok=True)

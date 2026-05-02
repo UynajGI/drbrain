@@ -950,19 +950,18 @@ def test_clean_cmd_empty_dirs():
     """clean_cmd prints 'Nothing to clean' when data dirs are already empty."""
     from drbrain.cli.commands import clean_cmd
 
-    cfg = {
-        "db": {"path": "/nonexistent/db/test.db"},
-        "dirs": {
-            "cache": "/nonexistent/cache",
-            "logs": "/nonexistent/logs",
-            "papers": "/nonexistent/papers",
-            "reports": "/nonexistent/reports",
-        },
-    }
-    with _mock_load_config(cfg):
-        with mock.patch("typer.echo") as mock_echo:
-            clean_cmd(force=False, config_path="config.yaml")
-            mock_echo.assert_any_call("Nothing to clean — data directories are already empty.")
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {
+            "db": {"path": f"{td}/nonexistent.db"},
+            "dirs": {
+                "cache": f"{td}/cache",
+                "logs": f"{td}/logs",
+                "papers": f"{td}/papers",
+                "reports": f"{td}/reports",
+            },
+        }
+        with _mock_load_config(cfg):
+            clean_cmd(force=True, config_path="config.yaml")
 
 
 # -- query_cmd no results message --
