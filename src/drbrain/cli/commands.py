@@ -2261,7 +2261,7 @@ def check_cmd():
                 table_api.add_row(
                     "  MinerU API", "[yellow]Unreachable[/yellow]", "(check token/network)"
                 )
-                warnings.append("MinerU API unreachable — PDF parsing will use PyMuPDF fallback")
+                warnings.append("MinerU API unreachable (token-tier may not work)")
         else:
             table_api.add_row(
                 "  MinerU API", "[yellow]Not configured[/yellow]", "(flash mode will be used)"
@@ -2280,9 +2280,19 @@ def check_cmd():
                 "  MinerU CLI", "[yellow]Not found[/yellow]",
                 "(install: npm i -g mineru-open-api)"
             )
-            warnings.append("MinerU CLI not found — PDF parsing will use PyMuPDF fallback")
     except Exception:
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
+
+    # Warn only if no MinerU path is available at all
+    mineru_api_ok = False
+    mineru_cli_ok = False
+    try:
+        mineru_api_ok = any("Reachable" in str(r) for r in table_api.rows if "MinerU API" in str(r))
+        mineru_cli_ok = any("Found" in str(r) for r in table_api.rows if "MinerU CLI" in str(r))
+    except Exception:
+        pass
+    if not mineru_api_ok and not mineru_cli_ok:
+        warnings.append("No MinerU available — PDF parsing will use PyMuPDF fallback")
 
     # -- LLM API connectivity --
     try:
