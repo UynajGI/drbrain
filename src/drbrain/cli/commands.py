@@ -246,10 +246,12 @@ def _ingest_single_paper(
 
     # Stage 3: Extract
     echo("  Extracting concepts + arguments...")
+    max_concurrent = cfg.get("extract", {}).get("max_concurrent", 10)
     if tree_json_path.exists():
         tree_data = json.loads(tree_json_path.read_text(encoding="utf-8"))
         concepts = asyncio.run(
-            extract_concepts_from_tree(md_path, tree_data["structure"], llm_models)
+            extract_concepts_from_tree(md_path, tree_data["structure"], llm_models,
+                                       max_concurrent=max_concurrent)
         )
     else:
         concepts = None

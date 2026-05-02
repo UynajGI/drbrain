@@ -101,6 +101,10 @@ bm25:
   k1: 1.5 # term frequency saturation (0.5-2.0)
   b: 0.75 # document length normalization (0-1)
 
+# ── Extraction ───────────────────────────────────────────────────
+extract:
+  max_concurrent: 10 # parallel LLM calls during concept extraction
+
 # ── Quality Control ──────────────────────────────────────────────
 queue:
   weak_threshold: 0.7 # confidence below this → review queue
