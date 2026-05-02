@@ -19,7 +19,7 @@ uv run drbrain serve                # launch Streamlit UI
 | Command | Purpose |
 |---------|---------|
 | `drbrain ingest` | Parse and ingest PDFs into knowledge graph |
-| `drbrain query` | Search concepts/arguments (BM25 + PageIndex tree retrieval) |
+| `drbrain query` | Search concepts/arguments (BM25 + hybrid graph boost + PageIndex tree retrieval) |
 | `drbrain analyze` | Generate knowledge frontier report (seeds, chains, hypotheses) |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) |
 | `drbrain graph neighbors <node>` | Direct graph traversal (no text search) |
