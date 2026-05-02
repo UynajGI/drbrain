@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -392,32 +391,38 @@ def _extract_arxiv_from_filename(pdf_path: Path) -> str | None:
 
 
 def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
-    """Fetch title and year from arXiv API."""
-    url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+    """Fetch title and year from arXiv API via httpx. Falls back to ID-based year."""
+    # Try API first
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "DrBrain/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            xml = resp.read().decode("utf-8")
+        import httpx
 
-        title_match = re.search(r"<title>(.+?)</title>", xml, re.DOTALL)
-        published_match = re.search(r"<published>(\d{4})-", xml)
+        url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}&max_results=1"
+        resp = httpx.get(url, timeout=10)
+        if resp.status_code == 200:
+            from xml.etree import ElementTree
 
-        title = None
-        year = None
-
-        if title_match:
-            all_titles = re.findall(r"<title>(.+?)</title>", xml, re.DOTALL)
-            if len(all_titles) > 1:
-                title = all_titles[1].strip()
-            else:
-                title = title_match.group(1).strip()
-
-        if published_match:
-            year = int(published_match.group(1))
-
-        return title, year
+            ns = "{http://www.w3.org/2005/Atom}"
+            root = ElementTree.fromstring(resp.text)
+            entry = root.find(f"{ns}entry")
+            if entry is not None:
+                title_el = entry.find(f"{ns}title")
+                published_el = entry.find(f"{ns}published")
+                title = title_el.text.strip() if title_el is not None and title_el.text else None
+                year = int(published_el.text[:4]) if published_el is not None and published_el.text else None
+                if title or year:
+                    return title, year
     except Exception:
-        return None, None
+        pass
+
+    # Fallback: infer year from arXiv ID (1706.03762 → 2017)
+    m = re.match(r"(\d{2})(\d{2})\.\d{4,5}", arxiv_id)
+    if m:
+        yy = int(m.group(1))
+        mm = int(m.group(2))
+        year = 2000 + yy if yy <= 50 else 1900 + yy
+        return None, year
+
+    return None, None
 
 
 def normalize_doi(raw: str) -> str:
