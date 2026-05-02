@@ -2270,10 +2270,12 @@ def check_cmd():
         table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
 
     # -- MinerU CLI --
+    mineru_cli_available = False
     try:
         import shutil as _shutil
         cli = _shutil.which("mineru-open-api")
         if cli:
+            mineru_cli_available = True
             table_api.add_row("  MinerU CLI", f"[green]Found[/green] ({cli})")
         else:
             table_api.add_row(
@@ -2283,16 +2285,9 @@ def check_cmd():
     except Exception:
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
 
-    # Warn only if no MinerU path is available at all
-    mineru_api_ok = False
-    mineru_cli_ok = False
-    try:
-        mineru_api_ok = any("Reachable" in str(r) for r in table_api.rows if "MinerU API" in str(r))
-        mineru_cli_ok = any("Found" in str(r) for r in table_api.rows if "MinerU CLI" in str(r))
-    except Exception:
-        pass
-    if not mineru_api_ok and not mineru_cli_ok:
-        warnings.append("No MinerU available — PDF parsing will use PyMuPDF fallback")
+    # Only warn about PyMuPDF fallback if no MinerU path works
+    if not mineru_cli_available:
+        warnings.append("MinerU unavailable — PDF parsing will use PyMuPDF fallback")
 
     # -- LLM API connectivity --
     try:
