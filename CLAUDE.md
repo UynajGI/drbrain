@@ -81,11 +81,11 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 
 ### Key Design Points
 
-- **Config**: `config.yaml` (checked in) overlayed by `config.local.yaml` (gitignored). Env var placeholders via `${VAR_NAME}` syntax. Deep-merge at the dict level.
-- **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list; returns first successful parse, `None` if all exhausted.
+- **Config**: `config.yaml` (checked in, all non-secret settings) overlayed by `config.local.yaml` (gitignored, secrets only — api_key, token, email). Env var placeholders via `${VAR_NAME}` syntax. Deep-merge at the dict level. `config.example.yaml` has 9 LLM provider templates.
+- **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list in `config.local.yaml`; first successful parse wins, `None` if all exhausted. Supports any litellm provider (OpenAI, Anthropic, Ollama, plus OpenAI-compatible endpoints like DeepSeek/Zhipu/Bailian).
 - **No vector embeddings**: BM25 (`query/bm25.py`) for search over concepts + arguments. No vector DB dependency.
 - **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
-- **Ecosystem enrichment**: CrossRef, Semantic Scholar, OpenAlex APIs for citation expansion, DOI resolution, author identity. Rate-limited with configurable cache TTL.
+- **Ecosystem enrichment**: CrossRef, Semantic Scholar (with API key support for higher rate limits), OpenAlex APIs for citation expansion, DOI resolution, author identity. Rate-limited with configurable cache TTL.
 - **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
 - **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
 - **Streamlit UI**: `drbrain serve` launches interactive graph visualization at `http://127.0.0.1:8501`.
