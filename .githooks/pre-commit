@@ -1,26 +1,40 @@
 #!/bin/sh
-# Pre-commit hook: lint and format only staged Python files.
+# Pre-commit hook: lint and format staged files.
 # Registered via core.hooksPath = .githooks
 
-# Collect staged Python files
 STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
+STAGED_YAML=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.ya?ml$' || true)
+STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACM | wc -l | tr -d ' ')
 
-if [ -z "$STAGED_PY" ]; then
-    exit 0
+# ── Python: ruff check + format ──
+if [ -n "$STAGED_PY" ]; then
+    echo "Ruff check..."
+    echo "$STAGED_PY" | xargs uv run ruff check --force-exclude
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "Commit blocked. Fix the issues above, then re-stage."
+        exit 1
+    fi
+
+    echo "Ruff format..."
+    echo "$STAGED_PY" | xargs uv run ruff format --force-exclude --quiet
+    echo "$STAGED_PY" | xargs git add
+    echo "  Python: OK ($(echo "$STAGED_PY" | wc -l | tr -d ' ') file(s))"
 fi
 
-echo "Running ruff check on staged files..."
-echo "$STAGED_PY" | xargs uv run ruff check --force-exclude
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "Commit blocked. Fix the issues above, then re-stage."
-    exit 1
+# ── YAML: basic lint (parse check) ──
+if [ -n "$STAGED_YAML" ]; then
+    BROKEN_YAML=""
+    for f in $STAGED_YAML; do
+        uv run python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || BROKEN_YAML="$BROKEN_YAML $f"
+    done
+    if [ -n "$BROKEN_YAML" ]; then
+        echo "YAML parse error in:$BROKEN_YAML"
+        exit 1
+    fi
+    echo "  YAML: OK ($(echo "$STAGED_YAML" | wc -l | tr -d ' ') file(s))"
 fi
 
-echo "Running ruff format on staged files..."
-echo "$STAGED_PY" | xargs uv run ruff format --force-exclude --quiet
-
-# Re-stage only the files we reformatted
-echo "$STAGED_PY" | xargs git add
-
-echo "Ruff OK ($(echo "$STAGED_PY" | wc -l | tr -d ' ') file(s))."
+if [ "$STAGED_ALL" -gt 0 ]; then
+    echo "Pre-commit OK ($STAGED_ALL file(s))."
+fi
