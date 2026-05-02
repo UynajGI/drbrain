@@ -232,8 +232,7 @@ def test_traverse_forward_only():
     g.add_edge("B", "C", "cites", "p1")
 
     results = g.traverse(start_nodes={"B"}, hops=1, direction="forward")
-    assert all(r.target == "C" for r in results)
-    assert "A" not in {r.target for r in results}
+    assert {r.target for r in results} == {"C"}
 
 
 def test_traverse_backward_only():
@@ -245,8 +244,7 @@ def test_traverse_backward_only():
     g.add_edge("B", "C", "cites", "p1")
 
     results = g.traverse(start_nodes={"B"}, hops=1, direction="backward")
-    assert all(r.target == "A" for r in results)
-    assert "C" not in {r.target for r in results}
+    assert {r.target for r in results} == {"A"}
 
 
 def test_traverse_relation_filter():
@@ -281,6 +279,7 @@ def test_traverse_hops_2():
 
 
 def test_traverse_empty_start_nodes():
+    """empty start_nodes returns []."""
     from drbrain.graph.engine import GraphEngine
 
     g = GraphEngine()
@@ -290,6 +289,7 @@ def test_traverse_empty_start_nodes():
 
 
 def test_traverse_node_not_in_graph():
+    """start node not in graph returns []."""
     from drbrain.graph.engine import GraphEngine
 
     g = GraphEngine()
