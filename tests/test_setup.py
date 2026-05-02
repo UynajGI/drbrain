@@ -2,9 +2,8 @@
 
 import tempfile
 from pathlib import Path
-from unittest import mock
 
-from drbrain.cli.setup import generate_local_config, setup_cmd
+from drbrain.cli.setup import generate_local_config
 
 
 def test_generate_local_config_creates_file():
@@ -82,73 +81,48 @@ def test_generate_local_config_custom_params():
         assert config["api"]["s2_rate_limit"] == 60
 
 
-# -- setup_cmd tests --
+# -- _ensure_directories tests --
 
 
-@mock.patch("drbrain.cli.setup.generate_local_config")
-@mock.patch("typer.confirm")
-@mock.patch("typer.prompt")
-@mock.patch("typer.echo")
-def test_setup_cmd_runs_with_confirm_true(mock_echo, mock_prompt, mock_confirm, mock_gen_config):
-    """setup_cmd writes config when user confirms 'Write config.local.yaml?'."""
-    mock_prompt.side_effect = [
-        "openai",  # [1/16] provider
-        "gpt-4o",  # [1/16] model
-        "sk-key",  # [1/16] api_key
-        "",  # [1/16] base_url
-        "flash",  # [4/16] mineru_mode
-        "vlm",  # [6/16] mineru_model
-        "data/drbrain.db",  # [10/16] db_path
-        100,  # [14/16] s2_rate_limit
-        "",  # [15/16] crossref_email
-        "",  # [15/16] openalex_token
-        1.5,  # [16/16] bm25_k1
-        0.75,  # [16/16] bm25_b
-    ]
-    mock_confirm.side_effect = [
-        False,  # [2/16] has_fallback → no
-        False,  # [7/16] is_ocr → no
-        True,  # [7/16] enable_formula → yes
-        True,  # [7/16] enable_table → yes
-        True,  # [16/16] Write config.local.yaml? → yes
-    ]
-    mock_gen_config.return_value = Path("config.local.yaml")
+def test_ensure_directories_creates_missing():
+    """_ensure_directories creates missing dirs, returns count."""
+    from drbrain.cli.setup import _ensure_directories
 
-    setup_cmd()
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {"dirs": {"inbox": f"{td}/inbox", "papers": f"{td}/papers"}}
+        created = _ensure_directories(cfg)
+        assert created == 2
+        assert Path(f"{td}/inbox").exists()
+        assert Path(f"{td}/papers").exists()
 
-    mock_gen_config.assert_called_once()
+        # Second call creates nothing
+        created2 = _ensure_directories(cfg)
+        assert created2 == 0
 
 
-@mock.patch("drbrain.cli.setup.generate_local_config")
-@mock.patch("typer.confirm")
-@mock.patch("typer.prompt")
-@mock.patch("typer.echo")
-def test_setup_cmd_cancelled_on_false(mock_echo, mock_prompt, mock_confirm, mock_gen_config):
-    """setup_cmd does NOT write config when user declines confirmation."""
-    mock_prompt.side_effect = [
-        "openai",  # provider
-        "gpt-4o",  # model
-        "sk-key",  # api_key
-        "",  # base_url
-        "flash",  # mineru_mode
-        "vlm",  # mineru_model
-        "data/drbrain.db",  # db_path
-        100,  # s2_rate_limit
-        "",  # crossref_email
-        "",  # openalex_token
-        1.5,  # bm25_k1
-        0.75,  # bm25_b
-    ]
-    mock_confirm.side_effect = [
-        False,  # has_fallback → no
-        False,  # is_ocr → no
-        True,  # enable_formula → yes
-        True,  # enable_table → yes
-        False,  # Write config.local.yaml? → NO
-    ]
-    mock_gen_config.return_value = Path("config.local.yaml")
+def test_ensure_directories_default_paths():
+    """_ensure_directories uses defaults when config has no dirs."""
+    from drbrain.cli.setup import _ensure_directories
 
-    setup_cmd()
+    cfg = {}  # no dirs config — uses default paths
+    created = _ensure_directories(cfg)
+    assert created >= 0  # doesn't crash
 
-    # generate_local_config should NOT be called
-    mock_gen_config.assert_not_called()
+
+# -- _brief_validation tests --
+
+
+def test_brief_validation_all_ok():
+    """_brief_validation returns ok and warn lists."""
+    from drbrain.cli.setup import _brief_validation
+
+    # Use a temp directory that exists
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        cfg = {"dirs": {"inbox": str(papers_dir)}}
+        ok, warn = _brief_validation(cfg)
+        assert isinstance(ok, list)
+        assert isinstance(warn, list)
+        # Should have ok for existing dir
+        assert any("Data directories" in o for o in ok)

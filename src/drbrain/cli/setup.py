@@ -1,10 +1,27 @@
-"""Setup wizard — generates config.local.yaml from interactive prompts."""
+"""Setup wizard — generates config.local.yaml, initializes data directories, validates environment."""
+
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import typer
 import yaml
+
+
+def _check_python_package(module: str) -> bool:
+    """Check if a Python module is importable."""
+    try:
+        __import__(module)
+        return True
+    except ImportError:
+        return False
+
+
+def _check_external_tool(name: str, test_cmd: str) -> tuple[bool, str | None]:
+    """Check if an external tool is on PATH. Returns (found, path)."""
+    path = shutil.which(test_cmd)
+    return (path is not None, path)
 
 
 def generate_local_config(
@@ -53,97 +70,253 @@ def generate_local_config(
     return out
 
 
-def setup_cmd():
-    """Interactive 16-step setup wizard."""
+def _ensure_directories(cfg: dict) -> int:
+    """Create all required data directories. Returns count of newly created dirs."""
+    dirs_config = cfg.get("dirs", {})
+    dir_paths: list[str] = []
+    if dirs_config:
+        dir_paths = list(dirs_config.values())
+    else:
+        dir_paths = [
+            "data/spool/inbox",
+            "data/spool/pending",
+            "data/papers",
+            "data/reports",
+            "data/cache",
+            "data/logs",
+        ]
+
+    created = 0
+    for d in dir_paths:
+        p = Path(d)
+        if not p.exists():
+            p.mkdir(parents=True, exist_ok=True)
+            created += 1
+    return created
+
+
+def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
+    """Quick environment validation. Returns (ok_list, warn_list)."""
+    ok: list[str] = []
+    warn: list[str] = []
+
+    # Python deps
+    deps = {
+        "pymupdf": "pymupdf",
+        "litellm": "litellm",
+        "typer": "typer",
+        "rich": "rich",
+        "pyyaml": "yaml",
+        "pydantic": "pydantic",
+        "streamlit": "streamlit",
+    }
+    missing_deps = [name for mod, name in deps.items() if not _check_python_package(mod)]
+    if missing_deps:
+        warn.append(f"Missing packages: {', '.join(missing_deps)}")
+    else:
+        ok.append("Python packages: all present")
+
+    # External tools
+    mineru_found, _ = _check_external_tool("mineru", "mineru-open-api")
+    if mineru_found:
+        ok.append("MinerU CLI: found")
+    else:
+        warn.append("MinerU CLI not found — PDF parsing will use PyMuPDF fallback")
+
+    # Config
+    if Path("config.yaml").exists():
+        ok.append("config.yaml: found")
+    else:
+        warn.append("config.yaml not found")
+
+    if Path("config.local.yaml").exists():
+        ok.append("config.local.yaml: found")
+    else:
+        warn.append("config.local.yaml not found — run `drbrain setup` first")
+
+    # Directories from config
+    dirs_config = cfg.get("dirs", {})
+    dir_paths = (
+        list(dirs_config.values())
+        if dirs_config
+        else [
+            "data/spool/inbox",
+            "data/spool/pending",
+            "data/papers",
+            "data/reports",
+            "data/cache",
+            "data/logs",
+        ]
+    )
+    missing_dirs = [d for d in dir_paths if not Path(d).exists()]
+    if missing_dirs:
+        warn.append(f"Missing directories: {', '.join(missing_dirs)}")
+    else:
+        ok.append("Data directories: all present")
+
+    return ok, warn
+
+
+def setup_cmd(
+    quick: bool = typer.Option(
+        False, "--quick", "-q", help="Skip interactive prompts, use defaults"
+    ),
+):
+    """Initialize DrBrain — generate config, create directories, validate environment."""
+    # If config.local.yaml already exists, offer to re-run or validate only
+    if Path("config.local.yaml").exists() and not quick:
+        typer.echo("config.local.yaml already exists.\n")
+        choice = typer.prompt(
+            "  [r]e-run setup  [v]alidate environment only  [q]uit",
+            default="v",
+        )
+        if choice == "q":
+            typer.echo("Cancelled.")
+            return
+        if choice == "v":
+            from drbrain.config import load_config
+
+            cfg = load_config()
+            _ensure_directories(cfg)
+            ok, warn = _brief_validation(cfg)
+            typer.echo()
+            for line in ok:
+                typer.echo(f"  [OK] {line}")
+            for line in warn:
+                typer.echo(f"  [!]  {line}")
+            typer.echo()
+            if not warn:
+                typer.echo("Environment ready. Next: drbrain ingest")
+            return
+
     typer.echo("=" * 60)
-    typer.echo("DrBrain Setup — Configuration Wizard")
+    typer.echo("DrBrain Setup")
     typer.echo("=" * 60)
 
-    # --- LLM Primary ---
-    typer.echo("\n[1/16] LLM Primary Model")
-    provider = typer.prompt("  Provider (openai/anthropic/ollama)", default="openai")
-    model = typer.prompt("  Model name", default="gpt-4o")
-    api_key = typer.prompt("  API key (leave empty for ollama)", default="", hide_input=True)
-    base_url = typer.prompt("  Base URL (empty for default)", default="", show_default=False)
+    # ── Step 1: LLM ──
+    typer.echo("\n── LLM Configuration ──")
+    typer.echo("  Primary model (required)")
+    provider = typer.prompt("    Provider (openai/anthropic/ollama)", default="openai")
+    model = typer.prompt("    Model name", default="gpt-4o")
+    api_key = typer.prompt("    API key (leave empty for ollama)", default="", hide_input=True)
+    base_url = typer.prompt("    Base URL (empty for default)", default="", show_default=False)
     base_url = base_url if base_url else None
     llm_primary = {
-        "provider": provider, "model": model,
-        "api_key": api_key, "base_url": base_url,
+        "provider": provider,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
     }
 
-    # --- LLM Fallback ---
-    typer.echo("\n[2/16] LLM Fallback Model (optional)")
-    has_fallback = typer.confirm("  Add fallback model?", default=False)
+    typer.echo("  Fallback model (optional)")
+    has_fallback = typer.confirm("    Add fallback?", default=False)
+    fallback_models: list[dict] = []
     if has_fallback:
-        fb_provider = typer.prompt("  Fallback provider", default="ollama")
-        fb_model = typer.prompt("  Fallback model", default="qwen2.5:7b")
-        fb_key = typer.prompt("  Fallback API key", default="", hide_input=True)
-        fb_url = typer.prompt("  Fallback base URL", default="http://localhost:11434")
-        llm_primary.setdefault("_fallback", {
-            "provider": fb_provider, "model": fb_model,
-            "api_key": fb_key, "base_url": fb_url if fb_url else None,
-        })
+        fb_provider = typer.prompt("    Provider", default="ollama")
+        fb_model = typer.prompt("    Model", default="qwen2.5:7b")
+        fb_key = typer.prompt("    API key", default="", hide_input=True)
+        fb_url = typer.prompt("    Base URL", default="http://localhost:11434")
+        fallback_models.append(
+            {
+                "provider": fb_provider,
+                "model": fb_model,
+                "api_key": fb_key,
+                "base_url": fb_url if fb_url else None,
+            }
+        )
 
-    # --- MinerU Mode ---
-    typer.echo("\n[4/16] MinerU Mode")
-    typer.echo("  Flash: free, no token required")
-    typer.echo("  Token: higher quality, requires token from https://mineru.net/apiManage/token")
-    mineru_mode = typer.prompt("  Mode (flash/token)", default="flash")
-
-    # --- MinerU Token ---
+    # ── Step 2: MinerU ──
+    typer.echo("\n── PDF Parser ──")
+    typer.echo("  MinerU: high-quality PDF→Markdown extraction")
+    typer.echo("  Fallback: PyMuPDF (always available, no config needed)")
+    mineru_mode = typer.prompt("  MinerU mode (flash/token)", default="flash")
     mineru_token = ""
     if mineru_mode == "token":
-        typer.echo("\n[5/16] MinerU Token")
-        typer.echo("  Get your token at: https://mineru.net/apiManage/token")
+        typer.echo("  Get token: https://mineru.net/apiManage/token")
         mineru_token = typer.prompt("  Token", hide_input=True)
-
-    # --- MinerU Model ---
-    typer.echo("\n[6/16] MinerU Extraction Model")
     mineru_model = typer.prompt("  Model (pipeline/vlm/MinerU-HTML)", default="vlm")
+    mineru_is_ocr = typer.confirm("  Enable OCR?", default=False)
+    mineru_enable_formula = typer.confirm("  Parse formulas?", default=True)
+    mineru_enable_table = typer.confirm("  Parse tables?", default=True)
 
-    # --- MinerU Options ---
-    typer.echo("\n[7/16] MinerU Options")
-    mineru_is_ocr = typer.confirm("  Enable OCR extraction?", default=False)
-    mineru_enable_formula = typer.confirm("  Enable formula parsing?", default=True)
-    mineru_enable_table = typer.confirm("  Enable table parsing?", default=True)
+    # ── Step 3: Paths & APIs ──
+    typer.echo("\n── Storage & APIs ──")
+    db_path = typer.prompt("  Database path", default="data/drbrain.db")
+    s2_rate_limit = typer.prompt("  Semantic Scholar rate limit (req/min)", default=100)
+    crossref_email = typer.prompt(
+        "  CrossRef email (optional, for polite pool)", default="", show_default=False
+    )
+    openalex_token = typer.prompt("  OpenAlex token (optional)", default="", hide_input=True)
+    bm25_k1 = typer.prompt("  BM25 k1 (term frequency)", default=1.5)
+    bm25_b = typer.prompt("  BM25 b (length normalization)", default=0.75)
 
-    # --- Paths ---
-    typer.echo("\n[10/16] Database Path")
-    db_path = typer.prompt("  DB path", default="data/drbrain.db")
+    # ── Step 4: Review ──
+    typer.echo("\n── Review ──")
+    typer.echo(f"  LLM:      {provider}/{model}")
+    if fallback_models:
+        typer.echo(f"  Fallback: {fallback_models[0]['provider']}/{fallback_models[0]['model']}")
+    typer.echo(
+        f"  PDF:      MinerU {mineru_mode} (model={mineru_model}, ocr={mineru_is_ocr}) "
+        f"+ PyMuPDF fallback"
+    )
+    typer.echo(f"  DB:       {db_path}")
+    typer.echo(
+        f"  APIs:     S2({s2_rate_limit}/min) CrossRef({crossref_email or 'none'}) "
+        f"OpenAlex({'configured' if openalex_token else 'none'})"
+    )
 
-    # --- API & BM25 ---
-    typer.echo("\n[14/16] Semantic Scholar API")
-    s2_rate_limit = typer.prompt("  Rate limit (req/min)", default=100)
+    if not typer.confirm("\n  Write config?", default=True):
+        typer.echo("Cancelled.")
+        return
 
-    typer.echo("\n[15/16] External APIs")
-    crossref_email = typer.prompt("  CrossRef email (for polite pool)", default="", show_default=False)
-    openalex_token = typer.prompt("  OpenAlex token (empty for anonymous)", default="", hide_input=True)
+    # ── Write config ──
+    models = [llm_primary] + fallback_models
+    config: dict = {
+        "llm": {"models": models},
+        "mineru": {
+            "token": mineru_token,
+            "model": mineru_model,
+            "is_ocr": mineru_is_ocr,
+            "enable_formula": mineru_enable_formula,
+            "enable_table": mineru_enable_table,
+        },
+        "db": {"path": db_path},
+        "api": {
+            "s2_rate_limit": s2_rate_limit,
+        },
+        "bm25": {"k1": float(bm25_k1), "b": float(bm25_b)},
+    }
+    if crossref_email:
+        config["api"]["crossref_email"] = crossref_email
+    if openalex_token:
+        config["api"]["openalex_token"] = openalex_token
 
-    typer.echo("\n[16/16] BM25 Parameters")
-    bm25_k1 = typer.prompt("  k1 (term frequency saturation)", default=1.5)
-    bm25_b = typer.prompt("  b (document length normalization)", default=0.75)
+    out = Path("config.local.yaml")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w") as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    typer.echo(f"\n  Config written to {out}")
 
-    typer.echo("\n[16/16] Review")
-    typer.echo(f"  LLM: {provider}/{model}")
-    typer.echo(f"  MinerU: {mineru_mode} mode, {mineru_model}")
-    typer.echo(f"  DB: {db_path}")
-    if typer.confirm("  Write config.local.yaml?", default=True):
-        path = generate_local_config(
-            output_path="config.local.yaml",
-            llm_primary=llm_primary,
-            mineru_mode=mineru_mode,
-            mineru_token=mineru_token,
-            mineru_model=mineru_model,
-            mineru_is_ocr=mineru_is_ocr,
-            mineru_enable_formula=mineru_enable_formula,
-            mineru_enable_table=mineru_enable_table,
-            db_path=db_path,
-            s2_rate_limit=s2_rate_limit,
-            crossref_email=crossref_email,
-            openalex_token=openalex_token,
-            bm25_k1=float(bm25_k1),
-            bm25_b=float(bm25_b),
-        )
-        typer.echo(f"\nConfig written to {path}")
+    # ── Step 5: Initialize environment ──
+    typer.echo("\n── Environment ──")
+    from drbrain.config import load_config
+
+    cfg = load_config()
+    created = _ensure_directories(cfg)
+    if created:
+        typer.echo(f"  Created {created} director{'y' if created == 1 else 'ies'}")
     else:
-        typer.echo("Setup cancelled, no file written.")
+        typer.echo("  Directories: all present")
+
+    ok, warn = _brief_validation(cfg)
+    for line in ok:
+        typer.echo(f"  [OK] {line}")
+    for line in warn:
+        typer.echo(f"  [!]  {line}")
+
+    typer.echo()
+    if not warn:
+        typer.echo("Ready. Next step: drbrain ingest")
+    else:
+        typer.echo(f"Setup complete with {len(warn)} warning(s).")
+        typer.echo("Run `drbrain check` for detailed diagnostics.")
