@@ -1,6 +1,6 @@
 """Legacy entrypoint — use `uv run drbrain` instead."""
 
-from brbrain.cli.main import app
+from drbrain.cli.main import app
 
 app()
 

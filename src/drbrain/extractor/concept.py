@@ -176,13 +176,11 @@ def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConce
         )
         rel_type = "cross_section_challenge" if has_opposition else "cross_section_support"
 
-        new_relations.append(
-            {
-                "head": target,
-                "rel": rel_type,
-                "tail": f"{len(sections_seen)}_sections",
-                "evidence": f"Arguments from: {', '.join(sections_seen.keys())}",
-            }
+        # Cross-section argument links are logged, not added as graph edges.
+        # The section provenance is already captured in each argument's section field.
+        log.debug(
+            "Cross-section %s: target=%r from %d sections (%s)",
+            rel_type, target, len(sections_seen), ", ".join(sections_seen.keys()),
         )
 
     if new_relations:

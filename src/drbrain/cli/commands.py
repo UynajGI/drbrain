@@ -2269,6 +2269,21 @@ def check_cmd():
     except Exception:
         table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
 
+    # -- MinerU CLI --
+    try:
+        import shutil as _shutil
+        cli = _shutil.which("mineru-open-api")
+        if cli:
+            table_api.add_row("  MinerU CLI", f"[green]Found[/green] ({cli})")
+        else:
+            table_api.add_row(
+                "  MinerU CLI", "[yellow]Not found[/yellow]",
+                "(install: npm i -g mineru-open-api)"
+            )
+            warnings.append("MinerU CLI not found — PDF parsing will use PyMuPDF fallback")
+    except Exception:
+        table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
+
     # -- LLM API connectivity --
     try:
         llm_models = cfg.get("llm", {}).get("models", [])
