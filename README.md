@@ -24,6 +24,7 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) |
 | `drbrain graph neighbors <node>` | Direct graph traversal (no text search) |
 | `drbrain graph path <src> <dst>` | Shortest path between two graph nodes |
+| `drbrain graph related <id...>` | Shared concept analysis across papers (3 modes) |
 | `drbrain closure` | Rule-based graph inference (supports `--dry-run`, `--rule`) |
 | `drbrain check-citations <text>` | Verify in-text citations against library |
 | `drbrain ws` | Manage paper workspaces |
