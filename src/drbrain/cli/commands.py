@@ -2161,7 +2161,8 @@ def check_cmd():
             if p.exists():
                 table5.add_row(f"  {dir_path}", "[green]Exists[/green]")
             else:
-                table5.add_row(f"  {dir_path}", "[yellow]Missing (will be created on use)[/yellow]")
+                p.mkdir(parents=True, exist_ok=True)
+                table5.add_row(f"  {dir_path}", "[green]Created[/green]")
     except Exception:
         for d in ["data/inbox", "data/papers"]:
             p = Path(d)
