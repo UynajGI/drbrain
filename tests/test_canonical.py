@@ -181,3 +181,162 @@ def test_smart_aligner_flush_pending_with_mocked_llm():
         # Pending should be cleared
         assert len(aligner._pending) == 0
         db.close()
+
+
+# -- SmartAligner.align() — BM25 score thresholds --
+
+
+def test_smart_aligner_bm25_ambiguous_score_queues_pending():
+    """When BM25 score is 0.3-0.8, label is queued for LLM arbitration."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.insert_concept("p1", "Method", "attention", 0.9, year=2024)
+        db.commit()
+
+        aligner = SmartAligner(db)
+        fake_doc = {"label": "attention", "type": "Method", "canonical_id": "concept_attention"}
+        # Score 0.5 is in the ambiguous range [0.3, 0.8)
+        with unittest.mock.patch.object(aligner, "_bm25_search", return_value=(0.5, fake_doc)):
+            cid = aligner.align("self attention", "Method")
+
+        # Should return the candidate's canonical_id
+        assert cid == "concept_attention"
+        # Should have queued for LLM arbitration
+        assert len(aligner._pending) == 1
+        assert aligner._pending[0]["label"] == "self attention"
+        assert aligner._pending[0]["score"] == 0.5
+        db.close()
+
+
+def test_smart_aligner_bm25_high_score_no_pending():
+    """When BM25 score >= 0.8, auto-align without queuing for LLM."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.insert_concept("p1", "Method", "attention", 0.9, year=2024)
+        db.commit()
+
+        aligner = SmartAligner(db)
+        fake_doc = {"label": "attention", "type": "Method", "canonical_id": "concept_attention"}
+        # Score 0.85 is >= BM25_AUTO_ALIGN (0.8)
+        with unittest.mock.patch.object(aligner, "_bm25_search", return_value=(0.85, fake_doc)):
+            cid = aligner.align("deep attention", "Method")
+
+        assert cid == "concept_attention"
+        # Should NOT have any pending (no LLM needed)
+        assert len(aligner._pending) == 0
+        db.close()
+
+
+def test_smart_aligner_flush_pending_empty_queue():
+    """flush_pending with empty pending list does nothing, even with models."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.commit()
+
+        aligner = SmartAligner(db, models=[{"provider": "openai", "model": "gpt-4"}])
+        # _pending is already empty
+        assert len(aligner._pending) == 0
+        # Should not raise, should not call LLM
+        aligner.flush_pending()
+        assert len(aligner._pending) == 0
+        db.close()
+
+
+def test_smart_aligner_bm25_low_score_below_threshold_creates_new():
+    """When BM25 score < 0.3, no match, creates new canonical_id."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.insert_concept("p1", "Method", "quantum computing", 0.9, year=2024)
+        db.commit()
+
+        aligner = SmartAligner(db)
+        fake_doc = {"label": "quantum computing", "type": "Method", "canonical_id": "concept_qc"}
+        # Score 0.25 is below BM25_PENDING_MIN (0.3)
+        with unittest.mock.patch.object(aligner, "_bm25_search", return_value=(0.25, fake_doc)):
+            cid = aligner.align("neural style transfer", "Method")
+
+        # Should create a new ID (not the candidate's)
+        assert cid is not None
+        assert cid != "concept_qc"
+        assert len(aligner._pending) == 0
+        db.close()
+
+
+def test_smart_aligner_flush_pending_low_confidence_keeps_independent():
+    """flush_pending with low-confidence LLM decision keeps label independent."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.insert_concept("p1", "Method", "attention", 0.9, year=2024)
+        db.commit()
+
+        aligner = SmartAligner(db, models=[{"provider": "openai", "model": "gpt-4"}])
+        aligner._pending.append(
+            {
+                "label": "self attention",
+                "type": "Method",
+                "candidates": ["attention"],
+                "score": 0.5,
+            }
+        )
+
+        # LLM returns low confidence (< 0.7) — label should stay independent
+        with unittest.mock.patch(
+            "drbrain.extractor.canonical._llm_arbitrate",
+            return_value=[{"label": "self attention", "canonical": "attention", "confidence": 0.4}],
+        ):
+            aligner.flush_pending()
+
+        # Pending should be cleared even when uncertain
+        assert len(aligner._pending) == 0
+        db.close()
+
+
+def test_smart_aligner_flush_pending_null_canonical():
+    """flush_pending with null canonical keeps label independent."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        db.commit()
+
+        aligner = SmartAligner(db, models=[{"provider": "openai", "model": "gpt-4"}])
+        aligner._pending.append(
+            {
+                "label": "novel technique",
+                "type": "Method",
+                "candidates": [],
+                "score": 0.5,
+            }
+        )
+
+        # LLM returns null canonical
+        with unittest.mock.patch(
+            "drbrain.extractor.canonical._llm_arbitrate",
+            return_value=[{"label": "novel technique", "canonical": None, "confidence": 0.5}],
+        ):
+            aligner.flush_pending()
+
+        assert len(aligner._pending) == 0
+        db.close()
+
+
+def test_smart_aligner_bm25_real_high_overlap():
+    """Real BM25 with multiple concepts + overlapping query triggers score path."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Test", 2024, "uploaded")
+        # Multiple concepts so IDF > 0 for terms shared by a subset
+        db.insert_concept("p1", "Method", "graph neural network training", 0.9, year=2024)
+        db.insert_concept("p1", "Method", "quantum error correction circuits", 0.9, year=2024)
+        db.insert_concept("p1", "Method", "reinforcement learning with rewards", 0.9, year=2024)
+        db.commit()
+
+        aligner = SmartAligner(db)
+        # "graph neural networks" shares terms with doc 1 → non-zero BM25
+        cid = aligner.align("graph neural networks", "Method")
+        assert cid is not None
+        db.close()

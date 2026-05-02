@@ -194,3 +194,59 @@ def test_detect_contradictions_empty():
     )
     contradictions = detect_section_contradictions(g, {"P1": "Results"})
     assert contradictions == []
+
+
+# -- Technology cliffs hypothesis --
+
+
+def test_generate_hypotheses_technology_cliffs():
+    """Extended methods constrained by a gap produce technology_revival hypothesis."""
+    g = _make_graph(
+        [
+            ("M1", "M2", "extends", "p1"),
+            ("G1", "M2", "constrains", "p1"),
+        ]
+    )
+    section_map = {"M1": "Methods", "M2": "Evaluation"}
+    hyps = generate_hypotheses(g, section_map=section_map)
+    tech_hyps = [h for h in hyps if h.type == "technology_revival"]
+    assert len(tech_hyps) == 1
+    assert "M2" in tech_hyps[0].description
+    assert "G1" in tech_hyps[0].description
+    evidence_text = " ".join(tech_hyps[0].evidence)
+    assert "Evaluation" in evidence_text
+
+
+def test_generate_hypotheses_technology_cliffs_no_section_map():
+    """Technology revival without section_map does not include section info."""
+    g = _make_graph(
+        [
+            ("M1", "M2", "extends", "p1"),
+            ("G1", "M2", "constrains", "p1"),
+        ]
+    )
+    hyps = generate_hypotheses(g)
+    tech_hyps = [h for h in hyps if h.type == "technology_revival"]
+    assert len(tech_hyps) == 1
+    evidence_text = " ".join(tech_hyps[0].evidence)
+    assert "section" not in evidence_text
+
+
+# -- Debate zone with all sections present in section_map --
+
+
+def test_generate_hypotheses_debate_full_sections():
+    """Debate hypothesis includes all distinct section names in evidence."""
+    g = _make_graph(
+        [
+            ("P1", "Conclusion_Z", "supports", "p1"),
+            ("P2", "Conclusion_Z", "challenges", "p2"),
+            ("P3", "Conclusion_Z", "supports", "p3"),
+        ]
+    )
+    section_map = {"P1": "Results", "P2": "Discussion", "P3": "Introduction"}
+    hyps = generate_hypotheses(g, section_map=section_map)
+    debate_hyps = [h for h in hyps if "Conclusion_Z" in h.description]
+    assert len(debate_hyps) == 1
+    assert debate_hyps[0].base_confidence == 0.6
+    assert debate_hyps[0].type == "debate_resolution"

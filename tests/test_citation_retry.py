@@ -103,3 +103,42 @@ def test_fetch_s2_uses_api_key_header():
     with unittest.mock.patch("requests.get", side_effect=mock_get):
         fetch_s2_with_retry("abc123", api_key="test-key")
         assert captured_headers["headers"].get("x-api-key") == "test-key"
+
+
+def test_fetch_s2_no_retry_on_connection_error():
+    """fetch_s2_with_retry does not retry on non-HTTP errors (connection error)."""
+    call_count = 0
+
+    def mock_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise requests.ConnectionError("connection refused")
+
+    with unittest.mock.patch("requests.get", side_effect=mock_get):
+        result = fetch_s2_with_retry("abc123", max_retries=3)
+        assert call_count == 1  # No retry for non-HTTP
+        assert result is None
+
+
+def test_search_s2_with_retry_uses_api_key():
+    """search_s2_with_retry includes x-api-key header when provided."""
+    captured_headers = {}
+
+    def mock_get(*args, **kwargs):
+        captured_headers["headers"] = kwargs.get("headers", {})
+        return _make_success_response({"data": []})
+
+    with unittest.mock.patch("requests.get", side_effect=mock_get):
+        search_s2_with_retry("test", api_key="s2-key-456")
+        assert captured_headers["headers"].get("x-api-key") == "s2-key-456"
+
+
+def test_search_s2_with_retry_exhausted_returns_empty():
+    """search_s2_with_retry returns empty list after all retries fail."""
+
+    def mock_get(*args, **kwargs):
+        return _make_429_response()
+
+    with unittest.mock.patch("requests.get", side_effect=mock_get):
+        result = search_s2_with_retry("test", max_retries=2)
+        assert result == []

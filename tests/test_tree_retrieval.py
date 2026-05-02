@@ -7,7 +7,11 @@ from unittest import mock
 
 import typer
 
-from drbrain.query.tree_retrieval import _ask_llm_for_relevant_nodes, query_by_structure
+from drbrain.query.tree_retrieval import (
+    _ask_llm_for_relevant_nodes,
+    _get_node_title,
+    query_by_structure,
+)
 
 
 def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
@@ -386,3 +390,72 @@ def test_query_cmd_bm25_unchanged():
         sys.stdout = old_stdout
 
         assert "Query:" in output
+
+
+# -- Edge case: LLM returns no relevant sections when structure exists --
+
+
+@mock.patch("drbrain.query.tree_retrieval._ask_llm_for_relevant_nodes")
+def test_query_by_structure_llm_returns_empty_with_structure(mock_ask, tmp_path):
+    """Returns None when LLM finds no relevant sections despite valid structure."""
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "tree.json").write_text(
+        '{"doc_name": "test", "line_count": 10, "structure": [{"title": "A", "node_id": "0000", "nodes": []}]}'
+    )
+    (paper_dir / "raw.md").write_text("# A\nContent here.\n")
+
+    mock_ask.return_value = []
+
+    import asyncio
+
+    result = asyncio.run(query_by_structure("question", paper_dir, []))
+    assert result is None
+
+
+# -- Edge case: get_node_content returns empty/None for all returned IDs --
+
+
+@mock.patch("drbrain.query.tree_retrieval.get_node_content")
+@mock.patch("drbrain.query.tree_retrieval._ask_llm_for_relevant_nodes")
+def test_query_by_structure_ids_have_no_content(mock_ask, mock_get_content, tmp_path):
+    """Returns None when LLM picks IDs but all have empty content."""
+    paper_dir = tmp_path / "paper"
+    paper_dir.mkdir()
+    (paper_dir / "tree.json").write_text(
+        '{"doc_name": "test", "line_count": 10, "structure": [{"title": "A", "node_id": "0000", "nodes": []}]}'
+    )
+    (paper_dir / "raw.md").write_text("# A\nContent.\n")
+
+    mock_ask.return_value = ["0000"]
+    mock_get_content.return_value = None  # No content for any node
+
+    import asyncio
+
+    result = asyncio.run(query_by_structure("question", paper_dir, []))
+    assert result is None
+
+
+# -- Edge case: _get_node_title with nonexistent node_id --
+
+
+def test_get_node_title_nonexistent_node():
+    """_get_node_title returns '' for a node_id not in the tree."""
+    structure = [{"title": "Section A", "node_id": "0000", "nodes": []}]
+    result = _get_node_title(structure, "nonexistent")
+    assert result == ""
+
+
+def test_get_node_title_in_nested_structure():
+    """_get_node_title finds title in nested nodes."""
+    structure = [
+        {
+            "title": "Root",
+            "node_id": "0000",
+            "nodes": [
+                {"title": "Child", "node_id": "0000-0", "nodes": []},
+            ],
+        }
+    ]
+    assert _get_node_title(structure, "0000-0") == "Child"
+    assert _get_node_title(structure, "0000") == "Root"

@@ -82,3 +82,82 @@ def test_list_backups_with_files(tmp_path):
     backups = list_backups(tmp_path)
     assert len(backups) == 2
     assert "06-15" in backups[0].name
+
+
+def test_create_backup_with_workspace_dir(tmp_path):
+    """create_backup includes workspace files when workspace_dir is provided."""
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    (papers_dir / "dummy.txt").write_text("data")
+
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    (db_dir / "drbrain.db").write_text("sqlite")
+
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+    (workspace_dir / "config.yaml").write_text("workspace: test")
+    (workspace_dir / "papers.json").write_text('["p1"]')
+
+    backups_dir = tmp_path / "backups"
+
+    path = create_backup(
+        papers_dir=papers_dir,
+        db_path=db_dir / "drbrain.db",
+        backup_dir=backups_dir,
+        workspace_dir=workspace_dir,
+    )
+
+    assert path.exists()
+    with tarfile.open(path, "r:gz") as tar:
+        names = tar.getnames()
+        assert any("workspace/config.yaml" in n for n in names)
+        assert any("workspace/papers.json" in n for n in names)
+
+
+def test_create_backup_with_reports_dir(tmp_path):
+    """create_backup includes reports when reports_dir is provided."""
+    papers_dir = tmp_path / "papers"
+    papers_dir.mkdir()
+    (papers_dir / "dummy.txt").write_text("data")
+
+    db_dir = tmp_path / "db"
+    db_dir.mkdir()
+    (db_dir / "drbrain.db").write_text("sqlite")
+
+    reports_dir = tmp_path / "reports"
+    reports_dir.mkdir()
+    (reports_dir / "report.json").write_text('{"key": "val"}')
+
+    backups_dir = tmp_path / "backups"
+
+    path = create_backup(
+        papers_dir=papers_dir,
+        db_path=db_dir / "drbrain.db",
+        backup_dir=backups_dir,
+        reports_dir=reports_dir,
+    )
+
+    assert path.exists()
+    with tarfile.open(path, "r:gz") as tar:
+        names = tar.getnames()
+        assert any("reports/report.json" in n for n in names)
+
+
+def test_create_backup_missing_papers_dir(tmp_path):
+    """create_backup does not crash when papers_dir does not exist."""
+    papers_dir = tmp_path / "nonexistent_papers"
+
+    backups_dir = tmp_path / "backups"
+
+    path = create_backup(
+        papers_dir=papers_dir,
+        db_path=tmp_path / "nonexistent" / "drbrain.db",
+        backup_dir=backups_dir,
+    )
+
+    assert path.exists()
+    # archive should be created but (mostly) empty
+    with tarfile.open(path, "r:gz") as tar:
+        names = tar.getnames()
+        assert len(names) == 0

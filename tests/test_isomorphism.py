@@ -159,3 +159,42 @@ def test_relation_signature_section_unknown():
     sig = _relation_signature(g, "P1", section_map=section_map)
     assert "in:addresses" in sig
     assert "@" not in str(sig)
+
+
+def test_relation_signature_outgoing_with_section():
+    """Outgoing edges include section info from target nodes."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+            ("M1", "P2", "extends", "p1"),
+        ]
+    )
+    section_map = {"P1": "Introduction", "P2": "Methods"}
+    sig = _relation_signature(g, "M1", section_map=section_map)
+    assert "out:addresses@Introduction" in sig
+    assert "out:extends@Methods" in sig
+
+
+def test_relation_signature_outgoing_without_section_map():
+    """Outgoing edges without section_map have no section suffix."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+        ]
+    )
+    sig = _relation_signature(g, "M1")
+    assert sig == {"out:addresses": 1}
+
+
+def test_relation_signature_mixed_in_out():
+    """Node with both incoming and outgoing edges gets both in: and out: keys."""
+    g = _make_graph(
+        [
+            ("M1", "Node_X", "addresses", "p1"),
+            ("Node_X", "P1", "extends", "p1"),
+        ]
+    )
+    section_map = {"M1": "Methods", "P1": "Results"}
+    sig = _relation_signature(g, "Node_X", section_map=section_map)
+    assert "in:addresses@Methods" in sig
+    assert "out:extends@Results" in sig

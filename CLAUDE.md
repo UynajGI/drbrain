@@ -104,7 +104,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 
 Project skills in `skills/` directory. Available skills: `research-analysis` (knowledge frontier analysis), `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`.
 
-## Behavioral Guidelines (from Karpathy)
+## Behavioral Guidelines
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 

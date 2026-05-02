@@ -90,3 +90,58 @@ def test_import_bibtex_minimal():
         assert papers[0]["title"] == "Just a Test"
     finally:
         Path(path).unlink()
+
+
+def test_import_bibtex_missing_year():
+    """BibTeX entry without year field has year=None."""
+    bib = "@article{test2025, title = {No Year Paper}, journal = {Some Journal}}"
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".bib", delete=False)
+    f.write(bib)
+    path = f.name
+    f.close()
+
+    try:
+        papers = import_bibtex_file(Path(path))
+        assert len(papers) == 1
+        assert papers[0]["title"] == "No Year Paper"
+        assert papers[0]["year"] is None
+    finally:
+        Path(path).unlink()
+
+
+def test_import_zotero_db_empty_creators():
+    """Zotero DB with empty creators table does not crash."""
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE items (itemID INTEGER PRIMARY KEY, itemType TEXT, key TEXT);
+        CREATE TABLE itemData (itemID INTEGER, fieldID INTEGER, value TEXT);
+        CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT);
+        CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, lastName TEXT, firstName TEXT);
+        CREATE TABLE itemCreators (itemID INTEGER, creatorID INTEGER, creatorType TEXT);
+        INSERT INTO fields VALUES (1, 'title'), (2, 'date'), (3, 'DOI');
+        INSERT INTO items VALUES (1, 'journalArticle', 'ABC123');
+        INSERT INTO itemData VALUES (1, 1, 'Test Paper'), (1, 2, '2024');
+    """)
+
+    papers = import_zotero_db(conn)
+    assert len(papers) == 1
+    assert papers[0]["title"] == "Test Paper"
+    assert papers[0]["authors"] == ""  # No creators → empty authors
+
+
+def test_import_zotero_db_missing_creators_table():
+    """Zotero DB without creators table at all does not crash."""
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE items (itemID INTEGER PRIMARY KEY, itemType TEXT, key TEXT);
+        CREATE TABLE itemData (itemID INTEGER, fieldID INTEGER, value TEXT);
+        CREATE TABLE fields (fieldID INTEGER PRIMARY KEY, fieldName TEXT);
+        INSERT INTO fields VALUES (1, 'title'), (2, 'date');
+        INSERT INTO items VALUES (1, 'journalArticle', 'ABC123');
+        INSERT INTO itemData VALUES (1, 1, 'Paper Without Creators Table');
+    """)
+
+    papers = import_zotero_db(conn)
+    assert len(papers) == 1
+    assert papers[0]["title"] == "Paper Without Creators Table"
+    assert papers[0]["year"] is None
