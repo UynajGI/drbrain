@@ -15,7 +15,7 @@ uv run ruff format .            # format
 uv run pytest --cov=drbrain --cov-report=term  # coverage report
 ```
 
-Key user commands: `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`.
+Key user commands: `setup`, `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`.
 
 ## Architecture
 

@@ -13,6 +13,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Closure filtering**: `drbrain closure --rule <name>` (repeatable, 11 rules supported) and `--dry-run` (read-only, does not persist).
 - **Multi-paper concept analysis**: `drbrain graph related <id...>` with 3 modes — `concepts` (SQL label intersection + coverage), `graph` (1-hop neighbor intersection via traverse), `edges` (shared relation-target patterns).
 - **Hybrid ranking**: `drbrain query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank BM25 results by graph centrality. Pure Python PageRank, no scipy dependency.
+- **Config example**: `config.example.yaml` with 9 LLM provider templates (OpenAI, Anthropic, DeepSeek, Zhipu, Bailian, MiniMax, Moonshot, Ollama, vLLM) — uncomment the one you need.
 - **Library management**: Inbox auto-classification (paper/thesis/preprint/book/review/document), spool/pending queue, workspace CRUD (`drbrain ws`), BibTeX/RIS/Markdown export, tar.gz backup, delete with `--rm-files`
 - **Citation graph**: Shared-reference analysis (`drbrain citations --type shared-refs`), citation verification against library (`drbrain check-citations`), citation_cache table with S2 write-through
 - **Knowledge frontier analysis**: `drbrain analyze` command orchestrating seeds, causal chains, counterfactual, hypotheses, and isomorphism detection
@@ -39,7 +40,9 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ### Fixed
 - `seed_cmd` dict key access: `seed['node']`→`seed['concept']`, `seed['signal']`→`seed['description']`
 - `test_closure_cmd_backward_compat`: insufficient test data (single extends edge produces no inferred edges; use 3-node transitive chain)
-- `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory (which nuked everything including spool, then crashed on missing subdirs)
+- `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory
+- `check_cmd`: now creates missing directories instead of just reporting them
+- `setup_cmd`: upgraded from config-only wizard to full env initializer (config + dirs + validation + readiness summary). `--quick` flag for non-interactive mode. Validate-only mode when config exists
 
 ## [v0.1.0] - 2026-04-28
 
