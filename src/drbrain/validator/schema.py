@@ -5,12 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 TBOX = {
-    "Problem": {"addresses", "leaves_open", "points_to"},
-    "Method": {"addresses", "proposes", "extends", "replaces", "solves"},
-    "Conclusion": {"supports", "challenges", "limits"},
-    "Debate": {"supports", "challenges"},
-    "Gap": {"leaves_open", "points_to", "constrains"},
-    "Actor": {"affiliated_with", "proposes"},
+    "Problem": {"addresses", "leaves_open", "points_to",
+                "cross_section_support", "cross_section_challenge"},
+    "Method": {"addresses", "proposes", "extends", "replaces", "solves",
+               "supports", "challenges", "limits", "constrains",
+               "cross_section_support", "cross_section_challenge"},
+    "Conclusion": {"supports", "challenges", "limits", "extends",
+                   "cross_section_support", "cross_section_challenge"},
+    "Debate": {"supports", "challenges",
+               "cross_section_support", "cross_section_challenge"},
+    "Gap": {"leaves_open", "points_to", "constrains",
+            "cross_section_support", "cross_section_challenge"},
+    "Actor": {"affiliated_with", "proposes",
+              "cross_section_support", "cross_section_challenge"},
 }
 
 RBOX = {

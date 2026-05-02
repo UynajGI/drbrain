@@ -496,10 +496,10 @@ def _ingest_single_paper(
             f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]"
         )
 
-    # Log validation failures
+    # Log validation failures (TBox violations are expected — LLM is inexact)
     tbox_violations = [r["reason"] for r in validation["rejected"]]
     for reason in tbox_violations:
-        _log_error(cfg, f"[{local_id}] TBox violation: {reason}")
+        _ingest_log.warning(f"[{local_id}] TBox validation: {reason}")
 
     # Flush pending LLM alignments
     aligner.flush_pending()
