@@ -15,7 +15,7 @@ class LLMClient:
     def __init__(self, models: list[dict]):
         self.models = models
 
-    def call(self, prompt: str, system_prompt: str = "", max_tokens: int = 4096) -> dict | None:
+    def call(self, prompt: str, system_prompt: str = "", max_tokens: int = 16384) -> dict | None:
         return call_with_fallback(prompt, self.models, system_prompt, max_tokens)
 
 
@@ -66,7 +66,7 @@ def call_with_fallback(
     prompt: str,
     models: list[dict],
     system_prompt: str = "",
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
 ) -> dict | None:
     """Try models in order, return first successful parsed JSON response."""
     for i, model_cfg in enumerate(models):
@@ -90,7 +90,7 @@ async def acall_with_fallback(
     prompt: str,
     models: list[dict],
     system_prompt: str = "",
-    max_tokens: int = 4096,
+    max_tokens: int = 16384,
 ) -> dict | None:
     """Async version of call_with_fallback."""
     for i, model_cfg in enumerate(models):

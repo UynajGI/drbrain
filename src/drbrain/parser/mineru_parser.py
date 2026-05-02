@@ -1,4 +1,4 @@
-"""MinerU PDF parser via mineru-open-api CLI + pypdfium2 fallback."""
+"""MinerU PDF parser via mineru-open-api CLI + PyMuPDF fallback."""
 
 from __future__ import annotations
 
@@ -134,28 +134,27 @@ class MinerUParser:
             tmp.cleanup()
 
     def _count_pages(self, pdf_path: Path) -> int:
-        """Count pages in PDF using pypdfium2."""
-        import pypdfium2 as pdfium
+        """Count pages in PDF using PyMuPDF."""
+        import fitz
 
-        doc = pdfium.PdfDocument(str(pdf_path))
+        doc = fitz.open(str(pdf_path))
         try:
-            return len(doc)
+            return doc.page_count
         finally:
             doc.close()
 
     def _split_pdf(self, pdf_path: Path, max_pages: int, base_dir: Path) -> list[Path]:
         """Split PDF into chunks of max_pages each. Returns list of temp PDF paths."""
-        import pypdfium2 as pdfium
+        import fitz
 
-        doc = pdfium.PdfDocument(str(pdf_path))
-        total = len(doc)
+        doc = fitz.open(str(pdf_path))
+        total = doc.page_count
         chunks: list[Path] = []
         for start in range(0, total, max_pages):
             end = min(start + max_pages, total)
             out = base_dir / f"chunk_{start}-{end}.pdf"
-            out_doc = pdfium.PdfDocument.new()
-            for i in range(start, end):
-                out_doc.import_pages(doc, pages=[i])
+            out_doc = fitz.open()
+            out_doc.insert_pdf(doc, from_page=start, to_page=end - 1)
             out_doc.save(str(out))
             out_doc.close()
             chunks.append(out)

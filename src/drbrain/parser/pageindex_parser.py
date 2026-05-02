@@ -662,23 +662,23 @@ def _extract_pdf_outline(pdf_path: str | Path) -> list[tuple[int, str, int]]:
     Returns list of (level, title, page_index) tuples.
     Returns empty list if PDF has no outline.
     """
-    import pypdfium2 as pdfium
+    import fitz
 
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
         return []
 
     try:
-        doc = pdfium.PdfDocument(str(pdf_path))
-        toc = list(doc.get_toc())
+        doc = fitz.open(str(pdf_path))
+        toc = doc.get_toc(simple=True)
         doc.close()
     except Exception:
         return []
 
     items = []
     for item in toc:
-        # PdfOutlineItem(level, title, is_closed, n_kids, page_index, view_mode, view_pos)
-        items.append((item.level, item.title, item.page_index))
+        # simple=True returns (level, title, page) tuples
+        items.append((item[0], item[1], item[2] - 1))  # page_index is 0-based
     return items
 
 
