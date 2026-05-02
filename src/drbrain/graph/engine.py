@@ -81,6 +81,7 @@ class GraphEngine:
         for seed in start_nodes:
             if seed not in self.graph:
                 continue
+            visited.add((seed, seed))
             # Queue: (current_node, seed_origin, path_so_far)
             queue: list[tuple[str, str, list[TraverseStep]]] = [(seed, seed, [])]
 
