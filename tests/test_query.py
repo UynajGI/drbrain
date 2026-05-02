@@ -463,3 +463,116 @@ def test_query_cmd_graph_backward_compat():
         assert any(r["local_id"] == "method_x" for r in results)
         graph_results = [r for r in results if r.get("_via_graph")]
         assert any(r["local_id"] == "method_y" for r in graph_results)
+
+
+def test_query_cmd_hybrid_boost():
+    """--hybrid adds _hybrid_boost field and re-ranks by boosted score."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "hub_method", 0.9, year=2023)
+        db.insert_concept("paper_a", "Gap", "leaf_gap", 0.8, year=2023)
+        # hub_method connected to many things -> high PageRank
+        db.insert_concept("paper_a", "Method", "m2", 0.85, year=2023)
+        db.insert_concept("paper_a", "Method", "m3", 0.85, year=2023)
+        db.insert_concept("paper_a", "Problem", "p1", 0.7, year=2023)
+        db.insert_edge("hub_method", "leaf_gap", "addresses", "paper_a", 1.0)
+        db.insert_edge("hub_method", "m2", "extends", "paper_a", 1.0)
+        db.insert_edge("hub_method", "m3", "extends", "paper_a", 1.0)
+        db.insert_edge("hub_method", "p1", "addresses", "paper_a", 1.0)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="hub",
+                    neighbors=0,
+                    hybrid=True,
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    relation=None,
+                    direction="both",
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        results = json.loads(capture.getvalue())
+        # Every result should have _hybrid_boost
+        for r in results:
+            assert "_hybrid_boost" in r
+            assert 1.0 <= r["_hybrid_boost"] <= 2.0
+        # hub_method should have higher boost than leaf_gap (more connections)
+        hub = [r for r in results if r["local_id"] == "hub_method"]
+        leaf = [r for r in results if r["local_id"] == "leaf_gap"]
+        if hub and leaf:
+            assert hub[0]["_hybrid_boost"] >= leaf[0]["_hybrid_boost"]
+        # Results should be sorted by score descending
+        scores = [r["score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
+
+
+def test_query_cmd_hybrid_off_by_default():
+    """Without --hybrid, results do not have _hybrid_boost."""
+    with tempfile.TemporaryDirectory() as td:
+        papers_dir = Path(td) / "papers"
+        papers_dir.mkdir()
+        db_path = f"{td}/test.db"
+
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        db.insert_paper("paper_a", "Paper A", 2023, "uploaded")
+        db.insert_concept("paper_a", "Method", "method_x", 0.9, year=2023)
+        db.commit()
+        db.close()
+
+        cfg = _make_minimal_config(db_path, str(papers_dir))
+
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
+        try:
+            with _mock_load_config(cfg):
+                query_cmd(
+                    text="method_x",
+                    neighbors=0,
+                    hybrid=False,
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    min_confidence=None,
+                    limit=20,
+                    relation=None,
+                    direction="both",
+                    json_output=True,
+                    jsonl=False,
+                    paper=None,
+                    workspace=None,
+                )
+        finally:
+            sys.stdout = old_stdout
+
+        results = json.loads(capture.getvalue())
+        for r in results:
+            assert "_hybrid_boost" not in r

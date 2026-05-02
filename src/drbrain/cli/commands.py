@@ -1109,6 +1109,9 @@ def query_cmd(
         "-D",
         help="Traversal direction: forward, backward, or both",
     ),
+    hybrid: bool = typer.Option(
+        False, "--hybrid", help="Boost results by graph centrality (PageRank)"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
     paper: str = typer.Option(
@@ -1130,6 +1133,7 @@ def query_cmd(
     _direction = (
         direction if not isinstance(direction, typer.models.OptionInfo) else direction.default
     )
+    _hybrid = hybrid if not isinstance(hybrid, typer.models.OptionInfo) else hybrid.default
 
     if _paper:
         papers_dir = Path(cfg["dirs"]["papers"])
@@ -1242,6 +1246,46 @@ def query_cmd(
         ws_paper_ids = _resolve_workspace_papers(workspace)
         if ws_paper_ids is not None:
             results = [r for r in results if r["local_id"] in ws_paper_ids]
+
+    # Hybrid ranking: boost by graph centrality (PageRank)
+    if _hybrid and results:
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        if graph.graph.number_of_nodes() > 0:
+            # Minimal PageRank — avoids scipy dependency
+            g = graph.graph
+            n = g.number_of_nodes()
+            damping = 0.85
+            pr = {node: 1.0 / n for node in g.nodes()}
+            for _ in range(100):
+                new_pr: dict[str, float] = {}
+                for node in g.nodes():
+                    rank = (1 - damping) / n
+                    for pred in g.predecessors(node):
+                        out_deg = g.out_degree(pred)
+                        if out_deg > 0:
+                            rank += damping * pr[pred] / out_deg
+                    new_pr[node] = rank
+                # Check convergence
+                diff = sum(abs(new_pr[node] - pr[node]) for node in g.nodes())
+                pr = new_pr
+                if diff < 1e-6:
+                    break
+            # Compute percentile rank for each node
+            sorted_nodes = sorted(pr.items(), key=lambda x: x[1])
+            n = len(sorted_nodes)
+            percentiles: dict[str, float] = {}
+            for rank, (node, _) in enumerate(sorted_nodes):
+                percentiles[node] = rank / (n - 1) if n > 1 else 0.5
+            # Apply multiplicative boost [1.0, 2.0]
+            for r in results:
+                node_id = r["local_id"]
+                boost = 1.0 + percentiles.get(node_id, 0.0)
+                r["score"] = round(r["score"] * boost, 4)
+                r["_hybrid_boost"] = round(boost, 3)
+            # Re-sort by boosted score
+            results.sort(key=lambda r: r["score"], reverse=True)
+        graph.graph = None
 
     # Map BM25 concept results to use labels as local_id for graph traversal
     concept_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
@@ -1368,10 +1412,11 @@ def query_cmd(
                 path_parts.append(step["dst"])
             path_str = " -> ".join(path_parts)
             extra += f" [graph: {path_str}]"
+        boost_str = f", boost: {r['_hybrid_boost']:.1f}x" if "_hybrid_boost" in r else ""
         year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
         conf_str = f", confidence: {r['confidence']:.2f}" if "confidence" in r else ""
         typer.echo(
-            f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})"
+            f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}{boost_str}, paper: {r['local_id']}{year_str}{conf_str})"
         )
 
 
