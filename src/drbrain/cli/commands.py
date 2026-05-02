@@ -894,7 +894,7 @@ def seed_cmd(
     typer.echo(f"Research seeds found: {len(seeds)}")
 
     for seed in seeds:
-        typer.echo(f"  [{seed['type']}] {seed['node']}: {seed['signal']}")
+        typer.echo(f"  [{seed['type']}] {seed['concept']}: {seed['description']}")
 
 
 def list_cmd(
