@@ -34,6 +34,7 @@ def _build_litellm_kwargs(
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
         "max_tokens": max_tokens,
+        "timeout": 60,
     }
     if model_cfg.get("api_key"):
         kwargs["api_key"] = model_cfg["api_key"]
@@ -130,6 +131,7 @@ async def acall_text_with_fallback(
                 "messages": messages,
                 "temperature": 0,
                 "max_tokens": max_tokens,
+                "timeout": 60,
             }
             if model_cfg.get("api_key"):
                 kwargs["api_key"] = model_cfg["api_key"]

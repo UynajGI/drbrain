@@ -2262,6 +2262,34 @@ def check_cmd():
             )
     except Exception:
         table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
+
+    # -- LLM API connectivity --
+    try:
+        llm_models = cfg.get("llm", {}).get("models", [])
+        for i, m in enumerate(llm_models):
+            label = f"  LLM [{i}] {m.get('provider','?')}/{m.get('model','?')}"
+            api_key = m.get("api_key", "")
+            if api_key and api_key.startswith("${"):
+                table_api.add_row(label, "[yellow]Env var not set[/yellow]")
+                continue
+            try:
+                import litellm as _llm
+                name = f"{m['provider']}/{m['model']}"
+                kwargs = {"model": name, "messages": [{"role": "user", "content": "hi"}],
+                         "max_tokens": 5, "timeout": 10}
+                if m.get("api_key"):
+                    kwargs["api_key"] = m["api_key"]
+                if m.get("base_url"):
+                    kwargs["api_base"] = m["base_url"]
+                _llm.completion(**kwargs)
+                table_api.add_row(label, "[green]Reachable[/green]")
+            except Exception as e:
+                err_msg = str(e)[:60]
+                table_api.add_row(label, "[yellow]Unreachable[/yellow]", f"({err_msg})")
+                warnings.append(f"LLM [{i}] {m.get('model','?')} unreachable")
+    except Exception:
+        table_api.add_row("  LLM", "[yellow]Not configured[/yellow]", "(run `drbrain setup`)")
+
     console.print(table_api)
 
     # -- Summary --
