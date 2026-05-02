@@ -324,40 +324,25 @@ class MinerUParser:
         return md_files[0].read_text(encoding="utf-8")
 
     def _fallback_pymupdf(self, pdf_path: Path) -> str:
-        """Extract via PyMuPDF HTML mode, preserving heading structure."""
-        import re as _re
+        """Extract markdown via pymupdf4llm. Falls back to plain text."""
+        try:
+            import pymupdf4llm
+            md = pymupdf4llm.to_markdown(str(pdf_path))
+            if md.strip():
+                return md
+        except Exception:
+            pass
 
+        # Last resort: plain text
         import fitz
-
         doc = fitz.open(str(pdf_path))
         try:
-            # Use HTML to preserve heading structure, then strip tags for markdown-like output
-            html_parts = []
-            for page in doc:
-                html = page.get_text("html")
-                # Convert <h1>/<h2>/etc to markdown-style headings
-                html = _re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n', html, flags=_re.DOTALL)
-                html = _re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n', html, flags=_re.DOTALL)
-                html = _re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n', html, flags=_re.DOTALL)
-                html = _re.sub(r'<h4[^>]*>(.*?)</h4>', r'#### \1\n', html, flags=_re.DOTALL)
-                # Convert <p> to plain text
-                html = _re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', html, flags=_re.DOTALL)
-                # Convert <b>/<strong> to bold
-                html = _re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', html, flags=_re.DOTALL)
-                html = _re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', html, flags=_re.DOTALL)
-                # Strip remaining tags
-                html = _re.sub(r'<[^>]+>', '', html)
-                html_parts.append(html)
-            result = "\n\n".join(html_parts)
-            if result.strip():
-                return result
-            # Fallback to plain text if HTML output is empty
-            text_lines = []
+            lines = []
             for page in doc:
                 t = page.get_text("text")
                 if t.strip():
-                    text_lines.append(t)
-            return "\n\n".join(text_lines)
+                    lines.append(t)
+            return "\n\n".join(lines)
         finally:
             doc.close()
 
