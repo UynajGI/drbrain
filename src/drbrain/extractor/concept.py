@@ -287,7 +287,7 @@ async def extract_concepts_from_tree(
     md_path: str | Path,
     structure: list[dict],
     models: list[dict],
-    max_concurrent: int = 3,
+    max_concurrent: int = 10,
 ) -> ExtractedConcepts | None:
     """Extract concepts using PageIndex tree structure (structure-first, content-on-demand).
 
