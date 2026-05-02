@@ -42,6 +42,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - PDF parsing: replaced pypdfium2 with PyMuPDF (fitz); use `pymupdf4llm` for markdown extraction with proper heading/table structure; plain text fallback
 - LLM client: 60s timeout prevents indefinite hangs; `drbrain check` now tests LLM API connectivity
 - Ingest: PDF removed from inbox after successful ingest (was left behind)
+- TBox schema expanded: Method gains `supports/challenges/limits/constrains`; Conclusion gains `extends`; all types accept `cross_section_support/cross_section_challenge`. Validation rejections downgraded to WARNING.
 - `seed_cmd` dict key access: `seed['node']`→`seed['concept']`, `seed['signal']`→`seed['description']`
 - `test_closure_cmd_backward_compat`: insufficient test data (single extends edge produces no inferred edges; use 3-node transitive chain)
 - `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory

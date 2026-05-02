@@ -31,7 +31,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
    **PageIndex tree extraction** (`parser/pageindex_parser.py`): Documents are first structured into a tree (`tree.json` in Stage 2.5). `extract_concepts_from_tree()` then extracts per-leaf-node with the tree skeleton as LLM context, replacing flat `text[:8000]` truncation. Concurrency is capped via `asyncio.Semaphore(max_concurrent=3)`. Content quality gate (`_is_quality_content()`) filters short text and reference lists before LLM calls. After merge, `_link_cross_section_arguments()` links arguments sharing targets across sections.
 
-4. **Validate** (`validator/schema.py`): **TBox** enforces which relations each concept type can use (e.g., Problem can `addresses`/`leaves_open`/`points_to`). **RBox** enforces transitivity, asymmetry, irreflexivity on specific relations. Pre-insertion TBox check via `validate_extraction()` in concept.py. Rejected items go to `validation.log`.
+4. **Validate** (`validator/schema.py`): **TBox** enforces which relations each concept type can use — Method: `addresses/proposes/extends/replaces/solves/supports/challenges/limits/constrains`; Conclusion: `supports/challenges/limits/extends`; Problem: `addresses/leaves_open/points_to`; Gap: `leaves_open/points_to/constrains`; Actor: `affiliated_with/proposes`; Debate: `supports/challenges`. `cross_section_*` relations allowed for all types. **RBox** enforces transitivity, asymmetry, irreflexivity. Rejected items logged at WARNING level.
 
 5. **Queue** (`extractor/queue.py`): Low-confidence concepts (< `weak_threshold`, default 0.7) are routed to `confidence_queue` table for manual review via `drbrain queue` / `drbrain queue resolve`.
 
