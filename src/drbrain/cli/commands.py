@@ -1043,6 +1043,18 @@ def query_cmd(
     neighbors: int = typer.Option(
         0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"
     ),
+    relation: str = typer.Option(
+        None,
+        "--relation",
+        "-R",
+        help="Comma-separated relation types to follow (e.g. addresses,extends,challenges)",
+    ),
+    direction: str = typer.Option(
+        "both",
+        "--direction",
+        "-D",
+        help="Traversal direction: forward, backward, or both",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
     paper: str = typer.Option(
@@ -1058,6 +1070,12 @@ def query_cmd(
     # --- Tree retrieval path ---
     # Normalize: when called directly (not through typer CLI), OptionInfo is still the default
     _paper = paper if not isinstance(paper, typer.models.OptionInfo) else paper.default
+
+    # Normalize typer defaults for direct-call compatibility
+    _relation = relation if not isinstance(relation, typer.models.OptionInfo) else relation.default
+    _direction = (
+        direction if not isinstance(direction, typer.models.OptionInfo) else direction.default
+    )
 
     if _paper:
         papers_dir = Path(cfg["dirs"]["papers"])
@@ -1116,6 +1134,37 @@ def query_cmd(
 
     db = Database(cfg["db"]["path"])
 
+    # Parse and validate graph traversal flags
+    _relations: set[str] | None = None
+    if _relation is not None:
+        _relations = {r.strip() for r in _relation.split(",") if r.strip()}
+        valid_relations = {
+            "addresses",
+            "leaves_open",
+            "points_to",
+            "proposes",
+            "extends",
+            "replaces",
+            "solves",
+            "supports",
+            "challenges",
+            "limits",
+            "constrains",
+            "affiliated_with",
+        }
+        invalid = _relations - valid_relations
+        if invalid:
+            typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
+            typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+            raise typer.Exit(1)
+
+    if _direction not in ("forward", "backward", "both"):
+        typer.echo(
+            f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     from drbrain.query.bm25 import build_bm25_index
 
     bm25 = build_bm25_index(db)
@@ -1139,29 +1188,80 @@ def query_cmd(
         if ws_paper_ids is not None:
             results = [r for r in results if r["local_id"] in ws_paper_ids]
 
+    # Map BM25 concept results to use labels as local_id for graph traversal
+    concept_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
+    for r in results:
+        if r["type"] in concept_types:
+            r["_paper_id"] = r["local_id"]
+            r["local_id"] = r["label"]
+
     # Expand by graph traversal
     if neighbors > 0 and results:
         graph = GraphEngine()
         graph.load_from_db(db)
-        seed_ids = {r["local_id"] for r in results}
-        expanded_ids = set()
-        for sid in seed_ids:
-            expanded_ids.update(graph.get_neighbors(sid, hops=neighbors))
-        # Add neighbor papers as Paper-type results
-        for nid in expanded_ids - seed_ids:
-            paper = db.get_paper(nid)
-            if paper:
-                results.append(
-                    {
-                        "local_id": nid,
-                        "type": "Paper",
-                        "label": paper["title"],
-                        "text": paper.get("abstract", ""),
-                        "year": paper.get("year"),
-                        "score": 0.0,
-                        "_via_neighbors": True,
-                    }
-                )
+        # Seed from top-scoring BM25 result(s) only, so lower-scored hits
+        # become discoverable via traverse() rather than being pre-seeded
+        max_score = max(r["score"] for r in results)
+        seed_ids = {r["local_id"] for r in results if r["score"] >= max_score}
+
+        traverse_results = graph.traverse(
+            start_nodes=seed_ids,
+            hops=neighbors,
+            relations=_relations,
+            direction=_direction,
+        )
+
+        seen_ids = seed_ids.copy()
+        for tr in traverse_results:
+            if tr.target in seen_ids:
+                continue
+            seen_ids.add(tr.target)
+
+            # Resolve node type from DB
+            node_type = "Unknown"
+            row = db.conn.execute(
+                "SELECT type FROM concepts WHERE label = ? LIMIT 1", (tr.target,)
+            ).fetchone()
+            if row:
+                node_type = row[0]
+            else:
+                paper = db.get_paper(tr.target)
+                if paper:
+                    node_type = "Paper"
+
+            if node_type == "Paper":
+                paper = db.get_paper(tr.target)
+                label = paper["title"] if paper else tr.target
+                text = paper.get("abstract", "") if paper else ""
+                year = paper.get("year") if paper else None
+            else:
+                label = tr.target
+                text = ""
+                year = None
+
+            results.append(
+                {
+                    "local_id": tr.target,
+                    "type": node_type,
+                    "label": label,
+                    "text": text,
+                    "year": year,
+                    "score": 0.0,
+                    "_via_graph": True,
+                    "_source_seed": tr.source,
+                    "_distance": tr.distance,
+                    "_path": [
+                        {
+                            "src": s.src,
+                            "relation": s.relation,
+                            "dst": s.dst,
+                            "hop": s.hop,
+                        }
+                        for s in tr.path
+                    ],
+                }
+            )
+
         graph.graph = None  # Free memory
         db.close()
     else:
@@ -1192,7 +1292,13 @@ def query_cmd(
     if min_confidence is not None:
         filters.append(f"min_confidence={min_confidence}")
     if neighbors:
-        filters.append(f"neighbors={neighbors}")
+        if _relation:
+            rel_str = ",".join(sorted(_relations))
+            filters.append(f"neighbors={neighbors}, relation={rel_str}")
+        else:
+            filters.append(f"neighbors={neighbors}")
+        if _direction and _direction != "both":
+            filters.append(f"direction={_direction}")
     if filters:
         typer.echo(f"  Filters: {', '.join(filters)}")
     typer.echo(f"  Results: {len(results)}")
@@ -1200,8 +1306,13 @@ def query_cmd(
         extra = ""
         if r["type"] == "Argument":
             extra = f" [{r.get('arg_type', '')}]"
-        if r.get("_via_neighbors"):
-            extra += " [neighbor]"
+        if r.get("_via_graph"):
+            path_parts = [r["_source_seed"]]
+            for step in r.get("_path", []):
+                path_parts.append(step["relation"])
+                path_parts.append(step["dst"])
+            path_str = " -> ".join(path_parts)
+            extra += f" [graph: {path_str}]"
         year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
         conf_str = f", confidence: {r['confidence']:.2f}" if "confidence" in r else ""
         typer.echo(
