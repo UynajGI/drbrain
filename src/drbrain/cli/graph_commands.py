@@ -143,3 +143,115 @@ def neighbors_cmd(
         path_str = " -> ".join(path_parts)
         typer.echo(f"  {r['local_id']} ({r['type']})")
         typer.echo(f"    graph: {path_str}")
+
+
+@graph_app.command("path")
+def path_cmd(
+    src_label: str = typer.Argument(..., help="Source node label"),
+    dst_label: str = typer.Argument(..., help="Destination node label"),
+    max_length: int = typer.Option(6, "--max-length", help="Maximum path length (BFS cutoff)"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+):
+    """Find shortest path between two nodes in the knowledge graph."""
+    import networkx as nx
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    graph = GraphEngine()
+    paper_ids = _resolve_workspace_papers(workspace)
+    graph.load_from_db(db, paper_ids=paper_ids)
+
+    g = graph.graph
+
+    # Check nodes exist
+    if src_label not in g:
+        typer.echo(f"Source node '{src_label}' not found in graph.", err=True)
+        db.close()
+        raise typer.Exit(1)
+    if dst_label not in g:
+        typer.echo(f"Target node '{dst_label}' not found in graph.", err=True)
+        db.close()
+        raise typer.Exit(1)
+    if src_label == dst_label:
+        typer.echo("Source and target are the same node.")
+        db.close()
+        return
+
+    # Shortest path on undirected copy for pathfinding
+    ug = g.to_undirected()
+    try:
+        node_path = nx.shortest_path(ug, source=src_label, target=dst_label)
+    except (nx.NetworkXNoPath, nx.NetworkXError):
+        typer.echo(
+            f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
+        )
+        db.close()
+        return
+
+    # Check max_length (cutoff applied by nx.shortest_path)
+    path_len = len(node_path) - 1
+    if path_len > max_length:
+        typer.echo(
+            f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
+        )
+        db.close()
+        return
+
+    # Recover edge data from original directed graph
+    path_steps: list[dict] = []
+    for i in range(len(node_path) - 1):
+        u, v = node_path[i], node_path[i + 1]
+        # Check both directions in the directed graph
+        if g.has_edge(u, v):
+            edge_data = list(g[u][v].values())[0]  # first edge's data
+            path_steps.append(
+                {
+                    "src": u,
+                    "relation": edge_data["relation"],
+                    "dst": v,
+                    "direction": "forward",
+                }
+            )
+        elif g.has_edge(v, u):
+            edge_data = list(g[v][u].values())[0]
+            path_steps.append(
+                {
+                    "src": v,
+                    "relation": edge_data["relation"],
+                    "dst": u,
+                    "direction": "backward",
+                }
+            )
+
+    db.close()
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "src": src_label,
+                    "dst": dst_label,
+                    "length": path_len,
+                    "path": path_steps,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    # Terminal output
+    parts: list[str] = []
+    for step in path_steps:
+        if step["direction"] == "forward":
+            parts.append(f"{step['src']} --{step['relation']}--> {step['dst']}")
+        else:
+            parts.append(f"{step['dst']} --{step['relation']}--> {step['src']} (reversed)")
+
+    typer.echo(f"Path from {src_label} to {dst_label} ({path_len} hops):")
+    if parts:
+        typer.echo("  " + " -> ".join(parts))
+    else:
+        typer.echo("  (direct)")
