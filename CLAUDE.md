@@ -12,6 +12,7 @@ uv run pytest -m "not integration"  # skip slow integration tests
 uv run pytest tests/test_xxx.py::test_name  # single test case
 uv run ruff check .             # lint
 uv run ruff format .            # format
+uv run pytest --cov=drbrain --cov-report=term  # coverage report
 ```
 
 Key user commands: `ingest`, `query`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`.
