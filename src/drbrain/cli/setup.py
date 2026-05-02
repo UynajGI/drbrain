@@ -102,15 +102,15 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
 
     # Python deps
     deps = {
-        "pymupdf": "pymupdf",
-        "litellm": "litellm",
-        "typer": "typer",
-        "rich": "rich",
-        "pyyaml": "yaml",
-        "pydantic": "pydantic",
-        "streamlit": "streamlit",
+        "pymupdf": "PyMuPDF",
+        "litellm": "LiteLLM",
+        "typer": "Typer",
+        "rich": "Rich",
+        "yaml": "PyYAML",
+        "pydantic": "Pydantic",
+        "streamlit": "Streamlit",
     }
-    missing_deps = [name for mod, name in deps.items() if not _check_python_package(mod)]
+    missing_deps = [display for mod, display in deps.items() if not _check_python_package(mod)]
     if missing_deps:
         warn.append(f"Missing packages: {', '.join(missing_deps)}")
     else:
@@ -188,6 +188,52 @@ def setup_cmd(
             if not warn:
                 typer.echo("Environment ready. Next: drbrain ingest")
             return
+
+    # ── Quick mode: skip prompts, use defaults ──
+    if quick:
+        config: dict = {
+            "llm": {
+                "models": [
+                    {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "${OPENAI_API_KEY}",
+                        "base_url": None,
+                    }
+                ],
+            },
+            "mineru": {
+                "token": "",
+                "model": "vlm",
+                "is_ocr": False,
+                "enable_formula": True,
+                "enable_table": True,
+            },
+            "db": {"path": "data/drbrain.db"},
+            "api": {"s2_rate_limit": 100},
+            "bm25": {"k1": 1.5, "b": 0.75},
+        }
+        out = Path("config.local.yaml")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        typer.echo(f"Config written to {out} (defaults)")
+
+        from drbrain.config import load_config
+
+        cfg = load_config()
+        created = _ensure_directories(cfg)
+        if created:
+            typer.echo(f"Created {created} director{'y' if created == 1 else 'ies'}")
+        ok, warn = _brief_validation(cfg)
+        for line in ok:
+            typer.echo(f"  [OK] {line}")
+        for line in warn:
+            typer.echo(f"  [!]  {line}")
+        typer.echo()
+        typer.echo("Ready. Next step: drbrain ingest")
+        typer.echo("Edit config.local.yaml to customize LLM and API keys.")
+        return
 
     typer.echo("=" * 60)
     typer.echo("DrBrain Setup")
