@@ -62,10 +62,32 @@ def test_find_isomorphic_patterns():
     assert isinstance(mapping, IsomorphicMapping)
 
 
-def test_find_isomorphic_patterns_empty():
-    """Empty graph returns no patterns."""
+def test_find_isomorphic_patterns_empty_graph():
+    """Empty graph returns empty list."""
     g = GraphEngine()
     assert find_isomorphic_patterns(g) == []
+
+
+def test_find_isomorphic_patterns_single_node():
+    """Graph with one node (no edges) returns empty list."""
+    g = GraphEngine()
+    g.graph.add_node("OnlyNode")
+    patterns = find_isomorphic_patterns(g)
+    assert patterns == []
+
+
+def test_find_isomorphic_patterns_unique_signatures():
+    """Nodes with unique relation signatures produce no isomorphisms."""
+    g = _make_graph(
+        [
+            ("M1", "P1", "addresses", "p1"),
+            ("M2", "P1", "challenges", "p1"),
+        ]
+    )
+    patterns = find_isomorphic_patterns(g)
+    # M1 has out:addresses (unique), M2 has out:challenges (unique),
+    # P1 has in:addresses + in:challenges (unique). No pairs.
+    assert patterns == []
 
 
 def test_isomorphic_mapping_fields():

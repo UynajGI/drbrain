@@ -1,9 +1,9 @@
 """Tests for temporal evolution signal detection."""
-import tempfile
-from pathlib import Path
-from datetime import datetime
 
-import pytest
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
 from drbrain.storage.database import Database
 
 
@@ -22,11 +22,20 @@ def test_signal_emerging():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         # Growing: 1 paper 2 years ago, 2 papers last year, 4 papers this year
-        _seed_papers_and_concepts(db, "quantum transformer", "Method", [
-            (current - 2, 0.9),
-            (current - 1, 0.88), (current - 1, 0.91),
-            (current, 0.85), (current, 0.90), (current, 0.87), (current, 0.92),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "quantum transformer",
+            "Method",
+            [
+                (current - 2, 0.9),
+                (current - 1, 0.88),
+                (current - 1, 0.91),
+                (current, 0.85),
+                (current, 0.90),
+                (current, 0.87),
+                (current, 0.92),
+            ],
+        )
         signals = db.detect_evolution_signals()
         matching = [s for s in signals if s["label"] == "quantum transformer"]
         assert len(matching) == 1
@@ -55,12 +64,17 @@ def test_signal_declining():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         # Last seen 4 years ago, only 4 papers total, no recent activity
-        _seed_papers_and_concepts(db, "rnn language model", "Method", [
-            (current - 8, 0.9),
-            (current - 7, 0.88),
-            (current - 5, 0.85),
-            (current - 4, 0.82),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "rnn language model",
+            "Method",
+            [
+                (current - 8, 0.9),
+                (current - 7, 0.88),
+                (current - 5, 0.85),
+                (current - 4, 0.82),
+            ],
+        )
         signals = db.detect_evolution_signals()
         matching = [s for s in signals if s["label"] == "rnn language model"]
         assert len(matching) == 1
@@ -73,10 +87,21 @@ def test_signal_contested():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         # 8 papers, but low confidence (disagreement)
-        _seed_papers_and_concepts(db, "consciousness in llm", "Debate", [
-            (2023, 0.5), (2023, 0.6), (2024, 0.55), (2024, 0.65),
-            (2024, 0.45), (2025, 0.6), (2025, 0.5), (2025, 0.7),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "consciousness in llm",
+            "Debate",
+            [
+                (2023, 0.5),
+                (2023, 0.6),
+                (2024, 0.55),
+                (2024, 0.65),
+                (2024, 0.45),
+                (2025, 0.6),
+                (2025, 0.5),
+                (2025, 0.7),
+            ],
+        )
         signals = db.detect_evolution_signals()
         matching = [s for s in signals if s["label"] == "consciousness in llm"]
         assert len(matching) == 1
@@ -90,14 +115,19 @@ def test_signal_resurging():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         # Old papers 8-10 years ago, then nothing, then 2 papers recently
-        _seed_papers_and_concepts(db, "symbolic ai", "Method", [
-            (current - 10, 0.9),
-            (current - 9, 0.88),
-            (current - 8, 0.85),
-            # gap of 6 years
-            (current - 1, 0.75),
-            (current, 0.80),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "symbolic ai",
+            "Method",
+            [
+                (current - 10, 0.9),
+                (current - 9, 0.88),
+                (current - 8, 0.85),
+                # gap of 6 years
+                (current - 1, 0.75),
+                (current, 0.80),
+            ],
+        )
         signals = db.detect_evolution_signals()
         matching = [s for s in signals if s["label"] == "symbolic ai"]
         assert len(matching) == 1
@@ -111,9 +141,14 @@ def test_signal_default_unknown():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         # Single paper 2 years ago — not emerging (no growth), not declining (gap <= 3)
-        _seed_papers_and_concepts(db, "obscure method", "Method", [
-            (current - 2, 0.9),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "obscure method",
+            "Method",
+            [
+                (current - 2, 0.9),
+            ],
+        )
         signals = db.detect_evolution_signals()
         matching = [s for s in signals if s["label"] == "obscure method"]
         assert len(matching) == 1
@@ -127,13 +162,27 @@ def test_detect_signals_for_concept():
     current = datetime.now().year
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
-        _seed_papers_and_concepts(db, "transformer", "Method", [
-            (current - 5, 0.95), (current - 4, 0.93), (current - 4, 0.91),
-            (current - 3, 0.90), (current - 3, 0.88),
-        ])
-        _seed_papers_and_concepts(db, "rnn", "Method", [
-            (current - 10, 0.9), (current - 9, 0.88),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "transformer",
+            "Method",
+            [
+                (current - 5, 0.95),
+                (current - 4, 0.93),
+                (current - 4, 0.91),
+                (current - 3, 0.90),
+                (current - 3, 0.88),
+            ],
+        )
+        _seed_papers_and_concepts(
+            db,
+            "rnn",
+            "Method",
+            [
+                (current - 10, 0.9),
+                (current - 9, 0.88),
+            ],
+        )
 
         signal = db.get_concept_signal("transformer")
         assert signal is not None
@@ -150,11 +199,19 @@ def test_concept_evolution_with_trend():
     current = datetime.now().year
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
-        _seed_papers_and_concepts(db, "diffusion model", "Method", [
-            (current - 3, 0.9),
-            (current - 2, 0.88), (current - 2, 0.91),
-            (current - 1, 0.85), (current - 1, 0.90), (current - 1, 0.87),
-        ])
+        _seed_papers_and_concepts(
+            db,
+            "diffusion model",
+            "Method",
+            [
+                (current - 3, 0.9),
+                (current - 2, 0.88),
+                (current - 2, 0.91),
+                (current - 1, 0.85),
+                (current - 1, 0.90),
+                (current - 1, 0.87),
+            ],
+        )
 
         evolution = db.get_concept_evolution("diffusion model")
         assert len(evolution) == 3  # 3 years

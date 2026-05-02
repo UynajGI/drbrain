@@ -1,10 +1,10 @@
 """Tests for query command enhancements: arg-type filter, year-range, BM25 argument claims."""
+
 import tempfile
 from pathlib import Path
 
-import pytest
+from drbrain.query.bm25 import build_bm25_index, tokenize
 from drbrain.storage.database import Database
-from drbrain.query.bm25 import build_bm25_index, BM25Search, tokenize
 
 
 def test_tokenizer_normalizes():
@@ -20,8 +20,14 @@ def test_bm25_includes_argument_claims():
         db.insert_paper("p1", "Attention Paper", 2017, "uploaded")
         db.insert_concept("p1", "Method", "Transformer", 0.95, year=2017)
         db.insert_argument(
-            "p1", "Self-attention replaces RNN for sequence modeling",
-            "proposes", "Transformer", "Method", "empirical", "WMT14 BLEU +2.0", 0.95,
+            "p1",
+            "Self-attention replaces RNN for sequence modeling",
+            "proposes",
+            "Transformer",
+            "Method",
+            "empirical",
+            "WMT14 BLEU +2.0",
+            0.95,
         )
         db.commit()
 
@@ -31,7 +37,10 @@ def test_bm25_includes_argument_claims():
         # Should find the argument document
         arg_results = [r for r in results if r["type"] == "Argument"]
         assert len(arg_results) >= 1
-        assert "replaces" in arg_results[0]["label"].lower() or "self-attention" in arg_results[0]["label"].lower()
+        assert (
+            "replaces" in arg_results[0]["label"].lower()
+            or "self-attention" in arg_results[0]["label"].lower()
+        )
         db.close()
 
 
@@ -40,8 +49,12 @@ def test_bm25_search_with_arg_type_filter():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         db.insert_paper("p1", "Paper 1", 2024, "uploaded")
-        db.insert_argument("p1", "Supports claim", "supports", "Method X", "Method", "empirical", "", 0.9)
-        db.insert_argument("p1", "Challenges claim", "challenges", "Method X", "Method", "empirical", "", 0.8)
+        db.insert_argument(
+            "p1", "Supports claim", "supports", "Method X", "Method", "empirical", "", 0.9
+        )
+        db.insert_argument(
+            "p1", "Challenges claim", "challenges", "Method X", "Method", "empirical", "", 0.8
+        )
         db.commit()
 
         index = build_bm25_index(db)
@@ -69,6 +82,7 @@ def test_query_with_year_range():
         db.commit()
 
         from drbrain.query.bm25 import build_bm25_index
+
         index = build_bm25_index(db)
         results = index.search("attention", type_filter="Method")
         assert len(results) == 4
@@ -95,8 +109,14 @@ def test_bm25_argument_document_has_claim_text():
         db = Database(Path(td) / "test.db")
         db.insert_paper("p1", "Test Paper", 2024, "uploaded")
         db.insert_argument(
-            "p1", "Graph neural networks outperform MLPs on molecular property prediction",
-            "proposes", "GNN", "Method", "empirical", "MoleculeNet benchmark", 0.9,
+            "p1",
+            "Graph neural networks outperform MLPs on molecular property prediction",
+            "proposes",
+            "GNN",
+            "Method",
+            "empirical",
+            "MoleculeNet benchmark",
+            0.9,
         )
         db.commit()
 
@@ -114,8 +134,11 @@ def test_bm25_includes_paper_abstracts():
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         db.insert_paper("p1", "Short Title", 2024, "uploaded")
-        db.set_paper_abstract("p1", "We propose a novel neural architecture search method "
-                              "that combines reinforcement learning with evolutionary strategies")
+        db.set_paper_abstract(
+            "p1",
+            "We propose a novel neural architecture search method "
+            "that combines reinforcement learning with evolutionary strategies",
+        )
         db.commit()
 
         index = build_bm25_index(db)
@@ -154,8 +177,8 @@ def test_query_neighbors_expansion():
         db.insert_edge("transformer_v1", "transformer_v2", "extends", "p1")
         db.commit()
 
-        from drbrain.query.bm25 import build_bm25_index
         from drbrain.graph.engine import GraphEngine
+        from drbrain.query.bm25 import build_bm25_index
 
         # BM25 finds v1
         index = build_bm25_index(db)

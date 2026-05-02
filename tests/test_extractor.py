@@ -1,6 +1,9 @@
 """Tests for LLM client with fallback chain."""
+
+from unittest.mock import MagicMock, patch
+
 from drbrain.extractor.llm_client import LLMClient, call_with_fallback
-from unittest.mock import patch, MagicMock
+
 
 def test_single_model_call():
     """LLMClient calls litellm with correct kwargs."""
@@ -16,13 +19,20 @@ def test_single_model_call():
         assert result == {"ok": True}
         mock_litellm.completion.assert_called_once()
 
+
 def test_fallback_on_failure():
     """call_with_fallback tries next model on exception."""
     models = [
         {"provider": "openai", "model": "gpt-4o", "api_key": "sk-1", "base_url": None},
-        {"provider": "ollama", "model": "qwen2.5:7b", "api_key": None, "base_url": "http://localhost:11434"},
+        {
+            "provider": "ollama",
+            "model": "qwen2.5:7b",
+            "api_key": None,
+            "base_url": "http://localhost:11434",
+        },
     ]
     call_count = 0
+
     def side_effect(*args, **kwargs):
         nonlocal call_count
         call_count += 1
@@ -38,6 +48,7 @@ def test_fallback_on_failure():
         assert result == {"ok": True}
         assert call_count == 2
 
+
 def test_fallback_all_fail():
     """call_with_fallback returns None when all models fail."""
     models = [
@@ -49,10 +60,16 @@ def test_fallback_all_fail():
         result = call_with_fallback("test", models)
         assert result is None
 
+
 def test_model_name_formatting():
     """Provider/model are joined as 'provider/model' for litellm."""
     models = [
-        {"provider": "anthropic", "model": "claude-sonnet-4-20250514", "api_key": "sk-1", "base_url": None},
+        {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "api_key": "sk-1",
+            "base_url": None,
+        },
     ]
     client = LLMClient(models)
     with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:

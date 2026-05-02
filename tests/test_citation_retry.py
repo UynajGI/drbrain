@@ -1,6 +1,9 @@
 """Tests for S2 API retry logic."""
+
 import unittest.mock
+
 import requests
+
 from drbrain.extractor.citation import fetch_s2_with_retry, search_s2_with_retry
 
 
@@ -43,6 +46,7 @@ def test_fetch_s2_retries_on_429():
 
 def test_fetch_s2_gives_up_after_max_retries():
     """fetch_s2_with_retry returns None after 3 consecutive 429s."""
+
     def mock_get(*args, **kwargs):
         return _make_429_response()
 

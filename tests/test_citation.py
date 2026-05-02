@@ -1,9 +1,17 @@
 """Tests for Semantic Scholar citation API."""
-from drbrain.extractor.citation import parse_s2_response, match_to_local, expand_citations
+
 import tempfile
 from pathlib import Path
 from unittest import mock
+
+from drbrain.extractor.citation import (
+    _cache_citation,
+    expand_citations,
+    match_to_local,
+    parse_s2_response,
+)
 from drbrain.storage.database import Database
+
 
 def test_parse_s2_response():
     """parse_s2_response extracts title, year, ids from S2 JSON."""
@@ -19,6 +27,7 @@ def test_parse_s2_response():
     assert result["doi"] == "10.1234/test"
     assert result["arxiv"] == "1706.03762"
 
+
 def test_match_to_local_finds_existing():
     """match_to_local finds existing paper by DOI."""
     with tempfile.TemporaryDirectory() as td:
@@ -32,6 +41,7 @@ def test_match_to_local_finds_existing():
         assert entry.in_graph is True
         assert entry.local_id == "p1"
         db.close()
+
 
 def test_match_to_local_creates_placeholder():
     """match_to_local creates placeholder for unknown paper."""
@@ -71,9 +81,7 @@ def test_expand_backfills_doi_from_s2():
         with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             refs, cits = expand_citations(db, "p1", cfg)
 
-        doi = db.conn.execute(
-            "SELECT doi FROM paper_ids WHERE local_id = 'p1'"
-        ).fetchone()[0]
+        doi = db.conn.execute("SELECT doi FROM paper_ids WHERE local_id = 'p1'").fetchone()[0]
         assert doi == "10.1234/backfilled"
         db.close()
 
@@ -101,9 +109,7 @@ def test_expand_does_not_overwrite_existing_doi():
         with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             expand_citations(db, "p1", cfg)
 
-        doi = db.conn.execute(
-            "SELECT doi FROM paper_ids WHERE local_id = 'p1'"
-        ).fetchone()[0]
+        doi = db.conn.execute("SELECT doi FROM paper_ids WHERE local_id = 'p1'").fetchone()[0]
         assert doi == "10.1234/existing"
         db.close()
 
@@ -131,8 +137,51 @@ def test_expand_backfills_arxiv_if_missing():
         with mock.patch("drbrain.extractor.citation.fetch_s2_paper", return_value=s2_data):
             expand_citations(db, "p1", cfg)
 
-        arxiv = db.conn.execute(
-            "SELECT arxiv FROM paper_ids WHERE local_id = 'p1'"
-        ).fetchone()[0]
+        arxiv = db.conn.execute("SELECT arxiv FROM paper_ids WHERE local_id = 'p1'").fetchone()[0]
         assert arxiv == "2401.99999"
+        db.close()
+
+
+def test_cache_citation_inserts_row():
+    """_cache_citation writes to citation_cache table."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        db.insert_paper("p1", "Source Paper", 2024, "uploaded")
+        db.commit()
+
+        _cache_citation(
+            db,
+            source_paper="p1",
+            target_title="Referenced Paper",
+            target_year=2023,
+            relation="references",
+            target_doi="10.1234/cached",
+            target_s2_id="s2_abc456",
+        )
+
+        row = db.conn.execute(
+            "SELECT source_paper, target_title, target_year, relation, target_doi, target_s2_id "
+            "FROM citation_cache WHERE source_paper = 'p1'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "p1"
+        assert row[1] == "Referenced Paper"
+        assert row[2] == 2023
+        assert row[3] == "references"
+        assert row[4] == "10.1234/cached"
+        assert row[5] == "s2_abc456"
+
+        # INSERT OR IGNORE: duplicate insert should not raise
+        _cache_citation(
+            db,
+            source_paper="p1",
+            target_title="Referenced Paper",
+            target_year=2023,
+            relation="references",
+        )
+        count = db.conn.execute(
+            "SELECT COUNT(*) FROM citation_cache WHERE source_paper = 'p1'"
+        ).fetchone()[0]
+        assert count == 1
+
         db.close()

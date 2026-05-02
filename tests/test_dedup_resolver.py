@@ -1,10 +1,15 @@
 """Tests for dedup/resolver.py: triple-ID resolution and title utilities."""
+
 import tempfile
 from pathlib import Path
 
 from drbrain.dedup.resolver import (
-    normalize_doi, normalize_arxiv, title_key, title_hash,
-    DedupEngine, PaperIDs,
+    DedupEngine,
+    PaperIDs,
+    normalize_arxiv,
+    normalize_doi,
+    title_hash,
+    title_key,
 )
 from drbrain.storage.database import Database
 
@@ -16,6 +21,7 @@ def _make_db() -> Database:
 
 # -- normalize_doi --
 
+
 def test_normalize_doi_url():
     assert normalize_doi("https://doi.org/10.1234/abc") == "10.1234/abc"
 
@@ -25,6 +31,7 @@ def test_normalize_doi_prefix():
 
 
 # -- normalize_arxiv --
+
 
 def test_normalize_arxiv_version():
     assert normalize_arxiv("2401.12345v2") == "2401.12345"
@@ -36,6 +43,7 @@ def test_normalize_arxiv_no_match():
 
 
 # -- title_key --
+
 
 def test_title_key_removes_articles():
     assert title_key("The quick brown fox") == "quick brown fox"
@@ -50,6 +58,7 @@ def test_title_key_normalizes_whitespace():
 
 
 # -- title_hash --
+
 
 def test_title_hash_deterministic():
     """Same title produces same hash."""
@@ -69,6 +78,7 @@ def test_title_hash_short():
 
 
 # -- DedupEngine --
+
 
 def test_resolve_by_doi():
     """DOI match has highest priority."""

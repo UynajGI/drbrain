@@ -1,15 +1,19 @@
 """Tests for BM25 + LLM hybrid concept alignment (SmartAligner)."""
+
 import tempfile
 import unittest.mock
 from pathlib import Path
 
-from drbrain.storage.database import Database
 from drbrain.extractor.canonical import (
-    normalize_label, AliasTable, SmartAligner, _tokenize,
+    AliasTable,
+    SmartAligner,
+    _tokenize,
+    normalize_label,
 )
-
+from drbrain.storage.database import Database
 
 # -- normalize_label --
+
 
 def test_normalize_label_lowercase():
     assert normalize_label("Transformer") == "transformer"
@@ -26,6 +30,7 @@ def test_normalize_normalizes_variants():
 
 
 # -- AliasTable --
+
 
 def test_alias_table_add_and_lookup():
     table = AliasTable()
@@ -55,6 +60,7 @@ def test_alias_table_get_or_create():
 
 # -- _tokenize --
 
+
 def test_tokenize_english():
     assert _tokenize("Hello World") == ["hello", "world"]
 
@@ -65,6 +71,7 @@ def test_tokenize_chinese():
 
 
 # -- SmartAligner --
+
 
 def test_smart_aligner_exact_match():
     """Step 1: normalize + exact match returns existing canonical_id."""
@@ -133,12 +140,14 @@ def test_smart_aligner_flush_pending_no_models():
 
         aligner = SmartAligner(db, models=None)
         # Manually add a pending entry
-        aligner._pending.append({
-            "label": "self attention",
-            "type": "Method",
-            "candidates": ["attention"],
-            "score": 0.5,
-        })
+        aligner._pending.append(
+            {
+                "label": "self attention",
+                "type": "Method",
+                "candidates": ["attention"],
+                "score": 0.5,
+            }
+        )
         aligner.flush_pending()
         # Should still be pending (no models)
         assert len(aligner._pending) == 1
@@ -154,18 +163,18 @@ def test_smart_aligner_flush_pending_with_mocked_llm():
         db.commit()
 
         aligner = SmartAligner(db, models=[{"provider": "openai", "model": "gpt-4"}])
-        aligner._pending.append({
-            "label": "self attention",
-            "type": "Method",
-            "candidates": ["attention"],
-            "score": 0.5,
-        })
+        aligner._pending.append(
+            {
+                "label": "self attention",
+                "type": "Method",
+                "candidates": ["attention"],
+                "score": 0.5,
+            }
+        )
 
         with unittest.mock.patch(
             "drbrain.extractor.canonical._llm_arbitrate",
-            return_value=[
-                {"label": "self attention", "canonical": "attention", "confidence": 0.9}
-            ],
+            return_value=[{"label": "self attention", "canonical": "attention", "confidence": 0.9}],
         ):
             aligner.flush_pending()
 

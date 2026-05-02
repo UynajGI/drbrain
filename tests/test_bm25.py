@@ -1,8 +1,10 @@
 """Tests for BM25 search with confidence filtering."""
+
 import tempfile
 from pathlib import Path
-from drbrain.storage.database import Database
+
 from drbrain.query.bm25 import BM25Search, build_bm25_index
+from drbrain.storage.database import Database
 
 
 def test_bm25_confidence_stored():
@@ -51,7 +53,9 @@ def test_build_bm25_index_includes_confidence():
         db.insert_paper("p1", "Test Paper", 2024, "uploaded")
         db.insert_concept("p1", "Method", "transformer", 0.95, year=2024)
         db.insert_concept("p1", "Problem", "scalability", 0.6, year=2024)
-        db.insert_argument("p1", "transformers scale well", "supports", "transformer", "Method", confidence=0.85)
+        db.insert_argument(
+            "p1", "transformers scale well", "supports", "transformer", "Method", confidence=0.85
+        )
         db.commit()
 
         bm25 = build_bm25_index(db)

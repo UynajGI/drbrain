@@ -1,9 +1,14 @@
 """Tests for CrossRef DOI enrichment."""
-from drbrain.extractor.crossref import (
-    fetch_doi_by_title, fetch_doi_by_doi, _clean_title, _titles_match
-)
-from unittest import mock
+
 import json
+from unittest import mock
+
+from drbrain.extractor.crossref import (
+    _clean_title,
+    _titles_match,
+    fetch_doi_by_doi,
+    fetch_doi_by_title,
+)
 
 
 def test_clean_title_removes_special_chars():
@@ -23,12 +28,18 @@ def test_titles_match_exact():
 
 def test_titles_match_prefix():
     """_titles_match returns True when one title is prefix of other."""
-    assert _titles_match("attention is all you need", "attention is all you need in transformers") is True
+    assert (
+        _titles_match("attention is all you need", "attention is all you need in transformers")
+        is True
+    )
 
 
 def test_titles_match_overlap():
     """_titles_match returns True for high word overlap."""
-    assert _titles_match("deep learning for NLP", "deep learning for natural language processing") is True
+    assert (
+        _titles_match("deep learning for NLP", "deep learning for natural language processing")
+        is True
+    )
 
 
 def test_titles_match_different():
@@ -89,13 +100,19 @@ def test_fetch_doi_by_title_retries_on_error():
         if call_count < 2:
             raise ConnectionError("timeout")
         mock_resp = mock.Mock()
-        mock_resp.read.return_value = json.dumps({
-            "message": {"items": [{
-                "DOI": "10.9999/retry",
-                "title": ["Retry Paper"],
-                "published-online": {"date-parts": [[2025]]},
-            }]}
-        })
+        mock_resp.read.return_value = json.dumps(
+            {
+                "message": {
+                    "items": [
+                        {
+                            "DOI": "10.9999/retry",
+                            "title": ["Retry Paper"],
+                            "published-online": {"date-parts": [[2025]]},
+                        }
+                    ]
+                }
+            }
+        )
         return mock_resp
 
     with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen):
@@ -141,13 +158,15 @@ def test_fetch_doi_by_doi_retries_on_error():
         if call_count < 2:
             raise ConnectionError("timeout")
         mock_resp = mock.Mock()
-        mock_resp.read.return_value = json.dumps({
-            "message": {
-                "DOI": "10.9999/direct",
-                "title": ["Direct DOI Paper"],
-                "published-online": {"date-parts": [[2025]]},
+        mock_resp.read.return_value = json.dumps(
+            {
+                "message": {
+                    "DOI": "10.9999/direct",
+                    "title": ["Direct DOI Paper"],
+                    "published-online": {"date-parts": [[2025]]},
+                }
             }
-        })
+        )
         return mock_resp
 
     with mock.patch("urllib.request.urlopen", side_effect=mock_urlopen):

@@ -1,10 +1,11 @@
 """Tests for extractor queue: consensus, route_item edge cases, resolve_accept."""
+
 import asyncio
 import tempfile
 from pathlib import Path
 from unittest import mock
 
-from drbrain.extractor.queue import route_item, check_consensus, resolve_accept
+from drbrain.extractor.queue import check_consensus, resolve_accept, route_item
 from drbrain.storage.database import Database
 
 
@@ -95,6 +96,7 @@ def test_resolve_accept_nonexistent_queue_id():
 
 # -- concept.py extract_concepts --
 
+
 def test_extract_concepts_returns_none_on_llm_failure():
     """extract_concepts returns None when LLM extraction fails."""
     from drbrain.extractor.concept import extract_concepts
@@ -114,8 +116,13 @@ def test_extract_concepts_returns_data_on_success():
     async def run():
         mock_data = {
             "problems": [{"label": "X", "confidence": 0.9}],
-            "methods": [], "conclusions": [], "debates": [], "gaps": [],
-            "actors": [], "relations": [], "arguments": [],
+            "methods": [],
+            "conclusions": [],
+            "debates": [],
+            "gaps": [],
+            "actors": [],
+            "relations": [],
+            "arguments": [],
         }
         with mock.patch("drbrain.extractor.concept.acall_with_fallback", return_value=mock_data):
             result = await extract_concepts("some text", [{"provider": "test"}])

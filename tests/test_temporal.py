@@ -1,7 +1,10 @@
 """Tests for v1.1 database schema: arguments, confidence_queue, temporal fields."""
+
 import tempfile
 from pathlib import Path
+
 from drbrain.storage.database import Database
+
 
 def test_arguments_table_exists():
     """arguments table is created on Database init."""
@@ -13,6 +16,7 @@ def test_arguments_table_exists():
         assert row is not None
         db.close()
 
+
 def test_confidence_queue_table_exists():
     """confidence_queue table is created on Database init."""
     with tempfile.TemporaryDirectory() as td:
@@ -22,6 +26,7 @@ def test_confidence_queue_table_exists():
         ).fetchone()
         assert row is not None
         db.close()
+
 
 def test_insert_argument():
     """insert_argument stores argument and returns arg_id."""
@@ -40,10 +45,13 @@ def test_insert_argument():
             confidence=0.95,
         )
         assert arg_id is not None
-        row = db.conn.execute("SELECT claim, claim_type FROM arguments WHERE arg_id = ?", (arg_id,)).fetchone()
+        row = db.conn.execute(
+            "SELECT claim, claim_type FROM arguments WHERE arg_id = ?", (arg_id,)
+        ).fetchone()
         assert row[0] == "Self-attention replaces RNN"
         assert row[1] == "proposes"
         db.close()
+
 
 def test_insert_queue_item():
     """insert_queue_item stores pending item and returns queue_id."""
@@ -56,9 +64,12 @@ def test_insert_queue_item():
             confidence=0.52,
         )
         assert qid is not None
-        row = db.conn.execute("SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)).fetchone()
+        row = db.conn.execute(
+            "SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)
+        ).fetchone()
         assert row[0] == "pending"
         db.close()
+
 
 def test_resolve_queue_item_accept():
     """accept_queue_item sets status to 'accepted'."""
@@ -66,9 +77,12 @@ def test_resolve_queue_item_accept():
         db = Database(Path(td) / "test.db")
         qid = db.insert_queue_item("p1", "concept", '{"label": "test"}', 0.5)
         db.accept_queue_item(qid)
-        row = db.conn.execute("SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)).fetchone()
+        row = db.conn.execute(
+            "SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)
+        ).fetchone()
         assert row[0] == "accepted"
         db.close()
+
 
 def test_resolve_queue_item_reject():
     """reject_queue_item sets status to 'rejected'."""
@@ -76,9 +90,12 @@ def test_resolve_queue_item_reject():
         db = Database(Path(td) / "test.db")
         qid = db.insert_queue_item("p1", "concept", '{"label": "test"}', 0.5)
         db.reject_queue_item(qid)
-        row = db.conn.execute("SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)).fetchone()
+        row = db.conn.execute(
+            "SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)
+        ).fetchone()
         assert row[0] == "rejected"
         db.close()
+
 
 def test_get_queue_pending():
     """get_queue_pending returns only pending items."""
@@ -91,6 +108,7 @@ def test_get_queue_pending():
         assert len(pending) == 1
         assert pending[0]["queue_id"] == q2
         db.close()
+
 
 def test_concepts_have_temporal_fields():
     """concepts table has first_seen and last_seen columns."""
@@ -106,6 +124,7 @@ def test_concepts_have_temporal_fields():
         assert row[0] == 2020
         assert row[1] == 2020
         db.close()
+
 
 def test_get_concept_evolution():
     """get_concept_evolution returns year-by-year stats for a concept label."""
@@ -125,6 +144,7 @@ def test_get_concept_evolution():
         assert evolution[1]["year"] == 2020
         assert evolution[1]["count"] == 1
         db.close()
+
 
 def test_detect_evolution_signals():
     """detect_evolution_signals returns signal type for a concept."""

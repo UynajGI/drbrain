@@ -1,10 +1,14 @@
 """Tests for OpenAlex API client."""
-from drbrain.extractor.openalex import (
-    search_work_by_title, search_work_by_arxiv, get_work_by_doi,
-    batch_fetch_works, get_work_by_openalex_id,
-)
-from unittest import mock
+
 import json
+from unittest import mock
+
+from drbrain.extractor.openalex import (
+    batch_fetch_works,
+    get_work_by_doi,
+    search_work_by_arxiv,
+    search_work_by_title,
+)
 
 
 def test_search_work_by_title_empty():
@@ -15,12 +19,14 @@ def test_search_work_by_title_empty():
 def test_search_work_by_title_success():
     """search_work_by_title finds work and strips DOI URL prefix."""
     mock_response = {
-        "results": [{
-            "id": "https://openalex.org/W123",
-            "doi": "https://doi.org/10.1234/test",
-            "title": ["Test Paper"],
-            "publication_year": 2024,
-        }]
+        "results": [
+            {
+                "id": "https://openalex.org/W123",
+                "doi": "https://doi.org/10.1234/test",
+                "title": ["Test Paper"],
+                "publication_year": 2024,
+            }
+        ]
     }
     mock_resp = mock.Mock()
     mock_resp.read.return_value = json.dumps(mock_response)
@@ -47,12 +53,14 @@ def test_search_work_by_title_no_results():
 def test_search_work_by_arxiv_success():
     """search_work_by_arxiv finds work by arXiv ID."""
     mock_response = {
-        "results": [{
-            "id": "https://openalex.org/W456",
-            "doi": "https://doi.org/10.1103/test",
-            "title": ["Arxiv Paper"],
-            "publication_year": 2025,
-        }]
+        "results": [
+            {
+                "id": "https://openalex.org/W456",
+                "doi": "https://doi.org/10.1103/test",
+                "title": ["Arxiv Paper"],
+                "publication_year": 2025,
+            }
+        ]
     }
     mock_resp = mock.Mock()
     mock_resp.read.return_value = json.dumps(mock_response)
@@ -99,14 +107,23 @@ def test_batch_fetch_works():
     """batch_fetch_works retrieves multiple works in one call."""
     mock_response = {
         "results": [
-            {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/one", "title": "Paper One", "publication_year": 2024},
-            {"id": "https://openalex.org/W2", "doi": "https://doi.org/10.2/two", "title": "Paper Two", "publication_year": 2025},
+            {
+                "id": "https://openalex.org/W1",
+                "doi": "https://doi.org/10.1/one",
+                "title": "Paper One",
+                "publication_year": 2024,
+            },
+            {
+                "id": "https://openalex.org/W2",
+                "doi": "https://doi.org/10.2/two",
+                "title": "Paper Two",
+                "publication_year": 2025,
+            },
         ]
     }
     mock_resp = mock.Mock()
     mock_resp.read.return_value = json.dumps(mock_response)
 
-    from drbrain.extractor.openalex import batch_fetch_works
     with mock.patch("urllib.request.urlopen", return_value=mock_resp):
         results = batch_fetch_works(["https://openalex.org/W1", "https://openalex.org/W2"])
 

@@ -24,6 +24,7 @@ pdf = ["mineru[all]>=3.1"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=7.1.0",
     "ruff>=0.8",
 ]
 

@@ -1,5 +1,5 @@
 """Tests for API cache module."""
-import json
+
 import tempfile
 import time
 from pathlib import Path

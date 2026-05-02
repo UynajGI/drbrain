@@ -1,9 +1,10 @@
 """Tests for knowledge boundary detection (Spec §16)."""
+
 import tempfile
 from pathlib import Path
 
-from drbrain.storage.database import Database
 from drbrain.graph.engine import GraphEngine
+from drbrain.storage.database import Database
 
 
 def _seed_full_graph(db, graph):
@@ -23,7 +24,7 @@ def test_technology_cliff():
             db.insert_concept(f"p{i:03d}", "Method", "RNN variants", 0.9, year=year)
         # Recent papers with no extends (chain stopped)
         for i, year in enumerate([2024, 2025]):
-            pid = f"p{10+i:03d}"
+            pid = f"p{10 + i:03d}"
             db.insert_paper(pid, f"Recent {i} ({year})", year, "uploaded")
             db.insert_concept(pid, "Method", "RNN variants", 0.7, year=year)
 
@@ -95,7 +96,7 @@ def test_confidence_collapse():
 
         # Late window (2024-2025): low confidence (paradigm shift)
         for i in range(4):
-            pid = f"p{10+i:03d}"
+            pid = f"p{10 + i:03d}"
             db.insert_paper(pid, f"Late paper {i}", 2024 + (i % 2), "uploaded")
             db.insert_concept(pid, "Method", "GAN", 0.55, year=2024 + (i % 2))
 

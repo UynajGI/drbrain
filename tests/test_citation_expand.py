@@ -1,17 +1,22 @@
 """Tests for citation.py: expand_citations, match_to_local, parse_s2_response."""
+
 import tempfile
 import unittest.mock
 from pathlib import Path
 
 from drbrain.extractor.citation import (
-    match_to_local, parse_s2_response, expand_citations,
-    fetch_s2_paper, search_s2,
+    expand_citations,
+    fetch_s2_paper,
+    match_to_local,
+    parse_s2_response,
+    search_s2,
 )
 from drbrain.storage.database import Database
-from drbrain.report.generator import RefEntry
 
 
-def _make_db_with_paper(local_id: str, title: str, year: int, doi: str = None, arxiv: str = None, s2_id: str = None) -> Database:
+def _make_db_with_paper(
+    local_id: str, title: str, year: int, doi: str = None, arxiv: str = None, s2_id: str = None
+) -> Database:
     """Create a temp DB with one paper."""
     td = tempfile.mkdtemp()
     db = Database(Path(td) / "test.db")
@@ -22,6 +27,7 @@ def _make_db_with_paper(local_id: str, title: str, year: int, doi: str = None, a
 
 
 # -- parse_s2_response --
+
 
 def test_parse_s2_response_minimal():
     """parse_s2_response handles minimal response."""
@@ -61,6 +67,7 @@ def test_parse_s2_response_null_ext_ids():
 
 
 # -- match_to_local --
+
 
 def test_match_to_local_by_doi():
     """match_to_local finds paper by DOI."""
@@ -114,6 +121,7 @@ def test_match_to_local_not_found():
 
 # -- expand_citations --
 
+
 def test_expand_citations_creates_placeholder_neighbors():
     """expand_citations creates placeholder nodes for references not in graph."""
     s2_data = {
@@ -123,7 +131,13 @@ def test_expand_citations_creates_placeholder_neighbors():
         "externalIds": {"DOI": "10.1234/seed"},
         "citationCount": 5,
         "references": [
-            {"paperId": "ref1", "title": "Ref Paper 1", "year": 2020, "externalIds": None, "citationCount": 0},
+            {
+                "paperId": "ref1",
+                "title": "Ref Paper 1",
+                "year": 2020,
+                "externalIds": None,
+                "citationCount": 0,
+            },
         ],
         "citations": [],
     }
@@ -146,7 +160,9 @@ def test_expand_citations_creates_placeholder_neighbors():
         assert "Ref Paper 1" in placeholder_titles
 
         # Edge should exist
-        edges = db.conn.execute("SELECT src_id, dst_id, relation FROM edges WHERE relation='cites'").fetchall()
+        edges = db.conn.execute(
+            "SELECT src_id, dst_id, relation FROM edges WHERE relation='cites'"
+        ).fetchall()
         assert len(edges) >= 1
 
         db.close()
@@ -161,8 +177,13 @@ def test_expand_citations_matches_existing_neighbor():
         "externalIds": {"DOI": "10.1234/seed"},
         "citationCount": 0,
         "references": [
-            {"paperId": "ref1", "title": "Existing Ref", "year": 2020,
-             "externalIds": {"DOI": "10.5678/existing"}, "citationCount": 0},
+            {
+                "paperId": "ref1",
+                "title": "Existing Ref",
+                "year": 2020,
+                "externalIds": {"DOI": "10.5678/existing"},
+                "citationCount": 0,
+            },
         ],
         "citations": [],
     }
@@ -204,8 +225,12 @@ def test_expand_citations_returns_empty_when_no_s2_id():
         db.insert_paper("p1", "No ID Paper", 2024, "uploaded")
         db.commit()
 
-        with unittest.mock.patch("drbrain.extractor.citation.search_s2", return_value=[]), \
-             unittest.mock.patch("drbrain.extractor.citation._expand_with_openalex", return_value=([], [])):
+        with (
+            unittest.mock.patch("drbrain.extractor.citation.search_s2", return_value=[]),
+            unittest.mock.patch(
+                "drbrain.extractor.citation._expand_with_openalex", return_value=([], [])
+            ),
+        ):
             refs, cits = expand_citations(db, "p1", {})
 
         assert refs == []
@@ -223,7 +248,13 @@ def test_expand_citations_handles_citations_direction():
         "citationCount": 0,
         "references": [],
         "citations": [
-            {"paperId": "cit1", "title": "Citing Paper", "year": 2025, "externalIds": None, "citationCount": 0},
+            {
+                "paperId": "cit1",
+                "title": "Citing Paper",
+                "year": 2025,
+                "externalIds": None,
+                "citationCount": 0,
+            },
         ],
     }
 
@@ -259,13 +290,23 @@ def test_expand_citations_batches_placeholder_commits():
         "externalIds": {"DOI": "10.1234/seed"},
         "citationCount": 10,
         "references": [
-            {"paperId": f"ref{i}", "title": f"Ref Paper {i}", "year": 2020 + i,
-             "externalIds": None, "citationCount": 0}
+            {
+                "paperId": f"ref{i}",
+                "title": f"Ref Paper {i}",
+                "year": 2020 + i,
+                "externalIds": None,
+                "citationCount": 0,
+            }
             for i in range(1, 6)
         ],
         "citations": [
-            {"paperId": f"cit{i}", "title": f"Citing Paper {i}", "year": 2025,
-             "externalIds": None, "citationCount": 0}
+            {
+                "paperId": f"cit{i}",
+                "title": f"Citing Paper {i}",
+                "year": 2025,
+                "externalIds": None,
+                "citationCount": 0,
+            }
             for i in range(1, 4)
         ],
     }
@@ -302,6 +343,7 @@ def test_expand_citations_batches_placeholder_commits():
 
 
 # -- original non-retry functions --
+
 
 def test_fetch_s2_paper_success():
     """fetch_s2_paper returns parsed JSON on success."""

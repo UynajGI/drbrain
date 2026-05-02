@@ -53,3 +53,51 @@ def test_extract_citations_strips_duplicates():
 def test_match_citations_empty():
     """Empty citation list returns empty results."""
     assert match_citations([], None) == []
+
+
+def test_match_citations_found():
+    """match_citations finds matching paper in library."""
+    from unittest import mock
+
+    from drbrain.extractor.citation_check import CitationMatch
+
+    c = CitationMatch(author="Smith", year="2023", raw="Smith (2023)")
+
+    fake_db = mock.Mock()
+    fake_db.conn.execute.return_value.fetchall.return_value = [
+        ("Smith_canonical", "p42", "A Groundbreaking Study", 2023),
+    ]
+
+    result = match_citations([c], fake_db)
+    assert len(result) == 1
+    assert result[0].found is True
+    assert result[0].matched_id == "p42"
+    assert result[0].matched_title == "A Groundbreaking Study"
+
+
+def test_match_citations_not_found():
+    """match_citations returns citation with found=False when no match."""
+    from unittest import mock
+
+    from drbrain.extractor.citation_check import CitationMatch
+
+    c = CitationMatch(author="Unknown", year="1999", raw="Unknown (1999)")
+
+    fake_db = mock.Mock()
+    fake_db.conn.execute.return_value.fetchall.return_value = []
+
+    result = match_citations([c], fake_db)
+    assert len(result) == 1
+    assert result[0].found is False
+    assert result[0].matched_id is None
+    assert result[0].matched_title is None
+
+
+def test_match_citations_db_none_short_circuits():
+    """match_citations with db=None returns citations unchanged."""
+    from drbrain.extractor.citation_check import CitationMatch
+
+    c = CitationMatch(author="Smith", year="2023", raw="Smith (2023)")
+    result = match_citations([c], None)
+    assert result == [c]
+    assert result[0].found is False

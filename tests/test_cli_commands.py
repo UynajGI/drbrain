@@ -814,3 +814,179 @@ def test_check_cmd_missing_llm_key():
         ]
         mock_cfg.return_value = cfg
         check_cmd()  # Should warn, not raise
+
+
+# -- repair_cmd --
+
+
+def test_repair_cmd_no_args():
+    """repair_cmd raises Exit(1) when no local_id, --all, or --workspace."""
+    from drbrain.cli.commands import repair_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                repair_cmd(local_id=None, all=False, workspace=None)
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+def test_repair_cmd_dry_run():
+    """repair_cmd with --dry-run produces output without DB writes."""
+    from drbrain.cli.commands import repair_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.commit()
+        db.close()
+
+        fake_repairs = [
+            {"field": "title", "old": "Test Paper", "new": "Fixed Title", "source": "crossref"}
+        ]
+
+        with (
+            _mock_load_config(cfg),
+            mock.patch(
+                "drbrain.services.repair.repair_paper", return_value=fake_repairs
+            ) as mock_repair,
+        ):
+            repair_cmd(local_id="p1", all=False, workspace=None, dry_run=True, json_output=False)
+            mock_repair.assert_called_once()
+            assert mock_repair.call_args[1].get("dry_run") is True
+
+
+# -- backup_cmd --
+
+
+def test_backup_cmd_list_empty():
+    """backup_cmd --list on empty dir outputs 'No backups found.'"""
+    from drbrain.cli.commands import backup_cmd
+
+    with mock.patch("drbrain.storage.backup.list_backups", return_value=[]):
+        with mock.patch("typer.echo") as mock_echo:
+            backup_cmd(list_only=True, json_output=False)
+            mock_echo.assert_any_call("No backups found.")
+
+
+# -- import_cmd --
+
+
+def test_import_cmd_invalid_source():
+    """import_cmd with invalid source type raises Exit(1)."""
+    from drbrain.cli.commands import import_cmd
+
+    try:
+        import_cmd(source="xxx", path="dummy.bib")
+        assert False, "Should have raised Exit"
+    except typer.Exit as e:
+        assert e.exit_code == 1
+
+
+def test_import_cmd_file_not_found():
+    """import_cmd with nonexistent file raises Exit(1)."""
+    from drbrain.cli.commands import import_cmd
+
+    try:
+        import_cmd(source="zotero", path="/nonexistent/path/zotero.sqlite")
+        assert False, "Should have raised Exit"
+    except typer.Exit as e:
+        assert e.exit_code == 1
+
+
+# -- translate_cmd --
+
+
+def test_translate_cmd_paper_not_found():
+    """translate_cmd raises Exit(1) when paper not found."""
+    from drbrain.cli.commands import translate_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                translate_cmd(local_id="nonexistent")
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+# -- analyze_cmd --
+
+
+def test_analyze_cmd_no_args():
+    """analyze_cmd raises Exit(1) when no local_id and no workspace."""
+    from drbrain.cli.commands import analyze_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        with _mock_load_config(cfg):
+            try:
+                analyze_cmd(local_id=None, workspace=None)
+                assert False, "Should have raised Exit"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+
+# -- clean_cmd --
+
+
+def test_clean_cmd_empty_dirs():
+    """clean_cmd prints 'Nothing to clean' when data dirs are already empty."""
+    from drbrain.cli.commands import clean_cmd
+
+    cfg = {
+        "db": {"path": "/nonexistent/db/test.db"},
+        "dirs": {
+            "cache": "/nonexistent/cache",
+            "logs": "/nonexistent/logs",
+            "papers": "/nonexistent/papers",
+            "reports": "/nonexistent/reports",
+        },
+    }
+    with _mock_load_config(cfg):
+        with mock.patch("typer.echo") as mock_echo:
+            clean_cmd(force=False, config_path="config.yaml")
+            mock_echo.assert_any_call("Nothing to clean — data directories are already empty.")
+
+
+# -- query_cmd no results message --
+
+
+def test_query_cmd_no_results_message():
+    """query_cmd prints 'No results for: ...' when no matches found."""
+    from drbrain.cli.commands import query_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+
+        with _mock_load_config(cfg):
+            with mock.patch("typer.echo") as mock_echo:
+                query_cmd(
+                    "xyzzy_nonexistent_concept",
+                    type_filter=None,
+                    arg_type=None,
+                    year_start=None,
+                    year_end=None,
+                    limit=20,
+                    neighbors=0,
+                    json_output=False,
+                    jsonl=False,
+                )
+                mock_echo.assert_any_call("No results for: xyzzy_nonexistent_concept")
