@@ -255,3 +255,239 @@ def path_cmd(
         typer.echo("  " + " -> ".join(parts))
     else:
         typer.echo("  (direct)")
+
+
+@graph_app.command("related")
+def related_cmd(
+    paper_id: list[str] = typer.Argument(..., help="Two or more paper local_id values"),
+    mode: str = typer.Option(
+        "concepts",
+        "--mode",
+        "-m",
+        help="Analysis mode: concepts, graph, or edges",
+    ),
+    min_shared: int = typer.Option(
+        2,
+        "--min-shared",
+        help="Minimum number of papers a concept/edge must appear in to be shown",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+):
+    """Analyze shared concepts and connections across multiple papers."""
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    if len(paper_id) < 2:
+        typer.echo("At least 2 paper IDs required.", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    if mode not in ("concepts", "graph", "edges"):
+        typer.echo(f"Invalid mode '{mode}'. Must be: concepts, graph, or edges", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    for pid in paper_id:
+        paper = db.get_paper(pid)
+        if not paper:
+            typer.echo(f"Paper '{pid}' not found in database.", err=True)
+            db.close()
+            raise typer.Exit(1)
+
+    if mode == "concepts":
+        _related_concepts(db, paper_id, min_shared, json_output)
+    elif mode == "graph":
+        _related_graph(db, paper_id, min_shared, json_output, workspace)
+    elif mode == "edges":
+        _related_edges(db, paper_id, min_shared, json_output)
+
+    db.close()
+
+
+def _related_concepts(db, paper_ids: list[str], min_shared: int, json_output: bool):
+    """Mode: concepts — SQL intersection of concept labels across papers."""
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = db.conn.execute(
+        f"SELECT label, type, COUNT(DISTINCT local_id) as paper_count "
+        f"FROM concepts WHERE local_id IN ({placeholders}) "
+        f"GROUP BY label, type HAVING paper_count >= ? "
+        f"ORDER BY paper_count DESC, type, label",
+        (*paper_ids, min_shared),
+    ).fetchall()
+
+    shared = [{"label": r[0], "type": r[1], "paper_count": r[2]} for r in rows]
+
+    coverage: list[dict] = []
+    for pid in paper_ids:
+        total = db.conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE local_id = ?", (pid,)
+        ).fetchone()[0]
+        shared_count = db.conn.execute(
+            f"SELECT COUNT(DISTINCT label) FROM concepts "
+            f"WHERE local_id = ? AND label IN ("
+            f"  SELECT label FROM concepts WHERE local_id IN ({placeholders}) "
+            f"  GROUP BY label HAVING COUNT(DISTINCT local_id) >= ?"
+            f")",
+            (pid, *paper_ids, min_shared),
+        ).fetchone()[0]
+        coverage.append({"paper_id": pid, "total_concepts": total, "shared_concepts": shared_count})
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "mode": "concepts",
+                    "papers": paper_ids,
+                    "min_shared": min_shared,
+                    "shared": shared,
+                    "coverage": coverage,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    if not shared:
+        typer.echo(f"No shared concepts found (min-shared: {min_shared}).")
+        return
+
+    typer.echo(f"Shared concepts across {len(paper_ids)} papers (min-shared: {min_shared}):")
+    for s in shared:
+        typer.echo(f"  {s['label']} ({s['type']})  {s['paper_count']} papers")
+
+    typer.echo()
+    typer.echo("Coverage:")
+    for c in coverage:
+        typer.echo(
+            f"  {c['paper_id']}: {c['total_concepts']} concepts, {c['shared_concepts']} shared"
+        )
+
+
+def _related_edges(db, paper_ids: list[str], min_shared: int, json_output: bool):
+    """Mode: edges — SQL query for shared (relation, target) edge patterns."""
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = db.conn.execute(
+        f"SELECT relation, dst_id, COUNT(DISTINCT source_paper) as paper_count "
+        f"FROM edges WHERE source_paper IN ({placeholders}) "
+        f"GROUP BY relation, dst_id HAVING paper_count >= ? "
+        f"ORDER BY paper_count DESC, relation, dst_id",
+        (*paper_ids, min_shared),
+    ).fetchall()
+
+    shared_edges = [{"relation": r[0], "target": r[1], "paper_count": r[2]} for r in rows]
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "mode": "edges",
+                    "papers": paper_ids,
+                    "min_shared": min_shared,
+                    "shared_edges": shared_edges,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    if not shared_edges:
+        typer.echo(f"No shared edge patterns found (min-shared: {min_shared}).")
+        return
+
+    typer.echo(f"Shared edge patterns across {len(paper_ids)} papers (min-shared: {min_shared}):")
+    for e in shared_edges:
+        typer.echo(f"  {e['relation']} -> {e['target']}  {e['paper_count']} papers")
+
+
+def _related_graph(
+    db, paper_ids: list[str], min_shared: int, json_output: bool, workspace: str | None
+):
+    """Mode: graph — load graph, traverse from each paper's concepts, intersect neighbors."""
+    graph = GraphEngine()
+    paper_ids_set = _resolve_workspace_papers(workspace)
+    graph.load_from_db(db, paper_ids=paper_ids_set)
+
+    # Collect each paper's concept labels
+    paper_concepts: dict[str, set[str]] = {}
+    for pid in paper_ids:
+        rows = db.conn.execute("SELECT label FROM concepts WHERE local_id = ?", (pid,)).fetchall()
+        labels = {r[0] for r in rows}
+        if labels:
+            paper_concepts[pid] = labels
+
+    if not paper_concepts:
+        typer.echo("No concepts found for any of the given papers.")
+        return
+
+    # For each paper, collect 1-hop neighbors with path info
+    paper_neighbors: dict[str, set[str]] = {}
+    paper_paths: dict[str, dict[str, list[dict]]] = {}
+    for pid, labels in paper_concepts.items():
+        if not labels:
+            paper_neighbors[pid] = set()
+            paper_paths[pid] = {}
+            continue
+        trs = graph.traverse(start_nodes=labels, hops=1, direction="both")
+        paper_neighbors[pid] = {tr.target for tr in trs} | labels
+        paper_paths[pid] = {}
+        for tr in trs:
+            if tr.target not in paper_paths[pid]:
+                paper_paths[pid][tr.target] = [
+                    {"src": s.src, "relation": s.relation, "dst": s.dst} for s in tr.path
+                ]
+
+    graph.graph = None
+
+    # Find concepts shared by >= min_shared papers
+    concept_paper_map: dict[str, set[str]] = {}
+    for pid, neighbors in paper_neighbors.items():
+        for concept in neighbors:
+            if concept not in concept_paper_map:
+                concept_paper_map[concept] = set()
+            concept_paper_map[concept].add(pid)
+
+    shared_concepts = {
+        c: papers for c, papers in concept_paper_map.items() if len(papers) >= min_shared
+    }
+
+    # Build connections from pre-computed paths
+    connections: list[dict] = []
+    for concept, papers in sorted(shared_concepts.items()):
+        paths_per_paper: list[dict] = []
+        for pid in sorted(papers):
+            if pid in paper_paths and concept in paper_paths[pid]:
+                paths_per_paper.append({"paper_id": pid, "path": paper_paths[pid][concept]})
+        connections.append(
+            {
+                "concept": concept,
+                "paper_count": len(papers),
+                "paths": paths_per_paper,
+            }
+        )
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "mode": "graph",
+                    "papers": paper_ids,
+                    "connections": connections,
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    if not connections:
+        typer.echo("No shared graph connections found.")
+        return
+
+    for conn in connections:
+        typer.echo(f"\n  {conn['concept']} — shared by {conn['paper_count']} papers:")
+        for p in conn["paths"]:
+            path_str = " -> ".join(f"{s['src']} --{s['relation']}--> {s['dst']}" for s in p["path"])
+            typer.echo(f"    {p['paper_id']}:  {path_str}")
