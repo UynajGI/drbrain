@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS papers (
     year INTEGER,
     paper_type TEXT NOT NULL DEFAULT 'paper'
         CHECK(paper_type IN ('paper','review','thesis','preprint','book','document')),
-    status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged')),
+    status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged', 'extracted')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
