@@ -13,7 +13,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Closure filtering**: `drbrain closure --rule <name>` (repeatable, 11 rules supported) and `--dry-run` (read-only, does not persist).
 - **Multi-paper concept analysis**: `drbrain graph related <id...>` with 3 modes — `concepts` (SQL label intersection + coverage), `graph` (1-hop neighbor intersection via traverse), `edges` (shared relation-target patterns).
 - **Hybrid ranking**: `drbrain query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank BM25 results by graph centrality. Pure Python PageRank, no scipy dependency.
-- **Metadata cross-validation**: `_resolve_metadata` cross-checks arXiv, CrossRef, S2, and OpenAlex. Title+year consistency check prevents wrong-paper DOI assignment. Graceful degradation when any source is unavailable.
+- **Metadata cross-validation**: `_resolve_metadata` cross-checks arXiv, CrossRef, S2, and OpenAlex. Title+year consistency, text-year anchor. Stores doi, s2_id, openalex_id. Abstract extracted from tree.json.
 - **Extraction concurrency**: `extract.max_concurrent` in config.yaml controls parallel LLM calls during concept extraction (default 10)
 - **Library management**: Inbox auto-classification (paper/thesis/preprint/book/review/document), spool/pending queue, workspace CRUD (`drbrain ws`), BibTeX/RIS/Markdown export, tar.gz backup, delete with `--rm-files`
 - **Citation graph**: Shared-reference analysis (`drbrain citations --type shared-refs`), citation verification against library (`drbrain check-citations`), citation_cache table with S2 write-through
