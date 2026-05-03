@@ -6,6 +6,27 @@
       "sourceType": "github",
       "skillPath": "skills/crossref-search/SKILL.md",
       "computedHash": "5c1b15f26dd35682439c4ce8650dca1e24e1b8915fbfc64643e48847ad94b03f"
+    },
+    "deepxiv-baseline-table": {
+      "source": "DeepXiv/deepxiv_sdk",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/deepxiv-baseline-table/SKILL.md",
+      "computedHash": "1e240e3e5265159ad4fe397bb4d1421d534164de36bf42c7433cf87c9b1f408d"
+    },
+    "deepxiv-cli": {
+      "source": "DeepXiv/deepxiv_sdk",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/deepxiv-cli/SKILL.md",
+      "computedHash": "831952627cba74ba65f9a7d26d49af97c98563153ceb23325d74ad2bc8b1994f"
+    },
+    "deepxiv-trending-digest": {
+      "source": "DeepXiv/deepxiv_sdk",
+      "ref": "main",
+      "sourceType": "github",
+      "skillPath": "skills/deepxiv-trending-digest/SKILL.md",
+      "computedHash": "4de108e24143dc6c52d646ef40ecb1b2f7ea669b2fa3e0d42e1e0ee26a4066f2"
     }
   }
 }
