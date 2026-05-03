@@ -391,38 +391,34 @@ def _extract_arxiv_from_filename(pdf_path: Path) -> str | None:
 
 
 def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
-    """Fetch title and year from arXiv API via httpx. Falls back to ID-based year."""
-    # Try API first
+    """Fetch title and year from arXiv API via arxiv library."""
+    import os as _os
+
+    # arxiv library uses requests which can't route through SOCKS proxy.
+    # Clear proxy env vars for this call so requests connects directly.
+    _proxy_keys = {k: _os.environ.pop(k, None)
+                   for k in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY",
+                             "all_proxy", "https_proxy", "http_proxy")}
     try:
-        import httpx
+        import arxiv
 
-        url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}&max_results=1"
-        resp = httpx.get(url, timeout=10)
-        if resp.status_code == 200:
-            from xml.etree import ElementTree
-
-            ns = "{http://www.w3.org/2005/Atom}"
-            root = ElementTree.fromstring(resp.text)
-            entry = root.find(f"{ns}entry")
-            if entry is not None:
-                title_el = entry.find(f"{ns}title")
-                published_el = entry.find(f"{ns}published")
-                title = title_el.text.strip() if title_el is not None and title_el.text else None
-                year = int(published_el.text[:4]) if published_el is not None and published_el.text else None
-                if title or year:
-                    return title, year
+        client = arxiv.Client()
+        search = arxiv.Search(id_list=[arxiv_id])
+        paper = next(client.results(search))
+        year = paper.published.year if paper.published else None
+        return paper.title, year
     except Exception:
-        pass
-
-    # Fallback: infer year from arXiv ID (1706.03762 → 2017)
-    m = re.match(r"(\d{2})(\d{2})\.\d{4,5}", arxiv_id)
-    if m:
-        yy = int(m.group(1))
-        mm = int(m.group(2))
-        year = 2000 + yy if yy <= 50 else 1900 + yy
-        return None, year
-
-    return None, None
+        # Fallback: infer year from arXiv ID (1706.03762 → 2017)
+        m = re.match(r"(\d{2})(\d{2})\.\d{4,5}", arxiv_id)
+        if m:
+            yy = int(m.group(1))
+            year = 2000 + yy if yy <= 50 else 1900 + yy
+            return None, year
+        return None, None
+    finally:
+        for k, v in _proxy_keys.items():
+            if v is not None:
+                _os.environ[k] = v
 
 
 def normalize_doi(raw: str) -> str:
