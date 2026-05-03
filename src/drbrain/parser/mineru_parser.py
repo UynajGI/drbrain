@@ -109,23 +109,12 @@ class MinerUParser:
             if not arxiv and arxiv_from_name:
                 arxiv = arxiv_from_name
 
-            if arxiv:
-                api_title, api_year = _fetch_arxiv_metadata(arxiv)
-                if api_title:
-                    title = api_title
-                if api_year and not year:
-                    year = api_year
-
-            cr_title, cr_year, cr_doi = _fetch_crossref_metadata(title)
-            if cr_year and not year:
-                year = cr_year
-            if not doi and cr_doi:
-                doi = cr_doi
-
-            if not year and title:
-                oa_title, oa_year = _fetch_openalex_metadata(title)
-                if oa_year and not year:
-                    year = oa_year
+            title, year, doi = _resolve_metadata(
+                arxiv=arxiv,
+                raw_title=title,
+                raw_year=year,
+                raw_doi=doi,
+            )
 
             blocks = filter_sections(merged_md)
 
@@ -202,26 +191,13 @@ class MinerUParser:
             if not arxiv and arxiv_from_name:
                 arxiv = arxiv_from_name
 
-            # Enrich metadata: arXiv → CrossRef → OpenAlex
-            if arxiv:
-                api_title, api_year = _fetch_arxiv_metadata(arxiv)
-                if api_title:
-                    title = api_title
-                if api_year and not year:
-                    year = api_year
-
-            # Cross-validate / fill gaps with CrossRef
-            cr_title, cr_year, cr_doi = _fetch_crossref_metadata(title)
-            if cr_year and not year:
-                year = cr_year
-            if not doi and cr_doi:
-                doi = cr_doi
-
-            # If still no year, try OpenAlex
-            if not year and title:
-                oa_title, oa_year = _fetch_openalex_metadata(title)
-                if oa_year and not year:
-                    year = oa_year
+            # Cross-validate metadata from all available sources
+            title, year, doi = _resolve_metadata(
+                arxiv=arxiv,
+                raw_title=title,
+                raw_year=year,
+                raw_doi=doi,
+            )
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work
@@ -414,6 +390,106 @@ def _extract_arxiv_from_filename(pdf_path: Path) -> str | None:
     return None
 
 
+def _titles_match(a: str, b: str) -> bool:
+    """Check if two titles likely refer to the same paper. Uses word overlap ratio."""
+    a_words = set(a.strip().lower().rstrip(".").split())
+    b_words = set(b.strip().lower().rstrip(".").split())
+    if not a_words or not b_words:
+        return False
+    smaller = a_words if len(a_words) <= len(b_words) else b_words
+    larger = b_words if smaller == a_words else a_words
+    overlap = len(smaller & larger)
+    return overlap >= len(smaller) * 0.6  # 60% word overlap
+
+
+def _resolve_metadata(
+    arxiv: str | None = None,
+    raw_title: str | None = None,
+    raw_year: int | None = None,
+    raw_doi: str | None = None,
+) -> tuple[str | None, int | None, str | None]:
+    """Cross-validate metadata from arXiv, CrossRef, and OpenAlex.
+
+    Strategy:
+    1. If arXiv ID: fetch from arXiv API (authoritative for arXiv papers)
+    2. If title (from arxiv or extraction): search CrossRef + OpenAlex
+    3. DOI from CrossRef is gold standard — if CrossRef gives a DOI, use its year
+    4. If multiple sources agree on year → high confidence
+    5. Gaps filled by the most authoritative available source
+    """
+    sources: dict[str, dict] = {}  # source_name -> {title, year, doi}
+
+    # ── arXiv ──
+    if arxiv:
+        arxiv_title, arxiv_year = _fetch_arxiv_metadata(arxiv)
+        if arxiv_title or arxiv_year:
+            sources["arxiv"] = {"title": arxiv_title, "year": arxiv_year, "doi": None}
+
+    # ── CrossRef (keyed by title from arXiv, or raw title) ──
+    search_title = sources.get("arxiv", {}).get("title") or raw_title or ""
+    if search_title:
+        cr_title, cr_year, cr_doi = _fetch_crossref_metadata(search_title)
+        if cr_doi or cr_year:
+            sources["crossref"] = {"title": cr_title, "year": cr_year, "doi": cr_doi}
+
+    # ── OpenAlex ──
+    if search_title:
+        oa_title, oa_year = _fetch_openalex_metadata(search_title)
+        if oa_title or oa_year:
+            sources["openalex"] = {"title": oa_title, "year": oa_year, "doi": None}
+
+    # ── Semantic Scholar ──
+    if search_title:
+        s2_title, s2_year = _fetch_s2_metadata(search_title)
+        if s2_title or s2_year:
+            sources["s2"] = {"title": s2_title, "year": s2_year, "doi": None}
+
+    # ── Resolution ──
+    final_doi = raw_doi
+    final_title = raw_title
+    final_year = raw_year
+
+    # Only trust CrossRef's DOI if title matches AND year is consistent
+    cr_data = sources.get("crossref", {})
+    cr_doi = cr_data.get("doi")
+    cr_year = cr_data.get("year")
+    if cr_doi and not final_doi:
+        cr_title = cr_data.get("title") or ""
+        ref_title = final_title or ""
+        if _titles_match(ref_title, cr_title):
+            # Reject if existing year is > 5 years apart from CrossRef
+            existing_year = final_year or sources.get("arxiv", {}).get("year")
+            if existing_year and cr_year and abs(existing_year - cr_year) > 5:
+                pass  # too far apart — likely different paper
+            else:
+                final_doi = cr_doi
+
+    if final_doi:
+        if cr_data.get("year"):
+            final_year = cr_data["year"]
+        if cr_data.get("title"):
+            final_title = cr_data["title"]
+
+    if not final_year:
+        # No DOI — trust arXiv first, then consensus, then any source
+        years = [(k, v["year"]) for k, v in sources.items() if v.get("year")]
+        if len(years) >= 2 and len(set(y for _, y in years)) == 1:
+            # All sources agree
+            final_year = years[0][1]
+        elif sources.get("arxiv", {}).get("year"):
+            final_year = sources["arxiv"]["year"]
+        elif years:
+            final_year = years[0][1]
+
+    if not final_title or final_title == raw_title:
+        for src in ["arxiv", "crossref", "s2", "openalex"]:
+            if sources.get(src, {}).get("title"):
+                final_title = sources[src]["title"]
+                break
+
+    return final_title, final_year, final_doi
+
+
 def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
     """Fetch title and year from arXiv API via arxiv library."""
     try:
@@ -446,6 +522,31 @@ def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None]:
         if results:
             w = results[0]
             return w.get("title"), w.get("publication_year")
+    except Exception:
+        pass
+    return None, None
+
+
+def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int | None]:
+    """Fetch title and year from Semantic Scholar API."""
+    if not title:
+        return None, None
+    try:
+        import json as _json
+        import urllib.parse as _uparse
+        import urllib.request as _ureq
+
+        url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={_uparse.quote(title)}&limit=1&fields=title,year"
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["x-api-key"] = api_key
+        req = _ureq.Request(url, headers=headers)
+        resp = _ureq.urlopen(req, timeout=10)
+        data = _json.loads(resp.read())
+        papers = data.get("data", [])
+        if papers:
+            p = papers[0]
+            return p.get("title"), p.get("year")
     except Exception:
         pass
     return None, None
