@@ -26,7 +26,7 @@ console = Console()
 
 def ingest_cmd(
     paths: list[str] = typer.Argument(
-        None, help="PDF file(s) or directory. Defaults to data/inbox/."
+        None, help="PDF file(s) or directory. Defaults to data/spool/inbox/."
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
@@ -35,7 +35,7 @@ def ingest_cmd(
     """Ingest pipeline: parse -> identify -> tree -> paper record.
 
     Accepts single file, multiple files, or a directory of PDFs.
-    Defaults to data/inbox/ when no paths provided.
+    Defaults to data/spool/inbox/ when no paths provided.
     """
     if not paths:
         cfg = load_config()
