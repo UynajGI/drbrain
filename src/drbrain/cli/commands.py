@@ -2160,7 +2160,7 @@ def check_cmd():
         dir_paths = (
             list(dirs_config.values())
             if dirs_config
-            else ["data/inbox", "data/papers", "data/reports", "data/cache", "data/logs"]
+            else ["data/spool/inbox", "data/spool/pending", "data/papers", "data/reports", "data/cache", "data/logs"]
         )
         for dir_path in dir_paths:
             p = Path(dir_path)
@@ -2170,7 +2170,7 @@ def check_cmd():
                 p.mkdir(parents=True, exist_ok=True)
                 table5.add_row(f"  {dir_path}", "[green]Created[/green]")
     except Exception:
-        for d in ["data/inbox", "data/papers"]:
+        for d in ["data/spool/inbox", "data/spool/pending", "data/papers"]:
             p = Path(d)
             if p.exists():
                 table5.add_row(f"  {d}", "[green]Exists[/green]")
