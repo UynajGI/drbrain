@@ -115,6 +115,12 @@ class MinerUParser:
                     title = api_title
                 if api_year and not year:
                     year = api_year
+            elif title:
+                oa_title, oa_year = _fetch_openalex_metadata(title)
+                if oa_title:
+                    title = oa_title
+                if oa_year and not year:
+                    year = oa_year
 
             blocks = filter_sections(merged_md)
 
@@ -198,6 +204,13 @@ class MinerUParser:
                     title = api_title
                 if api_year and not year:
                     year = api_year
+            elif title:
+                # No arXiv ID — try OpenAlex for metadata
+                oa_title, oa_year = _fetch_openalex_metadata(title)
+                if oa_title:
+                    title = oa_title
+                if oa_year and not year:
+                    year = oa_year
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work
@@ -408,6 +421,23 @@ def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
             year = 2000 + yy if yy <= 50 else 1900 + yy
             return None, year
         return None, None
+
+
+def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None]:
+    """Fetch title and year from OpenAlex via pyalex. Used for papers without arXiv ID."""
+    if not title:
+        return None, None
+    try:
+        from pyalex import Works as _Works
+
+        works = _Works()
+        results = list(works.search(title).get(per_page=1))
+        if results:
+            w = results[0]
+            return w.get("title"), w.get("publication_year")
+    except Exception:
+        pass
+    return None, None
 
 
 def normalize_doi(raw: str) -> str:
