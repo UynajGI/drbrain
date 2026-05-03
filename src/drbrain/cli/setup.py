@@ -203,7 +203,7 @@ def setup_cmd(
                 ],
             },
             "mineru": {"token": ""},
-            "api": {"s2_api_key": "", "crossref_email": "", "openalex_token": ""},
+            "api": {"deepxiv_token": "", "s2_api_key": "", "crossref_email": "", "openalex_token": ""},
         }
         out = Path("config.local.yaml")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -278,7 +278,12 @@ def setup_cmd(
     # ── API Keys ──
     typer.echo()
     typer.echo("── API Keys ──")
-    s2_api_key = typer.prompt("  Semantic Scholar API key (optional)", default="", hide_input=True)
+    deepxiv_token = typer.prompt(
+        "  DeepXiv token (https://data.rag.ac.cn/register)", default="", hide_input=True
+    )
+    s2_api_key = typer.prompt(
+        "  Semantic Scholar API key (https://semanticscholar.org/product/api)", default="", hide_input=True
+    )
     crossref_email = typer.prompt("  CrossRef email (optional)", default="", show_default=False)
     openalex_token = typer.prompt("  OpenAlex token (optional)", default="", hide_input=True)
 
@@ -290,7 +295,8 @@ def setup_cmd(
     )
     typer.echo(f"  MinerU:   {mineru_mode}" + (" (token set)" if mineru_token else " (free tier)"))
     typer.echo(
-        f"  APIs:     S2({'key set' if s2_api_key else 'anonymous'})  "
+        f"  APIs:     DeepXiv({'key set' if deepxiv_token else 'not set'})  "
+        f"S2({'key set' if s2_api_key else 'anonymous'})  "
         f"CrossRef({crossref_email or 'none'})  "
         f"OpenAlex({'key set' if openalex_token else 'anonymous'})"
     )
@@ -301,6 +307,8 @@ def setup_cmd(
 
     # ── Write config.local.yaml (secrets only) ──
     api_cfg: dict = {}
+    if deepxiv_token:
+        api_cfg["deepxiv_token"] = deepxiv_token
     if s2_api_key:
         api_cfg["s2_api_key"] = s2_api_key
     if crossref_email:

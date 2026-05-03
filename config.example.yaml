@@ -89,9 +89,9 @@ dirs:
 
 # ── External APIs ────────────────────────────────────────────────
 api:
+  deepxiv_token: "${DEEPXIV_TOKEN}" # register at https://data.rag.ac.cn/register
   s2_rate_limit: 100 # Semantic Scholar requests/minute
-  s2_api_key: "" # Semantic Scholar API key — higher rate limits
-  # Apply at: https://www.semanticscholar.org/product/api#api-key
+  s2_api_key: "" # Semantic Scholar API key — https://www.semanticscholar.org/product/api
   cache_ttl: 86400 # API cache TTL in seconds (24h)
   crossref_email: "${CROSSREF_EMAIL}" # optional, for polite pool
   openalex_token: "${OPENALEX_TOKEN}" # optional, for higher rate limits

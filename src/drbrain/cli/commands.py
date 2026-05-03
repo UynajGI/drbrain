@@ -2302,6 +2302,27 @@ def check_cmd():
     if not mineru_cli_available:
         warnings.append("MinerU unavailable — PDF parsing will use PyMuPDF fallback")
 
+    # -- DeepXiv connectivity --
+    try:
+        dx_token = cfg.get("api", {}).get("deepxiv_token", "")
+        if dx_token and not dx_token.startswith("${"):
+            try:
+                from deepxiv_sdk import Reader as _dxReader
+                r = _dxReader(token=dx_token)
+                r.brief("1706.03762")
+                table_api.add_row("  DeepXiv", "[green]Reachable[/green]")
+            except Exception:
+                table_api.add_row(
+                    "  DeepXiv", "[yellow]Unreachable[/yellow]", "(check token at data.rag.ac.cn)"
+                )
+        else:
+            table_api.add_row(
+                "  DeepXiv", "[yellow]Not configured[/yellow]",
+                "(register at https://data.rag.ac.cn/register)"
+            )
+    except Exception:
+        table_api.add_row("  DeepXiv", "[yellow]Unknown[/yellow]")
+
     # -- LLM API connectivity --
     try:
         llm_models = cfg.get("llm", {}).get("models", [])

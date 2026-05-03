@@ -31,6 +31,7 @@ dirs:
   logs: "data/logs"
 
 api:
+  deepxiv_token: "${DEEPXIV_TOKEN}"
   s2_rate_limit: 100
   s2_api_key: "${S2_API_KEY}"
   cache_ttl: 86400
