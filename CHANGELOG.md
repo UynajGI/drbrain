@@ -49,7 +49,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - `check_cmd`: creates missing directories; tests LLM API connectivity; tests MinerU CLI presence; PyMuPDF fallback warning only when no MinerU path available
 - `check_cmd`: fallback directory paths updated from `data/inbox` to `data/spool/inbox` (stale reference from before restructure)
 - `_link_cross_section_arguments`: no longer creates edges to fake nodes; information preserved as debug log only
-- `setup` / `check`: DeepXiv token registration (data.rag.ac.cn) and S2 API key URL prompts
+- `setup` / `check`: DeepXiv token (data.rag.ac.cn) + S2 API key (semanticscholar.org) registration prompts. Ingest exports deepxiv_token to environment for library use.
 - `main.py`: fixed `brbrain` → `drbrain` import
 - `setup_cmd`: upgraded from config-only wizard to full env initializer (config + dirs + validation + readiness summary). `--quick` flag for non-interactive mode. Validate-only mode when config exists
 
