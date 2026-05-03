@@ -16,19 +16,19 @@ uv run drbrain serve                # launch Streamlit UI
 
 ## Key Commands
 
-| Command | Purpose | Tested |
-|---------|---------|--------|
+| Command | Purpose | E2E |
+|---------|---------|-----|
 | `drbrain setup` | Interactive config wizard + env init | ✅ |
 | `drbrain check` | Full environment diagnostics + auto-fix | ✅ |
+| `drbrain clean` | Clear data (db/cache/logs/papers/reports) | ✅ |
 | `drbrain ingest` | Parse PDFs (metadata + tree) — lightweight | ✅ |
 | `drbrain build` | 5-stage LLM graph extraction | ✅ |
-| `drbrain query` | BM25 + `--hybrid` + `--neighbors --relation --direction` | ✅ |
-| `drbrain graph neighbors` | Direct graph traversal from a node | ✅ |
-| `drbrain graph path` | Shortest path between two nodes | ✅ |
-| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
-| `drbrain closure` | Rule-based inference (`--dry-run`, `--rule`) | ✅ |
-| `drbrain clean` | Clear data (db/cache/logs/papers/reports) | ✅ |
-| `drbrain seed` | Detect research seeds from graph patterns | ✅ |
+| `drbrain query` | BM25 + `--hybrid` + `--neighbors` | ✅ |
+| `drbrain graph neighbors` | Direct graph traversal from a node | — |
+| `drbrain graph path` | Shortest path between two nodes | — |
+| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | — |
+| `drbrain closure` | Rule-based inference (`--dry-run`, `--rule`) | — |
+| `drbrain seed` | Detect research seeds from graph patterns | — |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) | — |
 | `drbrain check-citations` | Verify in-text citations against library | — |
 | `drbrain analyze` | Knowledge frontier report | — |
