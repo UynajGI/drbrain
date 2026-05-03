@@ -241,6 +241,18 @@ def _ingest_single_paper(
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         tree_json_path.write_text(doc_tree.to_json(), encoding="utf-8")
         echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_json_path.name}")
+        # Extract abstract from tree structure
+        for node in doc_tree.structure:
+            title = node.get("title", "") if isinstance(node, dict) else getattr(node, "title", "")
+            if "abstract" in title.lower():
+                abstract = ""
+                if isinstance(node, dict):
+                    abstract = node.get("summary", "") or node.get("content", "")
+                else:
+                    abstract = getattr(node, "summary", "") or getattr(node, "content", "")
+                if abstract.strip():
+                    db.set_paper_abstract(local_id, abstract[:2000])
+                break
     except Exception as e:
         echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
         _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
