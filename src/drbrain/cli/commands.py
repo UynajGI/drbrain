@@ -2631,3 +2631,126 @@ def translate_cmd(
         typer.echo(json.dumps({"paper": local_id, "output": str(result)}, ensure_ascii=False))
     else:
         typer.echo(f"Translated: {result}")
+
+
+def build_cmd(
+    paper_id: list[str] = typer.Argument(
+        None, help="Paper IDs to build graph for. Omit for all unprocessed."
+    ),
+    skip_refine: bool = typer.Option(
+        False, "--skip-refine", help="Skip iterative refinement stage"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Build knowledge graph from ingested papers using 5-stage LLM extraction."""
+    from drbrain.extractor.concept import build_graph_from_tree
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+
+    # Select papers to process
+    if paper_id:
+        papers = []
+        for pid in paper_id:
+            p = db.get_paper(pid)
+            if p:
+                papers.append(p)
+            else:
+                typer.echo(f"Paper not found: {pid}", err=True)
+    else:
+        all_papers = db.get_all_papers()
+        papers = [p for p in all_papers if p.get("status") == "uploaded"]
+
+    if not papers:
+        typer.echo("No papers to build. Run: drbrain ingest first")
+        db.close()
+        return
+
+    llm_models = cfg.get("llm", {}).get("models", [])
+    if not llm_models:
+        typer.echo("No LLM models configured. Run: drbrain setup", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    all_results = []
+
+    for paper in papers:
+        pid = paper["local_id"]
+        typer.echo(f"\n{pid}: {paper['title'][:80]}")
+
+        tree_path = papers_dir / pid / "tree.json"
+        md_path = papers_dir / pid / "raw.md"
+
+        if not tree_path.exists() or not md_path.exists():
+            typer.echo(f"  No tree.json or raw.md — ingest this paper first")
+            continue
+
+        import json as _json
+        tree = _json.loads(tree_path.read_text(encoding="utf-8"))
+        structure = tree.get("structure", [])
+        if not structure:
+            typer.echo(f"  Empty tree structure — skipping")
+            continue
+
+        # Run 5-stage pipeline
+        typer.echo("  Stage 1: Ontology...")
+        result = asyncio.run(
+            build_graph_from_tree(md_path, structure, llm_models, skip_refine=skip_refine)
+        )
+
+        concepts = result.get("concepts", [])
+        relations = result.get("relations", [])
+        merges = result.get("merges", [])
+        corrections = result.get("corrections", [])
+
+        typer.echo(f"  Stage 2: Entities...   {len(concepts)} concepts")
+        typer.echo(f"  Stage 3: Relations...  {len(relations)} edges")
+        typer.echo(f"  Stage 4: Coreference... {len(merges)} merges")
+        if not skip_refine:
+            typer.echo(f"  Stage 5: Refine...     {len(corrections)} corrections")
+
+        # Validate and insert concepts
+        valid_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
+        valid_count = 0
+        rejected = 0
+        for c in concepts:
+            ctype = c.get("type", "")
+            label = c.get("label", "")
+            conf = c.get("confidence", 0.5)
+            if ctype not in valid_types or not label:
+                rejected += 1
+                continue
+            db.insert_concept(pid, ctype, label, conf)
+            valid_count += 1
+
+        # Insert relations
+        for r in relations:
+            head = r.get("head", "")
+            rel = r.get("rel", "")
+            tail = r.get("tail", "")
+            if head and rel and tail:
+                try:
+                    db.insert_edge(head, tail, rel, pid)
+                except Exception:
+                    pass  # duplicate edge or invalid reference
+
+        # Mark as extracted
+        db.conn.execute(
+            "UPDATE papers SET status = 'extracted' WHERE local_id = ?", (pid,)
+        )
+        db.commit()
+
+        typer.echo(f"  Valid: {valid_count} | Rejected: {rejected}")
+        all_results.append(
+            {"paper_id": pid, "concepts": valid_count, "relations": len(relations)}
+        )
+
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps({"results": all_results}, indent=2, ensure_ascii=False))
+    elif all_results:
+        total_c = sum(r["concepts"] for r in all_results)
+        total_r = sum(r["relations"] for r in all_results)
+        typer.echo(f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers")

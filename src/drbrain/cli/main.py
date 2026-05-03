@@ -10,6 +10,7 @@ from loguru import logger
 from drbrain.cli.commands import (
     analyze_cmd,
     backup_cmd,
+    build_cmd,
     check_citations_cmd,
     check_cmd,
     citations_cmd,
@@ -80,6 +81,7 @@ app.command("analyze")(analyze_cmd)
 app.command("repair")(repair_cmd)
 app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
+app.command("build")(build_cmd)
 
 # Graph subcommands
 app.add_typer(graph_app, name="graph")
