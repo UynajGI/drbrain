@@ -449,6 +449,14 @@ def _resolve_metadata(
     final_title = raw_title
     final_year = raw_year
 
+    # Use text-extracted year as anchor to filter API results
+    _text_year = raw_year  # from PDF text parsing
+
+    def _year_consistent(api_year, anchor):
+        if not api_year or not anchor:
+            return True
+        return abs(api_year - anchor) <= 5
+
     # Only trust CrossRef's DOI if title matches AND year is consistent
     cr_data = sources.get("crossref", {})
     cr_doi = cr_data.get("doi")
@@ -457,11 +465,8 @@ def _resolve_metadata(
         cr_title = cr_data.get("title") or ""
         ref_title = final_title or ""
         if _titles_match(ref_title, cr_title):
-            # Reject if existing year is > 5 years apart from CrossRef
-            existing_year = final_year or sources.get("arxiv", {}).get("year")
-            if existing_year and cr_year and abs(existing_year - cr_year) > 5:
-                pass  # too far apart — likely different paper
-            else:
+            anchor = _text_year or sources.get("arxiv", {}).get("year")
+            if _year_consistent(cr_year, anchor):
                 final_doi = cr_doi
 
     if final_doi:
@@ -470,11 +475,16 @@ def _resolve_metadata(
         if cr_data.get("title"):
             final_title = cr_data["title"]
 
+    # Filter API years by text-year consistency
+    filtered_sources = {
+        k: v for k, v in sources.items()
+        if not _text_year or not v.get("year") or _year_consistent(v["year"], _text_year)
+    }
+
     if not final_year:
-        # No DOI — trust arXiv first, then consensus, then any source
-        years = [(k, v["year"]) for k, v in sources.items() if v.get("year")]
+        # Use filtered sources (year-consistent with text anchor)
+        years = [(k, v["year"]) for k, v in filtered_sources.items() if v.get("year")]
         if len(years) >= 2 and len(set(y for _, y in years)) == 1:
-            # All sources agree
             final_year = years[0][1]
         elif sources.get("arxiv", {}).get("year"):
             final_year = sources["arxiv"]["year"]
