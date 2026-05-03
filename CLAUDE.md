@@ -25,7 +25,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
 1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF → Markdown. Falls back to `pymupdf4llm.to_markdown()` for structured output (headings, tables, bold/italic). Plain text as last resort. Chapter-filtered to high-signal sections. PDFs >150 pages are split into chunks.
 
-2. **Identify** (`dedup/resolver.py`, `mineru_parser.py:_resolve_metadata`): Cross-validate paper metadata from arXiv, CrossRef, Semantic Scholar, and OpenAlex. Text-extracted year as anchor. Stores title, year, doi, arxiv, s2_id, openalex_id in `paper_ids`. Extracts abstract from tree.json Abstract node.
+2. **Identify** (`dedup/resolver.py`, `mineru_parser.py:_resolve_metadata`): Cross-validate paper metadata from 5 sources — arXiv, CrossRef, S2, OpenAlex, DeepXiv. Text-year anchor + title/year consistency check. Stores title, year, doi, arxiv, s2_id, openalex_id. Extracts abstract from tree.json. Graceful degradation when any source is unavailable.
 
 3. **Extract** (`extractor/concept.py`, `extractor/llm_client.py`): LLM extracts structured concepts (Problem, Method, Conclusion, Debate, Gap, Actor) and typed arguments with `mechanism` and `section` fields. Uses a fallback chain across configured models. Prompt template lives in `prompts/extract_concepts.txt`.
 
