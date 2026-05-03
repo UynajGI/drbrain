@@ -462,6 +462,13 @@ def _resolve_metadata(
             sources["s2"] = {"title": s2_title, "year": s2_year,
                             "doi": None, "s2_id": s2_id, "openalex_id": None}
 
+    # ── DeepXiv (arXiv papers, adds TLDR + keywords + citation count) ──
+    if arxiv:
+        dx = _fetch_deepxiv_metadata(arxiv)
+        if dx and dx.get("title"):
+            sources["deepxiv"] = {"title": dx["title"], "year": dx["year"],
+                                  "doi": None, "s2_id": None, "openalex_id": None}
+
     # ── Resolution ──
     final_doi = raw_doi
     final_title = raw_title
@@ -592,6 +599,29 @@ def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int |
     except Exception:
         pass
     return None, None, None
+
+
+def _fetch_deepxiv_metadata(arxiv_id: str) -> dict[str, Any] | None:
+    """Fetch metadata from DeepXiv API (title, year, TLDR, keywords, citations)."""
+    if not arxiv_id:
+        return None
+    try:
+        from deepxiv_sdk import Reader as _Reader
+
+        r = _Reader()
+        data = r.brief(arxiv_id)
+        year = None
+        if data.get("publish_at"):
+            year = int(data["publish_at"][:4])
+        return {
+            "title": data.get("title"),
+            "year": year,
+            "tldr": data.get("tldr"),
+            "keywords": data.get("keywords", []),
+            "citations": data.get("citations"),
+        }
+    except Exception:
+        return None
 
 
 def _fetch_crossref_metadata(title: str) -> tuple[str | None, int | None, str | None]:

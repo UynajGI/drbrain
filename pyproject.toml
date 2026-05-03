@@ -19,6 +19,7 @@ dependencies = [
     "rich>=13.9",
     "streamlit>=1.40",
     "typer>=0.15",
+    "deepxiv-sdk>=0.2.5",
 ]
 
 [project.optional-dependencies]
