@@ -2682,8 +2682,24 @@ def build_cmd(
         tree_path = papers_dir / pid / "tree.json"
         md_path = papers_dir / pid / "raw.md"
 
-        if not tree_path.exists() or not md_path.exists():
-            typer.echo(f"  No tree.json or raw.md — ingest this paper first")
+        # Retry tree generation if raw.md exists but tree.json is missing
+        if not tree_path.exists() and md_path.exists():
+            typer.echo(f"  Tree missing, retrying...")
+            try:
+                from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
+                pageindex_cfg = TreeConfig(
+                    if_add_node_summary=True, if_add_doc_description=True,
+                    if_add_node_text=False, if_add_node_id=True,
+                    max_node_tokens=10000, min_token_threshold=5000,
+                )
+                doc_tree = asyncio.run(md_to_tree(str(md_path), config=pageindex_cfg, models=llm_models))
+                tree_json_path.write_text(doc_tree.to_json(), encoding="utf-8")
+                typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
+            except Exception as e:
+                typer.echo(f"  Tree regeneration failed: {e}")
+                continue
+        elif not md_path.exists():
+            typer.echo(f"  No raw.md — ingest this paper first")
             continue
 
         import json as _json

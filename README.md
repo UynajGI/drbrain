@@ -16,28 +16,29 @@ uv run drbrain serve                # launch Streamlit UI
 
 ## Key Commands
 
-| Command | Purpose |
-|---------|---------|
-| `drbrain ingest` | Parse PDFs (metadata + tree) — no LLM extraction |
-| `drbrain build` | 5-stage LLM graph extraction from ingested papers |
-| `drbrain query` | Search concepts/arguments (BM25 + hybrid graph boost + PageIndex tree retrieval) |
-| `drbrain analyze` | Generate knowledge frontier report (seeds, chains, hypotheses) |
-| `drbrain citations` | Query citation graph (refs, citing, shared-refs) |
-| `drbrain graph neighbors <node>` | Direct graph traversal (no text search) |
-| `drbrain graph path <src> <dst>` | Shortest path between two graph nodes |
-| `drbrain graph related <id...>` | Shared concept analysis across papers (3 modes) |
-| `drbrain closure` | Rule-based graph inference (supports `--dry-run`, `--rule`) |
-| `drbrain check-citations <text>` | Verify in-text citations against library |
-| `drbrain ws` | Manage paper workspaces |
-| `drbrain export` | Export to BibTeX/RIS/Markdown |
-| `drbrain backup` | Create tar.gz backup |
-| `drbrain repair` | Auto-fix metadata via CrossRef/arXiv |
-| `drbrain import` | Import from Zotero or BibTeX |
-| `drbrain translate` | Translate paper markdown via LLM |
-| `drbrain setup` | Interactive config wizard + env init |
-| `drbrain check` | Full environment diagnostics + auto-fix |
-| `drbrain clean` | Clear data (db/cache/logs/papers/reports) |
-| `drbrain serve` | Web UI at http://127.0.0.1:8501 |
+| Command | Purpose | Tested |
+|---------|---------|--------|
+| `drbrain setup` | Interactive config wizard + env init | ✅ |
+| `drbrain check` | Full environment diagnostics + auto-fix | ✅ |
+| `drbrain ingest` | Parse PDFs (metadata + tree) — lightweight | ✅ |
+| `drbrain build` | 5-stage LLM graph extraction | ✅ |
+| `drbrain query` | BM25 + `--hybrid` + `--neighbors --relation --direction` | ✅ |
+| `drbrain graph neighbors` | Direct graph traversal from a node | ✅ |
+| `drbrain graph path` | Shortest path between two nodes | ✅ |
+| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
+| `drbrain closure` | Rule-based inference (`--dry-run`, `--rule`) | ✅ |
+| `drbrain clean` | Clear data (db/cache/logs/papers/reports) | ✅ |
+| `drbrain seed` | Detect research seeds from graph patterns | ✅ |
+| `drbrain citations` | Query citation graph (refs, citing, shared-refs) | — |
+| `drbrain check-citations` | Verify in-text citations against library | — |
+| `drbrain analyze` | Knowledge frontier report | — |
+| `drbrain ws` | Manage paper workspaces | — |
+| `drbrain export` | Export to BibTeX/RIS/Markdown | — |
+| `drbrain backup` | Create tar.gz backup | — |
+| `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | — |
+| `drbrain import` | Import from Zotero or BibTeX | — |
+| `drbrain translate` | Translate paper markdown via LLM | — |
+| `drbrain serve` | Streamlit UI at http://127.0.0.1:8501 | — |
 
 ## Architecture
 
