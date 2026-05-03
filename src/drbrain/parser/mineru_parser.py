@@ -115,10 +115,15 @@ class MinerUParser:
                     title = api_title
                 if api_year and not year:
                     year = api_year
-            elif title:
+
+            cr_title, cr_year, cr_doi = _fetch_crossref_metadata(title)
+            if cr_year and not year:
+                year = cr_year
+            if not doi and cr_doi:
+                doi = cr_doi
+
+            if not year and title:
                 oa_title, oa_year = _fetch_openalex_metadata(title)
-                if oa_title:
-                    title = oa_title
                 if oa_year and not year:
                     year = oa_year
 
@@ -197,18 +202,24 @@ class MinerUParser:
             if not arxiv and arxiv_from_name:
                 arxiv = arxiv_from_name
 
-            # Enrich metadata from arXiv API
+            # Enrich metadata: arXiv → CrossRef → OpenAlex
             if arxiv:
                 api_title, api_year = _fetch_arxiv_metadata(arxiv)
                 if api_title:
                     title = api_title
                 if api_year and not year:
                     year = api_year
-            elif title:
-                # No arXiv ID — try OpenAlex for metadata
+
+            # Cross-validate / fill gaps with CrossRef
+            cr_title, cr_year, cr_doi = _fetch_crossref_metadata(title)
+            if cr_year and not year:
+                year = cr_year
+            if not doi and cr_doi:
+                doi = cr_doi
+
+            # If still no year, try OpenAlex
+            if not year and title:
                 oa_title, oa_year = _fetch_openalex_metadata(title)
-                if oa_title:
-                    title = oa_title
                 if oa_year and not year:
                     year = oa_year
 
@@ -438,6 +449,34 @@ def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None]:
     except Exception:
         pass
     return None, None
+
+
+def _fetch_crossref_metadata(title: str) -> tuple[str | None, int | None, str | None]:
+    """Fetch title, year, and DOI from CrossRef by title search."""
+    if not title:
+        return None, None, None
+    try:
+        import json as _json
+        import urllib.parse as _uparse
+        import urllib.request as _ureq
+
+        clean = title.strip()[:200]
+        url = f"https://api.crossref.org/works?query.bibliographic={_uparse.quote(clean)}&rows=1"
+        req = _ureq.Request(url, headers={"Accept": "application/json"})
+        resp = _ureq.urlopen(req, timeout=10)
+        data = _json.loads(resp.read())
+        items = data.get("message", {}).get("items", [])
+        if items:
+            item = items[0]
+            doi = item.get("DOI")
+            cr_title = item.get("title", [None])[0]
+            year = item.get("published-print", {}).get("date-parts", [[None]])[0][0]
+            if not year:
+                year = item.get("created", {}).get("date-parts", [[None]])[0][0]
+            return cr_title, year, doi
+    except Exception:
+        pass
+    return None, None, None
 
 
 def normalize_doi(raw: str) -> str:
