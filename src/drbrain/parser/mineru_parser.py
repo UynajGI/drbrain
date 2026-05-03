@@ -109,12 +109,17 @@ class MinerUParser:
             if not arxiv and arxiv_from_name:
                 arxiv = arxiv_from_name
 
-            title, year, doi = _resolve_metadata(
+            meta = _resolve_metadata(
                 arxiv=arxiv,
                 raw_title=title,
                 raw_year=year,
                 raw_doi=doi,
             )
+            title = meta["title"] or title
+            year = meta["year"] or year
+            doi = meta["doi"] or doi
+            s2_id = meta["s2_id"]
+            oa_id = meta["openalex_id"]
 
             blocks = filter_sections(merged_md)
 
@@ -123,6 +128,8 @@ class MinerUParser:
                 year=year,
                 doi=doi,
                 arxiv=arxiv,
+                s2_id=s2_id,
+                openalex_id=oa_id,
                 text_blocks=blocks,
                 raw_md=merged_md,
                 images_dir=merged_images,
@@ -192,12 +199,17 @@ class MinerUParser:
                 arxiv = arxiv_from_name
 
             # Cross-validate metadata from all available sources
-            title, year, doi = _resolve_metadata(
+            meta = _resolve_metadata(
                 arxiv=arxiv,
                 raw_title=title,
                 raw_year=year,
                 raw_doi=doi,
             )
+            title = meta["title"] or title
+            year = meta["year"] or year
+            doi = meta["doi"] or doi
+            s2_id = meta["s2_id"]
+            oa_id = meta["openalex_id"]
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work
@@ -213,6 +225,8 @@ class MinerUParser:
                 year=year,
                 doi=doi,
                 arxiv=arxiv,
+                s2_id=s2_id,
+                openalex_id=oa_id,
                 authors=authors or [],
                 text_blocks=blocks,
                 raw_md=raw_md,
@@ -407,42 +421,46 @@ def _resolve_metadata(
     raw_title: str | None = None,
     raw_year: int | None = None,
     raw_doi: str | None = None,
-) -> tuple[str | None, int | None, str | None]:
-    """Cross-validate metadata from arXiv, CrossRef, and OpenAlex.
+) -> dict[str, Any]:
+    """Cross-validate metadata from arXiv, CrossRef, S2, and OpenAlex.
 
     Strategy:
     1. If arXiv ID: fetch from arXiv API (authoritative for arXiv papers)
-    2. If title (from arxiv or extraction): search CrossRef + OpenAlex
-    3. DOI from CrossRef is gold standard — if CrossRef gives a DOI, use its year
-    4. If multiple sources agree on year → high confidence
-    5. Gaps filled by the most authoritative available source
+    2. If title: search CrossRef, OpenAlex, S2
+    3. DOI from CrossRef with title+year consistency check
+    4. Multiple source consensus → high confidence
+    5. Returns {title, year, doi, s2_id, openalex_id}
     """
-    sources: dict[str, dict] = {}  # source_name -> {title, year, doi}
+    sources: dict[str, dict] = {}
 
     # ── arXiv ──
     if arxiv:
         arxiv_title, arxiv_year = _fetch_arxiv_metadata(arxiv)
         if arxiv_title or arxiv_year:
-            sources["arxiv"] = {"title": arxiv_title, "year": arxiv_year, "doi": None}
+            sources["arxiv"] = {"title": arxiv_title, "year": arxiv_year,
+                               "doi": None, "s2_id": None, "openalex_id": None}
 
     # ── CrossRef (keyed by title from arXiv, or raw title) ──
     search_title = sources.get("arxiv", {}).get("title") or raw_title or ""
     if search_title:
         cr_title, cr_year, cr_doi = _fetch_crossref_metadata(search_title)
         if cr_doi or cr_year:
-            sources["crossref"] = {"title": cr_title, "year": cr_year, "doi": cr_doi}
+            sources["crossref"] = {"title": cr_title, "year": cr_year, "doi": cr_doi,
+                                   "s2_id": None, "openalex_id": None}
 
     # ── OpenAlex ──
     if search_title:
-        oa_title, oa_year = _fetch_openalex_metadata(search_title)
+        oa_title, oa_year, oa_id = _fetch_openalex_metadata(search_title)
         if oa_title or oa_year:
-            sources["openalex"] = {"title": oa_title, "year": oa_year, "doi": None}
+            sources["openalex"] = {"title": oa_title, "year": oa_year,
+                                   "doi": None, "s2_id": None, "openalex_id": oa_id}
 
     # ── Semantic Scholar ──
     if search_title:
-        s2_title, s2_year = _fetch_s2_metadata(search_title)
+        s2_title, s2_year, s2_id = _fetch_s2_metadata(search_title)
         if s2_title or s2_year:
-            sources["s2"] = {"title": s2_title, "year": s2_year, "doi": None}
+            sources["s2"] = {"title": s2_title, "year": s2_year,
+                            "doi": None, "s2_id": s2_id, "openalex_id": None}
 
     # ── Resolution ──
     final_doi = raw_doi
@@ -497,7 +515,20 @@ def _resolve_metadata(
                 final_title = sources[src]["title"]
                 break
 
-    return final_title, final_year, final_doi
+    # Collect external IDs from sources
+    final_s2_id = None
+    final_openalex_id = None
+    for src_name in ["crossref", "s2", "openalex"]:
+        s = sources.get(src_name, {})
+        if s.get("s2_id") and not final_s2_id:
+            final_s2_id = s["s2_id"]
+        if s.get("openalex_id") and not final_openalex_id:
+            final_openalex_id = s["openalex_id"]
+
+    return {
+        "title": final_title, "year": final_year, "doi": final_doi,
+        "s2_id": final_s2_id, "openalex_id": final_openalex_id,
+    }
 
 
 def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
@@ -520,10 +551,10 @@ def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
         return None, None
 
 
-def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None]:
-    """Fetch title and year from OpenAlex via pyalex. Used for papers without arXiv ID."""
+def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None, str | None]:
+    """Fetch title, year, and OpenAlex ID via pyalex."""
     if not title:
-        return None, None
+        return None, None, None
     try:
         from pyalex import Works as _Works
 
@@ -531,22 +562,23 @@ def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None]:
         results = list(works.search(title).get(per_page=1))
         if results:
             w = results[0]
-            return w.get("title"), w.get("publication_year")
+            oa_id = w.get("id", "").replace("https://openalex.org/", "")
+            return w.get("title"), w.get("publication_year"), oa_id or None
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
-def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int | None]:
-    """Fetch title and year from Semantic Scholar API."""
+def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int | None, str | None]:
+    """Fetch title, year, and paperId from Semantic Scholar API."""
     if not title:
-        return None, None
+        return None, None, None
     try:
         import json as _json
         import urllib.parse as _uparse
         import urllib.request as _ureq
 
-        url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={_uparse.quote(title)}&limit=1&fields=title,year"
+        url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={_uparse.quote(title)}&limit=1&fields=title,year,paperId"
         headers = {"Accept": "application/json"}
         if api_key:
             headers["x-api-key"] = api_key
@@ -556,10 +588,10 @@ def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int |
         papers = data.get("data", [])
         if papers:
             p = papers[0]
-            return p.get("title"), p.get("year")
+            return p.get("title"), p.get("year"), p.get("paperId")
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
 def _fetch_crossref_metadata(title: str) -> tuple[str | None, int | None, str | None]:

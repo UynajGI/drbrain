@@ -167,7 +167,8 @@ def _ingest_single_paper(
         else:
             local_id = f"p{uuid.uuid4().hex[:6]}"
             db.insert_paper(local_id, parsed.title, parsed.year, "uploaded")
-            db.insert_paper_ids(local_id, doi=ids.doi, arxiv=ids.arxiv)
+            db.insert_paper_ids(local_id, doi=ids.doi, arxiv=ids.arxiv,
+                                s2_id=parsed.s2_id, openalex_id=parsed.openalex_id)
             db.commit()
             echo(f"  [new] {local_id}")
     else:
