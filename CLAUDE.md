@@ -21,27 +21,24 @@ Key user commands: `setup`, `ingest`, `query`, `graph`, `analyze`, `citations`, 
 
 DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven research discovery. It ingests PDFs, extracts structured concepts/arguments via LLM, deduplicates identities, and infers new relationships through rule-based graph closure.
 
-### Ingestion Pipeline (9 stages)
+### Ingestion Pipeline (2-phase)
 
-1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF → Markdown. Falls back to `pymupdf4llm.to_markdown()` for structured output (headings, tables, bold/italic). Plain text as last resort. Chapter-filtered to high-signal sections. PDFs >150 pages are split into chunks.
+**Phase 1 — `drbrain ingest`**: Lightweight PDF-to-library. No concept extraction.
 
-2. **Identify** (`dedup/resolver.py`, `mineru_parser.py:_resolve_metadata`): Cross-validate paper metadata from 5 sources — arXiv, CrossRef, S2, OpenAlex, DeepXiv. Text-year anchor + title/year consistency check. Stores title, year, doi, arxiv, s2_id, openalex_id. Extracts abstract from tree.json. Graceful degradation when any source is unavailable.
+1. **Parse** (`parser/mineru_parser.py`): MinerU CLI → Markdown. Falls back to `pymupdf4llm.to_markdown()`. PDFs >150 pages split into chunks.
+2. **Identify** (`dedup/resolver.py`, `mineru_parser.py:_resolve_metadata`): 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv). Stores title, year, doi, arxiv, s2_id, openalex_id in `paper_ids`. Extracts abstract from tree.json.
+3. **Tree** (`parser/pageindex_parser.py`): LLM structures markdown into `tree.json` with section summaries.
+4. **Record**: Insert paper with status `uploaded`.
 
-3. **Extract** (`extractor/concept.py`, `extractor/llm_client.py`): LLM extracts structured concepts (Problem, Method, Conclusion, Debate, Gap, Actor) and typed arguments with `mechanism` and `section` fields. Uses a fallback chain across configured models. Prompt template lives in `prompts/extract_concepts.txt`.
+**Phase 2 — `drbrain build [paper_id...]`**: 5-stage LLM graph extraction.
 
-   **PageIndex tree extraction** (`parser/pageindex_parser.py`): Documents are first structured into a tree (`tree.json` in Stage 2.5). `extract_concepts_from_tree()` then extracts per-leaf-node with the tree skeleton as LLM context, replacing flat `text[:8000]` truncation. Concurrency is capped via `asyncio.Semaphore(max_concurrent=3)`. Content quality gate (`_is_quality_content()`) filters short text and reference lists before LLM calls. After merge, `_link_cross_section_arguments()` links arguments sharing targets across sections.
+1. **Ontology Extension**: LLM suggests domain-specific subcategories under 6 TBox types.
+2. **Entity Extraction**: Per leaf-node concept extraction with subcategory labels. 10-way concurrency.
+3. **Relation Extraction**: LLM connects concepts using TBox relations.
+4. **Coreference Resolution**: LLM merges duplicate entity labels.
+5. **Iterative Refinement**: LLM self-reviews extraction for contradictions and errors (skippable via `--skip-refine`).
 
-4. **Validate** (`validator/schema.py`): **TBox** enforces which relations each concept type can use — Method: `addresses/proposes/extends/replaces/solves/supports/challenges/limits/constrains`; Conclusion: `supports/challenges/limits/extends`; Problem: `addresses/leaves_open/points_to`; Gap: `leaves_open/points_to/constrains`; Actor: `affiliated_with/proposes`; Debate: `supports/challenges`. `cross_section_*` relations allowed for all types. **RBox** enforces transitivity, asymmetry, irreflexivity. Rejected items logged at WARNING level.
-
-5. **Queue** (`extractor/queue.py`): Low-confidence concepts (< `weak_threshold`, default 0.7) are routed to `confidence_queue` table for manual review via `drbrain queue` / `drbrain queue resolve`.
-
-6. **Align** (`extractor/canonical.py`): Canonical ID alignment — BM25 similarity match with LLM arbitration for ambiguous cases (score 0.3-0.8).
-
-7. **Ingest** (`storage/database.py`): Inserts concepts, arguments (with `mechanism` and `section` fields), edges into SQLite. Basic SQLite wrapper with auto-schema init — no ORM.
-
-8. **Expand** (`extractor/citation.py`): Fetches references and citations from Semantic Scholar / CrossRef / OpenAlex. Creates placeholder papers for external references.
-
-9. **Closure** (`graph/engine.py`): NetworkX MultiDiGraph in-memory. Rule-based relationship inference (8 original rules + 4 path rules): `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, transitive closure, asymmetric detection, plus `method_supersedes_problem`, `challenge_chain`, `gap_inheritance`, `indirect_support` from `path_reasoning.py`. Also provides `traverse()` — directed BFS with relation filtering, path tracking, and direction control (forward/backward/both). Supports both full-graph and incremental (2-hop subgraph) closure.
+Paper statuses: `uploaded` → `extracted` (after build). `placeholder` for citation-only papers.
 
 ### Reasoning & Discovery Modules (post-ingestion)
 

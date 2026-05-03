@@ -18,7 +18,8 @@ uv run drbrain serve                # launch Streamlit UI
 
 | Command | Purpose |
 |---------|---------|
-| `drbrain ingest` | Parse and ingest PDFs into knowledge graph |
+| `drbrain ingest` | Parse PDFs (metadata + tree) — no LLM extraction |
+| `drbrain build` | 5-stage LLM graph extraction from ingested papers |
 | `drbrain query` | Search concepts/arguments (BM25 + hybrid graph boost + PageIndex tree retrieval) |
 | `drbrain analyze` | Generate knowledge frontier report (seeds, chains, hypotheses) |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) |
@@ -41,7 +42,7 @@ uv run drbrain serve                # launch Streamlit UI
 ## Architecture
 
 - **Parser**: MinerU CLI → PyMuPDF fallback, PDF → Markdown
-- **Extractor**: LLM structured extraction with PageIndex tree-based concurrency
+- **Extractor**: 5-stage LLM pipeline (ontology→entities→relations→coreference→refine), 10-way concurrent
 - **Dedup**: DOI → arXiv → S2 → OpenAlex → title+year fuzzy match
 - **Graph**: NetworkX in-memory + SQLite, rule-based closure with 8+4 inference rules, directed BFS traversal with relation filtering, shortest-path queries
 - **Reasoning**: Causal chains, counterfactual analysis, isomorphism detection, hypothesis generation
