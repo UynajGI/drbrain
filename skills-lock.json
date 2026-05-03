@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "crossref-search": {
+      "source": "beita6969/ScienceClaw",
+      "sourceType": "github",
+      "skillPath": "skills/crossref-search/SKILL.md",
+      "computedHash": "5c1b15f26dd35682439c4ce8650dca1e24e1b8915fbfc64643e48847ad94b03f"
+    }
+  }
+}
