@@ -25,7 +25,7 @@ DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven
 
 1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF → Markdown. Falls back to `pymupdf4llm.to_markdown()` for structured output (headings, tables, bold/italic). Plain text as last resort. Chapter-filtered to high-signal sections. PDFs >150 pages are split into chunks.
 
-2. **Identify** (`dedup/resolver.py`): Resolve paper identity via priority chain: DOI → arXiv → S2 ID → OpenAlex ID → title+year fuzzy match. Creates or upgrades paper record.
+2. **Identify** (`dedup/resolver.py`): Resolve paper identity via priority chain: DOI → arXiv → S2 ID → OpenAlex ID → title+year fuzzy match. Metadata enriched from `arxiv` library (primary), CrossRef API (DOI + gap fill), then `pyalex`/OpenAlex (last resort). Creates or upgrades paper record.
 
 3. **Extract** (`extractor/concept.py`, `extractor/llm_client.py`): LLM extracts structured concepts (Problem, Method, Conclusion, Debate, Gap, Actor) and typed arguments with `mechanism` and `section` fields. Uses a fallback chain across configured models. Prompt template lives in `prompts/extract_concepts.txt`.
 
@@ -85,7 +85,7 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list in `config.local.yaml`; first successful parse wins, `None` if all exhausted. Supports any litellm provider (OpenAI, Anthropic, Ollama, plus OpenAI-compatible endpoints like DeepSeek/Zhipu/Bailian).
 - **No vector embeddings**: BM25 (`query/bm25.py`) for search over concepts + arguments. No vector DB dependency.
 - **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
-- **Ecosystem enrichment**: CrossRef, Semantic Scholar (with API key support for higher rate limits), OpenAlex APIs for citation expansion, DOI resolution, author identity. Rate-limited with configurable cache TTL.
+- **Ecosystem enrichment**: `arxiv` library for arXiv metadata; CrossRef API (`crossref.py`) for DOI resolution and cross-validation; `pyalex` library for OpenAlex title search and author identity; Semantic Scholar (with API key support). Rate-limited with configurable cache TTL.
 - **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
 - **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
 - **Streamlit UI**: `drbrain serve` launches interactive graph visualization at `http://127.0.0.1:8501`.
