@@ -47,6 +47,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - `test_closure_cmd_backward_compat`: insufficient test data (single extends edge produces no inferred edges; use 3-node transitive chain)
 - `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory
 - `check_cmd`: creates missing directories; tests LLM API connectivity; tests MinerU CLI presence; PyMuPDF fallback warning only when no MinerU path available
+- `check_cmd`: fallback directory paths updated from `data/inbox` to `data/spool/inbox` (stale reference from before restructure)
 - `_link_cross_section_arguments`: no longer creates edges to fake nodes; information preserved as debug log only
 - `main.py`: fixed `brbrain` → `drbrain` import
 - `setup_cmd`: upgraded from config-only wizard to full env initializer (config + dirs + validation + readiness summary). `--quick` flag for non-interactive mode. Validate-only mode when config exists
