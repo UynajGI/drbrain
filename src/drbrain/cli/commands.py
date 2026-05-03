@@ -16,12 +16,9 @@ from rich.table import Table
 
 from drbrain.config import load_config
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
-from drbrain.extractor.canonical import SmartAligner
-from drbrain.extractor.concept import extract_concepts, extract_concepts_from_tree
 from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.query.tree_retrieval import query_by_structure
-from drbrain.report.generator import PaperReport
 from drbrain.storage.database import Database
 
 console = Console()
@@ -35,7 +32,7 @@ def ingest_cmd(
         False, "--json", help="Output machine-readable JSON to stdout"
     ),
 ):
-    """Full ingest pipeline: parse -> identify -> extract -> validate -> queue -> align -> ingest -> expand -> report.
+    """Ingest pipeline: parse -> identify -> tree -> paper record.
 
     Accepts single file, multiple files, or a directory of PDFs.
     Defaults to data/inbox/ when no paths provided.
@@ -70,16 +67,7 @@ def ingest_cmd(
 
     cfg = load_config()
     db = Database(cfg["db"]["path"])
-    graph = GraphEngine()
-    graph.load_from_db(db)
     dedup = DedupEngine(db)
-    llm_models = cfg.get("llm", {}).get("models", [])
-
-    aligner = SmartAligner(db, models=llm_models)
-
-    queue_cfg = cfg.get("queue", {})
-    weak_threshold = queue_cfg.get("weak_threshold", 0.7)
-    auto_accept = queue_cfg.get("auto_accept", 0.9)
 
     results = []
     for i, pdf_path in enumerate(pdf_files, 1):
@@ -92,11 +80,7 @@ def ingest_cmd(
             pdf_path,
             cfg,
             db,
-            graph,
             dedup,
-            aligner,
-            weak_threshold,
-            auto_accept,
             json_mode=json_output,
         )
         results.append(result)
@@ -126,14 +110,10 @@ def _ingest_single_paper(
     pdf_path: Path,
     cfg: dict,
     db: Database,
-    graph: GraphEngine,
     dedup: DedupEngine,
-    aligner: SmartAligner,
-    weak_threshold: float,
-    auto_accept: float,
     json_mode: bool = False,
 ) -> dict:
-    """Ingest a single paper. Returns {"ok": bool, "local_id": str|None, "report": dict|None, "error": str|None}."""
+    """Ingest a single paper: parse -> identify -> tree. Returns {"ok": bool, "local_id": str|None, "error": str|None}."""
 
     def echo(msg: str):
         if not json_mode:
@@ -262,268 +242,54 @@ def _ingest_single_paper(
         echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
         _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
 
-    # Stage 3: Extract
-    echo("  Extracting concepts + arguments...")
-    max_concurrent = cfg.get("extract", {}).get("max_concurrent", 10)
-    if tree_json_path.exists():
-        tree_data = json.loads(tree_json_path.read_text(encoding="utf-8"))
-        concepts = asyncio.run(
-            extract_concepts_from_tree(md_path, tree_data["structure"], llm_models,
-                                       max_concurrent=max_concurrent)
-        )
-    else:
-        concepts = None
+    # Stage 7: DOI enrichment — multi-source fallback chain
+    current_doi = db.get_paper(local_id).get("doi")
+    if not current_doi and parsed.title:
+        crossref_email = cfg.get("api", {}).get("crossref_email")
+        openalex_token = cfg.get("api", {}).get("openalex_token")
 
-    if concepts is None:
-        # Fallback: flat text extraction (no tree or tree extraction failed)
-        full_text = "\n\n".join(parsed.text_blocks)
-        concepts = asyncio.run(extract_concepts(full_text, llm_models))
-    if concepts is None:
-        echo("Error: LLM extraction failed. All models exhausted.")
-        _log_error(cfg, f"LLM extraction failed for {local_id}")
-        _move_to_pending(pdf_path, cfg, "LLM extraction failed")
-        raise typer.Exit(1)
-
-    # Stage 3.5: Validate
-    from drbrain.validator.schema import validate_extraction
-
-    echo("  Validating extraction...")
-    concept_data = {
-        "problems": concepts.problems,
-        "methods": concepts.methods,
-        "conclusions": concepts.conclusions,
-        "debates": concepts.debates,
-        "gaps": concepts.gaps,
-        "actors": concepts.actors,
-    }
-    validation = validate_extraction(concept_data, concepts.relations)
-    echo(f"  Valid items: {len(validation['valid'])}")
-    if validation["rejected"]:
-        echo(f"  Rejected: {len(validation['rejected'])}")
-        for r in validation["rejected"]:
-            echo(f"    [yellow]{r['reason']}[/yellow]")
-
-    valid_relations = [r["detail"] for r in validation["valid"] if r["type"] == "relation"]
-
-    # Stage 3.6: Queue low-confidence concepts
-    from drbrain.extractor.queue import route_item
-
-    typed_count = 0
-    queued_count = 0
-    weak_count = 0
-    all_items = [
-        ("Problem", concepts.problems),
-        ("Method", concepts.methods),
-        ("Conclusion", concepts.conclusions),
-        ("Debate", concepts.debates),
-        ("Gap", concepts.gaps),
-    ]
-    for ctype, items in all_items:
-        for item in items:
-            label = item.get("label", "")
-            conf = item.get("confidence", 1.0)
-            routing = route_item(
-                db,
-                local_id,
-                "concept",
-                {"label": label, "type": ctype},
-                conf,
-                weak_threshold,
-                auto_accept,
-            )
-            if routing["action"] == "queued":
-                queued_count += 1
-            elif routing["action"] == "weak":
-                weak_count += 1
-            typed_count += 1
-
-    # Stage 4: Align + Stage 5: Ingest
-    # Stage 6: Expand
-    # Stage 7: DOI enrichment
-    # Stage 8: Closure
-    # All wrapped in try/except for transaction rollback (Spec §20)
-    try:
-        # Stage 4: Align + Stage 5: Ingest
-        for ctype, items in all_items:
-            for item in items:
-                label = item.get("label", "")
-                conf = item.get("confidence", 1.0)
-                if conf >= weak_threshold:
-                    canonical_id = aligner.align(label, ctype)
-                    db.insert_concept(
-                        local_id,
-                        ctype,
-                        label,
-                        conf,
-                        year=parsed.year,
-                        section=item.get("section", ""),
-                    )
-                    db.insert_alias(label, canonical_id)
-
-        for rel in valid_relations:
-            db.insert_edge(rel["head"], rel["tail"], rel["rel"], local_id)
-
-        # Gap → Problem/Method (points_to) — infer from label overlap
-        if concepts.gaps and (concepts.problems or concepts.methods):
-            gap_labels = {g["label"] for g in concepts.gaps}
-            prob_labels = {p["label"] for p in concepts.problems}
-            method_labels = {m["label"] for m in concepts.methods}
-            for gap in gap_labels:
-                # Simple keyword overlap heuristic
-                gap_words = set(gap.lower().split())
-                for prob in prob_labels:
-                    prob_words = set(prob.lower().split())
-                    if gap_words & prob_words:
-                        db.insert_edge(gap, prob, "points_to", local_id)
-                for method in method_labels:
-                    method_words = set(method.lower().split())
-                    if gap_words & method_words:
-                        db.insert_edge(gap, method, "points_to", local_id)
-
-        # Ingest arguments
-        from drbrain.extractor.argument import validate_arguments
-
-        valid_args, rejected_args = validate_arguments(concepts.arguments)
-        for arg in valid_args:
-            db.insert_argument(
-                local_id,
-                arg.claim,
-                arg.claim_type,
-                arg.target,
-                arg.target_type,
-                arg.evidence_type,
-                arg.evidence_detail,
-                arg.mechanism,
-                arg.confidence,
-                section=arg.section,
-            )
-
-        db.commit()
-        echo(f"  Concepts inserted: {typed_count}")
-        echo(f"  Arguments inserted: {len(valid_args)}")
-        if queued_count:
-            echo(f"  Queued for review: {queued_count}")
-        if weak_count:
-            echo(f"  Weak (ingested with marker): {weak_count}")
-        if rejected_args:
-            echo(f"  Arguments rejected: {len(rejected_args)}")
-
-        # Stage 6: Expand
-        echo("  Expanding citations...")
-        from drbrain.extractor.citation import expand_citations
-
-        refs, cits = expand_citations(db, local_id, cfg)
-        refs_in = sum(1 for r in refs if r.in_graph)
-        cits_in = sum(1 for c in cits if c.in_graph)
-        echo(f"  References: {len(refs)} ({refs_in} in graph)")
-        echo(f"  Citations: {len(cits)} ({cits_in} in graph)")
-
-        # Stage 7: DOI enrichment — multi-source fallback chain
-        current_doi = db.get_paper(local_id).get("doi")
-        if not current_doi and parsed.title:
-            crossref_email = cfg.get("api", {}).get("crossref_email")
-            openalex_token = cfg.get("api", {}).get("openalex_token")
-
-            doi_info = None
-            sources = [
-                ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
-                (
-                    "CrossRef arXiv",
-                    lambda: (
-                        _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email)
-                        if parsed.arxiv
-                        else None
-                    ),
+        doi_info = None
+        sources = [
+            ("CrossRef title", lambda: _enrich_doi_from_crossref(parsed.title, crossref_email)),
+            (
+                "CrossRef arXiv",
+                lambda: (
+                    _enrich_doi_from_crossref_arxiv(parsed.arxiv, crossref_email)
+                    if parsed.arxiv
+                    else None
                 ),
-                (
-                    "CrossRef DOI",
-                    lambda: (
-                        _enrich_doi_from_crossref_doi(parsed.doi, crossref_email)
-                        if parsed.doi
-                        else None
-                    ),
+            ),
+            (
+                "CrossRef DOI",
+                lambda: (
+                    _enrich_doi_from_crossref_doi(parsed.doi, crossref_email)
+                    if parsed.doi
+                    else None
                 ),
-                (
-                    "OpenAlex title",
-                    lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token),
-                ),
-            ]
-            for name, fn in sources:
-                if doi_info and doi_info.get("doi"):
-                    break
-                echo(f"  Trying {name}...")
-                doi_info = fn()
-
+            ),
+            (
+                "OpenAlex title",
+                lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token),
+            ),
+        ]
+        for name, fn in sources:
             if doi_info and doi_info.get("doi"):
-                db.conn.execute(
-                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                    (doi_info["doi"], local_id),
-                )
-                db.commit()
-                echo(f"  Found DOI: {doi_info['doi']}")
-            else:
-                echo("  No DOI found in any source")
+                break
+            echo(f"  Trying {name}...")
+            doi_info = fn()
 
-        # Stage 8: Closure (full + incremental for new paper)
-        echo("  Running rule closure...")
-        graph.load_from_db(db)
-        inferred = graph.closure()
-        # Incremental closure from this paper's nodes
-        affected_nodes = {local_id}
-        for ctype, items in all_items:
-            for item in items:
-                affected_nodes.add(item.get("label", ""))
-        incr_inferred = graph.closure_incremental(affected_nodes)
-        inferred.extend(incr_inferred)
-        for edge in inferred:
-            db.insert_edge(edge["src"], edge["dst"], edge["relation"], local_id)
-        db.commit()
-        echo(f"  Inferred edges: {len(inferred)}")
+        if doi_info and doi_info.get("doi"):
+            db.conn.execute(
+                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                (doi_info["doi"], local_id),
+            )
+            db.commit()
+            echo(f"  Found DOI: {doi_info['doi']}")
+        else:
+            echo("  No DOI found in any source")
 
-    except Exception as e:
-        db.conn.rollback()
-        echo(f"[red]Error during ingestion, rolled back: {e}[/red]")
-        _log_error(cfg, f"Ingestion rollback for {local_id}: {e}")
-        return {"ok": False, "local_id": local_id, "error": str(e)}
-
-    # Stage 9: Report
-    report = PaperReport(
-        local_id=local_id,
-        title=parsed.title,
-        year=parsed.year,
-        ids={"doi": parsed.doi, "arxiv": parsed.arxiv},
-        status="uploaded",
-        concepts=concepts.to_dict(),
-        arguments=[a.to_dict() for a in valid_args],
-        references=refs,
-        citations=cits,
-        validation={
-            "items_rejected": len(validation["rejected"]),
-            "items_queued": queued_count,
-            "tbox_violations": [r["reason"] for r in validation["rejected"]],
-            "rbox_violations": [],
-        },
-    )
-    report_dir = Path(cfg["dirs"]["reports"])
-    report_path = report.save(report_dir)
-    echo(f"  Report saved: {report_path}")
-
-    summary = report.summary
-    if summary["graph_coverage"] < 0.3:
-        echo(
-            f"\n  [bold yellow]Warning: Low coverage ({summary['graph_coverage']:.1%}). Consider ingesting missing references.[/bold yellow]"
-        )
-
-    # Log validation failures (TBox violations are expected — LLM is inexact)
-    tbox_violations = [r["reason"] for r in validation["rejected"]]
-    for reason in tbox_violations:
-        _ingest_log.warning(f"[{local_id}] TBox validation: {reason}")
-
-    # Flush pending LLM alignments
-    aligner.flush_pending()
-
-    echo(f"\nDone: {local_id}")
-    return {"ok": True, "local_id": local_id, "report": report.to_dict()}
+    echo(f"  Ingested: {local_id}")
+    return {"ok": True, "local_id": local_id, "report": {"local_id": local_id}}
 
 
 def _check_and_merge_duplicates(
