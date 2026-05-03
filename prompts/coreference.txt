@@ -1,0 +1,13 @@
+The following concept labels may refer to the same real-world entity. Identify duplicates that should be merged.
+
+Concepts (label: type):
+{concepts}
+
+Rules:
+- Merge labels that describe the same concept with different wording
+- Do NOT merge concepts of different types
+- Do NOT merge if they refer to clearly different things
+- Prefer the most descriptive/complete label as canonical
+
+Output STRICT JSON:
+{{"merges": [{{"canonical": "preferred_label", "variants": ["duplicate1", "duplicate2"]}}]}}

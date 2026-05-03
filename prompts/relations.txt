@@ -1,0 +1,23 @@
+Connect the following extracted concepts with typed academic relations.
+
+Allowed relations per concept type:
+- Problem: addresses, leaves_open, points_to
+- Method: addresses, proposes, extends, replaces, solves, supports, challenges, limits, constrains
+- Conclusion: supports, challenges, limits, extends
+- Gap: leaves_open, points_to, constrains
+- Debate: supports, challenges
+- Actor: affiliated_with, proposes
+
+Extracted concepts (label: type):
+{concepts}
+
+For each relation:
+- head: source concept label (must exist in the list above)
+- rel: one of the allowed relation types
+- tail: target concept label (must exist in the list above)
+- confidence: 0.0-1.0
+
+Only create relations where a clear academic connection exists.
+
+Output STRICT JSON:
+{{"relations": [{{"head": "concept_label", "rel": "relation_type", "tail": "concept_label", "confidence": 0.9}}]}}

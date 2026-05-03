@@ -1,0 +1,20 @@
+You are reviewing a knowledge graph extraction for quality. Find and fix issues.
+
+Extraction summary:
+- Concepts extracted: {concept_count}
+- Relations extracted: {relation_count}
+
+Review for:
+- Contradictions: concept A challenges concept B, but also supports it
+- Redundancies: multiple concepts describe the same thing (not caught earlier)
+- Missing relations: obvious connections between concepts that weren't extracted
+- Wrong types: concept type doesn't match its label/description
+- Low confidence: any concept or relation that seems questionable
+
+Output corrections as STRICT JSON:
+{{"corrections": [
+  {{"action": "remove", "target": "concept_label", "reason": "..."}},
+  {{"action": "add_relation", "head": "...", "rel": "...", "tail": "...", "reason": "..."}},
+  {{"action": "merge", "label_a": "...", "label_b": "...", "reason": "..."}},
+  {{"action": "retype", "target": "concept_label", "new_type": "Method", "reason": "..."}}
+]}}

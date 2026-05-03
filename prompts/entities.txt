@@ -1,0 +1,18 @@
+Extract academic concepts from this paper section.
+
+Available concept types and their domain-specific subcategories:
+{ontology}
+
+For each concept found in this section:
+- label: 3-8 word descriptive label
+- type: one of Problem, Method, Conclusion, Gap, Debate, Actor
+- subcategory: matching label from the ontology above, or null if none fits
+- confidence: 0.0-1.0 (how certain you are this concept is correctly identified)
+
+Section: {section_title}
+
+Section Content:
+{section_text}
+
+Output STRICT JSON (no markdown, no extra text):
+{{"concepts": [{{"label": "...", "type": "...", "subcategory": "..." | null, "confidence": 0.9}}]}}

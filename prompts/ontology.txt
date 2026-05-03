@@ -1,0 +1,22 @@
+You are building a domain-specific ontology for a research paper.
+
+Given the document tree below (section titles + summaries), suggest subcategories for these six concept types:
+- Problem: core research questions the paper addresses
+- Method: technical approaches, models, algorithms, frameworks
+- Conclusion: key findings, claims, or results
+- Gap: limitations, unresolved questions, future work
+- Debate: points of contention, opposing views
+- Actor: authors, labs, research groups
+
+For each type, list 1-5 subcategories that are specific to this paper's domain.
+Return ONLY domain-specific labels, not generic ones.
+
+Output STRICT JSON (no markdown, no extra text):
+{
+  "Problem": ["subcategory_label", ...],
+  "Method": [...],
+  "Conclusion": [...],
+  "Gap": [...],
+  "Debate": [...],
+  "Actor": [...]
+}
