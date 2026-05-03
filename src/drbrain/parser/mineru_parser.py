@@ -421,6 +421,8 @@ def _resolve_metadata(
     raw_title: str | None = None,
     raw_year: int | None = None,
     raw_doi: str | None = None,
+    deepxiv_token: str = "",
+    s2_api_key: str = "",
 ) -> dict[str, Any]:
     """Cross-validate metadata from arXiv, CrossRef, S2, and OpenAlex.
 
@@ -464,7 +466,7 @@ def _resolve_metadata(
 
     # ── DeepXiv (arXiv papers, adds TLDR + keywords + citation count) ──
     if arxiv:
-        dx = _fetch_deepxiv_metadata(arxiv)
+        dx = _fetch_deepxiv_metadata(arxiv, token=deepxiv_token)
         if dx and dx.get("title"):
             sources["deepxiv"] = {"title": dx["title"], "year": dx["year"],
                                   "doi": None, "s2_id": None, "openalex_id": None}
@@ -601,14 +603,17 @@ def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int |
     return None, None, None
 
 
-def _fetch_deepxiv_metadata(arxiv_id: str) -> dict[str, Any] | None:
+def _fetch_deepxiv_metadata(arxiv_id: str, token: str = "") -> dict[str, Any] | None:
     """Fetch metadata from DeepXiv API (title, year, TLDR, keywords, citations)."""
     if not arxiv_id:
         return None
     try:
+        import os as _os
+
         from deepxiv_sdk import Reader as _Reader
 
-        r = _Reader()
+        _token = token or _os.environ.get("DEEPXIV_TOKEN", "")
+        r = _Reader(token=_token) if _token else _Reader()
         data = r.brief(arxiv_id)
         year = None
         if data.get("publish_at"):

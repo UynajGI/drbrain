@@ -42,6 +42,11 @@ def ingest_cmd(
     """
     if not paths:
         cfg = load_config()
+        # Expose API tokens to libraries that read them from environment
+        import os as _os
+        _dx_token = cfg.get("api", {}).get("deepxiv_token", "")
+        if _dx_token and "DEEPXIV_TOKEN" not in _os.environ:
+            _os.environ["DEEPXIV_TOKEN"] = _dx_token
         inbox_path = cfg.get("dirs", {}).get("inbox", "data/spool/inbox")
         paths = [inbox_path]
 
