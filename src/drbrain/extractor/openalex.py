@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os as _os
 import re
 import time
 import urllib.parse
@@ -11,11 +10,6 @@ import urllib.request
 from typing import Any
 
 OPENALEX_BASE = "https://api.openalex.org"
-
-# SOCKS5 proxy (ALL_PROXY) breaks urllib for OpenAlex. Install a direct-connect opener.
-_proxy_handler = urllib.request.ProxyHandler({})
-_direct_opener = urllib.request.build_opener(_proxy_handler)
-urllib.request.install_opener(_direct_opener)
 
 
 def _select_fields(fields: list[str]) -> str:

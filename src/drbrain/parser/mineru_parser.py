@@ -392,13 +392,6 @@ def _extract_arxiv_from_filename(pdf_path: Path) -> str | None:
 
 def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
     """Fetch title and year from arXiv API via arxiv library."""
-    import os as _os
-
-    # arxiv library uses requests which can't route through SOCKS proxy.
-    # Clear proxy env vars for this call so requests connects directly.
-    _proxy_keys = {k: _os.environ.pop(k, None)
-                   for k in ("ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY",
-                             "all_proxy", "https_proxy", "http_proxy")}
     try:
         import arxiv
 
@@ -415,10 +408,6 @@ def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
             year = 2000 + yy if yy <= 50 else 1900 + yy
             return None, year
         return None, None
-    finally:
-        for k, v in _proxy_keys.items():
-            if v is not None:
-                _os.environ[k] = v
 
 
 def normalize_doi(raw: str) -> str:
