@@ -57,7 +57,7 @@ async def _ask_llm_for_relevant_nodes(
         prompt=prompt,
         models=models,
         system_prompt=_SYSTEM_PROMPT,
-        max_tokens=256,
+        max_tokens=1024,
     )
     if result is None:
         return []
