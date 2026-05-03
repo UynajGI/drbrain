@@ -18,6 +18,11 @@ from drbrain.parser.pageindex_parser import get_document_structure_json, get_nod
 log = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE = Path(__file__).parent.parent.parent.parent / "prompts" / "extract_concepts.txt"
+ONTOLOGY_PROMPT = Path(__file__).parent.parent.parent.parent / "prompts" / "ontology.txt"
+ENTITIES_PROMPT = Path(__file__).parent.parent.parent.parent / "prompts" / "entities.txt"
+RELATIONS_PROMPT = Path(__file__).parent.parent.parent.parent / "prompts" / "relations.txt"
+COREFERENCE_PROMPT = Path(__file__).parent.parent.parent.parent / "prompts" / "coreference.txt"
+REFINE_PROMPT = Path(__file__).parent.parent.parent.parent / "prompts" / "refine.txt"
 
 
 class ExtractedConcepts:
@@ -338,3 +343,150 @@ async def extract_concepts_from_tree(
     sections = [s for _, s in valid_with_sections]
     merged = _merge_concepts(valid, sections=sections)
     return _link_cross_section_arguments(merged)
+
+
+async def build_graph_from_tree(
+    md_path: str | Path,
+    structure: list[dict],
+    models: list[dict],
+    skip_refine: bool = False,
+) -> dict:
+    """5-stage graph extraction from a document tree.
+
+    Stages: ontology -> entities -> relations -> coreference -> refine.
+    Returns {"concepts": [...], "relations": [...], "merges": [...], "corrections": [...]}
+    """
+    md_path = Path(md_path)
+    leaves = _collect_leaf_nodes(structure)
+    if not leaves:
+        return {"concepts": [], "relations": [], "merges": [], "corrections": []}
+
+    # Stage 1: Ontology Extension
+    ontology = await _build_ontology(structure, models)
+
+    # Stage 2: Entity Extraction
+    concepts = await _extract_entities(md_path, structure, leaves, ontology, models)
+
+    if not concepts:
+        return {"concepts": [], "relations": [], "merges": [], "corrections": []}
+
+    # Stage 3: Relation Extraction
+    relations = await _extract_relations(concepts, models)
+
+    # Stage 4: Coreference Resolution
+    concepts, merges = await _resolve_coreferences(concepts, models)
+
+    # Stage 5: Iterative Refinement (optional)
+    corrections = []
+    if not skip_refine:
+        corrections = await _refine_extraction(concepts, relations, models)
+
+    return {
+        "concepts": concepts, "relations": relations,
+        "merges": merges, "corrections": corrections,
+    }
+
+
+async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str, list[str]]:
+    """Stage 1: LLM suggests domain-specific subcategories under 6 TBox types."""
+    structure_json = get_document_structure_json(structure)
+    prompt = ONTOLOGY_PROMPT.read_text(encoding="utf-8")
+    user = f"Document Structure:\n{structure_json}"
+    data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
+    if not data:
+        return {}
+    # Filter to only valid TBox types with list values
+    valid_types = {"Problem", "Method", "Conclusion", "Gap", "Debate", "Actor"}
+    return {k: v for k, v in data.items() if k in valid_types and isinstance(v, list)}
+
+
+async def _extract_entities(
+    md_path: Path, structure: list[dict], leaves: list[dict],
+    ontology: dict[str, list[str]], models: list[dict],
+) -> list[dict]:
+    """Stage 2: Per leaf node, extract concepts with subcategories."""
+    import json as _json
+
+    prompt_tpl = ENTITIES_PROMPT.read_text(encoding="utf-8")
+    semaphore = asyncio.Semaphore(10)
+    all_concepts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    async def _extract_one(leaf: dict) -> list[dict]:
+        content = get_node_content(md_path, structure, leaf["node_id"])
+        if not content or not _is_quality_content(content):
+            return []
+        user = prompt_tpl.format(
+            ontology=_json.dumps(ontology, indent=2),
+            section_title=leaf.get("title", ""),
+            section_text=content,
+        )
+        async with semaphore:
+            data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt_tpl)
+        if not data:
+            return []
+        return data.get("concepts", [])
+
+    tasks = [_extract_one(leaf) for leaf in leaves]
+    results = await asyncio.gather(*tasks)
+    for concepts in results:
+        for c in concepts:
+            key = (c.get("label", "").strip().lower(), c.get("type", ""))
+            if key not in seen:
+                seen.add(key)
+                all_concepts.append(c)
+    return all_concepts
+
+
+async def _extract_relations(concepts: list[dict], models: list[dict]) -> list[dict]:
+    """Stage 3: LLM connects entities with TBox relations."""
+    concept_list = [f"{c['label']}: {c['type']}" for c in concepts]
+    prompt = RELATIONS_PROMPT.read_text(encoding="utf-8")
+    user = prompt.format(concepts="\n".join(concept_list))
+    data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
+    if not data:
+        return []
+    return data.get("relations", [])
+
+
+async def _resolve_coreferences(
+    concepts: list[dict], models: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Stage 4: LLM merges duplicate entity labels."""
+    concept_list = [f"{c['label']}: {c['type']}" for c in concepts]
+    prompt = COREFERENCE_PROMPT.read_text(encoding="utf-8")
+    user = prompt.format(concepts="\n".join(concept_list))
+    data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
+    if not data:
+        return concepts, []
+
+    merges = data.get("merges", [])
+    # Build canonical map from merges
+    canonical_map: dict[str, str] = {}
+    for m in merges:
+        canonical = m.get("canonical", "")
+        for variant in m.get("variants", []):
+            canonical_map[variant.strip().lower()] = canonical
+
+    # Apply merges
+    merged = []
+    for c in concepts:
+        label = c.get("label", "")
+        if label.strip().lower() in canonical_map:
+            c = dict(c)
+            c["_merged_from"] = label
+            c["label"] = canonical_map[label.strip().lower()]
+        merged.append(c)
+    return merged, merges
+
+
+async def _refine_extraction(
+    concepts: list[dict], relations: list[dict], models: list[dict],
+) -> list[dict]:
+    """Stage 5: LLM self-reviews and corrects the extraction."""
+    prompt = REFINE_PROMPT.read_text(encoding="utf-8")
+    user = prompt.format(concept_count=len(concepts), relation_count=len(relations))
+    data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
+    if not data:
+        return []
+    return data.get("corrections", [])
