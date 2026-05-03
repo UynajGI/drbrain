@@ -92,10 +92,9 @@ def test_ask_llm_for_relevant_nodes_handles_failure(mock_acall):
 
 
 @mock.patch("drbrain.query.tree_retrieval.get_node_content")
-@mock.patch("drbrain.query.tree_retrieval._ask_llm_for_relevant_nodes")
-def test_query_by_structure_basic(mock_ask, mock_get_content, tmp_path):
+@mock.patch("drbrain.query.tree_retrieval.acall_with_fallback")
+def test_query_by_structure_basic(mock_acall, mock_get_content, tmp_path):
     """query_by_structure returns structured section data."""
-    # Setup files
     paper_dir = tmp_path / "paper"
     paper_dir.mkdir()
     (paper_dir / "tree.json").write_text(
@@ -103,8 +102,8 @@ def test_query_by_structure_basic(mock_ask, mock_get_content, tmp_path):
     )
     (paper_dir / "raw.md").write_text("# A\nContent here.\n")
 
-    # Mock LLM to return a node_id
-    mock_ask.return_value = ["0000"]
+    # Mock LLM round 1: return node_ids for small skeleton
+    mock_acall.return_value = {"node_ids": ["0000"]}
     mock_get_content.return_value = "Full content of section A."
 
     import asyncio
@@ -116,15 +115,15 @@ def test_query_by_structure_basic(mock_ask, mock_get_content, tmp_path):
     assert result[0]["node_id"] == "0000"
 
 
-@mock.patch("drbrain.query.tree_retrieval._ask_llm_for_relevant_nodes")
-def test_query_by_structure_no_relevant_sections(mock_ask, tmp_path):
+@mock.patch("drbrain.query.tree_retrieval.acall_with_fallback")
+def test_query_by_structure_no_relevant_sections(mock_acall, tmp_path):
     """Returns None when LLM identifies no relevant sections."""
     paper_dir = tmp_path / "paper"
     paper_dir.mkdir()
     (paper_dir / "tree.json").write_text('{"doc_name": "test", "line_count": 10, "structure": []}')
     (paper_dir / "raw.md").write_text("# Empty\n")
 
-    mock_ask.return_value = []
+    mock_acall.return_value = None
 
     import asyncio
 
@@ -144,8 +143,8 @@ def test_query_by_structure_missing_files(tmp_path):
 
 
 @mock.patch("drbrain.query.tree_retrieval.get_node_content")
-@mock.patch("drbrain.query.tree_retrieval._ask_llm_for_relevant_nodes")
-def test_query_by_structure_multiple_sections(mock_ask, mock_get_content, tmp_path):
+@mock.patch("drbrain.query.tree_retrieval.acall_with_fallback")
+def test_query_by_structure_multiple_sections(mock_acall, mock_get_content, tmp_path):
     """Multiple relevant sections are returned as structured list."""
     paper_dir = tmp_path / "paper"
     paper_dir.mkdir()
@@ -158,7 +157,7 @@ def test_query_by_structure_multiple_sections(mock_ask, mock_get_content, tmp_pa
     )
     (paper_dir / "raw.md").write_text("# A\nContent A\n\n# B\nContent B\n")
 
-    mock_ask.return_value = ["0000", "0001"]
+    mock_acall.return_value = {"node_ids": ["0000", "0001"]}
     mock_get_content.side_effect = ["Content A.", "Content B."]
 
     import asyncio
