@@ -715,7 +715,7 @@ def expand_citations_multi(
         except Exception:
             pass
 
-    # ── Store in DB ──
+    # ── Store in DB (citation_cache + placeholder papers) ──
     refs_added = citing_added = 0
     for r in all_refs:
         try:
@@ -725,6 +725,13 @@ def expand_citations_multi(
                 "VALUES (?, ?, ?, 'references', ?)",
                 (local_id, r["title"][:200], r.get("year"), r.get("doi")),
             )
+            # Create placeholder if DOI is new
+            dval = r.get("doi")
+            if dval and not db.get_paper_by_external_id("doi", dval):
+                pid = f"p{uuid.uuid4().hex[:6]}"
+                db.insert_paper(pid, r["title"][:200], r.get("year"), "placeholder")
+                db.insert_paper_ids(pid, doi=dval)
+                db.commit()
             refs_added += 1
         except Exception:
             pass
@@ -736,6 +743,12 @@ def expand_citations_multi(
                 "VALUES (?, ?, ?, 'citing', ?)",
                 (local_id, c["title"][:200], c.get("year"), c.get("doi")),
             )
+            dval = c.get("doi")
+            if dval and not db.get_paper_by_external_id("doi", dval):
+                pid = f"p{uuid.uuid4().hex[:6]}"
+                db.insert_paper(pid, c["title"][:200], c.get("year"), "placeholder")
+                db.insert_paper_ids(pid, doi=dval)
+                db.commit()
             citing_added += 1
         except Exception:
             pass
