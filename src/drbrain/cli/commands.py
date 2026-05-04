@@ -2313,6 +2313,8 @@ def _print_analyze_report(report: dict) -> None:
         typer.echo(
             f"  [{seed.get('type', '?')}] {seed.get('concept', '?')}: {seed.get('description', '?')}"
         )
+        if seed.get("suggested_solutions"):
+            typer.echo(f"    → {seed['suggested_solutions']}")
 
     typer.echo(f"\n[bold]── Causal Chains ({s['causal_chains']})[/bold]")
     for chain in report.get("causal_chains", []):

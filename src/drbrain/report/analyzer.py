@@ -115,6 +115,12 @@ def analyze_paper(
             _generate_executive_summary(report, models)
         )
 
+        # Enhance seeds with LLM-suggested solution directions
+        if report["seeds"]:
+            report["seeds"] = asyncio.run(
+                _enhance_seeds(report["seeds"], paper.get("title", ""), models)
+            )
+
     return report
 
 
@@ -146,3 +152,21 @@ async def _generate_executive_summary(report: dict, models: list[dict]) -> str:
 
     result = await acall_text_with_fallback(prompt, models, max_tokens=300)
     return result.strip() if result else ""
+
+
+async def _enhance_seeds(seeds: list[dict], paper_title: str, models: list[dict]) -> list[dict]:
+    """Add LLM-suggested solution directions to each research seed."""
+    from drbrain.extractor.llm_client import acall_text_with_fallback
+
+    for seed in seeds[:5]:  # only top 5 get enhanced
+        prompt = (
+            f"Paper: {paper_title}\n"
+            f"Research gap: {seed.get('description', '')}\n\n"
+            "Suggest 1-2 concrete research directions or methods that could address this gap. "
+            "Be specific. One sentence per direction. Return plain text, no markdown."
+        )
+        result = await acall_text_with_fallback(prompt, models, max_tokens=150)
+        if result:
+            seed["suggested_solutions"] = result.strip()
+
+    return seeds
