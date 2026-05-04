@@ -41,8 +41,12 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - Default ingest path: `data/inbox/` → `data/spool/inbox/`
 - Data directory layout: renamed inbox, added spool/pending, workspace/, backups/
 - CLI: `expand` command replaced by `citations`
+- CLI: `serve` command (Streamlit UI) removed — not a current priority
 
 ### Fixed
+- Import: journal and citation_count now passed to `insert_paper()` when importing from BibTeX/Zotero
+- Repair: journal repairs from CrossRef now written to DB (was returned in list but not applied)
+- Repair: reports "Paper not found" error instead of silently producing 0 repairs
 - PDF parsing: replaced pypdfium2 with PyMuPDF (fitz); use `pymupdf4llm` for markdown extraction with proper heading/table structure; plain text fallback
 - LLM client: 60s timeout prevents indefinite hangs; `drbrain check` now tests LLM API connectivity
 - Ingest: PDF removed from inbox after successful ingest (was left behind)
