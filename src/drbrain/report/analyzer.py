@@ -12,6 +12,7 @@ def analyze_paper(
     local_id: str,
     *,
     full: bool = False,
+    models: list[dict] | None = None,
 ) -> dict:
     """Run all reasoning modules on a single paper. Returns structured report."""
     paper = db.get_paper(local_id)
@@ -30,7 +31,7 @@ def analyze_paper(
 
     # Seeds (always)
     seeds = graph.detect_research_seeds(db)
-    relevant_seeds = [s for s in seeds if s.get("node") and s["node"] in paper_concepts]
+    relevant_seeds = [s for s in seeds if s.get("concept")]
     report["seeds"] = relevant_seeds[:10]
 
     # Causal chains — per-concept lookup
@@ -107,4 +108,41 @@ def analyze_paper(
         "isomorphisms": len(report.get("isomorphisms", [])),
     }
 
+    if models:
+        import asyncio
+
+        report["executive_summary"] = asyncio.run(
+            _generate_executive_summary(report, models)
+        )
+
     return report
+
+
+async def _generate_executive_summary(report: dict, models: list[dict]) -> str:
+    """Generate a 3-5 sentence executive summary of the analysis report."""
+    from drbrain.extractor.llm_client import acall_text_with_fallback
+
+    # Build a compact summary of what was found
+    summary = report.get("summary", {})
+    paper = report.get("paper", {})
+    seeds = report.get("seeds", [])
+    chains = report.get("causal_chains", [])
+    hypotheses = report.get("hypotheses", [])
+
+    seed_text = ", ".join(s.get("description", "")[:80] for s in seeds[:3]) or "none"
+    chain_text = ", ".join(f"{c['source']} -> {c['target']}" for c in chains[:3]) or "none"
+    hypo_text = ", ".join(h.get("description", "")[:80] for h in hypotheses[:3]) or "none"
+
+    prompt = (
+        f"Paper: {paper.get('title', 'Unknown')} ({paper.get('year', '?')})\n"
+        f"Research seeds found: {summary.get('seeds', 0)} ({seed_text})\n"
+        f"Causal chains: {summary.get('causal_chains', 0)} ({chain_text})\n"
+        f"Hypotheses: {summary.get('hypotheses', 0)} ({hypo_text})\n"
+        f"Inferred edges: {summary.get('inferred_edges', 0)}\n\n"
+        "Write a 3-5 sentence executive summary of this knowledge frontier analysis. "
+        "Focus on the most important findings and actionable insights. "
+        "Be concise and direct. Return plain text, no markdown."
+    )
+
+    result = await acall_text_with_fallback(prompt, models, max_tokens=300)
+    return result.strip() if result else ""

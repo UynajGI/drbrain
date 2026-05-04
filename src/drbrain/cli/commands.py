@@ -2276,10 +2276,11 @@ def analyze_cmd(
 
     # Load graph with selected papers
     sel_ids = {p["local_id"] for p in selected}
-    graph.load_from_db(db, paper_ids=sel_ids)
+    # Load full graph for seed detection and cross-paper insights
+    graph.load_from_db(db)
 
     # ── Run analysis ──
-    reports = [analyze_paper(db, graph, p["local_id"], full=full) for p in selected]
+    reports = [analyze_paper(db, graph, p["local_id"], full=full, models=llm_models) for p in selected]
 
     db.close()
 
@@ -2299,6 +2300,10 @@ def _print_analyze_report(report: dict) -> None:
         typer.echo(f"Error: {report['error']}", err=True)
         return
 
+    if report.get("executive_summary"):
+        typer.echo(f"\n[bold]Executive Summary[/bold]")
+        typer.echo(f"  {report['executive_summary']}")
+
     p = report["paper"]
     s = report["summary"]
     typer.echo(f"\n[bold]Knowledge Frontier: {p['title']} ({p['year']})[/bold]")
@@ -2306,7 +2311,7 @@ def _print_analyze_report(report: dict) -> None:
     typer.echo(f"\n[bold]── Research Seeds ({s['seeds']})[/bold]")
     for seed in report.get("seeds", []):
         typer.echo(
-            f"  [{seed.get('type', '?')}] {seed.get('node', '?')}: {seed.get('signal', '?')}"
+            f"  [{seed.get('type', '?')}] {seed.get('concept', '?')}: {seed.get('description', '?')}"
         )
 
     typer.echo(f"\n[bold]── Causal Chains ({s['causal_chains']})[/bold]")
