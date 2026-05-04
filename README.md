@@ -24,14 +24,13 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain ingest` | Parse PDFs (metadata + tree) — lightweight | ✅ |
 | `drbrain build` | 5-stage LLM graph extraction | ✅ |
 | `drbrain embed` | TransE graph embeddings for link prediction | ✅ |
-| `drbrain closure` | Rule-based inference (`--mode hybrid`) | ✅ |
 | `drbrain reason` | LLM agent reasoning over knowledge graph | ✅ |
 | `drbrain query` | BM25 + `--hybrid` + `--neighbors` | ✅ |
 | `drbrain graph neighbors` | Direct graph traversal from a node | ✅ |
 | `drbrain graph path` | Shortest path between two nodes | ✅ |
 | `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
-| `drbrain closure` | Rule-based inference (`--dry-run`, `--rule`) | — |
-| `drbrain seed` | Detect research seeds from graph patterns | — |
+| `drbrain closure` | Rule-based inference (`--mode hybrid`, `--dry-run`) | ✅ |
+| `drbrain seed` | Detect research seeds from graph patterns | ✅ |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) | — |
 | `drbrain check-citations` | Verify in-text citations against library | — |
 | `drbrain analyze` | Knowledge frontier report | — |
