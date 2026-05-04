@@ -511,6 +511,16 @@ def citations_cmd(
 
     from drbrain.storage.citation_graph import query_citation_graph
 
+    # Auto-expand citations if none stored yet
+    existing = db.conn.execute(
+        "SELECT COUNT(*) FROM citation_cache WHERE source_paper = ?", (local_id,)
+    ).fetchone()[0]
+    if existing == 0:
+        typer.echo("  Expanding citations via OpenAlex...")
+        from drbrain.extractor.citation import expand_citations_oa
+        added = expand_citations_oa(db, local_id)
+        typer.echo(f"  Found {added} references")
+
     result = query_citation_graph(local_id, db.conn, ctype=ctype)
 
     if workspace:

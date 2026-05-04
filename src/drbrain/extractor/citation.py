@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 
 import requests
 from loguru import logger as _cit_log
@@ -396,6 +397,67 @@ def _process_citations_from_s2(
         db.commit()
 
     return references, citations
+
+
+def expand_citations_oa(db, local_id: str) -> int:
+    """Expand citations using OpenAlex (via pyalex). Returns number of references added."""
+    import pyalex
+    from pyalex import Works
+
+    # Get OpenAlex ID from DB
+    row = db.conn.execute(
+        "SELECT openalex_id FROM paper_ids WHERE local_id = ?", (local_id,)
+    ).fetchone()
+    oa_id = row[0] if row and row[0] else None
+    if not oa_id:
+        return 0
+
+    works = Works()
+    try:
+        w = works[oa_id]
+    except Exception:
+        return 0
+
+    ref_ids = w.get("referenced_works", [])
+    added = 0
+    for rid in ref_ids[:50]:
+        try:
+            r = works[rid]
+            doi = r.get("doi", "")
+            if doi:
+                doi = re.sub(r"^https?://doi\.org/", "", doi)
+            title = r.get("title", "") or "Untitled"
+            year = r.get("publication_year")
+
+            # Check if already in local DB
+            existing = None
+            if doi:
+                existing = db.get_paper_by_external_id("doi", doi)
+            if not existing:
+                existing = db.get_paper_by_external_id("openalex_id", rid)
+
+            if existing:
+                local_ref = existing
+            else:
+                local_ref = f"p{uuid.uuid4().hex[:6]}"
+                db.insert_paper(local_ref, title, year, "placeholder")
+                ids = {"doi": doi or None, "openalex_id": rid.replace('https://openalex.org/', '')}
+                db.insert_paper_ids(local_ref, **ids)
+                db.commit()
+
+            # Record citation relationship
+            db.conn.execute(
+                "INSERT OR IGNORE INTO citation_cache "
+                "(source_paper, target_title, target_year, relation, target_doi) "
+                "VALUES (?, ?, ?, 'references', ?)",
+                (local_id, title, year, doi or None),
+            )
+            added += 1
+        except Exception:
+            continue
+
+    db.commit()
+    return added
 
 
 def _crossref_doi_enrich(paper: dict, email: str | None = None) -> dict | None:
