@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS aliases (
     canonical_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS embeddings (
+    entity TEXT PRIMARY KEY,
+    vec BLOB NOT NULL,
+    dim INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS confidence_queue (
     queue_id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_paper TEXT NOT NULL,
@@ -235,6 +241,25 @@ class Database:
             (pattern_type, description, confidence),
         )
         return cur.lastrowid
+
+    # -- Embeddings --
+
+    def save_embedding(self, entity: str, vec, dim: int) -> None:
+        import numpy as np
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO embeddings (entity, vec, dim) VALUES (?, ?, ?)",
+            (entity, np.array(vec, dtype=np.float32).tobytes(), dim),
+        )
+
+    def load_embeddings(self) -> dict[str, np.ndarray]:
+        import numpy as np
+
+        rows = self.conn.execute("SELECT entity, vec, dim FROM embeddings").fetchall()
+        return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
+
+    def clear_embeddings(self) -> None:
+        self.conn.execute("DELETE FROM embeddings")
 
     # -- Query helpers --
 
