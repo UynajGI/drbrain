@@ -32,7 +32,7 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain closure` | Rule-based inference (`--mode hybrid`, `--dry-run`) | ✅ |
 | `drbrain seed` | Detect research seeds from graph patterns | ✅ |
 | `drbrain citations` | Multi-source citation expansion (`--limit`/`--sort`) | ✅ |
-| `drbrain check-citations` | Verify in-text citations against library | — |
+| `drbrain check-citations` | Verify in-text citations against library | ✅ |
 | `drbrain analyze` | Knowledge frontier report | — |
 | `drbrain ws` | Manage paper workspaces | — |
 | `drbrain export` | Export to BibTeX/RIS/Markdown | — |
