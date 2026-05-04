@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -456,8 +457,36 @@ def expand_citations_oa(db, local_id: str) -> int:
         except Exception:
             continue
 
+    # Also fetch citing papers
+    citing_added = 0
+    try:
+        import urllib.request as _ureq
+        cite_url = f"https://api.openalex.org/works?filter=cites:{oa_id}&per_page=50&sort=cited_by_count:desc"
+        req = _ureq.Request(cite_url, headers={"Accept": "application/json"})
+        resp = _ureq.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+        for r in data.get("results", [])[:50]:
+            try:
+                ctitle = r.get("title", "") or "Untitled"
+                cyear = r.get("publication_year")
+                cdoi = r.get("doi", "")
+                if cdoi:
+                    cdoi = re.sub(r"^https?://doi\.org/", "", cdoi)
+                db.conn.execute(
+                    "INSERT OR IGNORE INTO citation_cache "
+                    "(source_paper, target_title, target_year, relation, target_doi) "
+                    "VALUES (?, ?, ?, 'citing', ?)",
+                    (local_id, ctitle, cyear, cdoi or None),
+                )
+                citing_added += 1
+            except Exception:
+                continue
+        db.commit()
+    except Exception:
+        pass
+
     db.commit()
-    return added
+    return added, citing_added
 
 
 def _crossref_doi_enrich(paper: dict, email: str | None = None) -> dict | None:

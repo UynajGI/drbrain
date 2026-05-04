@@ -518,8 +518,8 @@ def citations_cmd(
     if existing == 0:
         typer.echo("  Expanding citations via OpenAlex...")
         from drbrain.extractor.citation import expand_citations_oa
-        added = expand_citations_oa(db, local_id)
-        typer.echo(f"  Found {added} references")
+        refs_added, citing_added = expand_citations_oa(db, local_id)
+        typer.echo(f"  Found {refs_added} references, {citing_added} citing")
 
     result = query_citation_graph(local_id, db.conn, ctype=ctype)
 
