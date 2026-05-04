@@ -124,6 +124,52 @@ def analyze_paper(
     return report
 
 
+def add_cross_paper_insights(reports: list[dict], db=None) -> list[dict]:
+    """Find method migration opportunities across analyzed papers.
+
+    Detects where a Method from one paper could address a Problem
+    in another paper, using concept label similarity via embedding.
+    """
+    if len(reports) < 2 or not db:
+        return reports
+
+    # Collect concepts by type across all papers
+    methods: list[dict] = []  # {label, paper_id, paper_title}
+    problems: list[dict] = []
+
+    for r in reports:
+        pid = r["paper"]["local_id"]
+        ptitle = r["paper"]["title"]
+        for c in db.get_concepts_by_paper(pid):
+            if c["type"] == "Method":
+                methods.append({"label": c["label"], "paper_id": pid, "paper_title": ptitle[:60]})
+            elif c["type"] == "Problem":
+                problems.append({"label": c["label"], "paper_id": pid, "paper_title": ptitle[:60]})
+
+    # Find cross-paper method→problem pairs
+    insights: list[dict] = []
+    from drbrain.extractor.concept import _label_similarity
+
+    for m in methods:
+        for p in problems:
+            if m["paper_id"] == p["paper_id"]:
+                continue  # same paper, skip
+            sim = _label_similarity(m["label"], p["label"])
+            if sim > 0.3:  # weak similarity threshold
+                insights.append({
+                    "method": m["label"],
+                    "method_paper": m["paper_title"],
+                    "problem": p["label"],
+                    "problem_paper": p["paper_title"],
+                    "similarity": round(sim, 3),
+                })
+
+    insights.sort(key=lambda x: x["similarity"], reverse=True)
+    if insights:
+        reports[0]["cross_paper_insights"] = insights[:10]
+    return reports
+
+
 async def _generate_executive_summary(report: dict, models: list[dict]) -> str:
     """Generate a 3-5 sentence executive summary of the analysis report."""
     from drbrain.extractor.llm_client import acall_text_with_fallback

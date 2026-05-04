@@ -2282,6 +2282,11 @@ def analyze_cmd(
     # ── Run analysis ──
     reports = [analyze_paper(db, graph, p["local_id"], full=full, models=llm_models) for p in selected]
 
+    # Add cross-paper insights for multi-paper analysis
+    if len(reports) > 1:
+        from drbrain.report.analyzer import add_cross_paper_insights
+        reports = add_cross_paper_insights(reports, db=db)
+
     db.close()
 
     if json_output:
@@ -2307,6 +2312,18 @@ def _print_analyze_report(report: dict) -> None:
     p = report["paper"]
     s = report["summary"]
     typer.echo(f"\n[bold]Knowledge Frontier: {p['title']} ({p['year']})[/bold]")
+
+    if report.get("cross_paper_insights"):
+        insights = report["cross_paper_insights"]
+        typer.echo(f"\n[bold]── Cross-paper Insights ({len(insights)})[/bold]")
+        for ins in insights[:5]:
+            typer.echo(
+                f"  Method '{ins['method']}' ({ins['method_paper']})"
+            )
+            typer.echo(
+                f"    → could address Problem '{ins['problem']}' ({ins['problem_paper']})"
+            )
+            typer.echo(f"    (similarity: {ins['similarity']})")
 
     typer.echo(f"\n[bold]── Research Seeds ({s['seeds']})[/bold]")
     for seed in report.get("seeds", []):
