@@ -6,6 +6,10 @@ import pytest
 
 from drbrain.services.translate import (
     _split_into_chunks,
+    _subdivide_chunk_for_retry,
+    _translate_chunk,
+    _translate_chunk_resilient,
+    _translate_chunk_with_retry,
     translate_paper,
     translate_text,
 )
@@ -481,3 +485,246 @@ class TestValidateLang:
             validate_lang("")
         with pytest.raises(ValueError):
             validate_lang("e" * 10)
+
+
+# ---------------------------------------------------------------------------
+# _translate_chunk tests
+# ---------------------------------------------------------------------------
+
+
+class TestTranslateChunk:
+    """Synchronous single-chunk translation via LLM."""
+
+    def test_returns_translated_text(self, monkeypatch):
+        """_translate_chunk returns the LLM result stripped."""
+
+        async def fake_acall(prompt, models, *, system_prompt="", max_tokens=1024):
+            return "  translated text here  "
+
+        monkeypatch.setattr(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            fake_acall,
+        )
+        result = _translate_chunk("hello world", "zh", [{"provider": "test", "model": "x"}])
+        assert result == "translated text here"
+
+    def test_llm_returns_none_raises(self, monkeypatch):
+        """When the LLM returns None, _translate_chunk raises RuntimeError."""
+
+        async def fake_acall(prompt, models, *, system_prompt="", max_tokens=1024):
+            return None
+
+        monkeypatch.setattr(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            fake_acall,
+        )
+        with pytest.raises(RuntimeError, match="Translation failed"):
+            _translate_chunk("hello", "zh", [{"provider": "test", "model": "x"}])
+
+    def test_passes_lang_name_in_prompt(self, monkeypatch):
+        """The prompt contains the human-readable language name."""
+        prompts: list[str] = []
+
+        async def fake_acall(prompt, models, *, system_prompt="", max_tokens=1024):
+            prompts.append(prompt)
+            return "ok"
+
+        monkeypatch.setattr(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            fake_acall,
+        )
+        _translate_chunk("test text", "ja", [{"provider": "test", "model": "x"}])
+        assert len(prompts) == 1
+        assert "Japanese" in prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# _translate_chunk_with_retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestTranslateChunkWithRetry:
+    """Exponential-backoff retry wrapper around _translate_chunk."""
+
+    def test_retry_succeeds_on_first_attempt(self, monkeypatch):
+        """Returns (result, 1) when the first call succeeds."""
+
+        def mock_translate(text, target_lang, models):
+            return f"T:{text}"
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk", mock_translate)
+        result, attempts = _translate_chunk_with_retry(
+            "hello", "zh", [], max_attempts=5, backoff_base=1.0
+        )
+        assert result == "T:hello"
+        assert attempts == 1
+
+    def test_retry_after_timeout(self, monkeypatch):
+        """Succeeds on the third attempt after two failures."""
+        call_count = 0
+
+        def mock_translate(text, target_lang, models):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise RuntimeError("timeout")
+            return f"T:{text}"
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk", mock_translate)
+        # Neutralise sleep so the test runs instantly
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+        result, attempts = _translate_chunk_with_retry(
+            "hello", "zh", [], max_attempts=5, backoff_base=1.0
+        )
+        assert result == "T:hello"
+        assert attempts == 3
+
+    def test_exponential_backoff_delays(self, monkeypatch):
+        """Verifies the sleep calls are [1.0, 2.0, 4.0, 8.0] with base=1.0."""
+        call_count = 0
+
+        def mock_translate(text, target_lang, models):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 5:
+                raise RuntimeError("timeout")
+            return f"T:{text}"
+
+        sleeps: list[float] = []
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk", mock_translate)
+        monkeypatch.setattr("time.sleep", sleeps.append)
+
+        _translate_chunk_with_retry("hello", "zh", [], max_attempts=5, backoff_base=1.0)
+        assert sleeps == [1.0, 2.0, 4.0, 8.0]
+
+    def test_max_attempts_exhausted_raises(self, monkeypatch):
+        """Raises the last exception when all retries are exhausted."""
+
+        def mock_translate(text, target_lang, models):
+            raise RuntimeError("always fails")
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk", mock_translate)
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+        with pytest.raises(RuntimeError, match="always fails"):
+            _translate_chunk_with_retry("hello", "zh", [], max_attempts=3, backoff_base=1.0)
+
+
+# ---------------------------------------------------------------------------
+# _subdivide_chunk_for_retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestSubdivideChunkForRetry:
+    """Chunk subdivision helper for resilient retry."""
+
+    def test_small_text_returns_single_element(self):
+        """Returns [text] when target >= len(text)."""
+        # Single-char text: len=1, target=max(1, min(chunk_size, 0))=1, 1>=1 → [text]
+        result = _subdivide_chunk_for_retry("a", chunk_size=100)
+        assert result == ["a"]
+
+    def test_target_size_is_half_of_text_length(self):
+        """The target chunk size is capped at len(text)//2."""
+        para = "X" * 800
+        text = "\n\n".join([para] * 6)  # ~4800 chars
+        # chunk_size=3000 but target = min(3000, 4800//2) = 2400
+        result = _subdivide_chunk_for_retry(text, chunk_size=3000)
+        assert len(result) >= 2
+        # No chunk should exceed target substantially (allow large-protected-block overflow)
+        # Target = max(1, min(3000, ~4800 // 2)) = 2400
+        target = max(1, min(3000, len(text) // 2))
+        assert all(len(c) <= target * 2 for c in result)
+
+    def test_subdivides_long_text(self):
+        """Splits long text into multiple chunks."""
+        para = "Y" * 500
+        text = "\n\n".join([para] * 10)  # ~5000 chars
+        result = _subdivide_chunk_for_retry(text, chunk_size=2000)
+        assert len(result) > 1
+
+    def test_target_clamped_to_min_one(self):
+        """Target size is at least 1 even for tiny chunk_size."""
+        result = _subdivide_chunk_for_retry("abcdef", chunk_size=0)
+        # len("abcdef") = 6, target = max(1, min(0, 3)) = max(1, 0) = 1
+        # 1 < 6, so it subdivides — hard_split into 6 chars
+        assert len(result) >= 1
+        assert "".join(result) == "abcdef"
+
+
+# ---------------------------------------------------------------------------
+# _translate_chunk_resilient tests
+# ---------------------------------------------------------------------------
+
+
+class TestTranslateChunkResilient:
+    """Timeout-resilient translation with chunk subdivision."""
+
+    def test_returns_on_first_retry_success(self, monkeypatch):
+        """Returns immediately when _translate_chunk_with_retry succeeds."""
+
+        def mock_retry(text, target_lang, models, *, max_attempts=5, backoff_base=1.0):
+            return f"[OK:{len(text)}]", 1
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_with_retry", mock_retry)
+        result, attempts = _translate_chunk_resilient(
+            "short text", "zh", [], chunk_size=3000, max_attempts=5
+        )
+        assert result == "[OK:10]"
+        assert attempts == 1
+
+    def test_subdivides_on_timeout(self, monkeypatch):
+        """When the full chunk times out it is subdivided and each subchunk
+        is translated independently."""
+        retry_calls: list[tuple[int, int]] = []
+
+        def mock_retry(text, target_lang, models, *, max_attempts=5, backoff_base=1.0):
+            retry_calls.append((len(text), max_attempts))
+            # Fail on the very first call (full chunk), succeed on subchunks
+            if len(retry_calls) == 1:
+                raise RuntimeError("timeout")
+            return f"[SUB:{len(text)}]", 1
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_with_retry", mock_retry)
+
+        # Text long enough to subdivide with small chunk_size
+        text = "AAA\n\nBBB\n\nCCC\n\nDDD"
+        result, attempts = _translate_chunk_resilient(
+            text, "zh", [], chunk_size=5, max_attempts=2, backoff_base=0.01
+        )
+        # The first call (full text) timed out → subdivided → subchunks succeeded
+        assert len(retry_calls) > 1, "should have subdivided and retried subchunks"
+        assert "[SUB:" in result
+        assert attempts >= 1
+
+    def test_no_subdivision_when_cannot_subdivide(self, monkeypatch):
+        """When text cannot be subdivided (too short), raises the exception."""
+
+        def mock_retry(text, target_lang, models, *, max_attempts=5, backoff_base=1.0):
+            raise RuntimeError("persistent failure")
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_with_retry", mock_retry)
+        with pytest.raises(RuntimeError, match="persistent failure"):
+            _translate_chunk_resilient("abc", "zh", [], chunk_size=3000, max_attempts=2)
+
+    def test_recursive_subdivision(self, monkeypatch):
+        """When even subchunks timeout they are subdivided again."""
+        retry_calls: list[tuple[int, int]] = []
+
+        def mock_retry(text, target_lang, models, *, max_attempts=5, backoff_base=1.0):
+            retry_calls.append((len(text), max_attempts))
+            # Fail first call (full chunk) and fail any chunk > 5 chars
+            if len(retry_calls) == 1 or len(text) > 5:
+                raise RuntimeError(f"timeout on len={len(text)}")
+            return f"[OK:{len(text)}]", 1
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_with_retry", mock_retry)
+        # Text that will subdivide, and subchunks may also subdivide
+        para = "Z" * 300
+        text = "\n\n".join([para] * 8)  # ~2400 chars
+        result, attempts = _translate_chunk_resilient(
+            text, "zh", [], chunk_size=200, max_attempts=2, backoff_base=0.01
+        )
+        assert "[OK:" in result
+        assert attempts >= 1

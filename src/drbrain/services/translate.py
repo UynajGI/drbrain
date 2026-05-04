@@ -49,6 +49,12 @@ _LANG_NAMES: dict[str, str] = {
     "es": "Spanish",
 }
 
+_TERMINOLOGY_RULES = {
+    "zh": "- 对于专业术语，在首次出现时用「英文 (中文翻译)」格式",
+    "ja": "- 専門用語は初出時に「英語 (日本語訳)」の形式で記載すること",
+    "ko": "- 전문 용어는 처음 등장할 때 「영어 (한국어 번역)」 형식을 사용",
+}
+
 
 def detect_language(text: str) -> str:
     """Detect language of *text* using heuristics (no external dependencies).
@@ -118,6 +124,25 @@ def validate_lang(lang: str) -> str:
     if not _LANG_PATTERN_RE.match(lang):
         raise ValueError(f"invalid language code: {lang!r}")
     return lang
+
+
+def _build_translate_prompt(text: str, target_lang: str, lang_name: str) -> str:
+    """Build a translation prompt for an academic paper chunk."""
+    header = (
+        f"翻译以下学术论文段落至{lang_name}。\n\n"
+        "重要事项：\n"
+        "- 保留所有 markdown 格式\n"
+        "- 保留 LaTeX 公式不翻译\n"
+        "- 保留代码块不翻译\n"
+        "- 保留图片引用不翻译\n"
+        "- 保留作者姓名和引用格式"
+    )
+    parts = [header]
+    rule = _TERMINOLOGY_RULES.get(target_lang)
+    if rule:
+        parts.append(rule)
+    parts.append(f"- 只返回翻译文本，不要任何解释\n\n原文：\n{text}")
+    return "\n".join(parts)
 
 
 def _adjust_for_placeholder(text: str, cut: int) -> int:
@@ -236,6 +261,96 @@ def _split_into_chunks(text: str, chunk_size: int) -> list[str]:
                 chunk_size,
             )
     return restored
+
+
+def _translate_chunk(text: str, target_lang: str, models: list[dict]) -> str:
+    """Translate a single chunk via LLM. Raises on failure."""
+    import asyncio
+
+    from drbrain.extractor.llm_client import acall_text_with_fallback
+
+    lang_name = _LANG_NAMES.get(target_lang, target_lang)
+    prompt = _build_translate_prompt(text, target_lang, lang_name)
+    result = asyncio.run(acall_text_with_fallback(prompt, models, max_tokens=4096))
+    if result is None:
+        raise RuntimeError(f"Translation failed for chunk ({len(text)} chars)")
+    return result.strip()
+
+
+def _translate_chunk_with_retry(
+    text: str,
+    target_lang: str,
+    models: list[dict],
+    *,
+    max_attempts: int = 5,
+    backoff_base: float = 1.0,
+) -> tuple[str, int]:
+    """Translate with exponential backoff retry. Returns (translated_text, attempts)."""
+    import time
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _translate_chunk(text, target_lang, models), attempt
+        except Exception:
+            if attempt >= max_attempts:
+                raise
+            time.sleep(backoff_base * (2 ** (attempt - 1)))
+    raise RuntimeError("unreachable")
+
+
+def _subdivide_chunk_for_retry(text: str, chunk_size: int) -> list[str]:
+    """Produce sub-chunks for retry at a smaller target size.
+
+    Target size is ``max(1, min(chunk_size, len(text) // 2))``.
+    Returns ``[text]`` if the target is not smaller than *text*.
+    """
+    target = max(1, min(chunk_size, len(text) // 2))
+    if target >= len(text):
+        return [text]
+    try:
+        return _split_into_chunks(text, target)
+    except Exception:
+        return _hard_split(text, target)
+
+
+def _translate_chunk_resilient(
+    text: str,
+    target_lang: str,
+    models: list[dict],
+    *,
+    chunk_size: int = 3000,
+    max_attempts: int = 5,
+    backoff_base: float = 1.0,
+) -> tuple[str, int]:
+    """Translate with retry; on repeated timeout, subdivide and retry parts."""
+    subchunks = _subdivide_chunk_for_retry(text, chunk_size)
+    split_budget = min(max_attempts, 2) if len(subchunks) > 1 else max_attempts
+    try:
+        return _translate_chunk_with_retry(
+            text,
+            target_lang,
+            models,
+            max_attempts=split_budget,
+            backoff_base=backoff_base,
+        )
+    except Exception:
+        if len(subchunks) <= 1:
+            raise
+        logger.warning(f"chunk timed out, retrying as {len(subchunks)} subchunks")
+        translated_parts = []
+        total_attempts = split_budget
+        for sub in subchunks:
+            t, used = _translate_chunk_resilient(
+                sub,
+                target_lang,
+                models,
+                chunk_size=max(1, min(chunk_size, len(sub))),
+                max_attempts=max_attempts,
+                backoff_base=backoff_base,
+            )
+            translated_parts.append(t)
+            total_attempts += used
+        return "\n\n".join(translated_parts), total_attempts
 
 
 async def translate_text(
