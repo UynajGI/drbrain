@@ -31,7 +31,7 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
 | `drbrain closure` | Rule-based inference (`--mode hybrid`, `--dry-run`) | ✅ |
 | `drbrain seed` | Detect research seeds from graph patterns | ✅ |
-| `drbrain citations` | Query citation graph (refs, citing, shared-refs) | — |
+| `drbrain citations` | Multi-source citation expansion (`--limit`/`--sort`) | ✅ |
 | `drbrain check-citations` | Verify in-text citations against library | — |
 | `drbrain analyze` | Knowledge frontier report | — |
 | `drbrain ws` | Manage paper workspaces | — |

@@ -51,6 +51,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - `clean_cmd`: targeted individual DB/metrics files instead of entire `data/` directory
 - `check_cmd`: creates missing directories; tests LLM API connectivity; tests MinerU CLI presence; PyMuPDF fallback warning only when no MinerU path available
 - `check_cmd`: fallback directory paths updated from `data/inbox` to `data/spool/inbox` (stale reference from before restructure)
+- `citations`: multi-source expansion via OpenAlex/pyalex + S2 + CrossRef, configurable `--limit`/`--sort`
 - `embed`: incremental training by default — new entities initialized randomly, existing ones warm-started from DB. `--retrain` for full rebuild.
 - `_link_cross_section_arguments`: no longer creates edges to fake nodes; information preserved as debug log only
 - `setup` / `check`: DeepXiv token (data.rag.ac.cn) + S2 API key (semanticscholar.org) registration prompts. Ingest exports deepxiv_token to environment for library use.
