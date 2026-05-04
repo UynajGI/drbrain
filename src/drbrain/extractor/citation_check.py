@@ -113,7 +113,7 @@ def match_citations(
             "JOIN papers p ON p.local_id = c2.local_id "
             "WHERE a.variant LIKE ? AND p.year = ? "
             "LIMIT 1",
-            (f"{c.author}%", int(c.year)),
+            (f"%{c.author}%", int(c.year)),
         ).fetchall()
 
         if rows:
