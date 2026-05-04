@@ -23,7 +23,7 @@ def _make_config(db_path: str, reports_dir: str) -> dict:
             "enable_table": True,
         },
         "dirs": {
-            "inbox": "data/inbox",
+            "inbox": "data/spool/inbox",
             "papers": "data/papers",
             "reports": reports_dir,
             "cache": "data/cache",

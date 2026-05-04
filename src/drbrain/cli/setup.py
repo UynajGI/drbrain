@@ -108,7 +108,6 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
         "rich": "Rich",
         "yaml": "PyYAML",
         "pydantic": "Pydantic",
-        "streamlit": "Streamlit",
     }
     missing_deps = [display for mod, display in deps.items() if not _check_python_package(mod)]
     if missing_deps:
@@ -203,7 +202,12 @@ def setup_cmd(
                 ],
             },
             "mineru": {"token": ""},
-            "api": {"deepxiv_token": "", "s2_api_key": "", "crossref_email": "", "openalex_token": ""},
+            "api": {
+                "deepxiv_token": "",
+                "s2_api_key": "",
+                "crossref_email": "",
+                "openalex_token": "",
+            },
         }
         out = Path("config.local.yaml")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -282,7 +286,9 @@ def setup_cmd(
         "  DeepXiv token (https://data.rag.ac.cn/register)", default="", hide_input=True
     )
     s2_api_key = typer.prompt(
-        "  Semantic Scholar API key (https://semanticscholar.org/product/api)", default="", hide_input=True
+        "  Semantic Scholar API key (https://semanticscholar.org/product/api)",
+        default="",
+        hide_input=True,
     )
     crossref_email = typer.prompt("  CrossRef email (optional)", default="", show_default=False)
     openalex_token = typer.prompt("  OpenAlex token (optional)", default="", hide_input=True)

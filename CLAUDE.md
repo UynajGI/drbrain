@@ -92,7 +92,6 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - **Ecosystem enrichment**: `arxiv` library for arXiv metadata; CrossRef API (`crossref.py`) for DOI resolution and cross-validation; `pyalex` library for OpenAlex title search and author identity; Semantic Scholar (with API key support). Rate-limited with configurable cache TTL.
 - **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
 - **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
-- **Streamlit UI**: `drbrain serve` launches interactive graph visualization at `http://127.0.0.1:8501`.
 - **Clean command**: `drbrain clean --force` removes all data files except PDFs.
 
 ### Testing

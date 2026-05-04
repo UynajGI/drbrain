@@ -1,4 +1,4 @@
-"""Integration tests using real PDFs from data/inbox/.
+"""Integration tests using real PDFs from data/spool/inbox/.
 
 These tests are slow (MinerU API + LLM calls) and are marked with the
 ``integration`` pytest marker.  Run them explicitly when you want to
@@ -20,7 +20,7 @@ from drbrain.cli.main import app
 runner = CliRunner()
 
 # All PDFs available in the repo
-PDF_DIR = Path("data/inbox")
+PDF_DIR = Path("data/spool/inbox")
 TEST_PDFS = sorted(str(p) for p in PDF_DIR.glob("*.pdf"))
 
 
@@ -46,7 +46,7 @@ def _minimal_cfg(db_path: str, reports_dir: str, papers_dir: str) -> dict:
             "enable_table": True,
         },
         "dirs": {
-            "inbox": "data/inbox",
+            "inbox": "data/spool/inbox",
             "papers": str(papers_dir),
             "reports": str(reports_dir),
             "cache": "data/cache",

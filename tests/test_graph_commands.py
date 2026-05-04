@@ -16,7 +16,7 @@ def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
     return {
         "db": {"path": db_path},
         "dirs": {
-            "inbox": "data/inbox",
+            "inbox": "data/spool/inbox",
             "papers": papers_dir,
             "reports": "/tmp/reports",
             "cache": "data/cache",

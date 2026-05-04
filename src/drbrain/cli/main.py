@@ -31,7 +31,6 @@ from drbrain.cli.commands import (
     repair_cmd,
     report_cmd,
     seed_cmd,
-    serve_cmd,
     stats_cmd,
     timeline_cmd,
     translate_cmd,
@@ -74,7 +73,6 @@ app.command("queue resolve")(queue_resolve_cmd)
 app.command("queue resolve-all")(queue_resolve_all_cmd)
 app.command("timeline")(timeline_cmd)
 app.command("delete")(delete_cmd)
-app.command("serve")(serve_cmd)
 app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
 app.command("clean")(clean_cmd)

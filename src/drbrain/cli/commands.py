@@ -1674,44 +1674,6 @@ def backup_cmd(
     typer.echo(f"Backup created: {path} ({size_mb:.1f} MB)")
 
 
-def serve_cmd(
-    host: str = typer.Option("127.0.0.1", "--host", help="Server host"),
-    port: int = typer.Option(8501, "--port", help="Server port"),
-):
-    """Launch the Streamlit UI for graph visualization."""
-    import subprocess
-    import sys
-
-    cfg = load_config()
-    app_path = Path(__file__).parent.parent / "api" / "app.py"
-
-    if not app_path.exists():
-        typer.echo(f"Streamlit app not found at {app_path}", err=True)
-        raise typer.Exit(1)
-
-    typer.echo(f"Starting DrBrain UI at http://{host}:{port}")
-    typer.echo(f"DB: {cfg['db']['path']}")
-    typer.echo("Press Ctrl+C to stop.")
-
-    env = {**__import__("os").environ, "DRBRAIN_DB_PATH": cfg["db"]["path"]}
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "streamlit",
-            "run",
-            str(app_path),
-            "--server.address",
-            host,
-            "--server.port",
-            str(port),
-            "--server.headless",
-            "true",
-        ],
-        env=env,
-    )
-
-
 def lineage_cmd(
     author_id: str = typer.Argument(None, help="OpenAlex author ID (e.g., A5023806754)"),
     list_all: bool = typer.Option(False, "--list", help="List all actors with paper counts"),
@@ -1869,7 +1831,6 @@ def check_cmd():
         ("rich", "rich"),
         ("pyyaml", "yaml"),
         ("pydantic", "pydantic"),
-        ("streamlit", "streamlit"),
     ]
     for pkg_name, import_name in required_packages:
         try:

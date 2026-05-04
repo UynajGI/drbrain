@@ -26,7 +26,7 @@ mineru:
 db:
   path: data/db/drbrain.db
 dirs:
-  inbox: data/inbox
+  inbox: data/spool/inbox
   papers: data/papers
   reports: data/reports
   cache: data/cache

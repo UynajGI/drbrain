@@ -61,7 +61,7 @@ def _write_config(td: str, db_path: str) -> None:
         },
         "db": {"path": db_path},
         "dirs": {
-            "inbox": "data/inbox",
+            "inbox": "data/spool/inbox",
             "papers": "data/papers",
             "reports": "data/reports",
             "cache": "data/cache",

@@ -11,7 +11,6 @@ uv run drbrain check               # verify environment
 uv run drbrain ingest               # ingest PDFs from data/spool/inbox/
 uv run drbrain query "graph neural networks"
 uv run drbrain analyze <id> --full  # knowledge frontier analysis
-uv run drbrain serve                # launch Streamlit UI
 ```
 
 ## Key Commands
@@ -40,7 +39,6 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | — |
 | `drbrain import` | Import from Zotero or BibTeX | — |
 | `drbrain translate` | Translate paper markdown via LLM | — |
-| `drbrain serve` | Streamlit UI at http://127.0.0.1:8501 | — |
 
 ## Architecture
 
