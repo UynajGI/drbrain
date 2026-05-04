@@ -17,6 +17,7 @@ from drbrain.cli.commands import (
     clean_cmd,
     closure_cmd,
     delete_cmd,
+    embed_cmd,
     export_cmd,
     import_cmd,
     ingest_cmd,
@@ -82,6 +83,7 @@ app.command("repair")(repair_cmd)
 app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
 app.command("build")(build_cmd)
+app.command("embed")(embed_cmd)
 
 # Graph subcommands
 app.add_typer(graph_app, name="graph")

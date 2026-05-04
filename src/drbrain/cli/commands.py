@@ -2770,3 +2770,43 @@ def build_cmd(
         total_c = sum(r["concepts"] for r in all_results)
         total_r = sum(r["relations"] for r in all_results)
         typer.echo(f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers")
+
+
+def embed_cmd(
+    dim: int = typer.Option(128, "--dim", help="Embedding dimension"),
+    epochs: int = typer.Option(100, "--epochs", help="Training epochs"),
+    retrain: bool = typer.Option(False, "--retrain", help="Force retrain"),
+):
+    """Train TransE graph embeddings for link prediction and similarity."""
+    from drbrain.graph.embedding import TransE
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    if graph.graph.number_of_nodes() == 0:
+        typer.echo("No graph data. Run: drbrain build first", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    existing = db.load_embeddings()
+    if existing and not retrain:
+        typer.echo(
+            f"Embeddings exist ({len(existing)} entities, "
+            f"dim={list(existing.values())[0].shape[0]}). Use --retrain to rebuild."
+        )
+        db.close()
+        return
+
+    db.clear_embeddings()
+    t = TransE(dim=dim, epochs=epochs)
+    typer.echo(f"Training embeddings (dim={dim}, epochs={epochs}, "
+               f"nodes={graph.graph.number_of_nodes()})...")
+    t.train(graph.graph)
+
+    for label, vec in t.entities.items():
+        db.save_embedding(label, vec, dim)
+    db.commit()
+    typer.echo(f"Trained {len(t.entities)} entities, {len(t.relations)} relations")
+    db.close()
