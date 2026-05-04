@@ -119,13 +119,20 @@ class GraphEngine:
 
         return results
 
-    def closure(self, section_map: dict[str, str] | None = None) -> list[dict]:
+    def closure(
+        self,
+        section_map: dict[str, str] | None = None,
+        mode: str = "symbolic",
+    ) -> list[dict]:
         """Run rule-based closure, return inferred edges.
 
         Args:
             section_map: Optional mapping of node label → section title.
                 When provided, each inferred edge gets a ``confidence`` field
                 computed via section-aware decay.
+            mode: ``"symbolic"`` (default) for rule-based inference only,
+                or ``"hybrid"`` to additionally weight confidence via TransE
+                embedding scores.
 
         Rules:
         - challenges(P, C) & supports(Q, C) => creates_debate(P, Q, C)
@@ -270,6 +277,18 @@ class GraphEngine:
                     confidence=1.0,
                     section=src_section,
                 )
+
+        # Hybrid mode: re-weight confidence with TransE embedding scores
+        if mode == "hybrid" and inferred:
+            from drbrain.graph.embedding import TransE
+
+            t = TransE(dim=128, epochs=50)
+            t.train(self.graph)
+            for edge in inferred:
+                score = t.score(edge["src"], edge["relation"], edge["dst"])
+                edge["embedding_score"] = round(float(1.0 / (1.0 + score)), 4)
+                existing = edge.get("confidence", 1.0)
+                edge["confidence"] = round(0.5 * existing + 0.5 * edge["embedding_score"], 3)
 
         return inferred
 

@@ -345,3 +345,27 @@ def test_traverse_default_direction_is_both():
     results = g.traverse(start_nodes={"B"}, hops=1)  # default both
     targets = {r.target for r in results}
     assert targets == {"A", "C"}
+
+
+def test_closure_hybrid_mode():
+    """closure --mode hybrid produces embedding-weighted confidence."""
+    g = GraphEngine()
+    g.add_edge("A", "B", "extends", "p1")
+    g.add_edge("B", "C", "extends", "p1")
+
+    inferred = g.closure(mode="hybrid")
+    for edge in inferred:
+        assert "embedding_score" in edge
+        conf = edge.get("confidence", 1.0)
+        assert 0.0 <= conf <= 1.0
+
+
+def test_closure_hybrid_backward_compat():
+    """closure without mode works as before."""
+    g = GraphEngine()
+    g.add_edge("A", "B", "extends", "p1")
+    g.add_edge("B", "C", "extends", "p1")
+
+    inferred = g.closure()  # default symbolic
+    for edge in inferred:
+        assert "embedding_score" not in edge
