@@ -27,6 +27,7 @@ from drbrain.cli.commands import (
     queue_cmd,
     queue_resolve_all_cmd,
     queue_resolve_cmd,
+    reason_cmd,
     repair_cmd,
     report_cmd,
     seed_cmd,
@@ -84,6 +85,7 @@ app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
 app.command("build")(build_cmd)
 app.command("embed")(embed_cmd)
+app.command("reason")(reason_cmd)
 
 # Graph subcommands
 app.add_typer(graph_app, name="graph")

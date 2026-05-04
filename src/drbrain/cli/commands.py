@@ -2813,3 +2813,29 @@ def embed_cmd(
     db.commit()
     typer.echo(f"Trained {len(t.entities)} entities, {len(t.relations)} relations")
     db.close()
+
+
+def reason_cmd(
+    question: str = typer.Argument(..., help="Question to reason about using the knowledge graph"),
+):
+    """LLM agent that reasons over the knowledge graph using tool-calling."""
+    from drbrain.extractor.reasoner import ReasonerAgent
+
+    cfg = load_config()
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    models = cfg.get("llm", {}).get("models", [])
+    if not models:
+        typer.echo("No LLM models configured. Run: drbrain setup", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    agent = ReasonerAgent(db=db, graph_engine=graph, models=models)
+
+    typer.echo(f"Reasoning: {question}\n")
+    answer = asyncio.run(agent.reason(question))
+    typer.echo(answer)
+
+    db.close()
