@@ -2557,6 +2557,28 @@ def ws_delete_cmd(
         typer.echo(f"Workspace deleted: {name}")
 
 
+def ws_rename_cmd(
+    old_name: str = typer.Argument(..., help="Current workspace name"),
+    new_name: str = typer.Argument(..., help="New workspace name"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Rename a workspace."""
+    from drbrain.storage.workspace import rename_workspace
+
+    try:
+        new_path = rename_workspace(old_name, new_name)
+        if json_output:
+            typer.echo(json.dumps({"renamed": old_name, "to": new_name, "path": str(new_path)}))
+        else:
+            typer.echo(f"Workspace renamed: {old_name} -> {new_name}")
+    except (ValueError, FileNotFoundError, FileExistsError) as e:
+        if json_output:
+            typer.echo(json.dumps({"error": str(e)}))
+        else:
+            typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+
 # -- repair + import commands --
 
 

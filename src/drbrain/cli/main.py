@@ -39,6 +39,7 @@ from drbrain.cli.commands import (
     ws_delete_cmd,
     ws_list_cmd,
     ws_remove_cmd,
+    ws_rename_cmd,
     ws_show_cmd,
 )
 from drbrain.cli.graph_commands import graph_app
@@ -96,6 +97,7 @@ ws_app.command("remove")(ws_remove_cmd)
 ws_app.command("list")(ws_list_cmd)
 ws_app.command("show")(ws_show_cmd)
 ws_app.command("delete")(ws_delete_cmd)
+ws_app.command("rename")(ws_rename_cmd)
 app.add_typer(ws_app, name="ws")
 
 if __name__ == "__main__":
