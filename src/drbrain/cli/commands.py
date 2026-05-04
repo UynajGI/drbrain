@@ -1312,6 +1312,7 @@ def _export_paper_to_meta(db: Database, local_id: str) -> dict:
         "authors": author_list,
         "first_author_lastname": lastname,
         "paper_type": paper.get("paper_type", "paper"),
+        "abstract": paper.get("abstract", ""),
     }
 
 
