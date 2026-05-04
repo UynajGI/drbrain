@@ -2,6 +2,8 @@
 
 from unittest import mock
 
+import pytest
+
 from drbrain.services.translate import (
     _split_into_chunks,
     translate_paper,
@@ -359,3 +361,123 @@ def test_translate_paper_llm_fails_returns_none(tmp_path):
         )
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# detect_language tests
+# ---------------------------------------------------------------------------
+
+
+class TestDetectLanguage:
+    """Heuristic language detection without external dependencies."""
+
+    def test_english_text(self):
+        from drbrain.services.translate import detect_language
+
+        assert (
+            detect_language(
+                "The quick brown fox jumps over the lazy dog. "
+                "This is a test of the emergency broadcast system."
+            )
+            == "en"
+        )
+
+    def test_chinese_text(self):
+        from drbrain.services.translate import detect_language
+
+        assert (
+            detect_language("本文提出了一种新型湍流模型，用于预测高雷诺数流动中的湍流结构。")
+            == "zh"
+        )
+
+    def test_japanese_kana(self):
+        from drbrain.services.translate import detect_language
+
+        assert detect_language("これはテストです") == "ja"
+
+    def test_korean_text(self):
+        from drbrain.services.translate import detect_language
+
+        assert detect_language("이 논문은 새로운 기계 학습 방법을 제안합니다") == "ko"
+
+    def test_german_text(self):
+        from drbrain.services.translate import detect_language
+
+        # Contains >=2 German stopwords uniquely
+        assert (
+            detect_language("Der Prozess der Wissensextraktion ist ein wichtiger Teil des Systems.")
+            == "de"
+        )
+
+    def test_french_text(self):
+        from drbrain.services.translate import detect_language
+
+        assert (
+            detect_language("Le modele de langage est une approche pour le traitement des donnees.")
+            == "fr"
+        )
+
+    def test_spanish_text(self):
+        from drbrain.services.translate import detect_language
+
+        assert (
+            detect_language("El modelo de lenguaje es una herramienta para el analisis de datos.")
+            == "es"
+        )
+
+    def test_empty_defaults_to_english(self):
+        from drbrain.services.translate import detect_language
+
+        assert detect_language("") == "en"
+
+    def test_math_only_defaults_to_english(self):
+        from drbrain.services.translate import detect_language
+
+        assert detect_language("$$E=mc^2$$") == "en"
+
+    def test_code_blocks_stripped(self):
+        from drbrain.services.translate import detect_language
+
+        text = (
+            "This is an English document about machine learning.\n\n"
+            "```python\n"
+            "# これは日本語のコメントです\n"
+            "x = 1 + 2\n"
+            "```\n\n"
+            "The results show significant improvement over the baseline."
+        )
+        assert detect_language(text) == "en"
+
+
+# ---------------------------------------------------------------------------
+# validate_lang tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateLang:
+    """Language code validation and normalization."""
+
+    def test_normalizes_case_and_whitespace(self):
+        from drbrain.services.translate import validate_lang
+
+        assert validate_lang(" ZH ") == "zh"
+        assert validate_lang("En") == "en"
+        assert validate_lang("  ja  ") == "ja"
+
+    def test_rejects_non_string(self):
+        from drbrain.services.translate import validate_lang
+
+        with pytest.raises(ValueError, match="str"):
+            validate_lang(None)
+        with pytest.raises(ValueError, match="str"):
+            validate_lang(123)
+
+    def test_rejects_invalid_pattern(self):
+        from drbrain.services.translate import validate_lang
+
+        with pytest.raises(ValueError):
+            validate_lang("zh-cn")
+        with pytest.raises(ValueError):
+            validate_lang("")
+        with pytest.raises(ValueError):
+            validate_lang("e" * 10)

@@ -20,6 +20,105 @@ _PROTECTED_RE = re.compile(
 _PLACEHOLDER_FMT = "\x00PROTECTED_{}\x00"
 _PLACEHOLDER_RE = re.compile(r"\x00PROTECTED_(\d+)\x00")
 
+# ---------------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------------
+
+# Script coverage regexes
+_CJK_RE = re.compile(r"[一-鿿㐀-䶿]")
+_HANGUL_RE = re.compile(r"[가-힯]")
+_KANA_RE = re.compile(r"[぀-ゟ゠-ヿ]")
+_ALPHA_RE = re.compile(r"[^\W\d_]")
+
+_LANG_PATTERN_RE = re.compile(r"^[a-z]{2,5}$")
+
+_LATIN_STOPWORDS: dict[str, set[str]] = {
+    "en": {"the", "and", "of", "to", "in", "for", "with", "is", "that", "this"},
+    "de": {"der", "die", "das", "und", "ist", "mit", "eine", "ein", "den", "von"},
+    "fr": {"le", "la", "les", "de", "des", "et", "une", "un", "dans", "pour"},
+    "es": {"el", "la", "los", "las", "de", "del", "y", "una", "un", "para"},
+}
+
+_LANG_NAMES: dict[str, str] = {
+    "zh": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+}
+
+
+def detect_language(text: str) -> str:
+    """Detect language of *text* using heuristics (no external dependencies).
+
+    Strips code blocks, LaTeX math, and images before analysis to avoid
+    false positives from non-linguistic content.
+    """
+    if not text:
+        return "en"
+
+    # Sample first 2000 chars and strip protected blocks (code, math, images)
+    sample = text[:2000]
+    cleaned = _PROTECTED_RE.sub("", sample)
+
+    alpha_chars = len(_ALPHA_RE.findall(cleaned))
+    if alpha_chars == 0:
+        return "en"
+
+    cjk_count = len(_CJK_RE.findall(cleaned))
+    hangul_count = len(_HANGUL_RE.findall(cleaned))
+    kana_count = len(_KANA_RE.findall(cleaned))
+
+    # CJK-dominant text: check for kana to disambiguate zh vs ja
+    if cjk_count / alpha_chars > 0.15:
+        if kana_count / alpha_chars > 0.10:
+            return "ja"
+        return "zh"
+
+    # Hangul-dominant text
+    if hangul_count / alpha_chars > 0.15:
+        return "ko"
+
+    # Pure-kana text (no CJK)
+    if kana_count / alpha_chars > 0.10:
+        return "ja"
+
+    # Latin-script stopword scoring
+    words = re.findall(r"[a-zA-Z]+", cleaned.lower())
+    if words:
+        scores: dict[str, int] = {}
+        for lang, stopwords in _LATIN_STOPWORDS.items():
+            scores[lang] = sum(1 for w in words if w in stopwords)
+        max_score = max(scores.values())
+        if max_score >= 2:
+            top_langs = [lang for lang, s in scores.items() if s == max_score]
+            if len(top_langs) == 1:
+                return top_langs[0]
+
+    return "en"
+
+
+def validate_lang(lang: str) -> str:
+    """Validate and normalize a language code.
+
+    Args:
+        lang: Raw language code string.
+
+    Returns:
+        Normalized lowercase code (e.g. ``"zh"``).
+
+    Raises:
+        ValueError: If *lang* is not a string or does not match ``^[a-z]{2,5}$``.
+    """
+    if not isinstance(lang, str):
+        raise ValueError(f"expected str, got {type(lang).__name__}")
+    lang = lang.strip().lower()
+    if not _LANG_PATTERN_RE.match(lang):
+        raise ValueError(f"invalid language code: {lang!r}")
+    return lang
+
 
 def _adjust_for_placeholder(text: str, cut: int) -> int:
     """Move cut point outside any placeholder span it would bisect."""
