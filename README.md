@@ -23,6 +23,9 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain clean` | Clear data (db/cache/logs/papers/reports) | ✅ |
 | `drbrain ingest` | Parse PDFs (metadata + tree) — lightweight | ✅ |
 | `drbrain build` | 5-stage LLM graph extraction | ✅ |
+| `drbrain embed` | TransE graph embeddings for link prediction | ✅ |
+| `drbrain closure` | Rule-based inference (`--mode hybrid`) | ✅ |
+| `drbrain reason` | LLM agent reasoning over knowledge graph | ✅ |
 | `drbrain query` | BM25 + `--hybrid` + `--neighbors` | ✅ |
 | `drbrain graph neighbors` | Direct graph traversal from a node | — |
 | `drbrain graph path` | Shortest path between two nodes | — |

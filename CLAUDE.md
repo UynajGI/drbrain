@@ -42,11 +42,18 @@ Paper statuses: `uploaded` → `extracted` (after build). `placeholder` for cita
 
 ### Reasoning & Discovery Modules (post-ingestion)
 
-- **Causal Chain** (`extractor/causal_chain.py`): Builds X→Y(via Z) chains from argument mechanism fields. DFS chain discovery sorts candidates by section adjacency (Introduction→Methods→Results→Discussion). `build_causal_chains()`, `find_chains_from()`, `find_path()`.
-- **Confidence Propagation** (`extractor/confidence_propagation.py`): Multi-hop confidence decay (default 0.85 per hop), multi-path merging via probabilistic OR: `P = 1 - prod(1 - p_i)`. Section-aware variant: `propagate_confidence_with_section()` — Methods/Results decay 0.90, Discussion/Related Work 0.80.
-- **Counterfactual Queries** (`extractor/counterfactual.py`): "What if X didn't exist?" — measures node removal impact on closure inferences. Section-weighted variant: `find_critical_nodes_weighted()`. `run_counterfactual()`, `find_critical_nodes()`.
-- **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Finds structurally similar subgraphs via relation signature Jaccard similarity. Section-aware signatures: `"in:supports@Methods"`. `find_similar_problems()`, `find_isomorphic_patterns()`.
-- **Hypothesis Generation** (`extractor/hypothesis.py`): Generates research hypotheses from unaddressed gaps, debate zones, and technology cliffs. Evidence strings include section provenance. `detect_section_contradictions()` finds supports/challenges from different sections. `generate_hypotheses()`, `score_hypothesis()`.
+**3-layer reasoning stack** (based on 2202.07412, 2306.08302, 2511.11017):
+
+- **Layer 1: TransE Embeddings** (`graph/embedding.py`): `drbrain embed` trains entity/relation vectors via `TransE`. `predict_link()`, `similar_entities()` for link prediction and entity similarity. Stored in `embeddings` SQLite table.
+- **Layer 2: Hybrid Closure** (`graph/engine.py`): `drbrain closure --mode hybrid` weights inferred edges by embedding scores. Path confidence via relation composition distance.
+- **Layer 3: LLM Agent Reasoning** (`extractor/reasoner.py`): `drbrain reason <question>` — LLM explores graph via tool-calling (search_concepts, get_neighbors, find_path), forms hypotheses.
+
+**Symbolic reasoning modules (classic):**
+- **Causal Chain** (`extractor/causal_chain.py`): `build_causal_chains()`, `find_chains_from()`, `find_path()`.
+- **Confidence Propagation** (`extractor/confidence_propagation.py`): Multi-hop decay (0.85), section-aware variant.
+- **Counterfactual Queries** (`extractor/counterfactual.py`): Node removal impact on closure.
+- **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Subgraph similarity by relation signature.
+- **Hypothesis Generation** (`extractor/hypothesis.py`): From gaps, debates, technology cliffs.
 - **Structure-first Retrieval** (`query/tree_retrieval.py`): Full PageIndex implementation — iterative tree-search with adaptive depth navigation. Small skeletons: one-shot. Large skeletons: top-level → branch selection → leaf selection. Returns `[{"node_id", "title", "content"}]`.
 - **Graph-Enhanced Search** (`query` + `graph/engine.py`): `query --neighbors` for directed graph expansion from BM25 results. `query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank results by graph centrality. Returns concept nodes with `_via_graph`, `_source_seed`, `_distance`, `_path` fields.
 - **Citation Graph** (`storage/citation_graph.py`): Shared-reference analysis, ref/citing/shared-refs queries. `find_shared_refs()` detects papers sharing references but not citing each other (knowledge frontier signal).
