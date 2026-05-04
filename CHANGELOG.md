@@ -8,6 +8,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [Unreleased]
 
 ### Added
+- **Translate refactor**: Placeholder-protected chunk splitting (code blocks, LaTeX math, images preserved across chunk boundaries). Heuristic language detection (CJK + Latin stopwords for de/fr/es). Concurrent chunk translation via ThreadPoolExecutor. Workdir-based state persistence with resume-from-interruption. Exponential backoff retry with timeout subdivision. Terminology annotation rules for zh/ja/ko.
+- **Workspace hardening**: `validate_workspace_name()` prevents path traversal. Atomic writes (tmp→rename) for `refs/papers.json`. `schema_version: 1` in workspace.yaml. `ws rename` command.
 - **Venue metadata enrichment**: Ingest now fetches journal, publisher, and citation_count from OpenAlex, CrossRef, S2, and DeepXiv APIs. Stored in papers table for complete BibTeX/RIS export. Placeholder papers upgraded on ingest also receive updated venue metadata.
 - **Cross-paper concept dedup**: automatic exact+similar label merging after `drbrain build`. Word-overlap similarity detection. Based on 2511.11017 ontology-driven approach.
 - **3-layer KG reasoning stack**: TransE embeddings (`drbrain embed`), hybrid closure (`drbrain closure --mode hybrid`), LLM agent reasoning (`drbrain reason`). Based on 2202.07412, 2306.08302, 2511.11017.
