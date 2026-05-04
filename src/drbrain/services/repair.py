@@ -174,6 +174,10 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
                 db.conn.execute(
                     "UPDATE paper_ids SET doi = ? WHERE local_id = ?", (r["new"], local_id)
                 )
+            elif r["field"] == "journal":
+                db.conn.execute(
+                    "UPDATE papers SET journal = ? WHERE local_id = ?", (r["new"], local_id)
+                )
         db.commit()
 
     return repairs

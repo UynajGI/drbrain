@@ -36,8 +36,8 @@ uv run drbrain analyze <id> --full  # knowledge frontier analysis
 | `drbrain ws` | Manage paper workspaces | ✅ |
 | `drbrain export` | Export to BibTeX/RIS/Markdown | ✅ |
 | `drbrain backup` | Create tar.gz backup | ✅ |
-| `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | — |
-| `drbrain import` | Import from Zotero or BibTeX | — |
+| `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | ✅ |
+| `drbrain import` | Import from Zotero or BibTeX | ✅ |
 | `drbrain translate` | Translate paper markdown via LLM | — |
 
 ## Architecture

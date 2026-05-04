@@ -2580,7 +2580,11 @@ def repair_cmd(
             papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
     elif local_id:
         paper = db.get_paper(local_id)
-        papers = [paper] if paper else []
+        if not paper:
+            db.close()
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            raise typer.Exit(1)
+        papers = [paper]
     else:
         db.close()
         typer.echo("Specify a paper, --all, or --workspace", err=True)
@@ -2677,6 +2681,8 @@ def import_cmd(
             paper.get("year"),
             "placeholder",
             paper_type=paper.get("paper_type", "paper"),
+            journal=paper.get("journal", ""),
+            citation_count=paper.get("citation_count", 0),
         )
         if paper.get("doi"):
             db.insert_paper_ids(local_id, doi=paper["doi"])
