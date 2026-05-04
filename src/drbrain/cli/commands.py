@@ -651,6 +651,7 @@ def closure_cmd(
         None, "--rule", help="Run only the named rule(s). Repeatable. Omit for all."
     ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+    mode: str = typer.Option("symbolic", "--mode", help="Inference mode: symbolic or hybrid"),
 ):
     """Run rule-based closure on the full graph."""
     # Normalize typer OptionInfo objects when calling directly (not via CLI)
@@ -660,6 +661,8 @@ def closure_cmd(
         dry_run = dry_run.default
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
+    if isinstance(mode, typer.models.OptionInfo):
+        mode = mode.default
 
     valid_rules = {
         "creates_debate",
@@ -687,7 +690,7 @@ def closure_cmd(
     paper_ids = _resolve_workspace_papers(workspace)
     graph.load_from_db(db, paper_ids=paper_ids)
 
-    inferred = graph.closure()
+    inferred = graph.closure(mode=mode)
 
     if rule is not None:
         rule_set = set(rule)
