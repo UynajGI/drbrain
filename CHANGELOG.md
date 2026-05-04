@@ -8,7 +8,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [Unreleased]
 
 ### Added
-- **3-layer KG reasoning stack**: TransE embeddings (`drbrain embed`), hybrid closure (`drbrain closure --mode hybrid`), LLM agent reasoning (`drbrain reason`). Based on papers 2202.07412, 2306.08302, 2511.11017.
+- **Cross-paper concept dedup**: automatic exact+similar label merging after `drbrain build`. Word-overlap similarity detection. Based on 2511.11017 ontology-driven approach.
+- **3-layer KG reasoning stack**: TransE embeddings (`drbrain embed`), hybrid closure (`drbrain closure --mode hybrid`), LLM agent reasoning (`drbrain reason`). Based on 2202.07412, 2306.08302, 2511.11017.
 - **Pipeline refactor**: Two-phase. `drbrain ingest` (lightweight) + `drbrain build` (5-stage extraction). Based on 2306.08302/2511.11017.
 - **Graph search — directed traversal**: `query --neighbors` now uses `GraphEngine.traverse()` with `--relation` (comma-separated edge type filter) and `--direction` (forward/backward/both) flags. Graph expansion returns concept nodes (Problem/Method/Gap/etc.) with full path trace, not just paper neighbors.
 - **Graph search — direct queries**: `drbrain graph neighbors <node>` traverses graph without BM25 text search. `drbrain graph path <src> <dst>` finds shortest path with edge direction/recovery from MultiDiGraph.
