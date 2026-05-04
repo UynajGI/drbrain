@@ -34,7 +34,7 @@ uv run drbrain analyze <id> --full  # knowledge frontier analysis
 | `drbrain check-citations` | Verify in-text citations against library | ✅ |
 | `drbrain analyze` | Knowledge frontier report (`--papers`/`--query`/`--discover`) | ✅ |
 | `drbrain ws` | Manage paper workspaces | ✅ |
-| `drbrain export` | Export to BibTeX/RIS/Markdown | — |
+| `drbrain export` | Export to BibTeX/RIS/Markdown | ✅ |
 | `drbrain backup` | Create tar.gz backup | ✅ |
 | `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | — |
 | `drbrain import` | Import from Zotero or BibTeX | — |
