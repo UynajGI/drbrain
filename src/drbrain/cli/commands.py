@@ -2772,6 +2772,12 @@ def build_cmd(
     elif all_results:
         total_c = sum(r["concepts"] for r in all_results)
         total_r = sum(r["relations"] for r in all_results)
+        # Cross-paper concept deduplication
+        from drbrain.extractor.concept import dedup_concepts_by_label
+        merged = dedup_concepts_by_label(db)
+        if merged:
+            typer.echo(f"  Dedup: {merged} duplicate concepts merged")
+
         typer.echo(f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers")
 
 
