@@ -1,23 +1,27 @@
 """Tests for paper translation service."""
 
-from unittest import mock
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
 from drbrain.services.translate import (
+    SKIP_ALL_CHUNKS_FAILED,
+    SKIP_ALREADY_EXISTS,
+    SKIP_EMPTY,
+    SKIP_NO_MD,
+    SKIP_SAME_LANG,
+    TranslateResult,
     _split_into_chunks,
     _subdivide_chunk_for_retry,
     _translate_chunk,
     _translate_chunk_resilient,
     _translate_chunk_with_retry,
+    _translation_state_path,
+    _translation_workdir,
     translate_paper,
-    translate_text,
 )
-
-# The LLM client function is imported locally inside translate_text(), so we
-# patch at its source module.
-ACALL_PATH = "drbrain.extractor.llm_client.acall_text_with_fallback"
-
 
 # ---------------------------------------------------------------------------
 # _split_into_chunks — basic behaviour
@@ -228,143 +232,218 @@ def test_placeholder_display_math_before_inline_math():
 
 
 # ---------------------------------------------------------------------------
-# translate_text tests (async)
+# TranslateResult tests
 # ---------------------------------------------------------------------------
 
 
-async def test_translate_text_returns_translated_content():
-    """translate_text calls LLM and returns translated content."""
-    text = "First paragraph.\n\n## Section\nSection text."
+class TestTranslateResult:
+    def test_ok_when_path_and_not_partial(self):
+        r = TranslateResult(path=Path("/tmp/out.md"), partial=False)
+        assert r.ok
 
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        return f"[TRANS] {prompt[:20]}..."
+    def test_not_ok_when_partial(self):
+        r = TranslateResult(path=Path("/tmp/out.md"), partial=True)
+        assert not r.ok
 
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = await translate_text(text, models=[{"provider": "openai", "model": "gpt-4"}])
-        assert result is not None
-        assert "[TRANS]" in result
+    def test_not_ok_when_none_path(self):
+        r = TranslateResult(skip_reason=SKIP_NO_MD)
+        assert not r.ok
 
-
-async def test_translate_text_llm_fails_returns_none():
-    """If LLM returns None for any chunk, translate_text returns None."""
-    # Need >CHUNK_SIZE chars to produce 2+ chunks
-    text = "Preamble.\n\n## Section A\n" + "X" * 2500 + "\n\n## Section B\n" + "Y" * 2500
-
-    call_count = 0
-
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            return None  # fail on second chunk
-        return f"[TRANS] {prompt[:20]}"
-
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = await translate_text(text, models=[{"provider": "openai", "model": "gpt-4"}])
-        assert result is None
-
-
-async def test_translate_text_passes_correct_params():
-    """translate_text passes the correct system_prompt, max_tokens to the LLM."""
-    text = "Just some text to translate."
-
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        return f"SYS:{system_prompt[:30]} | MAX:{max_tokens}"
-
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = await translate_text(
-            text,
-            models=[{"provider": "openai", "model": "gpt-4"}],
-            target_lang="Japanese",
-            source_lang="English",
-        )
-        assert result is not None
-        assert "SYS:" in result
-        assert "MAX:4096" in result
+    def test_defaults(self):
+        r = TranslateResult()
+        assert r.path is None
+        assert r.skip_reason == ""
+        assert not r.partial
+        assert r.completed_chunks == 0
+        assert r.total_chunks == 0
 
 
 # ---------------------------------------------------------------------------
-# translate_paper tests
+# translate_paper tests (new API)
 # ---------------------------------------------------------------------------
 
 
-def test_translate_paper_file_not_found(tmp_path):
-    """translate_paper returns None when the input file does not exist."""
-    nonexistent = tmp_path / "nonexistent.md"
-    result = translate_paper(
-        md_path=nonexistent,
-        models=[{"provider": "openai", "model": "gpt-4"}],
-    )
-    assert result is None
+class TestTranslatePaper:
+    def test_skip_no_md(self, tmp_path):
+        """No raw.md returns SKIP_NO_MD."""
+        paper_dir = tmp_path / "papers" / "test"
+        result = translate_paper(paper_dir, models=[])
+        assert result.path is None
+        assert result.skip_reason == SKIP_NO_MD
 
+    def test_skip_empty(self, tmp_path):
+        """Empty raw.md returns SKIP_EMPTY."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text("   \n  ")
+        result = translate_paper(paper_dir, models=[])
+        assert result.skip_reason == SKIP_EMPTY
 
-def test_translate_paper_creates_output_file(tmp_path):
-    """translate_paper reads source, translates, and writes output file."""
-    md_path = tmp_path / "raw.md"
-    md_path.write_text("Hello world content.", encoding="utf-8")
+    def test_skip_same_lang(self, tmp_path):
+        """Source language matches target returns SKIP_SAME_LANG."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        # Chinese text with target_lang="zh"
+        (paper_dir / "raw.md").write_text("本文提出了一种新型湍流模型用于预测高雷诺数流动")
+        result = translate_paper(paper_dir, models=[], target_lang="zh")
+        assert result.skip_reason == SKIP_SAME_LANG
 
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        return f"[TRANSLATED] {prompt}"
+    def test_skip_already_exists(self, tmp_path):
+        """Output exists without workdir returns SKIP_ALREADY_EXISTS."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text("Hello world content.")
+        out_path = paper_dir / "paper_zh.md"
+        out_path.write_text("existing translation")
+        result = translate_paper(paper_dir, models=[], target_lang="zh")
+        assert result.skip_reason == SKIP_ALREADY_EXISTS
 
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = translate_paper(
-            md_path=md_path,
-            models=[{"provider": "openai", "model": "gpt-4"}],
-            target_lang="Chinese",
+    def test_force_overwrites(self, tmp_path, monkeypatch):
+        """force=True re-translates even when output exists."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        text = "Hello world content.\n\nMore text here."
+        (paper_dir / "raw.md").write_text(text)
+        out_path = paper_dir / "paper_zh.md"
+        out_path.write_text("old translation")
+
+        monkeypatch.setattr("drbrain.services.translate.CHUNK_SIZE", 5000)
+
+        def mock_resilient(
+            t, target_lang, models, *, chunk_size=3000, max_attempts=5, backoff_base=1.0
+        ):
+            return f"[TRANS:{t}]", 1
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_resilient", mock_resilient)
+
+        result = translate_paper(paper_dir, models=[{}], target_lang="zh", force=True)
+        assert result.ok
+        assert result.path == out_path
+        assert "[TRANS:" in out_path.read_text("utf-8")
+
+    def test_concurrent_chunks(self, tmp_path, monkeypatch):
+        """Multiple chunks are translated concurrently."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+
+        # Generate 4 paragraphs that become 4 chunks
+        text = "\n\n".join(f"Paragraph {i}. " + "X" * 600 for i in range(6))
+        (paper_dir / "raw.md").write_text(text)
+
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def mock_resilient(
+            t, target_lang, models, *, chunk_size=3000, max_attempts=5, backoff_base=1.0
+        ):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.15)
+            with lock:
+                active -= 1
+            return "[T]", 1
+
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_resilient", mock_resilient)
+        monkeypatch.setattr("drbrain.services.translate.CHUNK_SIZE", 800)
+
+        result = translate_paper(paper_dir, models=[{}], target_lang="zh")
+        assert max_active > 1, f"expected concurrent workers, got max_active={max_active}"
+        assert result.ok
+        assert result.completed_chunks == result.total_chunks
+
+    def test_resume_from_workdir(self, tmp_path, monkeypatch):
+        """Partial first run, resume and complete on second run."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+
+        # Two paragraphs that produce exactly 2 chunks with CHUNK_SIZE=1000:
+        #   Header (7) + AAA*600 (600) + "\\n\\n" (2) = 609 chars → chunk 0
+        #   BBB*600 (600) = 600 chars → chunk 1
+        text = "Header.\n\n" + "A" * 600 + "\n\n" + "B" * 600
+        (paper_dir / "raw.md").write_text(text)
+
+        monkeypatch.setattr("drbrain.services.translate.CHUNK_SIZE", 1000)
+
+        # First run: chunk 0 succeeds, chunk 1 fails
+        call_counter = [0]
+
+        def mock_resilient_first(
+            t, target_lang, models, *, chunk_size=3000, max_attempts=5, backoff_base=1.0
+        ):
+            call_counter[0] += 1
+            if call_counter[0] == 2:  # chunk 1 raises
+                raise RuntimeError("simulated failure on chunk 1")
+            return f"[OK:{len(t)}]", 1
+
+        monkeypatch.setattr(
+            "drbrain.services.translate._translate_chunk_resilient", mock_resilient_first
         )
 
-    assert result is not None
-    assert result.exists()
-    content = result.read_text(encoding="utf-8")
-    assert "[TRANSLATED]" in content
+        result1 = translate_paper(paper_dir, models=[{}], target_lang="zh")
+        assert result1.partial
+        assert result1.completed_chunks == 1
+        assert result1.total_chunks == 2
 
+        # Verify workdir exists
+        workdir = _translation_workdir(paper_dir, "zh")
+        assert workdir.exists()
+        state_path = _translation_state_path(workdir)
+        assert state_path.exists()
 
-def test_translate_paper_custom_output_path(tmp_path):
-    """translate_paper writes to a custom output_path when provided."""
-    md_path = tmp_path / "raw.md"
-    md_path.write_text("Translate me.", encoding="utf-8")
-    custom_out = tmp_path / "custom_output.md"
+        # Verify output has first chunk only
+        out_path = paper_dir / "paper_zh.md"
+        assert out_path.exists()
+        assert "[OK:" in out_path.read_text("utf-8")
 
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        return f"[DONE] {prompt}"
+        # Second run: all succeed
+        call_counter[0] = 0
 
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = translate_paper(
-            md_path=md_path,
-            models=[{"provider": "openai", "model": "gpt-4"}],
-            output_path=custom_out,
+        def mock_resilient_second(
+            t, target_lang, models, *, chunk_size=3000, max_attempts=5, backoff_base=1.0
+        ):
+            call_counter[0] += 1
+            return f"[OK:{len(t)}]", 1
+
+        monkeypatch.setattr(
+            "drbrain.services.translate._translate_chunk_resilient", mock_resilient_second
         )
 
-    assert result == custom_out
-    assert custom_out.exists()
-    assert "[DONE]" in custom_out.read_text(encoding="utf-8")
+        result2 = translate_paper(paper_dir, models=[{}], target_lang="zh")
+        assert result2.ok, f"expected ok, got partial={result2.partial}, skip={result2.skip_reason}"
+        assert result2.completed_chunks == 2
+        assert result2.total_chunks == 2
+        # Only chunk 1 (the failed one) should be retranslated
+        assert call_counter[0] == 1
 
+        # Workdir cleaned up after success
+        assert not workdir.exists()
 
-def test_translate_paper_llm_fails_returns_none(tmp_path):
-    """If translation fails on any chunk, translate_paper returns None."""
-    md_path = tmp_path / "raw.md"
-    # Need >CHUNK_SIZE chars to produce 2+ chunks
-    md_path.write_text(
-        "Preamble.\n\n## First\n" + "A" * 2500 + "\n\n## Second\n" + "B" * 2500,
-        encoding="utf-8",
-    )
+    def test_all_chunks_fail(self, tmp_path, monkeypatch):
+        """All chunks fail returns SKIP_ALL_CHUNKS_FAILED with no output."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
 
-    call_count = 0
+        text = "Header.\n\n" + "A" * 600 + "\n\n" + "B" * 600
+        (paper_dir / "raw.md").write_text(text)
 
-    async def fake_acall(*, prompt, models, system_prompt, max_tokens):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 2:
-            return None
-        return f"[OK] {prompt}"
+        monkeypatch.setattr("drbrain.services.translate.CHUNK_SIZE", 500)
 
-    with mock.patch(ACALL_PATH, side_effect=fake_acall):
-        result = translate_paper(
-            md_path=md_path,
-            models=[{"provider": "openai", "model": "gpt-4"}],
-        )
+        def mock_resilient(
+            t, target_lang, models, *, chunk_size=3000, max_attempts=5, backoff_base=1.0
+        ):
+            raise RuntimeError("all fail")
 
-    assert result is None
+        monkeypatch.setattr("drbrain.services.translate._translate_chunk_resilient", mock_resilient)
+
+        result = translate_paper(paper_dir, models=[{}], target_lang="zh")
+        assert result.path is None
+        assert result.skip_reason == SKIP_ALL_CHUNKS_FAILED
+        assert result.completed_chunks == 0
+        # No output file written
+        assert not (paper_dir / "paper_zh.md").exists()
 
 
 # ---------------------------------------------------------------------------

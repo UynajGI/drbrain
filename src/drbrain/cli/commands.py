@@ -2734,20 +2734,15 @@ def import_cmd(
 
 def translate_cmd(
     local_id: str = typer.Argument(..., help="Paper local_id"),
-    target_lang: str = typer.Option("zh", "--lang", "-l", help="Target language: zh, en, ja, etc."),
-    source_lang: str = typer.Option("en", "--from", help="Source language (default: en)"),
+    target_lang: str = typer.Option(
+        "zh", "--lang", "-l", help="Target language code: zh, en, ja, etc."
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force re-translation even if output exists"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
     """Translate a paper's markdown via LLM."""
-    _lang_map = {
-        "zh": "Chinese",
-        "en": "English",
-        "ja": "Japanese",
-        "ko": "Korean",
-        "de": "German",
-        "fr": "French",
-    }
-
     cfg = load_config()
     db = Database(cfg["db"]["path"])
 
@@ -2759,9 +2754,9 @@ def translate_cmd(
         raise typer.Exit(1)
 
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    md_path = papers_dir / local_id / "raw.md"
+    paper_dir = papers_dir / local_id
 
-    if not md_path.exists():
+    if not (paper_dir / "raw.md").exists():
         typer.echo(f"No raw.md found for {local_id}. Run 'drbrain ingest' first.", err=True)
         raise typer.Exit(1)
 
@@ -2770,31 +2765,51 @@ def translate_cmd(
         typer.echo("No LLM models configured.", err=True)
         raise typer.Exit(1)
 
-    tgt = _lang_map.get(target_lang, target_lang)
-    src = _lang_map.get(source_lang, source_lang)
-
-    typer.echo(f"Translating: {paper['title']} ({src} → {tgt})")
+    typer.echo(f"Translating: {paper['title']} (→ {target_lang})")
 
     from drbrain.services.translate import translate_paper
 
     result = translate_paper(
-        md_path,
+        paper_dir,
         models=llm_models,
-        target_lang=tgt,
-        source_lang=src,
+        target_lang=target_lang,
+        force=force,
     )
 
-    if result is None:
-        if json_output:
-            typer.echo(json.dumps({"error": "Translation failed"}))
+    if not result.ok:
+        if result.partial:
+            msg = f"Partial translation ({result.completed_chunks}/{result.total_chunks} chunks) — re-run to resume"
+        elif result.skip_reason:
+            msg = f"Translation skipped: {result.skip_reason}"
         else:
-            typer.echo("Translation failed.", err=True)
-        raise typer.Exit(1)
+            msg = "Translation failed."
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"error": msg, "partial": result.partial, "skip_reason": result.skip_reason},
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            typer.echo(msg, err=True)
+        if not result.partial:
+            raise typer.Exit(1)
+        return
 
     if json_output:
-        typer.echo(json.dumps({"paper": local_id, "output": str(result)}, ensure_ascii=False))
+        typer.echo(
+            json.dumps(
+                {
+                    "paper": local_id,
+                    "output": str(result.path),
+                    "completed_chunks": result.completed_chunks,
+                    "total_chunks": result.total_chunks,
+                },
+                ensure_ascii=False,
+            )
+        )
     else:
-        typer.echo(f"Translated: {result}")
+        typer.echo(f"Translated: {result.path}")
 
 
 def build_cmd(
