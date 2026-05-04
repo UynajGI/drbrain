@@ -16,7 +16,7 @@ class TransE:
         self.relations: dict[str, np.ndarray] = {}
         self._entity_list: list[str] = []
 
-    def train(self, graph) -> None:
+    def train(self, graph, init_entities=None, init_relations=None) -> None:
         edges = []
         entities_set: set[str] = set()
         relations_set: set[str] = set()
@@ -32,10 +32,16 @@ class TransE:
         rng = np.random.default_rng(42)
         scale = np.sqrt(6.0 / self.dim)
         for e in entities_set:
-            self.entities[e] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
+            if init_entities and e in init_entities:
+                self.entities[e] = np.array(init_entities[e], dtype=np.float32)
+            else:
+                self.entities[e] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
         for r in relations_set:
-            self.relations[r] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
-            self.relations[r] /= np.linalg.norm(self.relations[r])
+            if init_relations and r in init_relations:
+                self.relations[r] = np.array(init_relations[r], dtype=np.float32)
+            else:
+                self.relations[r] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
+                self.relations[r] /= np.linalg.norm(self.relations[r])
 
         for epoch in range(self.epochs):
             total_loss = 0.0

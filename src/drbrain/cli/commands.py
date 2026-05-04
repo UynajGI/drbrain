@@ -2799,20 +2799,17 @@ def embed_cmd(
         db.close()
         raise typer.Exit(1)
 
+    # Load existing embeddings for incremental training
     existing = db.load_embeddings()
-    if existing and not retrain:
-        typer.echo(
-            f"Embeddings exist ({len(existing)} entities, "
-            f"dim={list(existing.values())[0].shape[0]}). Use --retrain to rebuild."
-        )
-        db.close()
-        return
+    init_ents = existing if existing and not retrain else None
+    init_rels = None  # relations are re-learned each time (fewer, changes matter)
 
     db.clear_embeddings()
     t = TransE(dim=dim, epochs=epochs)
     typer.echo(f"Training embeddings (dim={dim}, epochs={epochs}, "
-               f"nodes={graph.graph.number_of_nodes()})...")
-    t.train(graph.graph)
+               f"nodes={graph.graph.number_of_nodes()}"
+               f"{', incremental' if init_ents else ', from scratch'})...")
+    t.train(graph.graph, init_entities=init_ents, init_relations=init_rels)
 
     for label, vec in t.entities.items():
         db.save_embedding(label, vec, dim)
