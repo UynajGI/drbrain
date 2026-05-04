@@ -279,12 +279,17 @@ def _ingest_single_paper(
             doi_info = fn()
 
         if doi_info and doi_info.get("doi"):
-            db.conn.execute(
-                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                (doi_info["doi"], local_id),
-            )
-            db.commit()
-            echo(f"  Found DOI: {doi_info['doi']}")
+            # Year consistency check: reject if parsed year is >5 years from DOI source
+            doi_year = doi_info.get("year")
+            if parsed.year and doi_year and abs(parsed.year - doi_year) > 5:
+                echo(f"  DOI rejected (year mismatch: paper={parsed.year}, doi={doi_year})")
+            else:
+                db.conn.execute(
+                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
+                    (doi_info["doi"], local_id),
+                )
+                db.commit()
+                echo(f"  Found DOI: {doi_info['doi']}")
         else:
             echo("  No DOI found in any source")
 
