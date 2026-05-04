@@ -121,6 +121,7 @@ class ReasonerAgent:
                 kwargs = {
                     "model": name, "messages": messages, "temperature": 0.3,
                     "max_tokens": 1024, "timeout": 60, "tools": tools,
+                    "extra_body": {"thinking": {"type": "disabled"}},
                 }
                 if model.get("api_key"):
                     kwargs["api_key"] = model["api_key"]
