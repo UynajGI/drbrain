@@ -33,7 +33,7 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain seed` | Detect research seeds from graph patterns | ✅ |
 | `drbrain citations` | Multi-source citation expansion (`--limit`/`--sort`) | ✅ |
 | `drbrain check-citations` | Verify in-text citations against library | ✅ |
-| `drbrain analyze` | Knowledge frontier report | — |
+| `drbrain analyze` | Knowledge frontier report (`--papers`/`--query`/`--discover`) | ✅ |
 | `drbrain ws` | Manage paper workspaces | — |
 | `drbrain export` | Export to BibTeX/RIS/Markdown | — |
 | `drbrain backup` | Create tar.gz backup | — |
