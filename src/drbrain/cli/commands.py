@@ -2170,52 +2170,127 @@ def check_cmd():
 
 
 def analyze_cmd(
-    local_id: str = typer.Argument(None, help="Paper local_id"),
-    full: bool = typer.Option(False, "--full", "-f", help="Full analysis (slower)"),
+    local_id: str = typer.Argument(None, help="Paper local_id (single paper mode)"),
+    papers: str = typer.Option(None, "--papers", help="Comma-separated paper IDs"),
+    query: str = typer.Option(None, "--query", help="BM25 search query to select papers"),
+    discover: str = typer.Option(None, "--discover", help="LLM graph discovery question"),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace boundary scan"),
+    full: bool = typer.Option(False, "--full", "-f", help="Full analysis (slower)"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
-    """Analyze knowledge frontier: seeds, causal chains, hypotheses, and more."""
+    """Analyze knowledge frontier: seeds, causal chains, hypotheses, and more.
+
+    Paper selection (mutually exclusive, first match wins):
+    - <local_id>: single paper
+    - --papers p1,p2,...: specific papers
+    - --query "text": BM25 search then analyze matches
+    - --discover "question": LLM graph exploration to find relevant papers
+    - --workspace myws: all papers in workspace
+    - (none): error — specify one of the above
+    """
+    # Normalize typer OptionInfo objects when calling directly (not via CLI)
+    if isinstance(papers, typer.models.OptionInfo):
+        papers = papers.default
+    if isinstance(query, typer.models.OptionInfo):
+        query = query.default
+    if isinstance(discover, typer.models.OptionInfo):
+        discover = discover.default
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    if isinstance(full, typer.models.OptionInfo):
+        full = full.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+
     from drbrain.report.analyzer import analyze_paper
 
     cfg = load_config()
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
+    llm_models = cfg.get("llm", {}).get("models", [])
 
-    if workspace:
-        paper_ids = _resolve_workspace_papers(workspace)
-        graph.load_from_db(db, paper_ids=paper_ids)
-    else:
-        graph.load_from_db(db)
+    # ── Paper selection ──
+    selected: list[dict] = []
 
     if local_id:
-        report = analyze_paper(db, graph, local_id, full=full)
-    elif workspace:
-        # Workspace boundary scan: analyze all papers in workspace
-        papers = db.get_all_papers()
-        ws_ids = _resolve_workspace_papers(workspace)
-        ws_papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
-        reports = [analyze_paper(db, graph, p["local_id"], full=full) for p in ws_papers]
-
-        if json_output:
-            typer.echo(json.dumps(reports, indent=2, ensure_ascii=False, default=str))
+        p = db.get_paper(local_id)
+        if p:
+            selected = [p]
         else:
-            typer.echo(f"Workspace: {workspace} ({len(ws_papers)} papers)")
-            for r in reports:
-                _print_analyze_report(r)
-        db.close()
-        return
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            db.close()
+            raise typer.Exit(1)
+    elif papers:
+        for pid in papers.split(","):
+            pid = pid.strip()
+            p = db.get_paper(pid)
+            if p:
+                selected.append(p)
+            else:
+                typer.echo(f"Paper not found: {pid}", err=True)
+    elif query:
+        from drbrain.query.bm25 import build_bm25_index
+        bm25 = build_bm25_index(db)
+        results = bm25.search(query, limit=20)
+        seen = set()
+        for r in results:
+            pid = r["local_id"]
+            if pid not in seen:
+                seen.add(pid)
+                p = db.get_paper(pid)
+                if p:
+                    selected.append(p)
+        typer.echo(f"Query '{query}': {len(selected)} papers matched")
+    elif discover:
+        from drbrain.extractor.reasoner import ReasonerAgent
+        agent = ReasonerAgent(db=db, graph_engine=graph, models=llm_models)
+        typer.echo(f"Discovering papers for: {discover}")
+        answer = asyncio.run(agent.reason(
+            f"Find papers in the knowledge graph relevant to: {discover}. "
+            "Search concepts and explore neighbors. Return ONLY a comma-separated "
+            "list of the most relevant paper IDs (like pe211dc,p6a321e). Max 10."
+        ))
+        import re as _re
+        ids = _re.findall(r'p[a-f0-9]{6}', answer)
+        for pid in ids[:10]:
+            p = db.get_paper(pid)
+            if p:
+                selected.append(p)
+        typer.echo(f"Discovered: {len(selected)} papers")
+    elif workspace:
+        paper_ids = _resolve_workspace_papers(workspace)
+        all_papers = db.get_all_papers()
+        selected = [p for p in all_papers if paper_ids and p["local_id"] in paper_ids]
     else:
+        typer.echo(
+            "Specify a paper ID, --papers, --query, --discover, or --workspace.",
+            err=True,
+        )
         db.close()
-        typer.echo("Specify a paper local_id or --workspace", err=True)
         raise typer.Exit(1)
+
+    if not selected:
+        typer.echo("No papers to analyze.")
+        db.close()
+        raise typer.Exit(1)
+
+    # Load graph with selected papers
+    sel_ids = {p["local_id"] for p in selected}
+    graph.load_from_db(db, paper_ids=sel_ids)
+
+    # ── Run analysis ──
+    reports = [analyze_paper(db, graph, p["local_id"], full=full) for p in selected]
 
     db.close()
 
     if json_output:
-        typer.echo(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        typer.echo(json.dumps(reports, indent=2, ensure_ascii=False, default=str))
+    elif len(reports) == 1:
+        _print_analyze_report(reports[0])
     else:
-        _print_analyze_report(report)
+        typer.echo(f"Analysis: {len(reports)} papers\n")
+        for r in reports:
+            _print_analyze_report(r)
 
 
 def _print_analyze_report(report: dict) -> None:
