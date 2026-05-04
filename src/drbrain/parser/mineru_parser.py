@@ -46,6 +46,9 @@ class ParsedPaper:
     arxiv: str | None = None
     s2_id: str | None = None
     openalex_id: str | None = None
+    journal: str = ""
+    publisher: str = ""
+    citation_count: int = 0
     authors: list[dict] = field(default_factory=list)
     text_blocks: list[str] = field(default_factory=list)
     raw_md: str = ""
@@ -64,6 +67,8 @@ class MinerUParser:
         enable_table: bool = True,
         max_retries: int = 3,
         retry_delay: float = 2.0,
+        deepxiv_token: str = "",
+        s2_api_key: str = "",
     ):
         self.token = token
         self.model = model
@@ -72,6 +77,8 @@ class MinerUParser:
         self.enable_table = enable_table
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.deepxiv_token = deepxiv_token
+        self.s2_api_key = s2_api_key
 
     def extract(self, pdf_path: str | Path, max_pages: int = 150) -> ParsedPaper:
         """Extract structured content from PDF. Splits into chunks if > max_pages."""
@@ -114,12 +121,17 @@ class MinerUParser:
                 raw_title=title,
                 raw_year=year,
                 raw_doi=doi,
+                deepxiv_token=self.deepxiv_token,
+                s2_api_key=self.s2_api_key,
             )
             title = meta["title"] or title
             year = meta["year"] or year
             doi = meta["doi"] or doi
             s2_id = meta["s2_id"]
             oa_id = meta["openalex_id"]
+            journal = meta["journal"]
+            publisher = meta["publisher"]
+            citation_count = meta["citation_count"]
 
             blocks = filter_sections(merged_md)
 
@@ -130,6 +142,9 @@ class MinerUParser:
                 arxiv=arxiv,
                 s2_id=s2_id,
                 openalex_id=oa_id,
+                journal=journal,
+                publisher=publisher,
+                citation_count=citation_count,
                 text_blocks=blocks,
                 raw_md=merged_md,
                 images_dir=merged_images,
@@ -204,12 +219,17 @@ class MinerUParser:
                 raw_title=title,
                 raw_year=year,
                 raw_doi=doi,
+                deepxiv_token=self.deepxiv_token,
+                s2_api_key=self.s2_api_key,
             )
             title = meta["title"] or title
             year = meta["year"] or year
             doi = meta["doi"] or doi
             s2_id = meta["s2_id"]
             oa_id = meta["openalex_id"]
+            journal = meta["journal"]
+            publisher = meta["publisher"]
+            citation_count = meta["citation_count"]
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work
@@ -227,6 +247,9 @@ class MinerUParser:
                 arxiv=arxiv,
                 s2_id=s2_id,
                 openalex_id=oa_id,
+                journal=journal,
+                publisher=publisher,
+                citation_count=citation_count,
                 authors=authors or [],
                 text_blocks=blocks,
                 raw_md=raw_md,
@@ -340,6 +363,7 @@ class MinerUParser:
         """Extract markdown via pymupdf4llm. Falls back to plain text."""
         try:
             import pymupdf4llm
+
             md = pymupdf4llm.to_markdown(str(pdf_path))
             if md.strip():
                 return md
@@ -348,6 +372,7 @@ class MinerUParser:
 
         # Last resort: plain text
         import fitz
+
         doc = fitz.open(str(pdf_path))
         try:
             lines = []
@@ -423,7 +448,7 @@ def _resolve_metadata(
     raw_doi: str | None = None,
     deepxiv_token: str = "",
     s2_api_key: str = "",
-) -> dict[str, Any]:
+) -> dict:
     """Cross-validate metadata from arXiv, CrossRef, S2, and OpenAlex.
 
     Strategy:
@@ -439,37 +464,74 @@ def _resolve_metadata(
     if arxiv:
         arxiv_title, arxiv_year = _fetch_arxiv_metadata(arxiv)
         if arxiv_title or arxiv_year:
-            sources["arxiv"] = {"title": arxiv_title, "year": arxiv_year,
-                               "doi": None, "s2_id": None, "openalex_id": None}
+            sources["arxiv"] = {
+                "title": arxiv_title,
+                "year": arxiv_year,
+                "doi": None,
+                "s2_id": None,
+                "openalex_id": None,
+            }
 
     # ── CrossRef (keyed by title from arXiv, or raw title) ──
     search_title = sources.get("arxiv", {}).get("title") or raw_title or ""
     if search_title:
-        cr_title, cr_year, cr_doi = _fetch_crossref_metadata(search_title)
+        cr_title, cr_year, cr_doi, cr_journal, cr_publisher = _fetch_crossref_metadata(search_title)
         if cr_doi or cr_year:
-            sources["crossref"] = {"title": cr_title, "year": cr_year, "doi": cr_doi,
-                                   "s2_id": None, "openalex_id": None}
+            sources["crossref"] = {
+                "title": cr_title,
+                "year": cr_year,
+                "doi": cr_doi,
+                "s2_id": None,
+                "openalex_id": None,
+                "journal": cr_journal,
+                "publisher": cr_publisher,
+                "citation_count": 0,
+            }
 
     # ── OpenAlex ──
     if search_title:
-        oa_title, oa_year, oa_id = _fetch_openalex_metadata(search_title)
+        oa_title, oa_year, oa_id, oa_journal, oa_cited = _fetch_openalex_metadata(search_title)
         if oa_title or oa_year:
-            sources["openalex"] = {"title": oa_title, "year": oa_year,
-                                   "doi": None, "s2_id": None, "openalex_id": oa_id}
+            sources["openalex"] = {
+                "title": oa_title,
+                "year": oa_year,
+                "doi": None,
+                "s2_id": None,
+                "openalex_id": oa_id,
+                "journal": oa_journal,
+                "publisher": "",
+                "citation_count": oa_cited,
+            }
 
     # ── Semantic Scholar ──
     if search_title:
-        s2_title, s2_year, s2_id = _fetch_s2_metadata(search_title)
+        s2_title, s2_year, s2_id, s2_journal, s2_cited = _fetch_s2_metadata(search_title)
         if s2_title or s2_year:
-            sources["s2"] = {"title": s2_title, "year": s2_year,
-                            "doi": None, "s2_id": s2_id, "openalex_id": None}
+            sources["s2"] = {
+                "title": s2_title,
+                "year": s2_year,
+                "doi": None,
+                "s2_id": s2_id,
+                "openalex_id": None,
+                "journal": s2_journal,
+                "publisher": "",
+                "citation_count": s2_cited,
+            }
 
     # ── DeepXiv (arXiv papers, adds TLDR + keywords + citation count) ──
     if arxiv:
         dx = _fetch_deepxiv_metadata(arxiv, token=deepxiv_token)
         if dx and dx.get("title"):
-            sources["deepxiv"] = {"title": dx["title"], "year": dx["year"],
-                                  "doi": None, "s2_id": None, "openalex_id": None}
+            sources["deepxiv"] = {
+                "title": dx["title"],
+                "year": dx["year"],
+                "doi": None,
+                "s2_id": None,
+                "openalex_id": None,
+                "journal": "",
+                "publisher": "",
+                "citation_count": dx.get("citations") or 0,
+            }
 
     # ── Resolution ──
     final_doi = raw_doi
@@ -504,7 +566,8 @@ def _resolve_metadata(
 
     # Filter API years by text-year consistency
     filtered_sources = {
-        k: v for k, v in sources.items()
+        k: v
+        for k, v in sources.items()
         if not _text_year or not v.get("year") or _year_consistent(v["year"], _text_year)
     }
 
@@ -534,9 +597,28 @@ def _resolve_metadata(
         if s.get("openalex_id") and not final_openalex_id:
             final_openalex_id = s["openalex_id"]
 
+    # Collect venue metadata: prefer CrossRef for journal/publisher, then OpenAlex, then S2
+    final_journal = ""
+    final_publisher = ""
+    final_citation_count = 0
+    for src_name in ["crossref", "openalex", "s2", "deepxiv"]:
+        s = sources.get(src_name, {})
+        if s.get("journal") and not final_journal:
+            final_journal = s["journal"]
+        if s.get("publisher") and not final_publisher:
+            final_publisher = s["publisher"]
+        if s.get("citation_count") and not final_citation_count:
+            final_citation_count = s["citation_count"]
+
     return {
-        "title": final_title, "year": final_year, "doi": final_doi,
-        "s2_id": final_s2_id, "openalex_id": final_openalex_id,
+        "title": final_title,
+        "year": final_year,
+        "doi": final_doi,
+        "s2_id": final_s2_id,
+        "openalex_id": final_openalex_id,
+        "journal": final_journal,
+        "publisher": final_publisher,
+        "citation_count": final_citation_count,
     }
 
 
@@ -560,10 +642,12 @@ def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
         return None, None
 
 
-def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None, str | None]:
-    """Fetch title, year, and OpenAlex ID via pyalex."""
+def _fetch_openalex_metadata(
+    title: str,
+) -> tuple[str | None, int | None, str | None, str | None, int]:
+    """Fetch title, year, OpenAlex ID, journal, and citation count via pyalex."""
     if not title:
-        return None, None, None
+        return None, None, None, None, 0
     try:
         from pyalex import Works as _Works
 
@@ -572,22 +656,31 @@ def _fetch_openalex_metadata(title: str) -> tuple[str | None, int | None, str | 
         if results:
             w = results[0]
             oa_id = w.get("id", "").replace("https://openalex.org/", "")
-            return w.get("title"), w.get("publication_year"), oa_id or None
+            journal = ""
+            loc = w.get("primary_location") or {}
+            source = loc.get("source") or {}
+            if source:
+                journal = source.get("display_name") or ""
+            cited = w.get("cited_by_count") or 0
+            return w.get("title"), w.get("publication_year"), oa_id or None, journal, cited
     except Exception:
         pass
-    return None, None, None
+    return None, None, None, None, 0
 
 
-def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int | None, str | None]:
-    """Fetch title, year, and paperId from Semantic Scholar API."""
+def _fetch_s2_metadata(
+    title: str, api_key: str = ""
+) -> tuple[str | None, int | None, str | None, str | None, int]:
+    """Fetch title, year, paperId, journal, and citationCount from Semantic Scholar API."""
     if not title:
-        return None, None, None
+        return None, None, None, None, 0
     try:
         import json as _json
         import urllib.parse as _uparse
         import urllib.request as _ureq
 
-        url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={_uparse.quote(title)}&limit=1&fields=title,year,paperId"
+        fields = "title,year,paperId,journal,citationCount"
+        url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={_uparse.quote(title)}&limit=1&fields={fields}"
         headers = {"Accept": "application/json"}
         if api_key:
             headers["x-api-key"] = api_key
@@ -597,13 +690,23 @@ def _fetch_s2_metadata(title: str, api_key: str = "") -> tuple[str | None, int |
         papers = data.get("data", [])
         if papers:
             p = papers[0]
-            return p.get("title"), p.get("year"), p.get("paperId")
+            journal = ""
+            j = p.get("journal") or {}
+            if j:
+                journal = j.get("name", "")
+            return (
+                p.get("title"),
+                p.get("year"),
+                p.get("paperId"),
+                journal,
+                p.get("citationCount") or 0,
+            )
     except Exception:
         pass
-    return None, None, None
+    return None, None, None, None, 0
 
 
-def _fetch_deepxiv_metadata(arxiv_id: str, token: str = "") -> dict[str, Any] | None:
+def _fetch_deepxiv_metadata(arxiv_id: str, token: str = "") -> dict | None:
     """Fetch metadata from DeepXiv API (title, year, TLDR, keywords, citations)."""
     if not arxiv_id:
         return None
@@ -629,10 +732,12 @@ def _fetch_deepxiv_metadata(arxiv_id: str, token: str = "") -> dict[str, Any] | 
         return None
 
 
-def _fetch_crossref_metadata(title: str) -> tuple[str | None, int | None, str | None]:
-    """Fetch title, year, and DOI from CrossRef by title search."""
+def _fetch_crossref_metadata(
+    title: str,
+) -> tuple[str | None, int | None, str | None, str | None, str | None]:
+    """Fetch title, year, DOI, journal, and publisher from CrossRef by title search."""
     if not title:
-        return None, None, None
+        return None, None, None, None, None
     try:
         import json as _json
         import urllib.parse as _uparse
@@ -651,10 +756,12 @@ def _fetch_crossref_metadata(title: str) -> tuple[str | None, int | None, str | 
             year = item.get("published-print", {}).get("date-parts", [[None]])[0][0]
             if not year:
                 year = item.get("created", {}).get("date-parts", [[None]])[0][0]
-            return cr_title, year, doi
+            journal = item.get("container-title", [None])[0] or ""
+            publisher = item.get("publisher", "")
+            return cr_title, year, doi, journal, publisher
     except Exception:
         pass
-    return None, None, None
+    return None, None, None, None, None
 
 
 def normalize_doi(raw: str) -> str:
@@ -740,6 +847,7 @@ def filter_sections(raw_md: str) -> list[str]:
 def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
     """Convenience function: create parser from config and extract."""
     mineru_cfg = config.get("mineru", {})
+    api_cfg = config.get("api", {})
     max_pages = mineru_cfg.get("max_pages", 150)
     parser = MinerUParser(
         token=mineru_cfg.get("token", ""),
@@ -747,5 +855,7 @@ def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
         is_ocr=mineru_cfg.get("is_ocr", False),
         enable_formula=mineru_cfg.get("enable_formula", True),
         enable_table=mineru_cfg.get("enable_table", True),
+        deepxiv_token=api_cfg.get("deepxiv_token", ""),
+        s2_api_key=api_cfg.get("s2_api_key", ""),
     )
     return parser.extract(pdf_path, max_pages=max_pages)

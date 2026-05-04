@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS papers (
     paper_type TEXT NOT NULL DEFAULT 'paper'
         CHECK(paper_type IN ('paper','review','thesis','preprint','book','document')),
     status TEXT NOT NULL DEFAULT 'placeholder' CHECK(status IN ('uploaded', 'placeholder', 'merged', 'extracted')),
+    journal TEXT DEFAULT '',
+    publisher TEXT DEFAULT '',
+    citation_count INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -124,6 +127,7 @@ class Database:
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_SQL)
         self._migrate_add_paper_type()
+        self._migrate_add_venue_columns()
         self.conn.commit()
 
     def _migrate_add_paper_type(self) -> None:
@@ -133,6 +137,16 @@ class Database:
             self.conn.execute(
                 "ALTER TABLE papers ADD COLUMN paper_type TEXT NOT NULL DEFAULT 'paper'"
             )
+
+    def _migrate_add_venue_columns(self) -> None:
+        """Add journal, publisher, citation_count columns if missing."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "journal" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN journal TEXT DEFAULT ''")
+        if "publisher" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN publisher TEXT DEFAULT ''")
+        if "citation_count" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN citation_count INTEGER DEFAULT 0")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -173,11 +187,15 @@ class Database:
         year: int | None,
         status: str,
         paper_type: str = "paper",
+        journal: str = "",
+        publisher: str = "",
+        citation_count: int = 0,
     ) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (local_id, title, year, status, paper_type),
+            "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type, "
+            "journal, publisher, citation_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (local_id, title, year, status, paper_type, journal, publisher, citation_count),
         )
 
     def insert_paper_ids(
@@ -198,6 +216,22 @@ class Database:
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
             (local_id,),
+        )
+
+    def update_paper_venue(
+        self,
+        local_id: str,
+        title: str = "",
+        year: int | None = None,
+        journal: str = "",
+        publisher: str = "",
+        citation_count: int = 0,
+    ) -> None:
+        """Update paper metadata after ingest (for upgraded placeholders)."""
+        self.conn.execute(
+            "UPDATE papers SET title = ?, year = ?, journal = ?, publisher = ?, "
+            "citation_count = ? WHERE local_id = ?",
+            (title, year, journal, publisher, citation_count, local_id),
         )
 
     # -- Concept/edge/alias/seed inserts --
@@ -252,7 +286,7 @@ class Database:
             (entity, np.array(vec, dtype=np.float32).tobytes(), dim),
         )
 
-    def load_embeddings(self) -> dict[str, np.ndarray]:
+    def load_embeddings(self) -> dict:
         import numpy as np
 
         rows = self.conn.execute("SELECT entity, vec, dim FROM embeddings").fetchall()
@@ -266,7 +300,8 @@ class Database:
     def get_all_papers(self) -> list[dict]:
         """Return all papers as list of dicts."""
         rows = self.conn.execute(
-            "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, p.created_at, "
+            "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, "
+            "p.journal, p.publisher, p.citation_count, p.created_at, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
@@ -277,6 +312,9 @@ class Database:
             "year",
             "paper_type",
             "status",
+            "journal",
+            "publisher",
+            "citation_count",
             "created_at",
             "doi",
             "arxiv",
@@ -289,6 +327,7 @@ class Database:
         """Get a single paper by local_id."""
         row = self.conn.execute(
             "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, "
+            "p.journal, p.publisher, p.citation_count, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
             "WHERE p.local_id = ?",
@@ -303,6 +342,9 @@ class Database:
             "year",
             "paper_type",
             "status",
+            "journal",
+            "publisher",
+            "citation_count",
             "doi",
             "arxiv",
             "s2_id",

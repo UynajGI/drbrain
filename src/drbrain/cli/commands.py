@@ -41,6 +41,7 @@ def ingest_cmd(
         cfg = load_config()
         # Expose API tokens to libraries that read them from environment
         import os as _os
+
         _dx_token = cfg.get("api", {}).get("deepxiv_token", "")
         if _dx_token and "DEEPXIV_TOKEN" not in _os.environ:
             _os.environ["DEEPXIV_TOKEN"] = _dx_token
@@ -148,16 +149,45 @@ def _ingest_single_paper(
             local_id = merged_id
             echo(f"  [merged] {local_id}")
             db.upgrade_placeholder(local_id)
+            db.update_paper_venue(
+                local_id,
+                title=parsed.title,
+                year=parsed.year,
+                journal=parsed.journal,
+                publisher=parsed.publisher,
+                citation_count=parsed.citation_count,
+            )
             db.commit()
         else:
             local_id = f"p{uuid.uuid4().hex[:6]}"
-            db.insert_paper(local_id, parsed.title, parsed.year, "uploaded")
-            db.insert_paper_ids(local_id, doi=ids.doi, arxiv=ids.arxiv,
-                                s2_id=parsed.s2_id, openalex_id=parsed.openalex_id)
+            db.insert_paper(
+                local_id,
+                parsed.title,
+                parsed.year,
+                "uploaded",
+                journal=parsed.journal,
+                publisher=parsed.publisher,
+                citation_count=parsed.citation_count,
+            )
+            db.insert_paper_ids(
+                local_id,
+                doi=ids.doi,
+                arxiv=ids.arxiv,
+                s2_id=parsed.s2_id,
+                openalex_id=parsed.openalex_id,
+            )
             db.commit()
             echo(f"  [new] {local_id}")
     else:
         db.upgrade_placeholder(local_id)
+        db.update_paper_venue(
+            local_id,
+            title=parsed.title,
+            year=parsed.year,
+            journal=parsed.journal,
+            publisher=parsed.publisher,
+            citation_count=parsed.citation_count,
+        )
         db.commit()
         echo(f"  [upgrade] {local_id}")
 
@@ -486,8 +516,10 @@ def citations_cmd(
     ),
     limit: int = typer.Option(200, "--limit", "-l", help="Max results per type"),
     sort: str = typer.Option(
-        "cited_by_count:desc", "--sort", "-s",
-        help="Sort: cited_by_count:desc, publication_date:desc, relevance_score:desc"
+        "cited_by_count:desc",
+        "--sort",
+        "-s",
+        help="Sort: cited_by_count:desc, publication_date:desc, relevance_score:desc",
     ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
@@ -523,6 +555,7 @@ def citations_cmd(
     if existing == 0:
         typer.echo("  Expanding citations (OpenAlex + S2 + CrossRef)...")
         from drbrain.extractor.citation import expand_citations_multi
+
         refs_added, citing_added = expand_citations_multi(db, local_id, limit=limit, sort=sort)
         typer.echo(f"  Found {refs_added} references, {citing_added} citing")
 
@@ -1313,6 +1346,9 @@ def _export_paper_to_meta(db: Database, local_id: str) -> dict:
         "first_author_lastname": lastname,
         "paper_type": paper.get("paper_type", "paper"),
         "abstract": paper.get("abstract", ""),
+        "journal": paper.get("journal", ""),
+        "publisher": paper.get("publisher", ""),
+        "citation_count": paper.get("citation_count", 0),
     }
 
 
@@ -1968,7 +2004,14 @@ def check_cmd():
         dir_paths = (
             list(dirs_config.values())
             if dirs_config
-            else ["data/spool/inbox", "data/spool/pending", "data/papers", "data/reports", "data/cache", "data/logs"]
+            else [
+                "data/spool/inbox",
+                "data/spool/pending",
+                "data/papers",
+                "data/reports",
+                "data/cache",
+                "data/logs",
+            ]
         )
         for dir_path in dir_paths:
             p = Path(dir_path)
@@ -2081,14 +2124,14 @@ def check_cmd():
     mineru_cli_available = False
     try:
         import shutil as _shutil
+
         cli = _shutil.which("mineru-open-api")
         if cli:
             mineru_cli_available = True
             table_api.add_row("  MinerU CLI", f"[green]Found[/green] ({cli})")
         else:
             table_api.add_row(
-                "  MinerU CLI", "[yellow]Not found[/yellow]",
-                "(install: npm i -g mineru-open-api)"
+                "  MinerU CLI", "[yellow]Not found[/yellow]", "(install: npm i -g mineru-open-api)"
             )
     except Exception:
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
@@ -2103,6 +2146,7 @@ def check_cmd():
         if dx_token and not dx_token.startswith("${"):
             try:
                 from deepxiv_sdk import Reader as _dxReader
+
                 r = _dxReader(token=dx_token)
                 r.brief("1706.03762")
                 table_api.add_row("  DeepXiv", "[green]Reachable[/green]")
@@ -2112,8 +2156,9 @@ def check_cmd():
                 )
         else:
             table_api.add_row(
-                "  DeepXiv", "[yellow]Not configured[/yellow]",
-                "(register at https://data.rag.ac.cn/register)"
+                "  DeepXiv",
+                "[yellow]Not configured[/yellow]",
+                "(register at https://data.rag.ac.cn/register)",
             )
     except Exception:
         table_api.add_row("  DeepXiv", "[yellow]Unknown[/yellow]")
@@ -2122,16 +2167,21 @@ def check_cmd():
     try:
         llm_models = cfg.get("llm", {}).get("models", [])
         for i, m in enumerate(llm_models):
-            label = f"  LLM [{i}] {m.get('provider','?')}/{m.get('model','?')}"
+            label = f"  LLM [{i}] {m.get('provider', '?')}/{m.get('model', '?')}"
             api_key = m.get("api_key", "")
             if api_key and api_key.startswith("${"):
                 table_api.add_row(label, "[yellow]Env var not set[/yellow]")
                 continue
             try:
                 import litellm as _llm
+
                 name = f"{m['provider']}/{m['model']}"
-                kwargs = {"model": name, "messages": [{"role": "user", "content": "hi"}],
-                         "max_tokens": 5, "timeout": 10}
+                kwargs = {
+                    "model": name,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 5,
+                    "timeout": 10,
+                }
                 if m.get("api_key"):
                     kwargs["api_key"] = m["api_key"]
                 if m.get("base_url"):
@@ -2141,7 +2191,7 @@ def check_cmd():
             except Exception as e:
                 err_msg = str(e)[:60]
                 table_api.add_row(label, "[yellow]Unreachable[/yellow]", f"({err_msg})")
-                warnings.append(f"LLM [{i}] {m.get('model','?')} unreachable")
+                warnings.append(f"LLM [{i}] {m.get('model', '?')} unreachable")
     except Exception:
         table_api.add_row("  LLM", "[yellow]Not configured[/yellow]", "(run `drbrain setup`)")
 
@@ -2231,6 +2281,7 @@ def analyze_cmd(
                 typer.echo(f"Paper not found: {pid}", err=True)
     elif query:
         from drbrain.query.bm25 import build_bm25_index
+
         bm25 = build_bm25_index(db)
         results = bm25.search(query, limit=20)
         seen = set()
@@ -2244,15 +2295,19 @@ def analyze_cmd(
         typer.echo(f"Query '{query}': {len(selected)} papers matched")
     elif discover:
         from drbrain.extractor.reasoner import ReasonerAgent
+
         agent = ReasonerAgent(db=db, graph_engine=graph, models=llm_models)
         typer.echo(f"Discovering papers for: {discover}")
-        answer = asyncio.run(agent.reason(
-            f"Find papers in the knowledge graph relevant to: {discover}. "
-            "Search concepts and explore neighbors. Return ONLY a comma-separated "
-            "list of the most relevant paper IDs (like pe211dc,p6a321e). Max 10."
-        ))
+        answer = asyncio.run(
+            agent.reason(
+                f"Find papers in the knowledge graph relevant to: {discover}. "
+                "Search concepts and explore neighbors. Return ONLY a comma-separated "
+                "list of the most relevant paper IDs (like pe211dc,p6a321e). Max 10."
+            )
+        )
         import re as _re
-        ids = _re.findall(r'p[a-f0-9]{6}', answer)
+
+        ids = _re.findall(r"p[a-f0-9]{6}", answer)
         for pid in ids[:10]:
             p = db.get_paper(pid)
             if p:
@@ -2275,17 +2330,18 @@ def analyze_cmd(
         db.close()
         raise typer.Exit(1)
 
-    # Load graph with selected papers
-    sel_ids = {p["local_id"] for p in selected}
     # Load full graph for seed detection and cross-paper insights
     graph.load_from_db(db)
 
     # ── Run analysis ──
-    reports = [analyze_paper(db, graph, p["local_id"], full=full, models=llm_models) for p in selected]
+    reports = [
+        analyze_paper(db, graph, p["local_id"], full=full, models=llm_models) for p in selected
+    ]
 
     # Add cross-paper insights for multi-paper analysis
     if len(reports) > 1:
         from drbrain.report.analyzer import add_cross_paper_insights
+
         reports = add_cross_paper_insights(reports, db=db)
 
     db.close()
@@ -2307,7 +2363,7 @@ def _print_analyze_report(report: dict) -> None:
         return
 
     if report.get("executive_summary"):
-        typer.echo(f"\n[bold]Executive Summary[/bold]")
+        typer.echo("\n[bold]Executive Summary[/bold]")
         typer.echo(f"  {report['executive_summary']}")
 
     p = report["paper"]
@@ -2318,12 +2374,8 @@ def _print_analyze_report(report: dict) -> None:
         insights = report["cross_paper_insights"]
         typer.echo(f"\n[bold]── Cross-paper Insights ({len(insights)})[/bold]")
         for ins in insights[:5]:
-            typer.echo(
-                f"  Method '{ins['method']}' ({ins['method_paper']})"
-            )
-            typer.echo(
-                f"    → could address Problem '{ins['problem']}' ({ins['problem_paper']})"
-            )
+            typer.echo(f"  Method '{ins['method']}' ({ins['method_paper']})")
+            typer.echo(f"    → could address Problem '{ins['problem']}' ({ins['problem_paper']})")
             typer.echo(f"    (similarity: {ins['similarity']})")
 
     typer.echo(f"\n[bold]── Research Seeds ({s['seeds']})[/bold]")
@@ -2807,29 +2859,36 @@ def build_cmd(
 
         # Retry tree generation if raw.md exists but tree.json is missing
         if not tree_path.exists() and md_path.exists():
-            typer.echo(f"  Tree missing, retrying...")
+            typer.echo("  Tree missing, retrying...")
             try:
                 from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
+
                 pageindex_cfg = TreeConfig(
-                    if_add_node_summary=True, if_add_doc_description=True,
-                    if_add_node_text=False, if_add_node_id=True,
-                    max_node_tokens=10000, min_token_threshold=5000,
+                    if_add_node_summary=True,
+                    if_add_doc_description=True,
+                    if_add_node_text=False,
+                    if_add_node_id=True,
+                    max_node_tokens=10000,
+                    min_token_threshold=5000,
                 )
-                doc_tree = asyncio.run(md_to_tree(str(md_path), config=pageindex_cfg, models=llm_models))
-                tree_json_path.write_text(doc_tree.to_json(), encoding="utf-8")
+                doc_tree = asyncio.run(
+                    md_to_tree(str(md_path), config=pageindex_cfg, models=llm_models)
+                )
+                tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
                 typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
             except Exception as e:
                 typer.echo(f"  Tree regeneration failed: {e}")
                 continue
         elif not md_path.exists():
-            typer.echo(f"  No raw.md — ingest this paper first")
+            typer.echo("  No raw.md — ingest this paper first")
             continue
 
         import json as _json
+
         tree = _json.loads(tree_path.read_text(encoding="utf-8"))
         structure = tree.get("structure", [])
         if not structure:
-            typer.echo(f"  Empty tree structure — skipping")
+            typer.echo("  Empty tree structure — skipping")
             continue
 
         # Run 5-stage pipeline
@@ -2875,15 +2934,11 @@ def build_cmd(
                     pass  # duplicate edge or invalid reference
 
         # Mark as extracted
-        db.conn.execute(
-            "UPDATE papers SET status = 'extracted' WHERE local_id = ?", (pid,)
-        )
+        db.conn.execute("UPDATE papers SET status = 'extracted' WHERE local_id = ?", (pid,))
         db.commit()
 
         typer.echo(f"  Valid: {valid_count} | Rejected: {rejected}")
-        all_results.append(
-            {"paper_id": pid, "concepts": valid_count, "relations": len(relations)}
-        )
+        all_results.append({"paper_id": pid, "concepts": valid_count, "relations": len(relations)})
 
     db.close()
 
@@ -2894,11 +2949,14 @@ def build_cmd(
         total_r = sum(r["relations"] for r in all_results)
         # Cross-paper concept deduplication
         from drbrain.extractor.concept import dedup_concepts_by_label
+
         merged = dedup_concepts_by_label(db)
         if merged:
             typer.echo(f"  Dedup: {merged} duplicate concepts merged")
 
-        typer.echo(f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers")
+        typer.echo(
+            f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers"
+        )
 
 
 def embed_cmd(
@@ -2926,9 +2984,11 @@ def embed_cmd(
 
     db.clear_embeddings()
     t = TransE(dim=dim, epochs=epochs)
-    typer.echo(f"Training embeddings (dim={dim}, epochs={epochs}, "
-               f"nodes={graph.graph.number_of_nodes()}"
-               f"{', incremental' if init_ents else ', from scratch'})...")
+    typer.echo(
+        f"Training embeddings (dim={dim}, epochs={epochs}, "
+        f"nodes={graph.graph.number_of_nodes()}"
+        f"{', incremental' if init_ents else ', from scratch'})..."
+    )
     t.train(graph.graph, init_entities=init_ents, init_relations=init_rels)
 
     for label, vec in t.entities.items():
