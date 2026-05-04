@@ -461,11 +461,11 @@ def expand_citations_oa(db, local_id: str) -> int:
     citing_added = 0
     try:
         import urllib.request as _ureq
-        cite_url = f"https://api.openalex.org/works?filter=cites:{oa_id}&per_page=50&sort=cited_by_count:desc"
+        cite_url = f"https://api.openalex.org/works?filter=cites:{oa_id}&per_page=200&sort=cited_by_count:desc"
         req = _ureq.Request(cite_url, headers={"Accept": "application/json"})
         resp = _ureq.urlopen(req, timeout=10)
         data = json.loads(resp.read())
-        for r in data.get("results", [])[:50]:
+        for r in data.get("results", [])[:200]:
             try:
                 ctitle = r.get("title", "") or "Untitled"
                 cyear = r.get("publication_year")
