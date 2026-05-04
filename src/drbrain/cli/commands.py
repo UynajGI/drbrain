@@ -484,6 +484,11 @@ def citations_cmd(
     ctype: str = typer.Option(
         "all", "--type", "-t", help="Query type: refs, citing, shared-refs, all"
     ),
+    limit: int = typer.Option(200, "--limit", "-l", help="Max results per type"),
+    sort: str = typer.Option(
+        "cited_by_count:desc", "--sort", "-s",
+        help="Sort: cited_by_count:desc, publication_date:desc, relevance_score:desc"
+    ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
@@ -516,9 +521,9 @@ def citations_cmd(
         "SELECT COUNT(*) FROM citation_cache WHERE source_paper = ?", (local_id,)
     ).fetchone()[0]
     if existing == 0:
-        typer.echo("  Expanding citations via OpenAlex...")
-        from drbrain.extractor.citation import expand_citations_oa
-        refs_added, citing_added = expand_citations_oa(db, local_id)
+        typer.echo("  Expanding citations (OpenAlex + S2 + CrossRef)...")
+        from drbrain.extractor.citation import expand_citations_multi
+        refs_added, citing_added = expand_citations_multi(db, local_id, limit=limit, sort=sort)
         typer.echo(f"  Found {refs_added} references, {citing_added} citing")
 
     result = query_citation_graph(local_id, db.conn, ctype=ctype)

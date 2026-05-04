@@ -621,3 +621,124 @@ def _cache_citation(
         "VALUES (?, ?, ?, ?, ?, ?)",
         (source_paper, target_title, target_year, relation, target_doi, target_s2_id),
     )
+
+
+def expand_citations_multi(
+    db, local_id: str, limit: int = 200, sort: str = "cited_by_count:desc"
+) -> tuple[int, int]:
+    """Multi-source citation expansion: OpenAlex + S2 + CrossRef.
+
+    Deduplicates by title prefix. Returns (references_added, citing_added).
+    """
+    from pyalex import Works as _Works
+    import json as _json, urllib.request as _ureq
+
+    row = db.conn.execute(
+        "SELECT openalex_id, doi, s2_id, arxiv FROM paper_ids WHERE local_id = ?", (local_id,)
+    ).fetchone()
+    oa_id = row[0] if row else None
+    doi = row[1] if row else None
+    arxiv = row[3] if row else None
+
+    all_refs: list[dict] = []
+    all_citing: list[dict] = []
+    seen: set[str] = set()
+
+    def _key(title: str) -> str:
+        return " ".join((title or "").strip().lower().split()[:8])
+
+    # ── OpenAlex (pyalex) ──
+    if oa_id:
+        try:
+            w = _Works()[oa_id]
+            for rid in w.get("referenced_works", [])[:limit]:
+                try:
+                    r = _Works()[rid]
+                    t, k = r.get("title") or "", _key(r.get("title") or "")
+                    if k and k not in seen:
+                        seen.add(k)
+                        d = r.get("doi", "")
+                        all_refs.append({"title": t, "year": r.get("publication_year"),
+                                         "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None})
+                except Exception:
+                    pass
+            # Citing via pyalex filter
+            parts = sort.split(":")
+            sfield, sdir = parts[0], parts[1] if len(parts) > 1 else "desc"
+            kw = {sfield: sdir}
+            for r in _Works().filter(cites=oa_id).sort(**kw).get(per_page=limit):
+                t, k = r.get("title") or "", _key(r.get("title") or "")
+                if k and k not in seen:
+                    seen.add(k)
+                    d = r.get("doi", "")
+                    all_citing.append({"title": t, "year": r.get("publication_year"),
+                                       "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None})
+        except Exception:
+            pass
+
+    # ── S2 (supplement) ──
+    s2_id = f"arXiv:{arxiv}" if arxiv else None
+    if s2_id:
+        try:
+            url = f"https://api.semanticscholar.org/graph/v1/paper/{s2_id}?fields=references.title,references.year,references.doi,citations.title,citations.year,citations.doi"
+            r = _ureq.Request(url, headers={"Accept": "application/json"})
+            data = _json.loads(_ureq.urlopen(r, timeout=10).read())
+            for ref in data.get("references", [])[:limit]:
+                t, k = ref.get("title") or "", _key(ref.get("title") or "")
+                if k and k not in seen:
+                    seen.add(k)
+                    all_refs.append({"title": t, "year": ref.get("year"), "doi": ref.get("doi")})
+            for cite in data.get("citations", [])[:limit]:
+                t, k = cite.get("title") or "", _key(cite.get("title") or "")
+                if k and k not in seen:
+                    seen.add(k)
+                    all_citing.append({"title": t, "year": cite.get("year"), "doi": cite.get("doi")})
+        except Exception:
+            pass
+
+    # ── CrossRef (DOI-based, if still sparse) ──
+    if doi and (len(all_refs) < 10 or len(all_citing) < 10):
+        try:
+            url = f"https://api.crossref.org/works/{doi}"
+            r = _ureq.Request(url, headers={"Accept": "application/json"})
+            data = _json.loads(_ureq.urlopen(r, timeout=10).read())
+            for ref in data.get("message", {}).get("reference", [])[:limit]:
+                t = ref.get("article-title") or ref.get("unstructured", "")
+                if isinstance(t, list):
+                    t = t[0] if t else ""
+                if not t:
+                    continue
+                k = _key(t)
+                if k and k not in seen:
+                    seen.add(k)
+                    all_refs.append({"title": t[:200], "year": None, "doi": ref.get("DOI")})
+        except Exception:
+            pass
+
+    # ── Store in DB ──
+    refs_added = citing_added = 0
+    for r in all_refs:
+        try:
+            db.conn.execute(
+                "INSERT OR IGNORE INTO citation_cache "
+                "(source_paper, target_title, target_year, relation, target_doi) "
+                "VALUES (?, ?, ?, 'references', ?)",
+                (local_id, r["title"][:200], r.get("year"), r.get("doi")),
+            )
+            refs_added += 1
+        except Exception:
+            pass
+    for c in all_citing:
+        try:
+            db.conn.execute(
+                "INSERT OR IGNORE INTO citation_cache "
+                "(source_paper, target_title, target_year, relation, target_doi) "
+                "VALUES (?, ?, ?, 'citing', ?)",
+                (local_id, c["title"][:200], c.get("year"), c.get("doi")),
+            )
+            citing_added += 1
+        except Exception:
+            pass
+
+    db.commit()
+    return refs_added, citing_added
