@@ -20,7 +20,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Extraction concurrency**: `extract.max_concurrent` in config.yaml controls parallel LLM calls during concept extraction (default 10)
 - **Library management**: Inbox auto-classification (paper/thesis/preprint/book/review/document), spool/pending queue, workspace CRUD (`drbrain ws`), BibTeX/RIS/Markdown export, tar.gz backup, delete with `--rm-files`
 - **Citation graph**: Shared-reference analysis (`drbrain citations --type shared-refs`), citation verification against library (`drbrain check-citations`), citation_cache table with S2 write-through
-- **Knowledge frontier analysis**: `drbrain analyze` command orchestrating seeds, causal chains, counterfactual, hypotheses, and isomorphism detection
+- **Knowledge frontier analysis**: `drbrain analyze` with 4 selection modes, LLM executive summary + seed solution suggestions + cross-paper method migration detection
 - **PageIndex tree-based ingestion**: TOC fallback (header → PDF outline → LLM segmentation), tree validation/repair, concurrent leaf-node extraction, content quality gate, cross-section argument linking
 - **Section-aware reasoning**: TBox validation in extract, section contradiction detection, section-aware confidence propagation in graph closure
 - **Check command enhancements**: Library stats, disk space monitoring, MinerU API connectivity test, parser path recommendation
