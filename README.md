@@ -34,9 +34,9 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain citations` | Multi-source citation expansion (`--limit`/`--sort`) | ✅ |
 | `drbrain check-citations` | Verify in-text citations against library | ✅ |
 | `drbrain analyze` | Knowledge frontier report (`--papers`/`--query`/`--discover`) | ✅ |
-| `drbrain ws` | Manage paper workspaces | — |
-| `drbrain export` | Export to BibTeX/RIS/Markdown | — |
-| `drbrain backup` | Create tar.gz backup | — |
+| `drbrain ws` | Manage paper workspaces | ✅ |
+| `drbrain export` | Export to BibTeX/RIS/Markdown | ✅ |
+| `drbrain backup` | Create tar.gz backup | ✅ |
 | `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | — |
 | `drbrain import` | Import from Zotero or BibTeX | — |
 | `drbrain translate` | Translate paper markdown via LLM | — |
