@@ -27,9 +27,9 @@ uv run drbrain serve                # launch Streamlit UI
 | `drbrain closure` | Rule-based inference (`--mode hybrid`) | ✅ |
 | `drbrain reason` | LLM agent reasoning over knowledge graph | ✅ |
 | `drbrain query` | BM25 + `--hybrid` + `--neighbors` | ✅ |
-| `drbrain graph neighbors` | Direct graph traversal from a node | — |
-| `drbrain graph path` | Shortest path between two nodes | — |
-| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | — |
+| `drbrain graph neighbors` | Direct graph traversal from a node | ✅ |
+| `drbrain graph path` | Shortest path between two nodes | ✅ |
+| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
 | `drbrain closure` | Rule-based inference (`--dry-run`, `--rule`) | — |
 | `drbrain seed` | Detect research seeds from graph patterns | — |
 | `drbrain citations` | Query citation graph (refs, citing, shared-refs) | — |
