@@ -3410,7 +3410,7 @@ def build_cmd(
             if ctype not in valid_types or not label:
                 rejected += 1
                 continue
-            db.insert_concept(pid, ctype, label, conf)
+            db.insert_concept(pid, ctype, label, conf, section=c.get("section", ""))
             valid_count += 1
 
         # Insert relations
