@@ -39,6 +39,9 @@ uv run drbrain analyze <id> --full  # knowledge frontier analysis
 | `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | ✅ |
 | `drbrain import` | Import from Zotero or BibTeX | ✅ |
 | `drbrain translate` | Translate paper markdown via LLM | — |
+| `drbrain audit` | Data quality scan (15 rules, severity-graded) | ✅ |
+| `drbrain graph query` | Complex embedding-based queries (project/intersect/union) | ✅ |
+| `drbrain graph describe` | Natural language subgraph description via LLM | ✅ |
 
 ## Architecture
 
@@ -46,5 +49,5 @@ uv run drbrain analyze <id> --full  # knowledge frontier analysis
 - **Extractor**: 5-stage LLM pipeline (ontology→entities→relations→coreference→refine), 10-way concurrent
 - **Dedup**: DOI → arXiv → S2 → OpenAlex → title+year fuzzy match
 - **Graph**: NetworkX in-memory + SQLite, rule-based closure with 8+4 inference rules, directed BFS traversal with relation filtering, shortest-path queries
-- **Reasoning**: Causal chains, counterfactual analysis, isomorphism detection, hypothesis generation
+- **Reasoning**: Causal chains, counterfactual analysis, isomorphism detection, hypothesis generation, LLM↔KG bidirectional reasoning, embedding-driven rule mining
 - **Skills**: 5 AgentSkills.io-compatible skills in `skills/`
