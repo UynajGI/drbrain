@@ -87,3 +87,40 @@ Import: Zotero collection filter+creator+PDF, Zotero Web API, Endnote XML/RIS, p
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Session 2026-05-05 (round 3): Bug hunting, tree+graph, coverage tests
+
+**Date**: 2026-05-05
+**Task**: Session 2026-05-05 (round 3): Bug hunting, tree+graph, coverage tests
+**Branch**: `main`
+
+### Summary
+
+Bug hunting via code-review-graph: 5 silent interface mismatches found and fixed (tree edges key format, traverse params, dead code, volume/pages chain, mock path). Tree+graph deep integration: _build_tree_edges, _section_type_hints, _apply_tree_weights, _extract_entities section tagging, traverse-from command. Coverage: 15 new tests for cross-module interfaces.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5f7d65e` | (see git log) |
+| `9f4407e` | (see git log) |
+| `68476cc` | (see git log) |
+| `a7b1603` | (see git log) |
+| `a341e3c` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
