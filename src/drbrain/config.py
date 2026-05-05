@@ -1,10 +1,157 @@
-"""YAML config loader with local overlay support."""
+"""Typed config dataclasses with YAML loader, env var resolution, and dict-backward-compat."""
+
 from __future__ import annotations
 
+import os
+import re
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ── Env var pattern for ${VAR} resolution ──
+
+_ENV_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+
+# ── Base class for dict-like backward compatibility ──
+
+
+class _ConfigBase:
+    """Mixin providing dict-like access for backward compatibility.
+
+    Supports:
+      cfg["key"]           → getattr(cfg, "key")
+      cfg.get("key", def)   → getattr(cfg, "key", def)
+      cfg.values()          → list of field values (for iteration over DirsConfig paths)
+    """
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def values(self):
+        """Return field values as a list (supports list(dirs_config.values()) pattern)."""
+        return [getattr(self, f.name) for f in fields(self)]
+
+
+# ── Sub-config dataclasses ──
+
+
+@dataclass
+class LLMConfig(_ConfigBase):
+    models: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class MinerUConfig(_ConfigBase):
+    token: str = ""
+    model: str = "vlm"
+    is_ocr: bool = False
+    enable_formula: bool = True
+    enable_table: bool = True
+    max_pages: int = 150
+
+
+@dataclass
+class ApiConfig(_ConfigBase):
+    deepxiv_token: str = ""
+    s2_api_key: str = ""
+    s2_rate_limit: int = 100
+    cache_ttl: int = 86400
+    crossref_email: str = ""
+    openalex_token: str = ""
+
+
+@dataclass
+class DirsConfig(_ConfigBase):
+    inbox: str = "data/spool/inbox"
+    pending: str = "data/spool/pending"
+    papers: str = "data/papers"
+    reports: str = "data/reports"
+    cache: str = "data/cache"
+    logs: str = "data/logs"
+
+
+@dataclass
+class DBConfig(_ConfigBase):
+    path: str = "data/drbrain.db"
+
+
+@dataclass
+class ExtractConfig(_ConfigBase):
+    max_concurrent: int = 10
+
+
+@dataclass
+class BM25Config(_ConfigBase):
+    k1: float = 1.5
+    b: float = 0.75
+
+
+@dataclass
+class QueueConfig(_ConfigBase):
+    weak_threshold: float = 0.7
+    auto_accept: float = 0.9
+
+
+@dataclass
+class Config(_ConfigBase):
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    mineru: MinerUConfig = field(default_factory=MinerUConfig)
+    api: ApiConfig = field(default_factory=ApiConfig)
+    dirs: DirsConfig = field(default_factory=DirsConfig)
+    db: DBConfig = field(default_factory=DBConfig)
+    extract: ExtractConfig = field(default_factory=ExtractConfig)
+    bm25: BM25Config = field(default_factory=BM25Config)
+    queue: QueueConfig = field(default_factory=QueueConfig)
+
+    @classmethod
+    def from_yaml(
+        cls,
+        base_path: str | Path,
+        local_path: str | Path | None = None,
+    ) -> Config:
+        """Load config from YAML, deep-merge local overlay, resolve env vars.
+
+        Args:
+            base_path: Path to config.yaml.
+            local_path: Path to config.local.yaml. Defaults to "config.local.yaml" if None.
+
+        Returns:
+            Typed Config instance.
+        """
+        base = Path(base_path)
+        if not base.exists():
+            raise FileNotFoundError(f"Config not found: {base}")
+
+        with open(base) as f:
+            cfg = yaml.safe_load(f) or {}
+
+        local = Path(local_path) if local_path is not None else Path("config.local.yaml")
+        if local.exists():
+            with open(local) as f:
+                overlay = yaml.safe_load(f) or {}
+            cfg = merge_dicts(cfg, overlay)
+
+        cfg = _resolve_env_vars(cfg)
+
+        return cls(
+            llm=LLMConfig(**cfg.get("llm", {})),
+            mineru=MinerUConfig(**cfg.get("mineru", {})),
+            api=ApiConfig(**cfg.get("api", {})),
+            dirs=DirsConfig(**cfg.get("dirs", {})),
+            db=DBConfig(**cfg.get("db", {})),
+            extract=ExtractConfig(**cfg.get("extract", {})),
+            bm25=BM25Config(**cfg.get("bm25", {})),
+            queue=QueueConfig(**cfg.get("queue", {})),
+        )
+
+
+# ── Deep merge ──
 
 
 def merge_dicts(base: dict, override: dict) -> dict:
@@ -18,22 +165,34 @@ def merge_dicts(base: dict, override: dict) -> dict:
     return result
 
 
+# ── Env var resolution ──
+
+
+def _resolve_env_vars(obj: Any) -> Any:
+    """Recursively resolve ${VAR} patterns in all string values."""
+    if isinstance(obj, dict):
+        return {k: _resolve_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_env_vars(item) for item in obj]
+    if isinstance(obj, str):
+        return _ENV_PATTERN.sub(_env_replace, obj)
+    return obj
+
+
+def _env_replace(match: re.Match) -> str:
+    """Replace a single ${VAR} match with environment variable value."""
+    return os.environ.get(match.group(1), "")
+
+
+# ── Public loader ──
+
+
 def load_config(
     base_path: str | Path = "config.yaml",
-    local_path: str | Path = "config.local.yaml",
-) -> dict[str, Any]:
-    """Load base config and optionally merge local overlay."""
-    base = Path(base_path)
-    if not base.exists():
-        raise FileNotFoundError(f"Config not found: {base}")
+    local_path: str | Path | None = None,
+) -> Config:
+    """Load base config and optionally merge local overlay.
 
-    with open(base) as f:
-        cfg = yaml.safe_load(f) or {}
-
-    local = Path(local_path)
-    if local.exists():
-        with open(local) as f:
-            overlay = yaml.safe_load(f) or {}
-        cfg = merge_dicts(cfg, overlay)
-
-    return cfg
+    Returns a typed Config object with full dict-like backward compatibility.
+    """
+    return Config.from_yaml(base_path, local_path)
