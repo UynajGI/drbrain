@@ -23,7 +23,14 @@ find research gaps, and infer new relationships through rule-based reasoning.
 ## Quick Start
 
 ```bash
+# From PyPI (once published)
 pip install drbrain
+
+# From source (development)
+git clone https://github.com/UynajGI/DrBrain.git
+cd DrBrain
+uv sync && uv pip install -e .
+
 drbrain setup
 ```
 
