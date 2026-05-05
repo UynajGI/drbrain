@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 0
-- **Last Active**: -
+- **Total Sessions**: 1
+- **Last Active**: 2026-05-05
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~0 | Active |
+| `journal-1.md` | ~54 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 1 | 2026-05-05 | Session 2026-05-05: Engineering hardening T1-T10, Data quality pipeline, KG reasoning T1-T4, PageIndex TOC verification | `4dfd09c`, `4c48612`, `91ca1c9`, `7004b75`, `2818674`, `ca1dbc6`, `d622fbf`, `69e1ce4`, `332ad5a`, `bb7fef4`, `5c5d8ee`, `fbf2535`, `3055d40`, `7ec5a84`, `9f34ef6` | `main` |
 <!-- @@@/auto:session-history -->
 
 ---
