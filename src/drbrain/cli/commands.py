@@ -2933,36 +2933,162 @@ def repair_cmd(
 
 def import_cmd(
     ctx: typer.Context,
-    source: str = typer.Argument(..., help="Source type: zotero or bibtex"),
-    path: str = typer.Argument(..., help="Path to zotero.sqlite or .bib file"),
+    source: str = typer.Argument(..., help="Source type: zotero, bibtex, or endnote"),
+    path: str = typer.Argument(..., help="Path to zotero.sqlite, .bib, .ris, or .xml file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview only"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    list_collections: bool = typer.Option(
+        False, "--list-collections", help="List collections and exit"
+    ),
+    collection: str = typer.Option(None, "--collection", help="Filter by collection key"),
+    api_key: str = typer.Option(None, "--api-key", help="Zotero API key (for Web API mode)"),
+    library_id: str = typer.Option(
+        None, "--library-id", help="Zotero library ID (for Web API mode)"
+    ),
+    library_type: str = typer.Option(
+        "user", "--library-type", help="Zotero library type: user or group"
+    ),
+    no_pdf: bool = typer.Option(False, "--no-pdf", help="Skip PDF detection/download"),
+    import_collections: bool = typer.Option(
+        False, "--import-collections", help="Create workspaces per collection after import"
+    ),
 ):
-    """Import papers from Zotero or BibTeX."""
+    """Import papers from Zotero, BibTeX, or Endnote.
+
+    Sources:
+      zotero  - Zotero local SQLite database or Web API
+      bibtex  - BibTeX .bib file
+      endnote - Endnote .xml or .ris export
+    """
     import uuid
 
-    if source not in ("zotero", "bibtex"):
-        typer.echo("Source must be: zotero or bibtex", err=True)
+    if source not in ("zotero", "bibtex", "endnote"):
+        typer.echo("Source must be: zotero, bibtex, or endnote", err=True)
         raise typer.Exit(1)
 
-    p = Path(path)
-    if not p.exists():
-        typer.echo(f"File not found: {path}", err=True)
-        raise typer.Exit(1)
+    # --list-collections mode (zotero only)
+    if list_collections:
+        if source != "zotero":
+            typer.echo("--list-collections only supported for zotero source", err=True)
+            raise typer.Exit(1)
+
+        if library_id and api_key:
+            from drbrain.services.zotero_import import list_collections_api
+
+            try:
+                collections = list_collections_api(library_id, api_key, library_type=library_type)
+            except ImportError as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(1)
+        else:
+            p = Path(path)
+            if not p.exists():
+                typer.echo(f"File not found: {path}", err=True)
+                raise typer.Exit(1)
+            from drbrain.services.zotero_import import list_collections_local
+
+            try:
+                collections = list_collections_local(p)
+            except Exception as e:
+                typer.echo(f"Failed to list collections: {e}", err=True)
+                raise typer.Exit(1)
+
+        if json_output:
+            typer.echo(json.dumps(collections, indent=2, ensure_ascii=False))
+        else:
+            if not collections:
+                typer.echo("No collections found.")
+            else:
+                typer.echo(f"{'KEY':<10} {'ITEMS':>6}  NAME")
+                typer.echo("-" * 50)
+                for c in collections:
+                    typer.echo(f"{c['key']:<10} {c['numItems']:>6}  {c['name']}")
+        return
+
+    # Parse papers based on source
+    papers: list[dict] = []
 
     if source == "zotero":
-        import sqlite3
+        if library_id and api_key:
+            # Web API mode
+            from drbrain.services.zotero_import import fetch_zotero_api
 
-        from drbrain.services.zotero_import import import_zotero_db
+            try:
+                papers = fetch_zotero_api(
+                    library_id,
+                    api_key,
+                    library_type=library_type,
+                    collection_key=collection,
+                )
+            except ImportError as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(1)
+        else:
+            # Local SQLite mode
+            p = Path(path)
+            if not p.exists():
+                typer.echo(f"File not found: {path}", err=True)
+                raise typer.Exit(1)
 
-        conn = sqlite3.connect(str(p))
-        papers = import_zotero_db(conn)
-        conn.close()
-    else:
+            import sqlite3
+
+            from drbrain.services.zotero_import import import_zotero_db
+
+            conn = sqlite3.connect(str(p))
+            try:
+                zotero_storage = None
+                if not no_pdf:
+                    zotero_storage = p.parent / "storage"
+                    if not zotero_storage.exists():
+                        zotero_storage = None
+
+                papers = import_zotero_db(
+                    conn,
+                    collection_key=collection,
+                    storage_dir=zotero_storage,
+                )
+            finally:
+                conn.close()
+
+    elif source == "bibtex":
+        p = Path(path)
+        if not p.exists():
+            typer.echo(f"File not found: {path}", err=True)
+            raise typer.Exit(1)
+
         from drbrain.services.zotero_import import import_bibtex_file
 
         papers = import_bibtex_file(p)
 
+    elif source == "endnote":
+        p = Path(path)
+        if not p.exists():
+            typer.echo(f"File not found: {path}", err=True)
+            raise typer.Exit(1)
+
+        suffix = p.suffix.lower()
+        if suffix == ".ris":
+            from drbrain.services.zotero_import import parse_endnote_ris
+
+            papers = parse_endnote_ris(p)
+        elif suffix == ".xml":
+            from drbrain.services.zotero_import import parse_endnote_xml
+
+            try:
+                papers = parse_endnote_xml(p)
+            except ImportError as e:
+                typer.echo(str(e), err=True)
+                raise typer.Exit(1)
+        else:
+            typer.echo("Endnote source requires .ris or .xml file", err=True)
+            raise typer.Exit(1)
+
+    # Handle empty results
+    if not papers:
+        typer.echo("No papers found to import.")
+        return
+
+    # Dry-run: preview only
     if dry_run:
         if json_output:
             typer.echo(
@@ -2980,10 +3106,34 @@ def import_cmd(
                 )
         return
 
+    # Insert papers into database
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
+
+    # Dedup: check DOI before insert
+    existing_dois: set[str] = set()
+    try:
+        all_papers = db.get_all_papers()
+        for paper_row in all_papers:
+            pid = paper_row.get("local_id", "")
+            if pid:
+                row = db.conn.execute(
+                    "SELECT doi FROM paper_ids WHERE local_id = ?", (pid,)
+                ).fetchone()
+                if row and row[0]:
+                    existing_dois.add(row[0].lower().strip())
+    except Exception:
+        pass
+
     imported = []
+    skipped_dupes = 0
     for paper in papers:
+        # DOI dedup check
+        doi = (paper.get("doi") or "").lower().strip()
+        if doi and doi in existing_dois:
+            skipped_dupes += 1
+            continue
+
         local_id = f"p{uuid.uuid4().hex[:6]}"
         db.insert_paper(
             local_id,
@@ -2992,6 +3142,7 @@ def import_cmd(
             "placeholder",
             paper_type=paper.get("paper_type", "paper"),
             journal=paper.get("journal", ""),
+            publisher=paper.get("publisher", ""),
             citation_count=paper.get("citation_count", 0),
         )
         if paper.get("doi"):
@@ -3002,19 +3153,43 @@ def import_cmd(
                 if author:
                     db.insert_concept(local_id, "Actor", author, 1.0, year=paper.get("year"))
                     db.insert_alias(author, author)
+
+        # Copy PDF to paper directory if available
+        pdf_src = paper.get("pdf_path", "")
+        if pdf_src and not no_pdf:
+            pdf_src_path = Path(pdf_src)
+            if pdf_src_path.exists():
+                import shutil as _shutil
+
+                paper_dir = Path(cfg["db"]["path"]).parent / "papers" / local_id
+                paper_dir.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(str(pdf_src_path), str(paper_dir / pdf_src_path.name))
+
         imported.append({"local_id": local_id, "title": paper["title"]})
+        if doi:
+            existing_dois.add(doi)
+
     db.commit()
     db.close()
 
     if json_output:
         typer.echo(
             json.dumps(
-                {"imported": len(imported), "papers": imported}, indent=2, ensure_ascii=False
+                {
+                    "imported": len(imported),
+                    "skipped_duplicates": skipped_dupes,
+                    "papers": imported,
+                },
+                indent=2,
+                ensure_ascii=False,
             )
         )
         return
 
-    typer.echo(f"Imported {len(imported)} papers as placeholders.")
+    msg = f"Imported {len(imported)} papers as placeholders."
+    if skipped_dupes:
+        msg += f" Skipped {skipped_dupes} duplicates."
+    typer.echo(msg)
     typer.echo(
         "Run 'drbrain ingest' to process them, or 'drbrain repair --all' to fix metadata first."
     )
