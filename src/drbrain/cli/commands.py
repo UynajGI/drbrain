@@ -1632,6 +1632,8 @@ def _export_paper_to_meta(db: Database, local_id: str) -> dict:
         "journal": paper.get("journal", ""),
         "publisher": paper.get("publisher", ""),
         "citation_count": paper.get("citation_count", 0),
+        "volume": paper.get("volume", ""),
+        "pages": paper.get("pages", ""),
     }
 
 
@@ -3144,6 +3146,8 @@ def import_cmd(
             journal=paper.get("journal", ""),
             publisher=paper.get("publisher", ""),
             citation_count=paper.get("citation_count", 0),
+            volume=paper.get("volume", ""),
+            pages=paper.get("pages", ""),
         )
         if paper.get("doi"):
             db.insert_paper_ids(local_id, doi=paper["doi"])
