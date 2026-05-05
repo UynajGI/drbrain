@@ -9,6 +9,7 @@ from loguru import logger
 
 from drbrain.cli.commands import (
     analyze_cmd,
+    ask_cmd,
     backup_cmd,
     build_cmd,
     check_citations_cmd,
@@ -87,6 +88,7 @@ app.command("queue resolve-all")(queue_resolve_all_cmd)
 app.command("timeline")(timeline_cmd)
 app.command("delete")(delete_cmd)
 app.command("lineage")(lineage_cmd)
+app.command("ask")(ask_cmd)
 app.command("check")(check_cmd)
 app.command("audit")(audit_cmd)
 app.command("clean")(clean_cmd)

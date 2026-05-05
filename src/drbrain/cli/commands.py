@@ -3530,3 +3530,85 @@ def reason_cmd(
         typer.echo(answer)
 
     db.close()
+
+
+def ask_cmd(
+    ctx: typer.Context,
+    question: list[str] = typer.Argument(
+        ..., help="Natural language question about the knowledge graph"
+    ),
+    top_k: int = typer.Option(5, "--top", "-k", help="Number of graph concepts to retrieve"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Ask a question in natural language — searches the KG and returns an answer.
+
+    Example: drbrain ask "Is attention better than CNN for NLP?"
+    """
+    import asyncio
+
+    question_text = " ".join(question)
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    from drbrain.query.bm25 import build_bm25_index
+
+    idx = build_bm25_index(db)
+    results = idx.search(question_text, limit=top_k)
+
+    if not results:
+        db.close()
+        typer.echo("No relevant concepts found in the knowledge graph.")
+        return
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    context_parts = []
+    for r in results[:top_k]:
+        label = r.get("label", "")
+        ctype = r.get("type", "")
+        paper_id = r.get("local_id", "")
+        paper_info = db.get_paper(paper_id) if paper_id else {}
+        paper_title = paper_info.get("title", paper_id) if paper_info else paper_id
+        context_parts.append(f"- {label} ({ctype}) from {paper_title}")
+        if label in graph.graph:
+            neighbors = graph.traverse({label}, hops=1, direction="both")[:5]
+            for n in neighbors:
+                rel = n.path[0].relation.replace("_", " ") if n.path else "related to"
+                context_parts.append(f"  --{rel}--> {n.target}")
+
+    context = "\n".join(context_parts[:50])
+
+    models = cfg.llm.models if hasattr(cfg, "llm") else cfg.get("llm", {}).get("models", [])
+    if not models:
+        db.close()
+        typer.echo("No LLM models configured. Showing graph context only:\n\n" + context)
+        return
+
+    from drbrain.extractor.llm_client import acall_text_with_fallback
+
+    prompt = (
+        f"Answer this research question using the knowledge graph context below.\n\n"
+        f"Question: {question_text}\n\n"
+        f"Knowledge Graph Context:\n{context}\n\n"
+        f"Answer concisely in 2-4 sentences. If the context doesn't contain "
+        f"enough information, say so. Cite specific concepts and relations."
+    )
+
+    answer = asyncio.run(acall_text_with_fallback(prompt, models, max_tokens=300))
+    db.close()
+
+    if json_output:
+        import json as _json
+
+        typer.echo(
+            _json.dumps(
+                {"question": question_text, "answer": answer, "context": context},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    typer.echo(f"\nQ: {question_text}\n")
+    typer.echo(f"A: {answer}\n")
+    typer.echo(f"(based on {len(results)} graph concepts)")
