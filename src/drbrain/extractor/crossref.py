@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from loguru import logger
+
 CROSSREF_API = "https://api.crossref.org/works"
 
 
@@ -54,6 +56,10 @@ def fetch_doi_by_title(
                 }
             return None
         except Exception:
+            try:
+                logger.exception("CrossRef API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -106,6 +112,10 @@ def fetch_doi_by_doi(
             )
             return {"doi": doi_val, "title": title, "year": year}
         except Exception:
+            try:
+                logger.exception("CrossRef API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -155,6 +165,10 @@ def fetch_doi_by_arxiv(
                     return {"doi": doi, "title": title, "year": year}
             return None
         except Exception:
+            try:
+                logger.exception("CrossRef API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue

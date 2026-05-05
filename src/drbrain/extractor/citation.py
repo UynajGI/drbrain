@@ -402,7 +402,6 @@ def _process_citations_from_s2(
 
 def expand_citations_oa(db, local_id: str) -> int:
     """Expand citations using OpenAlex (via pyalex). Returns number of references added."""
-    import pyalex
     from pyalex import Works
 
     # Get OpenAlex ID from DB
@@ -417,6 +416,10 @@ def expand_citations_oa(db, local_id: str) -> int:
     try:
         w = works[oa_id]
     except Exception:
+        try:
+            _cit_log.exception("Citation expansion error")
+        except Exception:
+            pass
         return 0
 
     ref_ids = w.get("referenced_works", [])
@@ -442,7 +445,7 @@ def expand_citations_oa(db, local_id: str) -> int:
             else:
                 local_ref = f"p{uuid.uuid4().hex[:6]}"
                 db.insert_paper(local_ref, title, year, "placeholder")
-                ids = {"doi": doi or None, "openalex_id": rid.replace('https://openalex.org/', '')}
+                ids = {"doi": doi or None, "openalex_id": rid.replace("https://openalex.org/", "")}
                 db.insert_paper_ids(local_ref, **ids)
                 db.commit()
 
@@ -455,12 +458,17 @@ def expand_citations_oa(db, local_id: str) -> int:
             )
             added += 1
         except Exception:
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
             continue
 
     # Also fetch citing papers
     citing_added = 0
     try:
         import urllib.request as _ureq
+
         cite_url = f"https://api.openalex.org/works?filter=cites:{oa_id}&per_page=200&sort=cited_by_count:desc"
         req = _ureq.Request(cite_url, headers={"Accept": "application/json"})
         resp = _ureq.urlopen(req, timeout=10)
@@ -480,10 +488,17 @@ def expand_citations_oa(db, local_id: str) -> int:
                 )
                 citing_added += 1
             except Exception:
+                try:
+                    _cit_log.exception("Citation expansion error")
+                except Exception:
+                    pass
                 continue
         db.commit()
     except Exception:
-        pass
+        try:
+            _cit_log.exception("Citation expansion error")
+        except Exception:
+            pass
 
     db.commit()
     return added, citing_added
@@ -630,8 +645,10 @@ def expand_citations_multi(
 
     Deduplicates by title prefix. Returns (references_added, citing_added).
     """
+    import json as _json
+    import urllib.request as _ureq
+
     from pyalex import Works as _Works
-    import json as _json, urllib.request as _ureq
 
     row = db.conn.execute(
         "SELECT openalex_id, doi, s2_id, arxiv FROM paper_ids WHERE local_id = ?", (local_id,)
@@ -658,10 +675,18 @@ def expand_citations_multi(
                     if k and k not in seen:
                         seen.add(k)
                         d = r.get("doi", "")
-                        all_refs.append({"title": t, "year": r.get("publication_year"),
-                                         "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None})
+                        all_refs.append(
+                            {
+                                "title": t,
+                                "year": r.get("publication_year"),
+                                "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None,
+                            }
+                        )
                 except Exception:
-                    pass
+                    try:
+                        _cit_log.exception("Citation expansion error")
+                    except Exception:
+                        pass
             # Citing via pyalex filter
             parts = sort.split(":")
             sfield, sdir = parts[0], parts[1] if len(parts) > 1 else "desc"
@@ -671,10 +696,18 @@ def expand_citations_multi(
                 if k and k not in seen:
                     seen.add(k)
                     d = r.get("doi", "")
-                    all_citing.append({"title": t, "year": r.get("publication_year"),
-                                       "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None})
+                    all_citing.append(
+                        {
+                            "title": t,
+                            "year": r.get("publication_year"),
+                            "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None,
+                        }
+                    )
         except Exception:
-            pass
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
 
     # ── S2 (supplement) ──
     s2_id = f"arXiv:{arxiv}" if arxiv else None
@@ -692,9 +725,14 @@ def expand_citations_multi(
                 t, k = cite.get("title") or "", _key(cite.get("title") or "")
                 if k and k not in seen:
                     seen.add(k)
-                    all_citing.append({"title": t, "year": cite.get("year"), "doi": cite.get("doi")})
+                    all_citing.append(
+                        {"title": t, "year": cite.get("year"), "doi": cite.get("doi")}
+                    )
         except Exception:
-            pass
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
 
     # ── CrossRef (DOI-based, if still sparse) ──
     if doi and (len(all_refs) < 10 or len(all_citing) < 10):
@@ -713,7 +751,10 @@ def expand_citations_multi(
                     seen.add(k)
                     all_refs.append({"title": t[:200], "year": None, "doi": ref.get("DOI")})
         except Exception:
-            pass
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
 
     # ── Store in DB (citation_cache + placeholder papers) ──
     refs_added = citing_added = 0
@@ -734,7 +775,10 @@ def expand_citations_multi(
                 db.commit()
             refs_added += 1
         except Exception:
-            pass
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
     for c in all_citing:
         try:
             db.conn.execute(
@@ -751,7 +795,10 @@ def expand_citations_multi(
                 db.commit()
             citing_added += 1
         except Exception:
-            pass
+            try:
+                _cit_log.exception("Citation expansion error")
+            except Exception:
+                pass
 
     db.commit()
     return refs_added, citing_added

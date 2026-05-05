@@ -198,4 +198,5 @@ def _get_session_id() -> str:
 
         return get_session_id()
     except Exception:
+        logger.warning("metrics recording failed: could not get session ID")
         return ""

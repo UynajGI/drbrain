@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from loguru import logger
+
 REPAIR_SOURCES = {
     "doi": ["title", "authors", "year", "journal", "volume", "pages"],
     "arxiv": ["title", "authors", "year"],
@@ -62,6 +64,10 @@ def _repair_via_crossref(db, paper: dict) -> list[dict]:
 
         data = fetch_work_by_doi(doi)
     except Exception:
+        try:
+            logger.exception("Repair failed")
+        except Exception:
+            pass
         return []
 
     repairs = []
@@ -113,6 +119,10 @@ def _repair_via_arxiv(db, paper: dict) -> list[dict]:
 
         title, year = _fetch_arxiv_metadata(arxiv)
     except Exception:
+        try:
+            logger.exception("Repair failed")
+        except Exception:
+            pass
         return []
 
     repairs = []
@@ -134,6 +144,10 @@ def _repair_via_title_year(db, paper: dict) -> list[dict]:
 
         doi_info = fetch_doi_by_title(title)
     except Exception:
+        try:
+            logger.exception("Repair failed")
+        except Exception:
+            pass
         return []
     if doi_info and doi_info.get("doi"):
         return [{"field": "doi", "old": None, "new": doi_info["doi"], "source": "CrossRef"}]
@@ -158,7 +172,10 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
         try:
             repairs.extend(repair_fn(db, paper))
         except Exception:
-            pass
+            try:
+                logger.exception("Repair failed")
+            except Exception:
+                pass
 
     if repairs and not dry_run:
         for r in repairs:

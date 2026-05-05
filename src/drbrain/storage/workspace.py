@@ -9,8 +9,10 @@ from pathlib import Path
 
 import yaml
 
+from drbrain.exceptions import DrBrainError
 
-class WorkspaceError(Exception):
+
+class WorkspaceError(DrBrainError):
     """Raised when a workspace operation fails."""
 
 

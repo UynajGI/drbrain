@@ -9,6 +9,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from loguru import logger
+
 OPENALEX_BASE = "https://api.openalex.org"
 
 
@@ -49,6 +51,10 @@ def search_work_by_title(
                 "openalex_id": best.get("id", ""),
             }
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -86,6 +92,10 @@ def search_work_by_arxiv(
                 "openalex_id": best.get("id", ""),
             }
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -124,6 +134,10 @@ def get_work_by_doi(
                 "referenced_works": data.get("referenced_works", []),
             }
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -152,6 +166,10 @@ def get_work_references(
                     refs.append(ref_info)
             return refs
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -183,6 +201,10 @@ def get_work_by_openalex_id(
                 "openalex_id": data.get("id", ""),
             }
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
@@ -229,7 +251,10 @@ def search_authors_by_work(
             if data and "error" not in data:
                 work = data
         except Exception:
-            pass
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
 
     # Fallback to title search
     if work is None and title:
@@ -245,7 +270,10 @@ def search_authors_by_work(
             if results:
                 work = results[0]
         except Exception:
-            pass
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
 
     if work is None:
         return None
@@ -305,6 +333,10 @@ def batch_fetch_works(
                 )
             return works
         except Exception:
+            try:
+                logger.exception("OpenAlex API error")
+            except Exception:
+                pass
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             continue
