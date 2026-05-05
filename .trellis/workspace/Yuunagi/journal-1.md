@@ -52,3 +52,38 @@ Phase 1: Config dataclass T1, Logging session_id T2, Metrics WAL+timer T3, Error
 ### Next Steps
 
 - None - task complete
+
+
+## Session 2: Session 2026-05-05 (round 2): Import enhancement, Show+Index+Enrich, Iterative ontology, Author lastname
+
+**Date**: 2026-05-05
+**Task**: Session 2026-05-05 (round 2): Import enhancement, Show+Index+Enrich, Iterative ontology, Author lastname
+**Branch**: `main`
+
+### Summary
+
+Import: Zotero collection filter+creator+PDF, Zotero Web API, Endnote XML/RIS, pipeline integration. CLI: drbrain show (detailed paper view), drbrain index (BM25 rebuild). Repair: OpenAlex enrichment (abstract+citation_count). Export: _extract_lastname() for Chinese/particle/initial names. Ontology: iterative extension with plateau detection from 2511.11017.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5dca769` | (see git log) |
+| `44ca81c` | (see git log) |
+| `9ccc499` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
