@@ -11,6 +11,33 @@ def _bibtex_escape(text: str) -> str:
     return text
 
 
+def _extract_lastname(full_name: str) -> str:
+    """Extract last name from a full author name. Handles:
+    - Chinese names: first character is surname
+    - Particles: de, van, von, del, della, di, le, la
+    - Initials: "J. K. Eaton" → "Eaton"
+    - Simple: last word is surname
+    """
+    if not full_name:
+        return ""
+    name = full_name.strip()
+    # Chinese name detection
+    if re.search(r"[一-鿿]", name):
+        return name[0]
+    parts = name.split()
+    if not parts:
+        return ""
+    particles = {"de", "van", "von", "del", "della", "di", "le", "la"}
+    # If all but last are initials (e.g. "J. K. Rowling"), take last
+    if len(parts) >= 2 and all(len(p.rstrip(".")) <= 2 for p in parts[:-1]):
+        return parts[-1]
+    # Collect trailing particles + surname (e.g. "Vincent van Gogh" → "van Gogh")
+    i = len(parts) - 1
+    while i > 0 and parts[i - 1].lower() in particles:
+        i -= 1
+    return parts[-1] if i == len(parts) - 1 else " ".join(parts[i:])
+
+
 def _make_cite_key(meta: dict) -> str:
     last = meta.get("first_author_lastname") or "Unknown"
     last = re.sub(r"[^a-zA-Z]", "", last)

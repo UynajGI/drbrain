@@ -347,6 +347,10 @@ def test_repair_paper_no_doi_no_arxiv_only_normalization():
         ) as mock_crossref,
         patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata") as mock_arxiv,
         patch(
+            "drbrain.services.repair._enrich_via_openalex",
+            return_value=[],
+        ),
+        patch(
             "drbrain.extractor.crossref.fetch_doi_by_title",
             return_value=None,
         ),

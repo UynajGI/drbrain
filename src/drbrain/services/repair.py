@@ -107,6 +107,18 @@ def _repair_via_crossref(db, paper: dict) -> list[dict]:
         journal = (data.get("container-title", [""]) or [""])[0]
         if journal:
             repairs.append({"field": "journal", "old": "", "new": journal, "source": "CrossRef"})
+
+        abstract = (data.get("abstract", "") or "").strip()
+        if abstract and not paper.get("abstract"):
+            repairs.append(
+                {"field": "abstract", "old": "", "new": abstract[:2000], "source": "CrossRef"}
+            )
+
+        cited = data.get("is-referenced-by-count") or 0
+        if cited and not paper.get("citation_count"):
+            repairs.append(
+                {"field": "citation_count", "old": 0, "new": cited, "source": "CrossRef"}
+            )
     return repairs
 
 
@@ -130,6 +142,53 @@ def _repair_via_arxiv(db, paper: dict) -> list[dict]:
         repairs.append({"field": "title", "old": paper["title"], "new": title, "source": "arXiv"})
     if year and paper.get("year") != year:
         repairs.append({"field": "year", "old": paper.get("year"), "new": year, "source": "arXiv"})
+    return repairs
+
+
+def _enrich_via_openalex(db, paper: dict) -> list[dict]:
+    """Fetch abstract, citation_count, and authors from OpenAlex."""
+    title = paper.get("title", "")
+    doi = paper.get("doi")
+    if not title and not doi:
+        return []
+
+    try:
+        if doi:
+            from drbrain.extractor.openalex import get_work_by_doi
+
+            data = get_work_by_doi(doi)
+        else:
+            from drbrain.parser.mineru_parser import _fetch_openalex_metadata
+
+            t, y, oa_id, journal, cited = _fetch_openalex_metadata(title)
+            data = {"title": t, "publication_year": y, "cited_by_count": cited} if t else None
+    except Exception:
+        try:
+            logger.exception("OpenAlex enrichment failed")
+        except Exception:
+            pass
+        return []
+
+    repairs = []
+    if data:
+        if not paper.get("abstract") and data.get("abstract"):
+            repairs.append(
+                {
+                    "field": "abstract",
+                    "old": "",
+                    "new": data["abstract"][:2000],
+                    "source": "OpenAlex",
+                }
+            )
+        if not paper.get("citation_count") and data.get("cited_by_count"):
+            repairs.append(
+                {
+                    "field": "citation_count",
+                    "old": 0,
+                    "new": data["cited_by_count"],
+                    "source": "OpenAlex",
+                }
+            )
     return repairs
 
 
@@ -168,7 +227,12 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
             {"field": "title", "old": paper["title"], "new": normalized, "source": "normalization"}
         )
 
-    for repair_fn in (_repair_via_crossref, _repair_via_arxiv, _repair_via_title_year):
+    for repair_fn in (
+        _repair_via_crossref,
+        _repair_via_arxiv,
+        _repair_via_title_year,
+        _enrich_via_openalex,
+    ):
         try:
             repairs.extend(repair_fn(db, paper))
         except Exception:
@@ -194,6 +258,14 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
             elif r["field"] == "journal":
                 db.conn.execute(
                     "UPDATE papers SET journal = ? WHERE local_id = ?", (r["new"], local_id)
+                )
+            elif r["field"] == "abstract":
+                db.conn.execute(
+                    "UPDATE papers SET abstract = ? WHERE local_id = ?", (r["new"][:2000], local_id)
+                )
+            elif r["field"] == "citation_count":
+                db.conn.execute(
+                    "UPDATE papers SET citation_count = ? WHERE local_id = ?", (r["new"], local_id)
                 )
         db.commit()
 

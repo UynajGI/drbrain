@@ -1102,6 +1102,109 @@ def stats_cmd(
     console.print(table)
 
 
+def show_cmd(
+    ctx: typer.Context,
+    local_id: str = typer.Argument(..., help="Paper local_id"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Show detailed view of a single paper."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    paper = db.get_paper(local_id)
+    if not paper:
+        db.close()
+        typer.echo(f"Paper not found: {local_id}", err=True)
+        raise typer.Exit(1)
+
+    concepts = db.get_concepts_by_paper(local_id)
+    arguments = db.get_arguments_by_paper(local_id)
+    edges_out = db.conn.execute(
+        "SELECT relation, dst_id FROM edges WHERE src_id = ?", (local_id,)
+    ).fetchall()
+    edges_in = db.conn.execute(
+        "SELECT src_id, relation FROM edges WHERE dst_id = ?", (local_id,)
+    ).fetchall()
+    db.close()
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "paper": paper,
+                    "concepts": concepts,
+                    "arguments": arguments,
+                    "edges": {
+                        "outgoing": [{"relation": r[0], "target": r[1]} for r in edges_out],
+                        "incoming": [{"source": r[0], "relation": r[1]} for r in edges_in],
+                    },
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return
+
+    typer.echo(f"\n[bold]{paper['title']}[/bold]")
+    typer.echo(
+        f"  ID: {paper['local_id']}  |  Year: {paper.get('year', '?')}  "
+        f"|  Type: {paper.get('paper_type', '?')}  |  Status: {paper.get('status', '?')}"
+    )
+    if paper.get("journal"):
+        typer.echo(f"  Journal: {paper['journal']}")
+    if paper.get("doi"):
+        typer.echo(f"  DOI: {paper['doi']}")
+    if paper.get("abstract"):
+        typer.echo(f"\n  Abstract: {paper['abstract'][:500]}")
+    if paper.get("citation_count"):
+        typer.echo(f"  Citations: {paper['citation_count']}")
+
+    if concepts:
+        typer.echo(f"\n[bold]Concepts ({len(concepts)})[/bold]")
+        by_type: dict[str, list] = {}
+        for c in concepts:
+            by_type.setdefault(c["type"], []).append(c["label"])
+        for ct, labels in by_type.items():
+            typer.echo(f"  {ct}: {', '.join(labels[:10])}")
+
+    if arguments:
+        typer.echo(f"\n[bold]Arguments ({len(arguments)})[/bold]")
+        for a in arguments[:10]:
+            typer.echo(f"  [{a['claim_type']}] {a['claim'][:120]} -> {a['target_label']}")
+
+    if edges_out:
+        typer.echo(f"\n[bold]Outgoing edges ({len(edges_out)})[/bold]")
+        for r in edges_out[:15]:
+            typer.echo(f"  --{r[0]}--> {r[1]}")
+    if edges_in:
+        typer.echo(f"\n[bold]Incoming edges ({len(edges_in)})[/bold]")
+        for r in edges_in[:15]:
+            typer.echo(f"  {r[0]} --{r[1]}--> {paper['local_id']}")
+
+    typer.echo()
+
+
+def index_cmd(
+    ctx: typer.Context,
+    rebuild: bool = typer.Option(False, "--rebuild", help="Force full rebuild"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+):
+    """Rebuild the BM25 search index."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    from drbrain.query.bm25 import build_bm25_index
+
+    typer.echo("Building BM25 index...")
+    index, doc_ids = build_bm25_index(db, force=rebuild)
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps({"documents": len(doc_ids), "indexed": True}))
+    else:
+        typer.echo(f"Indexed {len(doc_ids)} documents")
+
+
 def query_cmd(
     ctx: typer.Context,
     text: str,
@@ -1512,7 +1615,9 @@ def _export_paper_to_meta(db: Database, local_id: str) -> dict:
 
     author_list = authors[0] if authors and authors[0] else ""
     first_author = author_list.split(" and ")[0].strip() if author_list else ""
-    lastname = first_author.split()[-1] if first_author else ""
+    from drbrain.storage.export import _extract_lastname
+
+    lastname = _extract_lastname(first_author)
 
     return {
         "local_id": local_id,

@@ -20,6 +20,7 @@ from drbrain.cli.commands import (
     embed_cmd,
     export_cmd,
     import_cmd,
+    index_cmd,
     ingest_cmd,
     lineage_cmd,
     list_cmd,
@@ -31,6 +32,7 @@ from drbrain.cli.commands import (
     repair_cmd,
     report_cmd,
     seed_cmd,
+    show_cmd,
     stats_cmd,
     timeline_cmd,
     translate_cmd,
@@ -75,6 +77,8 @@ app.command("closure")(closure_cmd)
 app.command("seed")(seed_cmd)
 app.command("list")(list_cmd)
 app.command("stats")(stats_cmd)
+app.command("show")(show_cmd)
+app.command("index")(index_cmd)
 app.command("query")(query_cmd)
 app.command("export")(export_cmd)
 app.command("queue")(queue_cmd)
