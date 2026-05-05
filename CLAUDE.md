@@ -85,7 +85,13 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 
 ### Key Design Points
 
-- **Config**: `config.yaml` (checked in, all non-secret settings) overlayed by `config.local.yaml` (gitignored, secrets only — api_key, token, email). Env var placeholders via `${VAR_NAME}` syntax. Deep-merge at the dict level. `config.example.yaml` has 9 LLM provider templates.
+- **Config**: `Config` typed dataclass in `config.py` (LLM, MinerU, API, Dirs, DB, Extract, BM25, Queue sub-configs). Loaded once at CLI startup via typer.Context. `config.yaml` (checked in, non-secret) overlayed by `config.local.yaml` (gitignored, secrets). Env var placeholders `${VAR_NAME}` resolved at load time. All sub-configs support dict-style access for backward compatibility.
+- **Logging**: `log.py` — loguru-based with `get_session_id()` (UUID4), `ui()` for canonical output, configurable log path.
+- **Metrics**: `metrics.py` — SQLite with WAL mode + thread-safety. `events` table with session_id. `timer()` context manager and `timed()` decorator. `llm_calls` table for backward compat.
+- **Exceptions**: `exceptions.py` — `DrBrainError` base, `ConfigError`, `APIError`/`APIRateLimitError`, `ExtractionError`, `StorageError`. `WorkspaceError` inherits from `DrBrainError`. All API clients now `logger.exception()` on failure.
+- **Storage**: `database.py` with `schema_versions` versioned migrations + WAL mode. `storage/paths.py` centralized path accessors (`paper_dir()`, `raw_md_path()`, etc.). Atomic writes (tmp→rename) throughout.
+- **API clients**: `openalex.py`, `crossref.py` — `requests.Session` with `urllib3.Retry` (exponential backoff, 429/5xx retry). MinerU exponential backoff.
+- **Dependencies**: `cli/dependencies.py` — self-contained `check_import_error()` with install hints dict.
 - **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list in `config.local.yaml`; first successful parse wins, `None` if all exhausted. Supports any litellm provider (OpenAI, Anthropic, Ollama, plus OpenAI-compatible endpoints like DeepSeek/Zhipu/Bailian).
 - **No vector embeddings**: BM25 (`query/bm25.py`) for search over concepts + arguments. No vector DB dependency.
 - **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
