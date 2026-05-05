@@ -1,56 +1,86 @@
-# DrBrain — Academic Knowledge Graph System
+<div align="center">
 
-Vector-free, symbol-driven research discovery engine. Ingest PDFs, build a knowledge graph,
-and discover research hypotheses, causal chains, and knowledge frontier signals.
+# DrBrain
+
+**Vector-free, symbol-driven academic knowledge graph.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Claude Code Skills](https://img.shields.io/badge/Claude_Code_Skills-DrBrain-purple.svg)](.claude/skills/)
+
+</div>
+
+---
+
+Your AI coding agent already reads code and writes code. DrBrain gives it a structured
+knowledge graph of academic papers — so it can search literature, trace causal chains,
+find research gaps, and infer new relationships through rule-based reasoning.
+
+- Your paper library becomes a queryable knowledge graph with concept-level granularity.
+- Reasoning is symbol-driven: closure rules, confidence propagation, counterfactuals — zero vectors required.
+- Built for AI agents: every feature is accessible through the CLI that your agent already uses.
 
 ## Quick Start
 
 ```bash
-uv sync
-uv run drbrain check               # verify environment
-uv run drbrain ingest               # ingest PDFs from data/spool/inbox/
-uv run drbrain query "graph neural networks"
-uv run drbrain analyze <id> --full  # knowledge frontier analysis
+pip install drbrain
+drbrain setup
 ```
 
-## Key Commands
+`drbrain setup` detects your AI platforms (Claude Code, Codex, Cursor, Cline, Windsurf, Qwen, Copilot)
+and injects agent entries so your coding agent can use DrBrain skills directly.
 
-| Command | Purpose | E2E |
-|---------|---------|-----|
-| `drbrain setup` | Interactive config wizard + env init | ✅ |
-| `drbrain check` | Full environment diagnostics + auto-fix | ✅ |
-| `drbrain clean` | Clear data (db/cache/logs/papers/reports) | ✅ |
-| `drbrain ingest` | Parse PDFs (metadata + tree) — lightweight | ✅ |
-| `drbrain build` | 5-stage LLM graph extraction | ✅ |
-| `drbrain embed` | TransE graph embeddings for link prediction | ✅ |
-| `drbrain reason` | LLM agent reasoning over knowledge graph | ✅ |
-| `drbrain query` | BM25 + `--hybrid` + `--neighbors` | ✅ |
-| `drbrain graph neighbors` | Direct graph traversal from a node | ✅ |
-| `drbrain graph path` | Shortest path between two nodes | ✅ |
-| `drbrain graph related` | Shared concept analysis (concepts/graph/edges) | ✅ |
-| `drbrain closure` | Rule-based inference (`--mode hybrid`, `--dry-run`) | ✅ |
-| `drbrain seed` | Detect research seeds from graph patterns | ✅ |
-| `drbrain citations` | Multi-source citation expansion (`--limit`/`--sort`) | ✅ |
-| `drbrain check-citations` | Verify in-text citations against library | ✅ |
-| `drbrain analyze` | Knowledge frontier report (`--papers`/`--query`/`--discover`) | ✅ |
-| `drbrain ws` | Manage paper workspaces | ✅ |
-| `drbrain export` | Export to BibTeX/RIS/Markdown | ✅ |
-| `drbrain backup` | Create tar.gz backup | ✅ |
-| `drbrain repair` | Auto-fix metadata via CrossRef/arXiv | ✅ |
-| `drbrain import` | Import from Zotero or BibTeX | ✅ |
-| `drbrain translate` | Translate paper markdown via LLM | — |
-| `drbrain audit` | Data quality scan (15 rules, severity-graded) | ✅ |
-| `drbrain ask` | Natural language KGQA (BM25 → graph traversal → LLM answer) | ✅ |
-| `drbrain show` | Detailed single-paper view (metadata, concepts, edges) | ✅ |
-| `drbrain index` | Rebuild BM25 search index | ✅ |
-| `drbrain graph query` | Complex embedding-based queries (project/intersect/union) | ✅ |
-| `drbrain graph describe` | Natural language subgraph description via LLM | ✅ |
+Then drop PDFs into `data/spool/inbox/` and let your agent take it from there — or use the CLI yourself.
 
-## Architecture
+## What It Does
 
-- **Parser**: MinerU CLI → PyMuPDF fallback, PDF → Markdown
-- **Extractor**: 5-stage LLM pipeline (ontology→entities→relations→coreference→refine), 10-way concurrent
-- **Dedup**: DOI → arXiv → S2 → OpenAlex → title+year fuzzy match
-- **Graph**: NetworkX in-memory + SQLite, rule-based closure with 8+4 inference rules, directed BFS traversal with relation filtering, shortest-path queries
-- **Reasoning**: Causal chains, counterfactual analysis, isomorphism detection, hypothesis generation, LLM↔KG bidirectional reasoning, embedding-driven rule mining
-- **Skills**: 5 AgentSkills.io-compatible skills in `skills/`
+|  | Feature | Details |
+|--|---------|---------|
+| **Ingest** | PDF to structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
+| **Build** | 5-stage concept extraction | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
+| **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
+| **Knowledge Graph** | Rule-based closure | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
+| **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
+| **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
+| **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification against library |
+| **Export** | BibTeX, RIS, Markdown | Full library or workspace export with complete venue metadata (journal, volume, pages) |
+| **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
+| **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
+| **Audit** | Data quality scan | 15 severity-graded rules, PDF pre-validation, ingest quality gates |
+
+## Works With Your Agent
+
+DrBrain is designed to work through AI coding agents. `drbrain setup` injects the right
+entry files into your project so your agent can discover and use skills directly.
+
+| Agent / IDE | Entry injected |
+|-------------|---------------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `CLAUDE.md` + `.claude-plugin/` + `.mcp.json` |
+| [Codex](https://openai.com/codex) / OpenClaw | `AGENTS.md` |
+| [Cline](https://github.com/cline/cline) | `.clinerules` |
+| [Qwen](https://qwen.ai/) | `QWEN.md` |
+| [Cursor](https://cursor.sh) | `.cursorrules` |
+| [Windsurf](https://codeium.com/windsurf) | `.windsurfrules` |
+| [GitHub Copilot](https://github.com/features/copilot) | `.github/copilot-instructions.md` |
+
+Skills follow the open [AgentSkills.io](https://agentskills.io) standard. Claude Code users
+also get `.claude-plugin/` + `.mcp.json` injected for full plugin integration.
+
+## Configuration
+
+`drbrain setup` walks you through the basics interactively:
+
+- LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, etc.)
+- MinerU token (optional; PyMuPDF fallback for PDF parsing)
+- Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate limits)
+- `drbrain check` verifies your environment
+
+## Inspired By
+
+DrBrain's agent-first design is inspired by [ScholarAIO](https://github.com/ZimoLiao/scholaraio) — the
+pioneering "research infrastructure for AI agents." DrBrain takes a different technical path:
+symbol-driven knowledge graph reasoning over vector-based semantic search.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
