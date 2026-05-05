@@ -1,122 +1,82 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Quick Commands
 
 ```bash
-uv sync                        # install all deps (including dev)
-uv run drbrain <command>       # CLI entry point
-uv run pytest                   # run all tests
-uv run pytest -m "not integration"  # skip slow integration tests
-uv run pytest tests/test_xxx.py::test_name  # single test case
-uv run ruff check .             # lint
-uv run ruff format .            # format
-uv run pytest --cov=drbrain --cov-report=term  # coverage report
+uv sync                                  # install all deps
+uv run drbrain <command>                 # CLI entry point
+uv run pytest                            # all tests
+uv run pytest -m "not integration"       # skip slow integration tests
+uv run pytest tests/test_xxx.py::name    # single test
+uv run ruff check . && uv run ruff format .
+uv run pytest --cov=drbrain --cov-report=term
 ```
 
-Key user commands: `setup`, `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`.
+Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`.
 
 ## Architecture
 
-DrBrain is an **academic knowledge graph system** — vector-free, symbol-driven research discovery. It ingests PDFs, extracts structured concepts/arguments via LLM, deduplicates identities, and infers new relationships through rule-based graph closure.
+DrBrain is a **vector-free, symbol-driven academic knowledge graph**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure.
 
-### Ingestion Pipeline (2-phase)
+### Pipeline
 
-**Phase 1 — `drbrain ingest`**: Lightweight PDF-to-library. No concept extraction.
+**Ingest** (`drbrain ingest`): PDF→markdown (MinerU CLI, fallback pymupdf4llm). 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) for metadata + venue (journal/publisher/citation_count). LLM tree-structures markdown → `tree.json`. Status: `uploaded`.
 
-1. **Parse** (`parser/mineru_parser.py`): MinerU CLI → Markdown. Falls back to `pymupdf4llm.to_markdown()`. PDFs >150 pages split into chunks.
-2. **Identify** (`dedup/resolver.py`, `mineru_parser.py:_resolve_metadata`): 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv). Stores title, year, doi, arxiv, s2_id, openalex_id in `paper_ids`, and journal, publisher, citation_count in `papers` table. Extracts abstract from tree.json.
-3. **Tree** (`parser/pageindex_parser.py`): LLM structures markdown into `tree.json` with section summaries.
-4. **Record**: Insert paper with status `uploaded`.
+**Build** (`drbrain build [id...]`): 5-stage LLM extraction — ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → refinement (`--skip-refine` to skip). Status: `extracted`.
 
-**Phase 2 — `drbrain build [paper_id...]`**: 5-stage LLM graph extraction.
+### Key Modules
 
-1. **Ontology Extension**: LLM suggests domain-specific subcategories under 6 TBox types.
-2. **Entity Extraction**: Per leaf-node concept extraction with subcategory labels. 10-way concurrency.
-3. **Relation Extraction**: LLM connects concepts using TBox relations.
-4. **Coreference Resolution**: LLM merges duplicate entity labels.
-5. **Iterative Refinement**: LLM self-reviews extraction for contradictions and errors (skippable via `--skip-refine`).
+| Area         | Key files                                                                                                                                                | What                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Graph engine | `graph/engine.py`, `graph/embedding.py`                                                                                                                  | TransE embeddings, rule closure (8+4 rules), hybrid scoring, t-norm grounding                     |
+| Extraction   | `extractor/concept.py`, `extractor/reasoner.py`                                                                                                          | 5-stage LLM extraction, bidirectional LLM↔KG reasoning                                            |
+| Reasoning    | `extractor/causal_chain.py`, `extractor/confidence_propagation.py`, `extractor/counterfactual.py`, `extractor/isomorphism.py`, `extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
+| Search       | `query/bm25.py`, `query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search                                               |
+| Quality      | `services/audit.py`, `services/repair.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex                                                  |
+| Import       | `services/zotero_import.py`, `services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
+| Storage      | `storage/database.py`, `storage/export.py`, `storage/workspace.py`                                                                                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD                                   |
+| CLI          | `cli/commands.py`, `cli/graph_commands.py`, `cli/main.py`                                                                                                | Typer CLI, graph traversal, KGQA (`ask`)                                                          |
 
-Paper statuses: `uploaded` → `extracted` (after build). `placeholder` for citation-only papers.
-
-### Reasoning & Discovery Modules (post-ingestion)
-
-**3-layer reasoning stack** (based on 2202.07412, 2306.08302, 2511.11017):
-
-- **Layer 1: TransE Embeddings** (`graph/embedding.py`): `drbrain embed` trains entity/relation vectors via `TransE`. `predict_link()`, `similar_entities()` for link prediction and entity similarity. Stored in `embeddings` SQLite table.
-- **Layer 2: Hybrid Closure** (`graph/engine.py`): `drbrain closure --mode hybrid` weights inferred edges by embedding scores. Path confidence via relation composition distance.
-- **Layer 3: LLM Agent Reasoning** (`extractor/reasoner.py`): `drbrain reason <question>` — LLM explores graph via tool-calling (search_concepts, get_neighbors, find_path), forms hypotheses.
-
-**Symbolic reasoning modules (classic):**
-- **Causal Chain** (`extractor/causal_chain.py`): `build_causal_chains()`, `find_chains_from()`, `find_path()`.
-- **Confidence Propagation** (`extractor/confidence_propagation.py`): Multi-hop decay (0.85), section-aware variant.
-- **Counterfactual Queries** (`extractor/counterfactual.py`): Node removal impact on closure.
-- **Cross-domain Isomorphism** (`extractor/isomorphism.py`): Subgraph similarity by relation signature.
-- **Hypothesis Generation** (`extractor/hypothesis.py`): From gaps, debates, technology cliffs.
-- **Structure-first Retrieval** (`query/tree_retrieval.py`): Full PageIndex implementation — iterative tree-search with adaptive depth navigation. Small skeletons: one-shot. Large skeletons: top-level → branch selection → leaf selection. Returns `[{"node_id", "title", "content"}]`.
-- **Graph-Enhanced Search** (`query` + `graph/engine.py`): `query --neighbors` for directed graph expansion from BM25 results. `query --hybrid` applies multiplicative PageRank boost [1.0, 2.0] to re-rank results by graph centrality. Returns concept nodes with `_via_graph`, `_source_seed`, `_distance`, `_path` fields.
-- **Citation Graph** (`storage/citation_graph.py`): Shared-reference analysis, ref/citing/shared-refs queries. `find_shared_refs()` detects papers sharing references but not citing each other (knowledge frontier signal).
-- **Citation Verification** (`extractor/citation_check.py`): Extracts (Author, Year) patterns from text and matches against the local library.
-- **Library Management** (`storage/inbox.py`, `storage/workspace.py`, `storage/export.py`, `storage/backup.py`): Inbox scanning (with pending queue), workspace CRUD, BibTeX/RIS/Markdown export, tar.gz backup.
-- **Paper Type Detection** (`extractor/detection.py`): Heuristic + LLM classification into paper/review/thesis/preprint/book/document.
-- **Knowledge Frontier Analysis** (`report/analyzer.py`): Orchestrates all reasoning modules into unified report via `drbrain analyze`.
-- **Metadata Repair** (`services/repair.py`): Auto-fix paper metadata via CrossRef/arXiv APIs. Title normalization, missing DOI resolution, author/journal backfill.
-- **Zotero Import** (`services/zotero_import.py`): Import papers from Zotero SQLite databases and BibTeX `.bib` files.
-- **Paper Translation** (`services/translate.py`): LLM-powered paper translation with placeholder-protected chunking (code/math/images preserved), heuristic language detection (CJK/Latin stopwords), concurrent chunk translation via ThreadPoolExecutor, state persistence with resume-from-interruption, exponential backoff retry with timeout subdivision.
-- **Graph Query** (`cli/graph_commands.py`): Direct graph traversal without BM25. `drbrain graph neighbors <node>` traverses with direction/relation filtering via `GraphEngine.traverse()`. `drbrain graph path <src> <dst>` finds shortest path using `nx.shortest_path()` on undirected copy, recovers edge direction/relation from original directed graph. `drbrain closure` supports `--rule` (filter by inference rule name) and `--dry-run` (read-only, no DB persist). `drbrain graph related <paper_id...>` analyzes shared concepts across papers in 3 modes: `concepts` (SQL label intersection), `graph` (1-hop neighbor intersection via traverse), `edges` (shared edge patterns).
-- **Logging** (`log.py`, `metrics.py`): loguru-based structured logging with rotating files. SQLite-backed LLM token usage tracking in `data/metrics.db`.
-
-### Data Directory Layout
+### Data Layout
 
 ```
 data/
-├── spool/inbox/       # PDFs awaiting ingest (auto-classified)
-├── spool/pending/     # Failed ingests + pending.jsonl
-├── papers/<id>/       # Per-paper: source.pdf, raw.md, images/, tree.json
-├── drbrain.db          # SQLite database
-├── metrics.db          # LLM token tracking
-├── backups/            # tar.gz backups
-├── cache/             # API cache (rebuildable)
-├── logs/              # validation.log
-└── reports/           # Per-paper JSON reports
-workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
+├── spool/inbox/        PDFs awaiting ingest
+├── spool/pending/      Failed ingests
+├── papers/<id>/        source.pdf, raw.md, tree.json, images/
+├── drbrain.db          SQLite (WAL mode, schema_versions)
+├── metrics.db          LLM token tracking
+├── cache/              API cache (rebuildable)
+└── reports/            Per-paper JSON
+workspace/<name>/       workspace.yaml + refs/papers.json
 ```
 
-### Key Design Points
+### Design Points
 
-- **Config**: `Config` typed dataclass in `config.py` (LLM, MinerU, API, Dirs, DB, Extract, BM25, Queue sub-configs). Loaded once at CLI startup via typer.Context. `config.yaml` (checked in, non-secret) overlayed by `config.local.yaml` (gitignored, secrets). Env var placeholders `${VAR_NAME}` resolved at load time. All sub-configs support dict-style access for backward compatibility.
-- **Logging**: `log.py` — loguru-based with `get_session_id()` (UUID4), `ui()` for canonical output, configurable log path.
-- **Metrics**: `metrics.py` — SQLite with WAL mode + thread-safety. `events` table with session_id. `timer()` context manager and `timed()` decorator. `llm_calls` table for backward compat.
-- **Exceptions**: `exceptions.py` — `DrBrainError` base, `ConfigError`, `APIError`/`APIRateLimitError`, `ExtractionError`, `StorageError`. `WorkspaceError` inherits from `DrBrainError`. All API clients now `logger.exception()` on failure.
-- **Storage**: `database.py` with `schema_versions` versioned migrations + WAL mode. `storage/paths.py` centralized path accessors (`paper_dir()`, `raw_md_path()`, etc.). Atomic writes (tmp→rename) throughout.
-- **API clients**: `openalex.py`, `crossref.py` — `requests.Session` with `urllib3.Retry` (exponential backoff, 429/5xx retry). MinerU exponential backoff.
-- **Dependencies**: `cli/dependencies.py` — self-contained `check_import_error()` with install hints dict.
-- **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list in `config.local.yaml`; first successful parse wins, `None` if all exhausted. Supports any litellm provider (OpenAI, Anthropic, Ollama, plus OpenAI-compatible endpoints like DeepSeek/Zhipu/Bailian).
-- **No vector embeddings**: BM25 (`query/bm25.py`) for search over concepts + arguments. No vector DB dependency.
-- **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
-- **KG reasoning enhancement**: TransE-based complex query operators (project/intersect/union/negate) in `graph/query_embeddings.py`. LLM↔KG bidirectional iterative reasoning with TBox/RBox validation (`reason --bidirectional`). Embedding-driven path rule mining from TransE relations (`closure --mine-rules`). Subgraph-to-text description via LLM (`graph describe`).
-- **Data quality**: `drbrain audit` with 15 severity-graded rules. PDF pre-validation (encryption/corruption via PyMuPDF). 3 non-blocking ingest quality gates. PageIndex TOC verification with LLM correction loop.
-- **Ecosystem enrichment**: `arxiv` library for arXiv metadata; CrossRef API (`crossref.py`) for DOI resolution and cross-validation; `pyalex` library for OpenAlex title search and author identity; Semantic Scholar (with API key support). Rate-limited with configurable cache TTL.
-- **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
-- **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
-- **Clean command**: `drbrain clean --force` removes all data files except PDFs.
+- **Config**: `config.py` typed dataclass hierarchy. `config.yaml` + `config.local.yaml` (gitignored). Env var `${VAR_NAME}` resolution. Sub-configs support dict-style `[]` access.
+- **Logging/Metrics**: loguru + `get_session_id()` (UUID4), `ui()` for user output. SQLite metrics with WAL + thread-safety, `timer()` / `timed()`.
+- **API clients**: `requests.Session` + `urllib3.Retry` on 429/5xx. MinerU exponential backoff.
+- **LLM**: `acall_with_fallback()` iterates model list in config; any litellm provider.
+- **No vectors**: BM25 search, rule-based reasoning. Zero embedding dependency for core discovery.
+- **Section provenance**: `section` field flows from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.).
+- **Atomic writes**: tmp→rename pattern throughout. `storage/paths.py` for centralized paths.
 
 ### Testing
 
-- Tests use pytest with `asyncio_mode = "auto"`.
-- Integration tests are marked with `@pytest.mark.integration`; run with `-m "not integration"` to skip.
-- Tests hit a real SQLite database (in-memory or temp file) — no mocking of the database layer.
-- 1094 tests total. TDD: tests-first for all new modules. 84% coverage.
+- pytest, `asyncio_mode = "auto"`. Real SQLite (in-memory/temp), no DB mocking.
+- `@pytest.mark.integration` on slow tests. `-m "not integration"` to skip.
 
 ### Gotchas
 
-- **Editable install**: After `uv sync`, run `uv pip install -e .` once if `ModuleNotFoundError: No module named 'drbrain'` appears. The src-layout package needs an editable install for imports to resolve.
-- **typer OptionInfo in tests**: When calling command functions directly (not via CLI), typer `Option` default values appear as `OptionInfo` objects. Use `isinstance(param, typer.models.OptionInfo)` to extract `.default`. All commands use the `_resolve_workspace_papers()` or equivalent normalization.
+- **Editable install**: `uv pip install -e .` once after `uv sync` if `ModuleNotFoundError: No module named 'drbrain'`.
+- **typer OptionInfo**: In tests, typer `Option` defaults appear as `OptionInfo` objects — use `isinstance(param, typer.models.OptionInfo)` to extract `.default`.
 
-### Skills
+## Guidelines
 
-Project skills in `skills/` directory. Available skills: `research-analysis` (knowledge frontier analysis), `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`.
+1. **Use code-review-graph MCP tools first** for code exploration (semantic_search_nodes, query_graph, detect_changes) — fall back to Grep/Read only when the graph doesn't cover it.
+2. **Surgical changes**: touch only what the task requires. Don't refactor adjacent code. Match existing style.
+3. **Simplicity first**: no abstractions for single-use, no speculative features, no error handling for impossible states.
+4. **Goal-driven**: define verifiable success criteria before implementing. Write the test first, then make it pass.
 
 ## Behavioral Guidelines
 
@@ -203,16 +163,16 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 
 ### Key Tools
 
-| Tool | Use when |
-|------|----------|
-| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
-| `get_review_context` | Need source snippets for review — token-efficient |
-| `get_impact_radius` | Understanding blast radius of a change |
-| `get_affected_flows` | Finding which execution paths are impacted |
-| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
-| `semantic_search_nodes` | Finding functions/classes by name or keyword |
-| `get_architecture_overview` | Understanding high-level codebase structure |
-| `refactor_tool` | Planning renames, finding dead code |
+| Tool                        | Use when                                               |
+| --------------------------- | ------------------------------------------------------ |
+| `detect_changes`            | Reviewing code changes — gives risk-scored analysis    |
+| `get_review_context`        | Need source snippets for review — token-efficient      |
+| `get_impact_radius`         | Understanding blast radius of a change                 |
+| `get_affected_flows`        | Finding which execution paths are impacted             |
+| `query_graph`               | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes`     | Finding functions/classes by name or keyword           |
+| `get_architecture_overview` | Understanding high-level codebase structure            |
+| `refactor_tool`             | Planning renames, finding dead code                    |
 
 ### Workflow
 
