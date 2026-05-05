@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS citation_cache (
     cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source_paper, target_title)
 );
+
+CREATE TABLE IF NOT EXISTS schema_versions (
+    version INTEGER PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -122,13 +127,33 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
 
     def _init_schema(self) -> None:
         self.conn.executescript(SCHEMA_SQL)
-        self._migrate_add_paper_type()
-        self._migrate_add_venue_columns()
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Apply pending schema migrations in order."""
+        current = self.conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_versions"
+        ).fetchone()[0]
+
+        migrations = [
+            (1, "paper_type", self._migrate_add_paper_type),
+            (2, "venue_columns", self._migrate_add_venue_columns),
+        ]
+
+        for version, name, fn in migrations:
+            if current < version:
+                fn()
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
+                    (version,),
+                )
+                self.conn.commit()
 
     def _migrate_add_paper_type(self) -> None:
         """Add paper_type column if missing (pre-v2 DBs)."""

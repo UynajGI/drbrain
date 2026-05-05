@@ -20,6 +20,7 @@ from pathlib import Path
 
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
+from drbrain.storage.paths import raw_md_path, tree_json_path
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +78,10 @@ async def _ask_llm_for_relevant_nodes(
         per_round=5,
     )
     result = await acall_with_fallback(
-        prompt=prompt, models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=1024,
+        prompt=prompt,
+        models=models,
+        system_prompt=_SYSTEM_PROMPT,
+        max_tokens=1024,
     )
     if result is None:
         return []
@@ -117,7 +121,6 @@ def _collect_all_leaf_ids(structure: list[dict]) -> set[str]:
 
 def _build_remaining_structure(structure: list[dict], read_ids: set[str]) -> str:
     """Build a structure JSON string with only unread leaf nodes."""
-    import copy
 
     def _filter_read(nodes):
         result = []
@@ -213,8 +216,8 @@ async def query_by_structure(
     If tree skeleton too large → top-level navigation: show headings first,
     LLM picks branches → expand selected branches → LLM picks leaves.
     """
-    tree_path = paper_dir / "tree.json"
-    md_path = paper_dir / "raw.md"
+    tree_path = tree_json_path(paper_dir)
+    md_path = raw_md_path(paper_dir)
 
     if not tree_path.exists() or not md_path.exists():
         log.warning(f"Missing tree.json or raw.md in {paper_dir}")
@@ -239,9 +242,13 @@ async def query_by_structure(
 
         nav1 = await acall_with_fallback(
             prompt=_NON_LEAF_SELECTION_PROMPT.format(
-                structure_json=top_json, question=question, per_round=per_round,
+                structure_json=top_json,
+                question=question,
+                per_round=per_round,
             ),
-            models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=512,
+            models=models,
+            system_prompt=_SYSTEM_PROMPT,
+            max_tokens=512,
         )
         if nav1 and isinstance(nav1, dict):
             branch_ids = set(nav1.get("node_ids", []))
@@ -258,11 +265,15 @@ async def query_by_structure(
                         prompt=_NON_LEAF_SELECTION_PROMPT.format(
                             structure_json=json.dumps(
                                 _build_top_level_structure(expanded, depth=2),
-                                ensure_ascii=False, indent=2,
+                                ensure_ascii=False,
+                                indent=2,
                             ),
-                            question=question, per_round=per_round,
+                            question=question,
+                            per_round=per_round,
                         ),
-                        models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=512,
+                        models=models,
+                        system_prompt=_SYSTEM_PROMPT,
+                        max_tokens=512,
                     )
                     if nav2 and isinstance(nav2, dict):
                         selected_ids = [str(n) for n in nav2.get("node_ids", [])[:per_round]]
@@ -270,9 +281,13 @@ async def query_by_structure(
                     # Show expanded children, let LLM pick leaves
                     nav2 = await acall_with_fallback(
                         prompt=_LEAF_SELECTION_PROMPT.format(
-                            expanded_json=expanded_json, question=question, per_round=per_round,
+                            expanded_json=expanded_json,
+                            question=question,
+                            per_round=per_round,
                         ),
-                        models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=512,
+                        models=models,
+                        system_prompt=_SYSTEM_PROMPT,
+                        max_tokens=512,
                     )
                     if nav2 and isinstance(nav2, dict):
                         selected_ids = [str(n) for n in nav2.get("node_ids", [])[:per_round]]
@@ -280,9 +295,13 @@ async def query_by_structure(
         # Small tree: one-shot selection
         r1 = await acall_with_fallback(
             prompt=_ROUND1_PROMPT.format(
-                structure_json=full_skeleton, question=question, per_round=per_round,
+                structure_json=full_skeleton,
+                question=question,
+                per_round=per_round,
             ),
-            models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=1024,
+            models=models,
+            system_prompt=_SYSTEM_PROMPT,
+            max_tokens=1024,
         )
         if r1 and isinstance(r1, dict):
             selected_ids = [str(n) for n in r1.get("node_ids", [])[:per_round]]
@@ -314,10 +333,14 @@ async def query_by_structure(
 
         r2 = await acall_with_fallback(
             prompt=_ROUND2_PROMPT.format(
-                previous_content=previous_text, remaining_structure=remaining_json,
-                question=question, per_round=per_round,
+                previous_content=previous_text,
+                remaining_structure=remaining_json,
+                question=question,
+                per_round=per_round,
             ),
-            models=models, system_prompt=_SYSTEM_PROMPT, max_tokens=512,
+            models=models,
+            system_prompt=_SYSTEM_PROMPT,
+            max_tokens=512,
         )
         if r2 and isinstance(r2, dict) and not r2.get("done") and r2.get("node_ids"):
             for nid in r2["node_ids"]:
@@ -327,7 +350,11 @@ async def query_by_structure(
                 content = get_node_content(md_path, structure, nid)
                 if content and content.strip():
                     title = _get_node_title(structure, nid)
-                    collected[nid] = {"node_id": nid, "title": title or "", "content": content.strip()}
+                    collected[nid] = {
+                        "node_id": nid,
+                        "title": title or "",
+                        "content": content.strip(),
+                    }
 
     if not collected:
         return None

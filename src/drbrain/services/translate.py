@@ -13,6 +13,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from drbrain.storage.paths import raw_md_path
+
 CHUNK_SIZE = 3000  # chars per translation chunk
 
 # ---------------------------------------------------------------------------
@@ -579,7 +581,7 @@ def translate_paper(
     """
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-    md_path = paper_dir / "raw.md"
+    md_path = raw_md_path(paper_dir)
     if not md_path.exists():
         return TranslateResult(skip_reason=SKIP_NO_MD)
 

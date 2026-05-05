@@ -20,6 +20,12 @@ from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.query.tree_retrieval import query_by_structure
 from drbrain.storage.database import Database
+from drbrain.storage.paths import (
+    images_dir,
+    raw_md_path,
+    source_pdf_path,
+    tree_json_path,
+)
 
 console = Console()
 
@@ -238,8 +244,8 @@ def _ingest_single_paper(
     db.commit()
 
     # Stage 2.5: Structure markdown into tree (PageIndex)
-    md_path = paper_dir / "raw.md"
-    tree_json_path = paper_dir / "tree.json"
+    md_path = raw_md_path(paper_dir)
+    tree_path = tree_json_path(paper_dir)
     echo("  Structuring document tree...")
     try:
         from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
@@ -254,8 +260,8 @@ def _ingest_single_paper(
             max_node_tokens=10000,
         )
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
-        tree_json_path.write_text(doc_tree.to_json(), encoding="utf-8")
-        echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_json_path.name}")
+        tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
+        echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_path.name}")
         # Extract abstract from tree structure
         for node in doc_tree.structure:
             title = node.get("title", "") if isinstance(node, dict) else getattr(node, "title", "")
@@ -435,7 +441,7 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             images/      — extracted images
     """
     # Move source PDF from inbox to paper directory
-    dst_pdf = paper_dir / "source.pdf"
+    dst_pdf = source_pdf_path(paper_dir)
     if not dst_pdf.exists():
         shutil.copy2(source_pdf, dst_pdf)
         try:
@@ -446,7 +452,7 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
     # Copy images and rewrite refs
     raw_md = parsed.raw_md
     if parsed.images_dir and parsed.images_dir.exists():
-        img_dst = paper_dir / "images"
+        img_dst = images_dir(paper_dir)
         shutil.copytree(parsed.images_dir, img_dst, dirs_exist_ok=True)
         # MinerU outputs "images/<hash>/file.jpg", rewrite to "images/<hash>/file.jpg"
         # (no local_id prefix needed — images/ is already inside paper_dir)
@@ -456,7 +462,7 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             raw_md,
         )
 
-    md_path = paper_dir / "raw.md"
+    md_path = raw_md_path(paper_dir)
     md_path.write_text(raw_md, encoding="utf-8")
 
 
@@ -987,7 +993,7 @@ def query_cmd(
         if not paper_dir.exists():
             typer.echo(f"Paper not found: {_paper}", err=True)
             raise typer.Exit(1)
-        if not (paper_dir / "tree.json").exists():
+        if not tree_json_path(paper_dir).exists():
             typer.echo(f"tree.json not found for {_paper}. Run 'drbrain ingest' first.", err=True)
             raise typer.Exit(1)
 
@@ -2756,7 +2762,7 @@ def translate_cmd(
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     paper_dir = papers_dir / local_id
 
-    if not (paper_dir / "raw.md").exists():
+    if not raw_md_path(paper_dir).exists():
         typer.echo(f"No raw.md found for {local_id}. Run 'drbrain ingest' first.", err=True)
         raise typer.Exit(1)
 
@@ -2858,8 +2864,8 @@ def build_cmd(
         pid = paper["local_id"]
         typer.echo(f"\n{pid}: {paper['title'][:80]}")
 
-        tree_path = papers_dir / pid / "tree.json"
-        md_path = papers_dir / pid / "raw.md"
+        tree_path = tree_json_path(papers_dir / pid)
+        md_path = raw_md_path(papers_dir / pid)
 
         # Retry tree generation if raw.md exists but tree.json is missing
         if not tree_path.exists() and md_path.exists():
