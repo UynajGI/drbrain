@@ -3071,6 +3071,18 @@ def embed_cmd(
 def reason_cmd(
     ctx: typer.Context,
     question: str = typer.Argument(..., help="Question to reason about using the knowledge graph"),
+    bidirectional: bool = typer.Option(
+        False,
+        "--bidirectional",
+        "-b",
+        help="Use bidirectional LLM-KG iterative reasoning loop (validates hypotheses against graph constraints)",
+    ),
+    max_rounds: int = typer.Option(
+        3,
+        "--max-rounds",
+        "-r",
+        help="Maximum hypothesis-revision rounds for bidirectional mode",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     from drbrain.extractor.reasoner import ReasonerAgent
@@ -3088,8 +3100,22 @@ def reason_cmd(
 
     agent = ReasonerAgent(db=db, graph_engine=graph, models=models)
 
-    typer.echo(f"Reasoning: {question}\n")
-    answer = asyncio.run(agent.reason(question))
-    typer.echo(answer)
+    if bidirectional:
+        typer.echo(f"Bidirectional reasoning: {question}\n")
+        result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
+        if "error" in result:
+            typer.echo(f"Error: {result['error']}", err=True)
+        else:
+            typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
+            typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
+            for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
+                typer.echo(
+                    f"  Round {i}: consistent={v['consistent']}, "
+                    f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
+                )
+    else:
+        typer.echo(f"Reasoning: {question}\n")
+        answer = asyncio.run(agent.reason(question))
+        typer.echo(answer)
 
     db.close()

@@ -1,8 +1,8 @@
 """LLM Agent for graph reasoning with tool-calling loop."""
+
 from __future__ import annotations
 
 import json
-import asyncio
 
 
 class ReasonerAgent:
@@ -70,6 +70,7 @@ class ReasonerAgent:
         if not self.db:
             return []
         from drbrain.query.bm25 import build_bm25_index
+
         bm25 = build_bm25_index(self.db)
         results = bm25.search(query, limit=limit)
         return [{"label": r["label"], "type": r["type"], "score": r["score"]} for r in results]
@@ -80,7 +81,9 @@ class ReasonerAgent:
         results = self.graph.traverse(start_nodes={node}, hops=hops, direction=direction)
         return [
             {
-                "target": r.target, "source": r.source, "distance": r.distance,
+                "target": r.target,
+                "source": r.source,
+                "distance": r.distance,
                 "path": [{"src": s.src, "relation": s.relation, "dst": s.dst} for s in r.path],
             }
             for r in results
@@ -90,6 +93,7 @@ class ReasonerAgent:
         if not self.graph or src not in self.graph.graph or dst not in self.graph.graph:
             return None
         import networkx as nx
+
         ug = self.graph.graph.to_undirected()
         try:
             node_path = nx.shortest_path(ug, source=src, target=dst)
@@ -104,11 +108,14 @@ class ReasonerAgent:
 
         tools = self.tool_definitions()
         messages = [
-            {"role": "system", "content": (
-                "You are a knowledge graph reasoning assistant. "
-                "Use the provided tools to explore the graph and answer questions. "
-                "Explain your reasoning step by step."
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "You are a knowledge graph reasoning assistant. "
+                    "Use the provided tools to explore the graph and answer questions. "
+                    "Explain your reasoning step by step."
+                ),
+            },
             {"role": "user", "content": question},
         ]
 
@@ -119,8 +126,12 @@ class ReasonerAgent:
                 model = self.models[0]
                 name = f"{model['provider']}/{model['model']}"
                 kwargs = {
-                    "model": name, "messages": messages, "temperature": 0.3,
-                    "max_tokens": 1024, "timeout": 60, "tools": tools,
+                    "model": name,
+                    "messages": messages,
+                    "temperature": 0.3,
+                    "max_tokens": 1024,
+                    "timeout": 60,
+                    "tools": tools,
                     "extra_body": {"thinking": {"type": "disabled"}},
                 }
                 if model.get("api_key"):
@@ -132,12 +143,23 @@ class ReasonerAgent:
                 msg = resp.choices[0].message
 
                 if msg.tool_calls:
-                    messages.append({"role": "assistant", "content": msg.content or "",
-                                     "tool_calls": [{
-                                         "id": tc.id, "type": "function",
-                                         "function": {"name": tc.function.name,
-                                                      "arguments": tc.function.arguments},
-                                     } for tc in msg.tool_calls]})
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": msg.content or "",
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                                for tc in msg.tool_calls
+                            ],
+                        }
+                    )
                     for tc in msg.tool_calls:
                         args = json.loads(tc.function.arguments)
                         if tc.function.name == "search_concepts":
@@ -148,13 +170,297 @@ class ReasonerAgent:
                             result = self._find_path(**args)
                         else:
                             result = []
-                        messages.append({
-                            "role": "tool", "tool_call_id": tc.id,
-                            "content": json.dumps(result, ensure_ascii=False, default=str),
-                        })
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(result, ensure_ascii=False, default=str),
+                            }
+                        )
                 else:
                     return msg.content or "No answer generated."
             except Exception as e:
                 return f"Reasoning error: {e}"
 
         return "Unable to answer after maximum reasoning turns."
+
+    def _call_llm(self, prompt: str, system: str | None = None) -> str | None:
+        """Call LLM with a prompt and return text response (no tool-calling).
+
+        Args:
+            prompt: User message to send.
+            system: Optional system prompt override.
+
+        Returns:
+            LLM text response or None on failure.
+        """
+        if not self.models:
+            return None
+
+        try:
+            import litellm
+
+            model = self.models[0]
+            name = f"{model['provider']}/{model['model']}"
+            messages = [
+                {
+                    "role": "system",
+                    "content": system
+                    or (
+                        "You are a knowledge graph reasoning assistant. "
+                        "Answer concisely based on evidence."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ]
+            kwargs = {
+                "model": name,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_tokens": 1024,
+                "timeout": 60,
+                "extra_body": {"thinking": {"type": "disabled"}},
+            }
+            if model.get("api_key"):
+                kwargs["api_key"] = model["api_key"]
+            if model.get("base_url"):
+                kwargs["api_base"] = model["base_url"]
+
+            resp = litellm.completion(**kwargs)
+            return resp.choices[0].message.content or ""
+        except Exception:
+            return None
+
+    def _kg_validate(self, hypothesis: str) -> dict:
+        """Check hypothesis against KG for consistency.
+
+        Extracts entity mentions from hypothesis text by matching
+        concept labels in the DB, then checks the subgraph of those
+        entities for TBox violations, RBox violations, and graph
+        patterns (debates, gaps).
+
+        Args:
+            hypothesis: Free-text hypothesis from LLM.
+
+        Returns:
+            {"consistent": bool, "violations": [...], "patterns": [...]}
+        """
+        result: dict = {"consistent": True, "violations": [], "patterns": []}
+
+        if not self.graph or self.graph.graph.number_of_nodes() == 0:
+            return result
+
+        # 1. Find entity mentions in hypothesis text by matching DB concept labels
+        mentioned_labels: list[str] = []
+        if self.db:
+            rows = self.db.conn.execute(
+                "SELECT DISTINCT label FROM concepts ORDER BY length(label) DESC"
+            ).fetchall()
+            hypothesis_lower = hypothesis.lower()
+            for (label,) in rows:
+                if label and label.lower() in hypothesis_lower:
+                    mentioned_labels.append(label)
+        else:
+            # No DB: extract potential labels from graph nodes
+            for node in self.graph.graph.nodes():
+                if node and node.lower() in hypothesis.lower():
+                    mentioned_labels.append(node)
+
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_labels = []
+        for label in mentioned_labels:
+            if label not in seen:
+                seen.add(label)
+                unique_labels.append(label)
+        mentioned_labels = unique_labels[:20]  # cap at 20 entities
+
+        if len(mentioned_labels) < 2:
+            return result
+
+        # 2. Gather all edges between mentioned entities
+        subgraph_edges: list[dict] = []
+        for u, v, data in self.graph.graph.edges(data=True):
+            if u in seen and v in seen:
+                subgraph_edges.append(
+                    {
+                        "src": u,
+                        "dst": v,
+                        "relation": data.get("relation", ""),
+                        "source_paper": data.get("source", ""),
+                    }
+                )
+
+        # 3. TBox validation: check each edge's relation against concept types
+        from drbrain.validator.schema import detect_asymmetric_violations, validate_tbox
+
+        if self.db:
+            # Build type lookup from DB
+            type_rows = self.db.conn.execute(
+                "SELECT label, type FROM concepts WHERE label IN ({})".format(
+                    ",".join("?" for _ in mentioned_labels)
+                ),
+                mentioned_labels,
+            ).fetchall()
+            label_to_type: dict[str, str] = {row[0]: row[1] for row in type_rows}
+
+            for edge in subgraph_edges:
+                src_type = label_to_type.get(edge["src"])
+                if src_type:
+                    tbox_result = validate_tbox(src_type, edge["relation"])
+                    if not tbox_result.valid:
+                        result["consistent"] = False
+                        result["violations"].append(
+                            {
+                                "type": "tbox",
+                                "edge": edge,
+                                "reason": tbox_result.reason,
+                            }
+                        )
+        else:
+            # Without DB, we can't do TBox checks (don't know concept types)
+            pass
+
+        # 4. RBox validation: check for asymmetric violations
+        asym_violations = detect_asymmetric_violations(subgraph_edges)
+        if asym_violations:
+            result["consistent"] = False
+            for v in asym_violations:
+                result["violations"].append(
+                    {
+                        "type": "rbox_asymmetric",
+                        "edge": v,
+                        "reason": f"'{v['relation']}' is asymmetric but reverse edge exists.",
+                    }
+                )
+
+        # 5. Graph pattern detection
+        # Debate: two entities connected by "challenges" to the same target
+        debates_found: set[tuple] = set()
+        for i, e1 in enumerate(subgraph_edges):
+            for e2 in subgraph_edges[i + 1 :]:
+                if e1["relation"] == "challenges" and e2["relation"] == "challenges":
+                    if e1["dst"] == e2["dst"] and e1["src"] != e2["src"]:
+                        debates_found.add((e1["src"], e2["src"], e1["dst"]))
+
+        for a, b, target in debates_found:
+            result["patterns"].append(
+                {
+                    "type": "debate",
+                    "description": f"'{a}' and '{b}' both challenge '{target}'",
+                    "entities": [a, b, target],
+                }
+            )
+
+        # Gaps: pairs of entities of same/compatible types with no edge between them
+        if len(mentioned_labels) >= 2 and self.db:
+            connected_pairs: set[tuple[str, str]] = set()
+            for e in subgraph_edges:
+                connected_pairs.add((e["src"], e["dst"]))
+                connected_pairs.add((e["dst"], e["src"]))
+
+            for i, a in enumerate(mentioned_labels):
+                for b in mentioned_labels[i + 1 :]:
+                    if (a, b) not in connected_pairs:
+                        a_type = label_to_type.get(a)
+                        b_type = label_to_type.get(b)
+                        if a_type and b_type:
+                            result["patterns"].append(
+                                {
+                                    "type": "gap",
+                                    "description": f"No edge between '{a}' ({a_type}) and '{b}' ({b_type})",
+                                    "entities": [a, b],
+                                }
+                            )
+
+        return result
+
+    def reason_bidirectional(self, question: str, max_rounds: int = 3) -> dict:
+        """Iterative LLM-KG reasoning loop.
+
+        Each round:
+        1. LLM proposes hypothesis based on question + previous KG feedback
+        2. KG validates hypothesis via TBox/RBox consistency check
+        3. If contradiction: feed contradiction back to LLM, repeat
+        4. KG detects graph patterns (gaps, contradictions, debates) -> feeds to LLM
+
+        Args:
+            question: The research question to reason about.
+            max_rounds: Maximum number of hypothesis-revision rounds.
+
+        Returns:
+            {"answer": str, "rounds": int, "hypotheses": [...], "kg_validations": [...]}
+        """
+        if not self.models:
+            return {"error": "No LLM models configured."}
+
+        hypotheses: list[str] = []
+        validations: list[dict] = []
+        previous_violations: list[str] = []
+        previous_patterns: list[str] = []
+
+        for round_num in range(1, max_rounds + 1):
+            # Build prompt
+            if round_num == 1:
+                prompt = (
+                    f"Question: {question}\n\n"
+                    "Based on your knowledge, propose a clear hypothesis that answers "
+                    "this question. Include specific entities and relationships "
+                    "(e.g., 'Method X addresses Problem Y', 'Finding A supports Conclusion B')."
+                )
+            else:
+                violation_text = (
+                    "\n".join(f"- {v}" for v in previous_violations)
+                    if previous_violations
+                    else "None"
+                )
+                pattern_text = (
+                    "\n".join(f"- {p}" for p in previous_patterns) if previous_patterns else "None"
+                )
+                prompt = (
+                    f"Question: {question}\n\n"
+                    f"Your previous hypothesis was:\n"
+                    f'  "{hypotheses[-1]}"\n\n'
+                    f"The knowledge graph found these issues:\n"
+                    f"  Violations: {violation_text}\n"
+                    f"  Patterns: {pattern_text}\n\n"
+                    "Please revise your hypothesis to address these issues. "
+                    "Propose a new hypothesis that is consistent with the graph constraints. "
+                    "If you cannot resolve the contradictions, acknowledge the uncertainty."
+                )
+
+            hypothesis = self._call_llm(prompt)
+            if hypothesis is None:
+                return {
+                    "answer": "LLM call failed during bidirectional reasoning.",
+                    "rounds": round_num,
+                    "hypotheses": hypotheses,
+                    "kg_validations": validations,
+                }
+
+            hypotheses.append(hypothesis)
+
+            # Validate against KG
+            validation = self._kg_validate(hypothesis)
+            validations.append(validation)
+
+            # Collect violations and patterns for next round
+            previous_violations = [v["reason"] for v in validation["violations"]]
+            previous_patterns = [p["description"] for p in validation["patterns"]]
+
+            if validation["consistent"]:
+                return {
+                    "answer": hypothesis,
+                    "rounds": round_num,
+                    "hypotheses": hypotheses,
+                    "kg_validations": validations,
+                }
+
+        # Exhausted all rounds
+        best = hypotheses[-1] if hypotheses else "No hypothesis generated."
+        return {
+            "answer": best,
+            "rounds": max_rounds,
+            "hypotheses": hypotheses,
+            "kg_validations": validations,
+        }
