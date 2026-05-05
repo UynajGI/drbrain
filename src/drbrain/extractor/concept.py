@@ -639,7 +639,12 @@ async def _extract_entities(
             data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt_tpl)
         if not data:
             return []
-        return data.get("concepts", [])
+        concepts = data.get("concepts", [])
+        # Tag each concept with its source section for tree+graph traversal
+        section_title = leaf.get("title", "")
+        for c in concepts:
+            c["section"] = section_title
+        return concepts
 
     tasks = [_extract_one(leaf) for leaf in ordered_leaves]
     results = await asyncio.gather(*tasks)
