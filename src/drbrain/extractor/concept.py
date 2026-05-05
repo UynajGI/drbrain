@@ -348,6 +348,81 @@ async def extract_concepts_from_tree(
     return _link_cross_section_arguments(merged)
 
 
+def _section_type_hints(title: str) -> dict[str, float]:
+    """Map section title to likely concept type probabilities.
+
+    Uses keyword matching against common academic section names.
+    Returns dict of {type: weight} for use in extraction prompts.
+    """
+    t = title.lower().strip()
+    hints: dict[str, dict[str, float]] = {
+        "abstract": {"Problem": 0.9, "Gap": 0.5},
+        "introduction": {"Problem": 0.8, "Gap": 0.6, "Method": 0.2},
+        "related work": {"Method": 0.3, "Gap": 0.5},
+        "background": {"Problem": 0.7, "Method": 0.3},
+        "method": {"Method": 0.9},
+        "methodology": {"Method": 0.9},
+        "approach": {"Method": 0.8},
+        "experiment": {"Method": 0.5, "Conclusion": 0.3},
+        "results": {"Conclusion": 0.7, "Method": 0.2},
+        "evaluation": {"Conclusion": 0.6, "Method": 0.3},
+        "discussion": {"Conclusion": 0.5, "Debate": 0.4, "Gap": 0.3},
+        "conclusion": {"Conclusion": 0.9},
+        "future work": {"Gap": 0.8},
+        "limitation": {"Gap": 0.7, "Debate": 0.3},
+    }
+    # Find best matching section
+    for key, weights in hints.items():
+        if key in t:
+            return weights
+    # Default: slight Problem bias for unknown sections
+    return {"Problem": 0.3, "Method": 0.3, "Conclusion": 0.2}
+
+
+def _tree_position_weight(node: dict, depth: int = 0, max_depth: int = 5) -> float:
+    """Compute confidence weight for concepts extracted from a tree node.
+
+    Concepts from deep in the tree (specialized subsections) get higher weight.
+    Concepts from shallow sections (e.g. Abstract, Introduction) get lower weight.
+    Returns weight in [0.5, 1.0].
+    """
+    title = node.get("title", "").lower().strip()
+    # Shallow sections: lower confidence
+    shallow_keywords = {"abstract", "introduction", "related work", "background"}
+    for kw in shallow_keywords:
+        if kw in title and depth <= 2:
+            return 0.6
+    # Deep specialized sections: higher confidence
+    if depth >= 4:
+        return 0.95
+    # Scale by depth
+    return min(1.0, 0.5 + depth / max_depth * 0.5)
+
+
+def _build_tree_edges(structure: list[dict], parent_id: str = "root") -> list[dict]:
+    """Create 'contains' edges from tree parent-child relationships.
+
+    Returns list of {src, dst, relation: 'contains'} for graph ingestion.
+    Uses section titles as node identifiers.
+    """
+    edges = []
+    for node in structure:
+        title = node.get("title", "")
+        if title:
+            edges.append(
+                {
+                    "src": parent_id if parent_id != "root" else "document",
+                    "dst": title,
+                    "relation": "contains",
+                    "weight": 0.9,
+                }
+            )
+        children = node.get("nodes", [])
+        if children:
+            edges.extend(_build_tree_edges(children, title))
+    return edges
+
+
 async def build_graph_from_tree(
     md_path: str | Path,
     structure: list[dict],
@@ -367,14 +442,21 @@ async def build_graph_from_tree(
     # Stage 1: Ontology Extension
     ontology = await _build_ontology(structure, models)
 
-    # Stage 2: Entity Extraction
+    # Stage 2: Entity Extraction (tree-guided with section hints)
     concepts = await _extract_entities(md_path, structure, leaves, ontology, models)
 
     if not concepts:
         return {"concepts": [], "relations": [], "merges": [], "corrections": []}
 
+    # Stage 2.5: Apply tree position → confidence weight
+    _apply_tree_weights(concepts, leaves, structure)
+
     # Stage 3: Relation Extraction
     relations = await _extract_relations(concepts, models)
+
+    # Stage 3.5: Add tree hierarchy edges (section contains subsection)
+    tree_edges = _build_tree_edges(structure)
+    relations.extend(tree_edges)
 
     # Stage 4: Coreference Resolution
     concepts, merges = await _resolve_coreferences(concepts, models)
@@ -470,6 +552,43 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
     return ontology
 
 
+def _apply_tree_weights(concepts: list[dict], leaves: list[dict], structure: list[dict]) -> None:
+    """Apply tree-position-based confidence weighting to concepts.
+
+    Builds a leaf-node lookup indexed by node_id, then walks depth for
+    each concept's source leaf. Concepts from deeper, specialized sections
+    get higher confidence than shallow/general sections.
+    """
+    # Build node_id → depth map by walking tree
+    node_depths: dict[str, int] = {}
+
+    def _walk(nodes: list[dict], depth: int):
+        for node in nodes:
+            nid = node.get("node_id", "")
+            if nid:
+                node_depths[nid] = depth
+            _walk(node.get("nodes", []), depth + 1)
+
+    _walk(structure, 0)
+
+    # Leaf lookup: {leaf_title: leaf_node}
+    leaf_by_title: dict[str, dict] = {}
+    for leaf in leaves:
+        t = leaf.get("title", "")
+        if t:
+            leaf_by_title[t.lower().strip()] = leaf
+
+    for c in concepts:
+        section = (c.get("section", "") or "").lower().strip()
+        leaf = leaf_by_title.get(section)
+        if leaf:
+            depth = node_depths.get(leaf.get("node_id", ""), 2)
+            weight = _tree_position_weight(leaf, depth)
+            # Blend with existing confidence
+            existing = c.get("confidence", 1.0)
+            c["confidence"] = round(existing * weight, 3)
+
+
 async def _extract_entities(
     md_path: Path,
     structure: list[dict],
@@ -477,7 +596,12 @@ async def _extract_entities(
     ontology: dict[str, list[str]],
     models: list[dict],
 ) -> list[dict]:
-    """Stage 2: Per leaf node, extract concepts with subcategories."""
+    """Stage 2: Per leaf node, extract concepts with subcategories.
+
+    Uses section-type hints to bias extraction: e.g., Method sections
+    are prompted to focus on Method concepts, Results on Conclusions.
+    Leaves are ordered by priority: Methods/Results first, then others.
+    """
     import json as _json
 
     prompt_tpl = ENTITIES_PROMPT.read_text(encoding="utf-8")
@@ -485,22 +609,39 @@ async def _extract_entities(
     all_concepts: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
+    # Tree-guided ordering: prioritize high-signal sections first
+    priority_keywords = ["method", "approach", "experiment", "results", "evaluation"]
+
+    def _leaf_priority(leaf: dict) -> int:
+        t = leaf.get("title", "").lower()
+        for i, kw in enumerate(priority_keywords):
+            if kw in t:
+                return i
+        return len(priority_keywords)
+
+    ordered_leaves = sorted(leaves, key=_leaf_priority)
+
     async def _extract_one(leaf: dict) -> list[dict]:
         content = get_node_content(md_path, structure, leaf["node_id"])
         if not content or not _is_quality_content(content):
             return []
+        hints = _section_type_hints(leaf.get("title", ""))
+        hints_str = ", ".join(f"{k}" for k in hints)
         user = prompt_tpl.format(
             ontology=_json.dumps(ontology, indent=2),
             section_title=leaf.get("title", ""),
             section_text=content,
         )
+        # Append section hint to guide extraction focus
+        if hints_str:
+            user += f"\n\n[Section hint: this section is likely about {hints_str}. Focus extraction on these concept types.]"
         async with semaphore:
             data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt_tpl)
         if not data:
             return []
         return data.get("concepts", [])
 
-    tasks = [_extract_one(leaf) for leaf in leaves]
+    tasks = [_extract_one(leaf) for leaf in ordered_leaves]
     results = await asyncio.gather(*tasks)
     for concepts in results:
         for c in concepts:
