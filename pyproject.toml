@@ -38,6 +38,7 @@ drbrain = "drbrain.cli.main:app"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+exclude = [".trellis/"]
 
 [tool.ruff.format]
 quote-style = "double"
