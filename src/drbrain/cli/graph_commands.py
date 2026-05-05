@@ -8,6 +8,7 @@ import typer
 
 from drbrain.cli.commands import _resolve_node_type, _resolve_workspace_papers
 from drbrain.graph.engine import GraphEngine
+from drbrain.graph.query_embeddings import query_embed
 from drbrain.storage.database import Database
 
 graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
@@ -494,3 +495,50 @@ def _related_graph(
         for p in conn["paths"]:
             path_str = " -> ".join(f"{s['src']} --{s['relation']}--> {s['dst']}" for s in p["path"])
             typer.echo(f"    {p['paper_id']}:  {path_str}")
+
+
+@graph_app.command("query")
+def graph_query_cmd(
+    ctx: typer.Context,
+    query_json: str = typer.Argument(..., help="JSON query DSL"),
+    top_k: int = typer.Option(10, "--top", "-k", help="Number of results"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Execute embedding-based complex query over TransE embeddings.
+
+    Query DSL examples:
+      {"type": "project",  "entity": "Attention", "relation": "addresses"}
+      {"type": "intersect", "queries": [...]}
+      {"type": "union",     "queries": [...]}
+      {"type": "negate",    "query": {...}}
+
+    Requires trained embeddings (drbrain embed).
+    """
+    import json as _json
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    try:
+        query = _json.loads(query_json)
+    except _json.JSONDecodeError as e:
+        typer.echo(f"Invalid JSON: {e}", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    if "type" not in query:
+        typer.echo('Query must have a "type" field', err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    results = query_embed(db, query, top_k=top_k)
+    db.close()
+
+    if json_output:
+        typer.echo(_json.dumps(results, indent=2, ensure_ascii=False))
+    else:
+        if not results:
+            typer.echo("No results found (embeddings may not be trained).")
+            return
+        for r in results:
+            typer.echo(f"  {r['label']:40s}  score={r['score']:.4f}")

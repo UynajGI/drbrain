@@ -329,6 +329,47 @@ def _ingest_single_paper(
         else:
             echo("  No DOI found in any source")
 
+    # ── Quality Gates (non-blocking) ──────────────────────────────────
+
+    # Gate 1: raw.md size > 200 bytes
+    md_path_check = raw_md_path(paper_dir)
+    if md_path_check.exists():
+        md_size = md_path_check.stat().st_size
+        if md_size <= 200:
+            echo(
+                f"  [yellow]Quality Gate 1: raw.md is only {md_size} bytes (expected > 200)[/yellow]"
+            )
+            _ingest_log.warning(f"Quality Gate 1 failed for {local_id}: raw.md is {md_size} bytes")
+    else:
+        echo(f"  [yellow]Quality Gate 1: raw.md not found for {local_id}[/yellow]")
+        _ingest_log.warning(f"Quality Gate 1 failed for {local_id}: raw.md missing")
+
+    # Gate 2: title non-empty + year 1900-2030 + has external ID
+    gate2_issues = []
+    if not parsed.title or not parsed.title.strip():
+        gate2_issues.append("empty title")
+    if parsed.year is None or not (1900 <= parsed.year <= 2030):
+        gate2_issues.append(f"year out of range ({parsed.year})")
+    if not ids.doi and not ids.arxiv:
+        gate2_issues.append("no external ID (DOI/arXiv)")
+    if gate2_issues:
+        echo(f"  [yellow]Quality Gate 2: {', '.join(gate2_issues)}[/yellow]")
+        _ingest_log.warning(f"Quality Gate 2 failed for {local_id}: {', '.join(gate2_issues)}")
+
+    # Gate 3: post-build — concepts >= 1 and edges >= 1
+    concept_count = len(db.get_concepts_by_paper(local_id))
+    edge_count = db.conn.execute(
+        "SELECT COUNT(*) FROM edges WHERE source_paper = ?", (local_id,)
+    ).fetchone()[0]
+    if concept_count < 1 or edge_count < 1:
+        echo(
+            f"  [dim]Quality Gate 3: concepts={concept_count}, edges={edge_count} "
+            f"(post-build check — run 'drbrain build {local_id}' to populate)[/dim]"
+        )
+        _ingest_log.info(
+            f"Quality Gate 3 for {local_id}: concepts={concept_count}, edges={edge_count}"
+        )
+
     echo(f"  Ingested: {local_id}")
     return {"ok": True, "local_id": local_id, "report": {"local_id": local_id}}
 
@@ -3020,6 +3061,8 @@ def embed_cmd(
 
     for label, vec in t.entities.items():
         db.save_embedding(label, vec, dim)
+    for label, vec in t.relations.items():
+        db.save_embedding(f"__rel__{label}", vec, dim)
     db.commit()
     typer.echo(f"Trained {len(t.entities)} entities, {len(t.relations)} relations")
     db.close()
