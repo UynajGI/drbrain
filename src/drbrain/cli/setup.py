@@ -100,14 +100,25 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
     ok: list[str] = []
     warn: list[str] = []
 
-    # Python deps
+    # Python deps — use shared install hints for consistency
+    from drbrain.cli.dependencies import _INSTALL_HINTS
+
+    # Map Python module names to display names from install hints
+    _module_to_hint_key: dict[str, str] = {
+        "pymupdf": "pymupdf",
+        "litellm": "litellm",
+        "typer": "typer",
+        "rich": "rich",
+        "yaml": "pyyaml",
+        "pydantic": "pydantic",
+        "pyalex": "pyalex",
+        "arxiv": "arxiv",
+        "pymupdf4llm": "pymupdf4llm",
+    }
     deps = {
-        "pymupdf": "PyMuPDF",
-        "litellm": "LiteLLM",
-        "typer": "Typer",
-        "rich": "Rich",
-        "yaml": "PyYAML",
-        "pydantic": "Pydantic",
+        mod: _INSTALL_HINTS[hint_key].replace("pip install ", "")
+        for mod, hint_key in _module_to_hint_key.items()
+        if hint_key in _INSTALL_HINTS
     }
     missing_deps = [display for mod, display in deps.items() if not _check_python_package(mod)]
     if missing_deps:

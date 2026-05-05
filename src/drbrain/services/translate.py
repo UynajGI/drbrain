@@ -325,7 +325,9 @@ def _load_success_prefix(workdir: Path, state: dict) -> list[str]:
 def _persist_prefix_output(out_path: Path, translated_chunks: list[str]) -> None:
     """Write translated prefix to *out_path*, or remove it if empty."""
     if translated_chunks:
-        out_path.write_text("\n\n".join(translated_chunks), encoding="utf-8")
+        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp.write_text("\n\n".join(translated_chunks), encoding="utf-8")
+        tmp.replace(out_path)
     elif out_path.exists():
         out_path.unlink()
 
@@ -665,7 +667,9 @@ def translate_paper(
                     # Write part file
                     part_path = _translation_part_path(workdir, idx)
                     part_path.parent.mkdir(parents=True, exist_ok=True)
-                    part_path.write_text(translated_text, encoding="utf-8")
+                    part_tmp = part_path.with_suffix(part_path.suffix + ".tmp")
+                    part_tmp.write_text(translated_text, encoding="utf-8")
+                    part_tmp.replace(part_path)
                     state["chunks"][idx]["status"] = "success"
                     state["chunks"][idx]["attempts"] = attempts
                 except Exception as exc:
