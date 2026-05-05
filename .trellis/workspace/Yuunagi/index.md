@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
+- **Total Sessions**: 4
 - **Last Active**: 2026-05-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~126 | Active |
+| `journal-1.md` | ~163 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-05-05 | OpenAlex enrichment + Engineering maturity | `21a7f1c`, `d510706`, `28160ae`, `08855df`, `6021958` | `main` |
 | 3 | 2026-05-05 | Session 2026-05-05 (round 3): Bug hunting, tree+graph, coverage tests | `5f7d65e`, `9f4407e`, `68476cc`, `a7b1603`, `a341e3c` | `main` |
 | 2 | 2026-05-05 | Session 2026-05-05 (round 2): Import enhancement, Show+Index+Enrich, Iterative ontology, Author lastname | `5dca769`, `44ca81c`, `9ccc499` | `main` |
 | 1 | 2026-05-05 | Session 2026-05-05: Engineering hardening T1-T10, Data quality pipeline, KG reasoning T1-T4, PageIndex TOC verification | `4dfd09c`, `4c48612`, `91ca1c9`, `7004b75`, `2818674`, `ca1dbc6`, `d622fbf`, `69e1ce4`, `332ad5a`, `bb7fef4`, `5c5d8ee`, `fbf2535`, `3055d40`, `7ec5a84`, `9f34ef6` | `main` |

@@ -124,3 +124,40 @@ Bug hunting via code-review-graph: 5 silent interface mismatches found and fixed
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: OpenAlex enrichment + Engineering maturity
+
+**Date**: 2026-05-05
+**Task**: OpenAlex enrichment + Engineering maturity
+**Branch**: `main`
+
+### Summary
+
+Fix OpenAlex enrichment in repair (authors, abstract, citation_count, volume, pages via get_work_enriched). Engineering maturity: clawhub.yaml skills publishing, 10 agent entry templates, multi-platform setup injection (7 platforms), .github/ directory (CI/PR/issue templates), community files (CONTRIBUTING/SECURITY/CODE_OF_CONDUCT/CITATION/LICENSE), README rewrite.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `21a7f1c` | (see git log) |
+| `d510706` | (see git log) |
+| `28160ae` | (see git log) |
+| `08855df` | (see git log) |
+| `6021958` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
