@@ -332,17 +332,17 @@ class MinerUParser:
                         self.max_retries,
                         result.stderr[:500],
                     )
-                    time.sleep(self.retry_delay)
+                    time.sleep(2.0**attempt)
                     continue
                 if not (out_dir / "images").exists():
-                    time.sleep(self.retry_delay)
+                    time.sleep(2.0**attempt)
                     continue
                 return out_dir, managed_tmp
             except subprocess.TimeoutExpired:
                 _parse_log.warning(
                     "mineru-open-api timeout (attempt %d/%d)", attempt + 1, self.max_retries
                 )
-                time.sleep(self.retry_delay)
+                time.sleep(2.0**attempt)
             except (FileNotFoundError, OSError) as e:
                 _parse_log.warning("mineru-open-api error: %s", e)
                 if managed_tmp:

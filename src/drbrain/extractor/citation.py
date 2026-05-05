@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import time
 import uuid
@@ -467,12 +466,12 @@ def expand_citations_oa(db, local_id: str) -> int:
     # Also fetch citing papers
     citing_added = 0
     try:
-        import urllib.request as _ureq
+        from drbrain.extractor.openalex import _get_session as _oa_session
 
         cite_url = f"https://api.openalex.org/works?filter=cites:{oa_id}&per_page=200&sort=cited_by_count:desc"
-        req = _ureq.Request(cite_url, headers={"Accept": "application/json"})
-        resp = _ureq.urlopen(req, timeout=10)
-        data = json.loads(resp.read())
+        resp = _oa_session().get(cite_url, headers={"Accept": "application/json"}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
         for r in data.get("results", [])[:200]:
             try:
                 ctitle = r.get("title", "") or "Untitled"
@@ -645,9 +644,6 @@ def expand_citations_multi(
 
     Deduplicates by title prefix. Returns (references_added, citing_added).
     """
-    import json as _json
-    import urllib.request as _ureq
-
     from pyalex import Works as _Works
 
     row = db.conn.execute(
@@ -714,8 +710,9 @@ def expand_citations_multi(
     if s2_id:
         try:
             url = f"https://api.semanticscholar.org/graph/v1/paper/{s2_id}?fields=references.title,references.year,references.doi,citations.title,citations.year,citations.doi"
-            r = _ureq.Request(url, headers={"Accept": "application/json"})
-            data = _json.loads(_ureq.urlopen(r, timeout=10).read())
+            resp = requests.get(url, headers={"Accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
             for ref in data.get("references", [])[:limit]:
                 t, k = ref.get("title") or "", _key(ref.get("title") or "")
                 if k and k not in seen:
@@ -738,8 +735,9 @@ def expand_citations_multi(
     if doi and (len(all_refs) < 10 or len(all_citing) < 10):
         try:
             url = f"https://api.crossref.org/works/{doi}"
-            r = _ureq.Request(url, headers={"Accept": "application/json"})
-            data = _json.loads(_ureq.urlopen(r, timeout=10).read())
+            resp = requests.get(url, headers={"Accept": "application/json"}, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
             for ref in data.get("message", {}).get("reference", [])[:limit]:
                 t = ref.get("article-title") or ref.get("unstructured", "")
                 if isinstance(t, list):

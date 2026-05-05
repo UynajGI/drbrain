@@ -2,16 +2,41 @@
 
 from __future__ import annotations
 
-import json
 import re
-import time
 import urllib.parse
-import urllib.request
 from typing import Any
 
+import requests
 from loguru import logger
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 OPENALEX_BASE = "https://api.openalex.org"
+
+
+def _http_session() -> requests.Session:
+    """Create a requests Session with retry/backoff for academic APIs."""
+    s = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"],
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
+_OPENALEX_SESSION: requests.Session | None = None
+
+
+def _get_session() -> requests.Session:
+    global _OPENALEX_SESSION
+    if _OPENALEX_SESSION is None:
+        _OPENALEX_SESSION = _http_session()
+    return _OPENALEX_SESSION
 
 
 def _select_fields(fields: list[str]) -> str:
@@ -32,33 +57,26 @@ def search_work_by_title(
     if token:
         headers.setdefault("User-Agent", f"DrBrain (mailto:{token})")
 
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            results = data.get("results", [])
-            if not results:
-                return None
-            best = results[0]
-            doi = best.get("doi", "")
-            if doi:
-                doi = re.sub(r"^https?://doi\.org/", "", doi)
-            return {
-                "doi": doi or None,
-                "title": best.get("title", ""),
-                "year": best.get("publication_year"),
-                "openalex_id": best.get("id", ""),
-            }
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return None
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+        best = results[0]
+        doi = best.get("doi", "")
+        if doi:
+            doi = re.sub(r"^https?://doi\.org/", "", doi)
+        return {
+            "doi": doi or None,
+            "title": best.get("title", ""),
+            "year": best.get("publication_year"),
+            "openalex_id": best.get("id", ""),
+        }
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return None
 
 
 def search_work_by_arxiv(
@@ -73,33 +91,26 @@ def search_work_by_arxiv(
     url = f"{OPENALEX_BASE}/works?filter=arxiv_id:{urllib.parse.quote(clean)}&per_page=1&select={fields}"
     headers: dict[str, str] = {"Accept": "application/json"}
 
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            results = data.get("results", [])
-            if not results:
-                return None
-            best = results[0]
-            doi = best.get("doi", "")
-            if doi:
-                doi = re.sub(r"^https?://doi\.org/", "", doi)
-            return {
-                "doi": doi or None,
-                "title": best.get("title", ""),
-                "year": best.get("publication_year"),
-                "openalex_id": best.get("id", ""),
-            }
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return None
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            return None
+        best = results[0]
+        doi = best.get("doi", "")
+        if doi:
+            doi = re.sub(r"^https?://doi\.org/", "", doi)
+        return {
+            "doi": doi or None,
+            "title": best.get("title", ""),
+            "year": best.get("publication_year"),
+            "openalex_id": best.get("id", ""),
+        }
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return None
 
 
 def get_work_by_doi(
@@ -116,32 +127,25 @@ def get_work_by_doi(
     url = f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(clean_doi)}?select={fields}"
     headers: dict[str, str] = {"Accept": "application/json"}
 
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            if not data or "error" in data:
-                return None
-            doi_val = data.get("doi", "")
-            if doi_val:
-                doi_val = re.sub(r"^https?://doi\.org/", "", doi_val)
-            return {
-                "doi": doi_val or None,
-                "title": data.get("title", ""),
-                "year": data.get("publication_year"),
-                "openalex_id": data.get("id", ""),
-                "referenced_works": data.get("referenced_works", []),
-            }
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return None
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data or "error" in data:
+            return None
+        doi_val = data.get("doi", "")
+        if doi_val:
+            doi_val = re.sub(r"^https?://doi\.org/", "", doi_val)
+        return {
+            "doi": doi_val or None,
+            "title": data.get("title", ""),
+            "year": data.get("publication_year"),
+            "openalex_id": data.get("id", ""),
+            "referenced_works": data.get("referenced_works", []),
+        }
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return None
 
 
 def get_work_references(
@@ -153,27 +157,20 @@ def get_work_references(
 
     refs: list[dict[str, Any]] = []
 
-    for attempt in range(max_retries):
-        try:
-            headers: dict[str, str] = {"Accept": "application/json"}
-            req = urllib.request.Request(openalex_id, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            ref_ids = data.get("referenced_works", [])
-            for ref_id in ref_ids[:50]:
-                ref_info = get_work_by_openalex_id(ref_id, token=token)
-                if ref_info:
-                    refs.append(ref_info)
-            return refs
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return []
+    try:
+        headers: dict[str, str] = {"Accept": "application/json"}
+        resp = _get_session().get(openalex_id, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        ref_ids = data.get("referenced_works", [])
+        for ref_id in ref_ids[:50]:
+            ref_info = get_work_by_openalex_id(ref_id, token=token)
+            if ref_info:
+                refs.append(ref_info)
+        return refs
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return []
 
 
 def get_work_by_openalex_id(
@@ -184,31 +181,24 @@ def get_work_by_openalex_id(
     url = f"{openalex_id}?select={fields}"
     headers: dict[str, str] = {"Accept": "application/json"}
 
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            if not data:
-                return None
-            doi = data.get("doi", "")
-            if doi:
-                doi = re.sub(r"^https?://doi\.org/", "", doi)
-            return {
-                "doi": doi or None,
-                "title": data.get("title", ""),
-                "year": data.get("publication_year"),
-                "openalex_id": data.get("id", ""),
-            }
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return None
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data:
+            return None
+        doi = data.get("doi", "")
+        if doi:
+            doi = re.sub(r"^https?://doi\.org/", "", doi)
+        return {
+            "doi": doi or None,
+            "title": data.get("title", ""),
+            "year": data.get("publication_year"),
+            "openalex_id": data.get("id", ""),
+        }
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return None
 
 
 def _extract_author_short_id(url: str) -> str | None:
@@ -245,16 +235,13 @@ def search_authors_by_work(
         if token:
             headers["User-Agent"] = f"DrBrain (mailto:{token})"
         try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req, timeout=10)
-            data = json.loads(resp.read())
+            resp = _get_session().get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
             if data and "error" not in data:
                 work = data
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
+        except requests.RequestException:
+            logger.exception("OpenAlex API error")
 
     # Fallback to title search
     if work is None and title:
@@ -263,17 +250,14 @@ def search_authors_by_work(
         if token:
             headers["User-Agent"] = f"DrBrain (mailto:{token})"
         try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req, timeout=10)
-            data = json.loads(resp.read())
+            resp = _get_session().get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
             results = data.get("results", [])
             if results:
                 work = results[0]
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
+        except requests.RequestException:
+            logger.exception("OpenAlex API error")
 
     if work is None:
         return None
@@ -312,32 +296,25 @@ def batch_fetch_works(
     url = f"{OPENALEX_BASE}/works?filter=openalex_id:{id_filter}&per_page=50&select={fields}"
     headers: dict[str, str] = {"Accept": "application/json"}
 
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            resp = urllib.request.urlopen(req)
-            data = json.loads(resp.read())
-            results = data.get("results", [])
-            works = []
-            for r in results:
-                doi = r.get("doi", "")
-                if doi:
-                    doi = re.sub(r"^https?://doi\.org/", "", doi)
-                works.append(
-                    {
-                        "doi": doi or None,
-                        "title": r.get("title", ""),
-                        "year": r.get("publication_year"),
-                        "openalex_id": r.get("id", ""),
-                    }
-                )
-            return works
-        except Exception:
-            try:
-                logger.exception("OpenAlex API error")
-            except Exception:
-                pass
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            continue
-    return []
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        works = []
+        for r in results:
+            doi = r.get("doi", "")
+            if doi:
+                doi = re.sub(r"^https?://doi\.org/", "", doi)
+            works.append(
+                {
+                    "doi": doi or None,
+                    "title": r.get("title", ""),
+                    "year": r.get("publication_year"),
+                    "openalex_id": r.get("id", ""),
+                }
+            )
+        return works
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return []
