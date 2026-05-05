@@ -14,6 +14,43 @@ from loguru import logger as _parse_log
 
 MAX_CHARS = 12_000
 
+
+@dataclass
+class PDFValidation:
+    """Result of pre-validating a PDF before extraction."""
+
+    ok: bool
+    error: str = ""
+    encrypted: bool = False
+    page_count: int = 0
+
+
+def _validate_pdf(pdf_path: Path) -> PDFValidation:
+    """Pre-validate a PDF file before passing to extraction pipeline.
+
+    Checks: file existence, page count, encryption status.
+    """
+    import fitz
+
+    if not pdf_path.exists():
+        return PDFValidation(ok=False, error=f"File not found: {pdf_path}")
+
+    try:
+        doc = fitz.open(str(pdf_path))
+        try:
+            pc = doc.page_count
+            enc = doc.is_encrypted
+            if pc == 0:
+                return PDFValidation(ok=False, error="0 pages")
+            if enc:
+                return PDFValidation(ok=False, error="encrypted", encrypted=True, page_count=pc)
+            return PDFValidation(ok=True, page_count=pc)
+        finally:
+            doc.close()
+    except Exception as e:
+        return PDFValidation(ok=False, error=f"PDF open error: {e}")
+
+
 # Markdown heading sections
 HEADING_SECTIONS = re.compile(
     r"^(abstract|introduction|related\s*work|method(ology)?|"
@@ -298,6 +335,19 @@ class MinerUParser:
         cli = _find_cli()
         if cli is None:
             return None, None
+
+        # Pre-validate PDF before invoking MinerU (only when file exists)
+        if pdf_path.exists():
+            validation = _validate_pdf(pdf_path)
+            if not validation.ok:
+                _parse_log.warning(
+                    "PDF validation failed for %s: %s (encrypted=%s, pages=%d)",
+                    pdf_path,
+                    validation.error,
+                    validation.encrypted,
+                    validation.page_count,
+                )
+                return None, None
 
         # Create temp dir if not provided
         managed_tmp: TemporaryDirectory | None = None

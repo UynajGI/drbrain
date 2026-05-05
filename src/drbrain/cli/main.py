@@ -45,6 +45,7 @@ from drbrain.cli.commands import (
 from drbrain.cli.graph_commands import graph_app
 from drbrain.cli.setup import setup_cmd
 from drbrain.log import setup_logging
+from drbrain.services.audit import audit_cmd
 
 app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 
@@ -83,6 +84,7 @@ app.command("timeline")(timeline_cmd)
 app.command("delete")(delete_cmd)
 app.command("lineage")(lineage_cmd)
 app.command("check")(check_cmd)
+app.command("audit")(audit_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
 app.command("analyze")(analyze_cmd)
