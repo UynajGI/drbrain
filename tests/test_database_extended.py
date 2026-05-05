@@ -1,141 +1,113 @@
 """Tests for database methods not covered by existing tests."""
 
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from drbrain.storage.database import Database
 
-
-def _make_db() -> Database:
-    """Create a temp database."""
-    td = tempfile.mkdtemp()
-    return Database(Path(td) / "test.db")
-
-
-def test_execute_and_commit():
+def test_execute_and_commit(tmp_db):
     """execute returns a cursor, commit persists changes."""
-    db = _make_db()
-    cur = db.execute("SELECT 1")
+    cur = tmp_db.execute("SELECT 1")
     assert cur.fetchone() == (1,)
-    db.commit()
-    db.close()
+    tmp_db.commit()
 
 
-def test_executemany():
+def test_executemany(tmp_db):
     """executemany inserts multiple rows."""
-    db = _make_db()
-    db.insert_paper("p1", "A", 2020, "uploaded")
-    db.insert_paper("p2", "B", 2021, "uploaded")
-    db.insert_paper("p3", "C", 2022, "uploaded")
-    db.commit()
+    tmp_db.insert_paper("p1", "A", 2020, "uploaded")
+    tmp_db.insert_paper("p2", "B", 2021, "uploaded")
+    tmp_db.insert_paper("p3", "C", 2022, "uploaded")
+    tmp_db.commit()
 
-    papers = db.get_all_papers()
+    papers = tmp_db.get_all_papers()
     assert len(papers) == 3
-    db.close()
 
 
-def test_get_paper_not_found():
+def test_get_paper_not_found(tmp_db):
     """get_paper returns None for unknown ID."""
-    db = _make_db()
-    assert db.get_paper("nonexistent") is None
-    db.close()
+    assert tmp_db.get_paper("nonexistent") is None
 
 
-def test_upgrade_placeholder():
+def test_upgrade_placeholder(tmp_db):
     """upgrade_placeholder changes status from placeholder to uploaded."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "placeholder")
-    db.commit()
+    tmp_db.insert_paper("p1", "Test", 2024, "placeholder")
+    tmp_db.commit()
 
-    before = db.get_paper("p1")
+    before = tmp_db.get_paper("p1")
     assert before["status"] == "placeholder"
 
-    db.upgrade_placeholder("p1")
-    db.commit()
+    tmp_db.upgrade_placeholder("p1")
+    tmp_db.commit()
 
-    after = db.get_paper("p1")
+    after = tmp_db.get_paper("p1")
     assert after["status"] == "uploaded"
-    db.close()
 
 
-def test_upgrade_placeholder_noop_for_uploaded():
+def test_upgrade_placeholder_noop_for_uploaded(tmp_db):
     """upgrade_placeholder does nothing for already uploaded papers."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "uploaded")
-    db.commit()
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
+    tmp_db.commit()
 
-    db.upgrade_placeholder("p1")
-    db.commit()
+    tmp_db.upgrade_placeholder("p1")
+    tmp_db.commit()
 
-    paper = db.get_paper("p1")
+    paper = tmp_db.get_paper("p1")
     assert paper["status"] == "uploaded"
-    db.close()
 
 
-def test_insert_and_get_concepts_by_paper():
+def test_insert_and_get_concepts_by_paper(tmp_db):
     """insert_concept + get_concepts_by_paper round-trip."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "uploaded")
-    cid = db.insert_concept("p1", "Problem", "ML Scalability", confidence=0.95, year=2024)
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
+    cid = tmp_db.insert_concept("p1", "Problem", "ML Scalability", confidence=0.95, year=2024)
     assert cid is not None
 
-    concepts = db.get_concepts_by_paper("p1")
+    concepts = tmp_db.get_concepts_by_paper("p1")
     assert len(concepts) == 1
     assert concepts[0]["label"] == "ML Scalability"
     assert concepts[0]["type"] == "Problem"
     assert concepts[0]["confidence"] == 0.95
-    db.close()
 
 
-def test_insert_alias():
+def test_insert_alias(tmp_db):
     """insert_alias stores variant->canonical mapping."""
-    db = _make_db()
     # Need a paper first (concepts FK to papers)
-    db.insert_paper("p1", "Test", 2024, "uploaded")
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
     # Need a concept first for alias FK
-    cid = db.insert_concept("p1", "Method", "transformers", year=2024)
-    db.insert_alias("transformers", str(cid))
-    db.insert_alias("Transformer", str(cid))
-    db.commit()
+    cid = tmp_db.insert_concept("p1", "Method", "transformers", year=2024)
+    tmp_db.insert_alias("transformers", str(cid))
+    tmp_db.insert_alias("Transformer", str(cid))
+    tmp_db.commit()
 
-    row = db.conn.execute(
+    row = tmp_db.conn.execute(
         "SELECT canonical_id FROM aliases WHERE variant='transformers'"
     ).fetchone()
     assert row[0] == str(cid)
-    db.close()
 
 
-def test_insert_and_get_seeds():
+def test_insert_and_get_seeds(tmp_db):
     """insert_seed + get_all_seeds round-trip."""
-    db = _make_db()
-    sid = db.insert_seed("unaddressed_gap", "No method addresses Gap X", confidence=0.8)
+    sid = tmp_db.insert_seed("unaddressed_gap", "No method addresses Gap X", confidence=0.8)
     assert sid is not None
 
-    seeds = db.get_all_seeds()
+    seeds = tmp_db.get_all_seeds()
     assert len(seeds) == 1
     assert seeds[0]["pattern_type"] == "unaddressed_gap"
-    db.close()
 
 
-def test_delete_seed():
+def test_delete_seed(tmp_db):
     """delete_seed removes a research seed."""
-    db = _make_db()
-    sid = db.insert_seed("test", "Test seed")
-    db.commit()
+    sid = tmp_db.insert_seed("test", "Test seed")
+    tmp_db.commit()
 
-    assert len(db.get_all_seeds()) == 1
-    db.delete_seed(sid)
-    db.commit()
-    assert len(db.get_all_seeds()) == 0
-    db.close()
+    assert len(tmp_db.get_all_seeds()) == 1
+    tmp_db.delete_seed(sid)
+    tmp_db.commit()
+    assert len(tmp_db.get_all_seeds()) == 0
 
 
-def test_insert_and_get_arguments():
+def test_insert_and_get_arguments(tmp_db):
     """insert_argument + get_arguments_by_paper round-trip."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "uploaded")
-    aid = db.insert_argument(
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
+    aid = tmp_db.insert_argument(
         "p1",
         "Method X outperforms Y",
         "supports",
@@ -147,92 +119,81 @@ def test_insert_and_get_arguments():
     )
     assert aid is not None
 
-    args = db.get_arguments_by_paper("p1")
+    args = tmp_db.get_arguments_by_paper("p1")
     assert len(args) == 1
     assert args[0]["claim"] == "Method X outperforms Y"
     assert args[0]["claim_type"] == "supports"
-    db.close()
 
 
-def test_confidence_queue_lifecycle():
+def test_confidence_queue_lifecycle(tmp_db):
     """Queue items flow: insert -> pending -> accept/reject."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "uploaded")
-    qid = db.insert_queue_item("p1", "concept", '{"label": "Test Concept"}', 0.6)
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
+    qid = tmp_db.insert_queue_item("p1", "concept", '{"label": "Test Concept"}', 0.6)
     assert qid is not None
 
-    pending = db.get_queue_pending()
+    pending = tmp_db.get_queue_pending()
     assert len(pending) == 1
     assert pending[0]["queue_id"] == qid
 
-    db.accept_queue_item(qid)
-    db.commit()
-    assert len(db.get_queue_pending()) == 0
-    db.close()
+    tmp_db.accept_queue_item(qid)
+    tmp_db.commit()
+    assert len(tmp_db.get_queue_pending()) == 0
 
 
-def test_queue_reject():
+def test_queue_reject(tmp_db):
     """reject_queue_item marks item as rejected."""
-    db = _make_db()
-    db.insert_paper("p1", "Test", 2024, "uploaded")
-    qid = db.insert_queue_item("p1", "concept", '{"label": "X"}', 0.5)
-    db.commit()
+    tmp_db.insert_paper("p1", "Test", 2024, "uploaded")
+    qid = tmp_db.insert_queue_item("p1", "concept", '{"label": "X"}', 0.5)
+    tmp_db.commit()
 
-    db.reject_queue_item(qid)
-    db.commit()
+    tmp_db.reject_queue_item(qid)
+    tmp_db.commit()
 
-    status = db.conn.execute(
+    status = tmp_db.conn.execute(
         "SELECT status FROM confidence_queue WHERE queue_id = ?", (qid,)
     ).fetchone()[0]
     assert status == "rejected"
-    db.close()
 
 
-def test_get_concept_evolution():
+def test_get_concept_evolution(tmp_db):
     """get_concept_evolution returns year-by-year usage."""
-    db = _make_db()
-    db.insert_paper("p1", "A", 2020, "uploaded")
-    db.insert_paper("p2", "B", 2021, "uploaded")
-    db.insert_paper("p3", "C", 2022, "uploaded")
-    db.insert_concept("p1", "Method", "Transformer", 0.9, year=2020)
-    db.insert_concept("p2", "Method", "Transformer", 0.8, year=2021)
-    db.insert_concept("p3", "Method", "Transformer", 0.95, year=2022)
-    db.commit()
+    tmp_db.insert_paper("p1", "A", 2020, "uploaded")
+    tmp_db.insert_paper("p2", "B", 2021, "uploaded")
+    tmp_db.insert_paper("p3", "C", 2022, "uploaded")
+    tmp_db.insert_concept("p1", "Method", "Transformer", 0.9, year=2020)
+    tmp_db.insert_concept("p2", "Method", "Transformer", 0.8, year=2021)
+    tmp_db.insert_concept("p3", "Method", "Transformer", 0.95, year=2022)
+    tmp_db.commit()
 
-    evolution = db.get_concept_evolution("Transformer")
+    evolution = tmp_db.get_concept_evolution("Transformer")
     assert len(evolution) == 3
     years = [e["year"] for e in evolution]
     assert years == [2020, 2021, 2022]
-    db.close()
 
 
-def test_detect_evolution_signals():
+def test_detect_evolution_signals(tmp_db):
     """detect_evolution_signals classifies concepts by temporal patterns."""
-    db = _make_db()
     current_year = datetime.now().year
-    db.insert_paper("p1", "A", current_year, "uploaded")
-    db.insert_paper("p2", "B", current_year, "uploaded")
-    db.insert_concept("p1", "Method", "NewThing", 0.9, year=current_year)
-    db.insert_concept("p2", "Method", "NewThing", 0.85, year=current_year)
-    db.commit()
+    tmp_db.insert_paper("p1", "A", current_year, "uploaded")
+    tmp_db.insert_paper("p2", "B", current_year, "uploaded")
+    tmp_db.insert_concept("p1", "Method", "NewThing", 0.9, year=current_year)
+    tmp_db.insert_concept("p2", "Method", "NewThing", 0.85, year=current_year)
+    tmp_db.commit()
 
-    signals = db.detect_evolution_signals()
+    signals = tmp_db.detect_evolution_signals()
     new_thing = [s for s in signals if s["label"] == "NewThing"]
     assert len(new_thing) == 1
     assert "signal" in new_thing[0]
-    db.close()
 
 
-def test_insert_edge_dedup():
+def test_insert_edge_dedup(tmp_db):
     """Duplicate edges are ignored (INSERT OR IGNORE)."""
-    db = _make_db()
-    db.insert_edge("p1", "p2", "cites", "p1")
-    db.insert_edge("p1", "p2", "cites", "p1")  # Duplicate
-    db.commit()
+    tmp_db.insert_edge("p1", "p2", "cites", "p1")
+    tmp_db.insert_edge("p1", "p2", "cites", "p1")  # Duplicate
+    tmp_db.commit()
 
-    count = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+    count = tmp_db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
     assert count == 1
-    db.close()
 
 
 def test_save_paper_artifacts():

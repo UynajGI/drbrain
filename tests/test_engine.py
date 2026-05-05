@@ -1,10 +1,6 @@
 """Tests for graph engine closure with section-aware confidence."""
 
-import tempfile
-from pathlib import Path
-
 from drbrain.graph.engine import GraphEngine
-from drbrain.storage.database import Database
 
 
 def _make_graph(edges):
@@ -301,41 +297,35 @@ def test_closure_constrains_indexing():
 # -- load_from_db --
 
 
-def test_load_from_db_all_edges():
+def test_load_from_db_all_edges(tmp_db):
     """load_from_db loads all edges from database into the graph."""
-    with tempfile.TemporaryDirectory() as td:
-        db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
-        db.insert_concept("p1", "Method", "M1", 0.9, year=2024)
-        db.insert_concept("p1", "Method", "M2", 0.8, year=2024)
-        db.insert_edge("M1", "M2", "extends", "p1")
-        db.commit()
+    tmp_db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+    tmp_db.insert_concept("p1", "Method", "M1", 0.9, year=2024)
+    tmp_db.insert_concept("p1", "Method", "M2", 0.8, year=2024)
+    tmp_db.insert_edge("M1", "M2", "extends", "p1")
+    tmp_db.commit()
 
-        g = GraphEngine()
-        g.load_from_db(db)
-        assert g.graph.number_of_edges() >= 1
-        db.close()
+    g = GraphEngine()
+    g.load_from_db(tmp_db)
+    assert g.graph.number_of_edges() >= 1
 
 
-def test_load_from_db_with_paper_ids():
+def test_load_from_db_with_paper_ids(tmp_db):
     """load_from_db filters edges by source_paper when paper_ids provided."""
-    with tempfile.TemporaryDirectory() as td:
-        db = Database(Path(td) / "test.db")
-        db.insert_paper("p1", "Paper One", 2024, "uploaded")
-        db.insert_paper("p2", "Paper Two", 2024, "uploaded")
-        db.insert_concept("p1", "Method", "M1", 0.9, year=2024)
-        db.insert_concept("p1", "Method", "M2", 0.8, year=2024)
-        db.insert_concept("p2", "Problem", "P1", 0.7, year=2024)
-        db.insert_concept("p2", "Method", "M3", 0.6, year=2024)
-        db.insert_edge("M1", "M2", "extends", "p1")
-        db.insert_edge("M3", "P1", "addresses", "p2")
-        db.commit()
+    tmp_db.insert_paper("p1", "Paper One", 2024, "uploaded")
+    tmp_db.insert_paper("p2", "Paper Two", 2024, "uploaded")
+    tmp_db.insert_concept("p1", "Method", "M1", 0.9, year=2024)
+    tmp_db.insert_concept("p1", "Method", "M2", 0.8, year=2024)
+    tmp_db.insert_concept("p2", "Problem", "P1", 0.7, year=2024)
+    tmp_db.insert_concept("p2", "Method", "M3", 0.6, year=2024)
+    tmp_db.insert_edge("M1", "M2", "extends", "p1")
+    tmp_db.insert_edge("M3", "P1", "addresses", "p2")
+    tmp_db.commit()
 
-        g = GraphEngine()
-        g.load_from_db(db, paper_ids={"p1"})
-        # Only the p1 edge should be loaded
-        assert g.graph.number_of_edges() == 1
-        db.close()
+    g = GraphEngine()
+    g.load_from_db(tmp_db, paper_ids={"p1"})
+    # Only the p1 edge should be loaded
+    assert g.graph.number_of_edges() == 1
 
 
 # -- closure_incremental edge cases --

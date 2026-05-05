@@ -51,6 +51,7 @@ ignore = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+norecursedirs = ["docs/learn/scholaraio/tests"]
 markers = [
     "integration: slow end-to-end tests using real PDFs and API calls",
 ]
