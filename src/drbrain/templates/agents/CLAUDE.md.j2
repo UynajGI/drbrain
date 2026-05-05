@@ -1,0 +1,17 @@
+# DrBrain — Claude Code Entry
+
+This file is the Claude Code project entrypoint for DrBrain. It intentionally stays light:
+
+- durable project facts and navigation live here
+- reusable procedures belong in skills (Claude Code auto-discovers via clawhub.yaml)
+- deep reference lives in `drbrain --help`
+
+## Quick Reference
+
+- CLI: `drbrain --help`
+- Key commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `ask`
+- Skills: `research-analysis`, `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`
+- Tests: `uv run pytest -m "not integration"`
+- Lint: `uv run ruff check . && uv run ruff format .`
+
+@AGENTS.md

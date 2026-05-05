@@ -1,0 +1,34 @@
+publisher: Yuunagi
+repo: UynajGI/DrBrain
+description: "Academic knowledge graph skills for AI agents — research analysis, paper ingest, literature query, citation tracking, and workspace management. Built for DrBrain."
+keywords:
+  - academic
+  - research
+  - knowledge-graph
+  - literature
+  - citations
+  - papers
+  - symbol-driven
+  - bm25
+  - knowledge-frontier
+
+skills:
+  - name: drbrain/research-analysis
+    path: skills/research-analysis
+    description: "Knowledge frontier analysis — detect research seeds, causal chains, hypotheses, and cross-domain isomorphism"
+
+  - name: drbrain/paper-ingest
+    path: skills/paper-ingest
+    description: "Ingest PDFs into the knowledge graph — MinerU parsing, 5-source cross-validation, tree structuring"
+
+  - name: drbrain/paper-query
+    path: skills/paper-query
+    description: "Query papers via BM25 search with graph-enhanced hybrid ranking and neighbor traversal"
+
+  - name: drbrain/citation-tracking
+    path: skills/citation-tracking
+    description: "Citation graph analysis — shared-reference detection, citation verification, multi-source expansion"
+
+  - name: drbrain/workspace-analysis
+    path: skills/workspace-analysis
+    description: "Manage paper workspaces — create subsets, cross-paper concept analysis, export BibTeX/RIS/Markdown"

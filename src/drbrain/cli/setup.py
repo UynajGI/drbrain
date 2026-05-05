@@ -8,6 +8,25 @@ from pathlib import Path
 import typer
 import yaml
 
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "agents"
+
+INJECTION_MAP: dict[str, list[tuple[str, str]]] = {
+    "claude_code": [
+        ("CLAUDE.md.j2", "CLAUDE.md"),
+    ],
+    "claude_plugin": [
+        ("plugin.json.j2", ".claude-plugin/plugin.json"),
+        ("marketplace.json.j2", ".claude-plugin/marketplace.json"),
+        ("mcp.json.j2", ".mcp.json"),
+    ],
+    "codex": [("AGENTS.md.j2", "AGENTS.md")],
+    "qwen": [("QWEN.md.j2", "QWEN.md")],
+    "cursor": [(".cursorrules.j2", ".cursorrules")],
+    "cline": [(".clinerules.j2", ".clinerules")],
+    "windsurf": [(".windsurfrules.j2", ".windsurfrules")],
+    "copilot": [("copilot-instructions.md.j2", ".github/copilot-instructions.md")],
+}
+
 
 def _check_python_package(module: str) -> bool:
     """Check if a Python module is importable."""
@@ -167,6 +186,136 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
     return ok, warn
 
 
+def _detect_platforms() -> dict[str, bool]:
+    """Detect installed AI platforms. Returns {platform_name: detected}."""
+    home = Path.home()
+    detected: dict[str, bool] = {}
+
+    # Claude Code
+    detected["claude_code"] = shutil.which("claude") is not None or (home / ".claude").exists()
+
+    # Codex / OpenClaw
+    detected["codex"] = shutil.which("codex") is not None or (home / ".codex").exists()
+
+    # Qwen
+    detected["qwen"] = (
+        (home / ".qwen").exists()
+        or (home / ".config" / "Qwen").exists()
+        or (Path(".") / ".qwen").exists()
+        or shutil.which("qwen") is not None
+    )
+
+    # Cursor
+    detected["cursor"] = (
+        (Path(".") / ".cursor").exists()
+        or (home / ".cursor").exists()
+        or shutil.which("cursor") is not None
+    )
+
+    # Cline
+    detected["cline"] = (
+        (home / ".cline").exists()
+        or (Path(".") / ".clinerules").exists()
+        or shutil.which("cline") is not None
+    )
+
+    # Windsurf
+    detected["windsurf"] = (
+        (home / ".windsurf").exists()
+        or (Path(".") / ".windsurfrules").exists()
+        or shutil.which("windsurf") is not None
+    )
+
+    # GitHub Copilot
+    detected["copilot"] = (Path(".") / ".github").exists()
+
+    return detected
+
+
+def _inject_agent_entries() -> None:
+    """Interactive agent entry injection. User must select at least one platform."""
+    detected = _detect_platforms()
+    available = {k for k, v in detected.items() if v}
+
+    if not available:
+        typer.echo(
+            "\nNo AI platforms detected. Install Claude Code or another AI coding tool, "
+            "then re-run `drbrain setup`."
+        )
+        return
+
+    # Build display: Claude Code entry includes claude_plugin group
+    _labels: dict[str, str] = {
+        "claude_code": "Claude Code (includes .claude-plugin + .mcp.json)",
+        "codex": "Codex / OpenClaw",
+        "qwen": "Qwen",
+        "cursor": "Cursor",
+        "cline": "Cline",
+        "windsurf": "Windsurf",
+        "copilot": "GitHub Copilot",
+    }
+
+    platforms = sorted(available, key=lambda p: list(_labels).index(p) if p in _labels else 99)
+
+    typer.echo("\nDetected AI platforms:")
+    for i, p in enumerate(platforms, 1):
+        typer.echo(f"  [{i}] {_labels.get(p, p)}")
+    typer.echo("  [a] All detected")
+    typer.echo("  [n] None (skip)")
+
+    choice_str = typer.prompt("Select platforms (comma-separated numbers)", default="a").strip()
+
+    if choice_str.lower() == "n":
+        typer.echo("Skipped agent entry injection.")
+        return
+
+    selected: set[str] = set()
+    if choice_str.lower() == "a":
+        selected = set(platforms)
+    else:
+        for part in choice_str.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(platforms):
+                    selected.add(platforms[idx])
+            except ValueError:
+                continue
+
+    if not selected:
+        typer.echo("No platforms selected. Skipping agent entry injection.")
+        return
+
+    # Inject templates for selected platforms
+    for platform in sorted(selected):
+        entries = INJECTION_MAP.get(platform, [])
+        # Claude Code also includes claude_plugin entries
+        if platform == "claude_code" and "claude_code" in selected:
+            entries = list(entries) + INJECTION_MAP.get("claude_plugin", [])
+
+        for template_name, target_name in entries:
+            template_path = _TEMPLATES_DIR / template_name
+            target_path = Path(".") / target_name
+
+            if not template_path.exists():
+                typer.echo(f"  [!]  Template not found: {template_name}")
+                continue
+
+            if target_path.exists():
+                typer.echo(f"  [!]  {target_name} already exists, skipping")
+                continue
+
+            # Render (plain text for now — .j2 extension for future-proofing)
+            content = template_path.read_text(encoding="utf-8")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(content, encoding="utf-8")
+            typer.echo(f"  [+]  {target_name}")
+
+    typer.echo()
+
+
 def setup_cmd(
     quick: bool = typer.Option(
         False, "--quick", "-q", help="Skip interactive prompts, use defaults"
@@ -238,6 +387,9 @@ def setup_cmd(
         for line in warn:
             typer.echo(f"  [!]  {line}")
         typer.echo()
+
+        _inject_agent_entries()
+
         typer.echo("Ready. Next step: drbrain ingest")
         typer.echo("Edit config.local.yaml to set your API keys and model.")
         return
@@ -364,6 +516,9 @@ def setup_cmd(
         typer.echo(f"  [!]  {line}")
 
     typer.echo()
+
+    _inject_agent_entries()
+
     if not warn:
         typer.echo("Ready. Next step: drbrain ingest")
     else:
