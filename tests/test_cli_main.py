@@ -36,9 +36,7 @@ def _make_config(db_path: str, reports_dir: str) -> dict:
 
 
 def mock_cfg(db_path: str, reports_dir: str):
-    return mock.patch(
-        "drbrain.cli.commands.load_config", return_value=_make_config(db_path, reports_dir)
-    )
+    return mock.patch("drbrain.config.load_config", return_value=_make_config(db_path, reports_dir))
 
 
 def test_app_help():

@@ -248,3 +248,35 @@ def test_save_paper_artifacts_copies_images():
         assert (paper_dir / "images" / "abc.jpg").exists()
         content = (paper_dir / "raw.md").read_text()
         assert "images/abc.jpg" in content
+
+
+# -- Volume/pages interface tests --
+
+
+def test_insert_paper_accepts_volume_pages(tmp_db):
+    """insert_paper must accept and store volume/pages."""
+    db = tmp_db
+    db.insert_paper("ptest", "Test Paper", 2024, "uploaded", volume="42", pages="100-120")
+    p = db.get_paper("ptest")
+    assert p["volume"] == "42"
+    assert p["pages"] == "100-120"
+
+
+def test_get_paper_returns_volume_pages(tmp_db):
+    """get_paper must include volume and pages in result dict."""
+    db = tmp_db
+    db.insert_paper("ptest2", "Test", 2023, "uploaded", volume="10", pages="50-55")
+    p = db.get_paper("ptest2")
+    assert "volume" in p
+    assert "pages" in p
+    assert p["volume"] == "10"
+    assert p["pages"] == "50-55"
+
+
+def test_insert_paper_volume_pages_default_empty(tmp_db):
+    """insert_paper defaults volume/pages to empty strings."""
+    db = tmp_db
+    db.insert_paper("ptest3", "Test", 2022, "uploaded")
+    p = db.get_paper("ptest3")
+    assert p["volume"] == ""
+    assert p["pages"] == ""

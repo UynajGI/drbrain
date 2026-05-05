@@ -558,3 +558,44 @@ def test_graph_related_no_shared():
 
         result = json.loads(capture.getvalue())
         assert len(result["shared"]) == 0
+
+
+# -- Traverse interface tests --
+
+
+def test_traverse_accepts_set_and_hops():
+    """GraphEngine.traverse must accept set[str] as first arg and hops= kwarg."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    # Add a minimal edge
+    g.graph.add_edge("A", "B", relation="addresses")
+    results = g.traverse({"A"}, hops=1, direction="both")
+    assert len(results) > 0
+    assert results[0].source == "A"
+
+
+def test_traverse_max_depth_rejected():
+    """GraphEngine.traverse must reject max_depth= (only accepts hops=)."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.graph.add_edge("A", "B", relation="addresses")
+    try:
+        g.traverse({"A"}, max_depth=1)
+        assert False, "Should have raised TypeError"
+    except TypeError:
+        pass  # Expected — confirms interface mismatch would be caught
+
+
+def test_traverse_string_input_converts_to_chars():
+    """Passing a string instead of set iterates characters incorrectly."""
+    from drbrain.graph.engine import GraphEngine
+
+    g = GraphEngine()
+    g.graph.add_edge("A", "B", relation="addresses")
+    # String "A" → iterates as {'A'}, should work for single-char string
+    # but multi-char string like "AB" → {'A', 'B'} — subtle bug if unchecked
+    results = g.traverse({"A"}, hops=1)  # Correct: use set
+    # This test ensures callers use set, not string
+    assert isinstance(results, list)

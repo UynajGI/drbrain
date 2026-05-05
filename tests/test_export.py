@@ -81,3 +81,17 @@ def test_batch_export():
 def test_batch_export_unknown_format():
     """Unknown format returns empty."""
     assert batch_export([SAMPLE_META], "docx") == ""
+
+
+def test_bibtex_includes_volume_pages():
+    """BibTeX output must include volume and pages when present."""
+    result = meta_to_bibtex(SAMPLE_META)
+    assert "volume" in result.lower()
+    assert "pages" in result.lower()
+
+
+def test_ris_includes_volume_pages():
+    """RIS output must include VL (volume) and SP/EP (pages) when present."""
+    result = meta_to_ris(SAMPLE_META)
+    assert "VL" in result
+    assert "SP" in result
