@@ -762,6 +762,9 @@ def closure_cmd(
     min_confidence: float = typer.Option(
         0.6, "--min-confidence", help="Minimum confidence for mined rules (0.0-1.0)"
     ),
+    ground: bool = typer.Option(
+        False, "--ground", help="Ground transitive rules as concrete triples (t-norm)"
+    ),
 ):
     """Run rule-based closure on the full graph."""
     # Normalize typer OptionInfo objects when calling directly (not via CLI)
@@ -777,6 +780,8 @@ def closure_cmd(
         mine_rules = mine_rules.default
     if isinstance(min_confidence, typer.models.OptionInfo):
         min_confidence = min_confidence.default
+    if isinstance(ground, typer.models.OptionInfo):
+        ground = ground.default
 
     valid_rules = {
         "creates_debate",
@@ -817,6 +822,14 @@ def closure_cmd(
             typer.echo(
                 f"Mined {len(mined_rules)} path rules from embeddings -> {len(mined_edges)} inferred edges"
             )
+
+    # ── Rule grounding (t-norm transitive closure) ──────────────────────
+    if ground:
+        grounded = graph.ground_rules(min_confidence=min_confidence)
+        if grounded:
+            inferred.extend(grounded)
+            if not json_output:
+                typer.echo(f"Grounded {len(grounded)} transitive rule instances (t-norm)")
 
     if rule is not None:
         rule_set = set(rule)

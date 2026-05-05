@@ -292,6 +292,43 @@ class GraphEngine:
 
         return inferred
 
+    def ground_rules(self, min_confidence: float = 0.5) -> list[dict]:
+        """Ground closure rules as concrete edges via path matching (t-norm style).
+
+        For transitive rules: if A→B and B→C exist, add A→C with
+        confidence = min(conf_AB, conf_BC) as a grounded triple.
+        """
+        grounded: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        transitive_relations = {"extends", "contains", "proposes", "addresses"}
+        for u, v, data in self.graph.edges(data=True):
+            rel = data.get("relation", "")
+            if rel not in transitive_relations:
+                continue
+            # Check if v has outgoing edges of the same relation type
+            for w, v2, data2 in self.graph.edges(v, data=True):
+                if data2.get("relation", "") == rel:
+                    key = (u, w, rel)
+                    if key not in seen:
+                        conf_uv = data.get("weight", 1.0)
+                        conf_vw = data2.get("weight", 1.0)
+                        confidence = min(conf_uv, conf_vw)
+                        if confidence >= min_confidence:
+                            seen.add(key)
+                            grounded.append(
+                                {
+                                    "src": u,
+                                    "dst": w,
+                                    "relation": rel,
+                                    "confidence": round(confidence, 3),
+                                    "via": [v],
+                                    "source": "rule_grounding",
+                                }
+                            )
+
+        return grounded
+
     def detect_research_seeds(self, db=None) -> list[dict]:
         """Detect research opportunities via graph patterns + temporal data.
 
