@@ -111,15 +111,25 @@ def analyze_paper(
     if models:
         import asyncio
 
-        report["executive_summary"] = asyncio.run(
-            _generate_executive_summary(report, models)
-        )
+        report["executive_summary"] = asyncio.run(_generate_executive_summary(report, models))
 
         # Enhance seeds with LLM-suggested solution directions
         if report["seeds"]:
             report["seeds"] = asyncio.run(
                 _enhance_seeds(report["seeds"], paper.get("title", ""), models)
             )
+
+        # Graph Summary — LLM description of top concepts' subgraphs
+        from drbrain.services.graph_to_text import describe_subgraph
+
+        all_concepts = db.get_concepts_by_paper(local_id)
+        top_concepts = sorted(all_concepts, key=lambda c: c.get("confidence", 0), reverse=True)[:3]
+        graph_descriptions: list[str] = []
+        for concept in top_concepts:
+            desc = asyncio.run(describe_subgraph(graph, db, concept["label"], models, depth=1))
+            if desc:
+                graph_descriptions.append(f"{concept['label']}: {desc}")
+        report["graph_summary"] = "\n\n".join(graph_descriptions) if graph_descriptions else ""
 
     return report
 
@@ -156,13 +166,15 @@ def add_cross_paper_insights(reports: list[dict], db=None) -> list[dict]:
                 continue  # same paper, skip
             sim = _label_similarity(m["label"], p["label"])
             if sim > 0.3:  # weak similarity threshold
-                insights.append({
-                    "method": m["label"],
-                    "method_paper": m["paper_title"],
-                    "problem": p["label"],
-                    "problem_paper": p["paper_title"],
-                    "similarity": round(sim, 3),
-                })
+                insights.append(
+                    {
+                        "method": m["label"],
+                        "method_paper": m["paper_title"],
+                        "problem": p["label"],
+                        "problem_paper": p["paper_title"],
+                        "similarity": round(sim, 3),
+                    }
+                )
 
     insights.sort(key=lambda x: x["similarity"], reverse=True)
     if insights:

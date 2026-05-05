@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import typer
@@ -9,6 +10,7 @@ import typer
 from drbrain.cli.commands import _resolve_node_type, _resolve_workspace_papers
 from drbrain.graph.engine import GraphEngine
 from drbrain.graph.query_embeddings import query_embed
+from drbrain.services.graph_to_text import describe_path, describe_subgraph
 from drbrain.storage.database import Database
 
 graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
@@ -495,6 +497,79 @@ def _related_graph(
         for p in conn["paths"]:
             path_str = " -> ".join(f"{s['src']} --{s['relation']}--> {s['dst']}" for s in p["path"])
             typer.echo(f"    {p['paper_id']}:  {path_str}")
+
+
+@graph_app.command("describe")
+def describe_cmd(
+    ctx: typer.Context,
+    node_label: str = typer.Argument(..., help="Concept label or paper ID"),
+    depth: int = typer.Option(1, "--depth", "-n", help="Number of hops to traverse"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+):
+    """Generate a natural language description of a subgraph centered on a node."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    graph = GraphEngine()
+    paper_ids = _resolve_workspace_papers(workspace)
+    graph.load_from_db(db, paper_ids=paper_ids)
+
+    if node_label not in graph.graph:
+        typer.echo(f"Node '{node_label}' not found in graph.", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    # Traverse and collect results for structured output
+    tr_results = graph.traverse(
+        start_nodes={node_label},
+        hops=depth,
+        direction="both",
+    )
+
+    seen = {node_label}
+    paths: list[list[dict]] = []
+    for tr in tr_results:
+        if tr.target in seen:
+            continue
+        seen.add(tr.target)
+        paths.append(
+            [{"src": s.src, "relation": s.relation, "dst": s.dst, "hop": s.hop} for s in tr.path]
+        )
+
+    # LLM summary
+    models = cfg.get("models", [])
+    if models:
+        description = asyncio.run(describe_subgraph(graph, db, node_label, models, depth=depth))
+    else:
+        description = ""
+
+    if json_output:
+        output = {
+            "center": node_label,
+            "depth": depth,
+            "neighbor_count": len(paths),
+            "paths": paths,
+            "description": description,
+        }
+        typer.echo(json.dumps(output, indent=2, ensure_ascii=False))
+        db.close()
+        return
+
+    # Terminal output
+    typer.echo(f'Subgraph centered on "{node_label}":')
+    if description:
+        typer.echo(f"  {description}")
+        typer.echo("")
+
+    if paths:
+        for p in paths:
+            path_desc = describe_path(p)
+            typer.echo(f"  {path_desc}")
+    else:
+        typer.echo("  (no neighbors found)")
+
+    db.close()
 
 
 @graph_app.command("query")
