@@ -809,6 +809,90 @@ async def _llm_segment_document(
     )
 
 
+async def _verify_tree_sample(
+    tree_items: list[dict], md_lines: list[str], models: list[dict]
+) -> float:
+    """LLM checks that sampled sections actually start at their claimed lines. Returns accuracy."""
+    if not tree_items or not models:
+        return 1.0
+
+    import random
+
+    from drbrain.extractor.llm_client import acall_text_with_fallback
+
+    sample_size = min(10, len(tree_items))
+    sampled = random.sample(tree_items, sample_size)
+
+    line_chunks = []
+    for item in sampled:
+        start = max(0, item["line_num"] - 2)
+        end = min(len(md_lines), item["line_num"] + 5)
+        chunk = "\n".join(md_lines[start:end])
+        line_chunks.append((item["title"], item["line_num"], chunk))
+
+    prompt = (
+        "Check if each section title starts at the claimed line in the text. "
+        "Respond ONLY with a JSON array of objects with keys 'title' and 'correct' (true/false).\n\n"
+    )
+    for title, line_num, chunk in line_chunks:
+        prompt += f"Title: {title} (claimed line {line_num})\nText:\n{chunk}\n\n"
+
+    result = await acall_text_with_fallback(prompt, models, max_tokens=500)
+    try:
+        import json
+
+        checks = json.loads(result) if result else []
+        if not checks:
+            return 0.0
+        correct = sum(1 for c in checks if c.get("correct"))
+        return correct / len(checks)
+    except Exception:
+        return 0.0
+
+
+async def _verify_and_correct_tree(
+    tree: DocumentTree, md_path: str, models: list[dict], max_retries: int = 2
+) -> DocumentTree:
+    """Verify tree structure, re-extract with adjusted settings if accuracy is low."""
+    if not models or not tree.structure:
+        return tree
+
+    md_lines = Path(md_path).read_text(encoding="utf-8").splitlines()
+    items = _collect_line_ranges(tree.structure)
+    items = [i for i in items if i["line_num"] > 0]
+
+    if len(items) < 3:
+        return tree
+
+    from loguru import logger
+
+    for attempt in range(max_retries + 1):
+        accuracy = await _verify_tree_sample(items, md_lines, models)
+        logger.info(f"Tree verification attempt {attempt}: accuracy={accuracy:.2f}")
+
+        if accuracy >= 0.7:
+            return tree
+
+        if attempt < max_retries:
+            logger.info("Re-extracting with adjusted thresholds...")
+            config = TreeConfig(
+                if_thinning=True,
+                min_token_threshold=max(2000, 5000 - attempt * 1500),
+                max_node_tokens=10000,
+                if_add_node_summary=False,
+                if_add_doc_description=False,
+                if_add_node_id=True,
+                if_add_node_text=False,
+            )
+            new_tree = await md_to_tree(md_path, config, models)
+            if new_tree.structure:
+                tree = new_tree
+                items = _collect_line_ranges(tree.structure)
+                items = [i for i in items if i["line_num"] > 0]
+
+    return tree
+
+
 async def md_to_tree_with_fallback(
     md_path: str | Path,
     config: TreeConfig | None = None,
@@ -824,6 +908,8 @@ async def md_to_tree_with_fallback(
     # Level 1: header-based
     tree = await md_to_tree(md_path, config, models)
     if tree.structure:
+        if models:
+            tree = await _verify_and_correct_tree(tree, md_path, models)
         return tree
 
     # Level 2: PDF outline
