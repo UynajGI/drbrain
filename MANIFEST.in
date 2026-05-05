@@ -1,0 +1,2 @@
+graft src/drbrain/templates
+include clawhub.yaml

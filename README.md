@@ -23,21 +23,13 @@ find research gaps, and infer new relationships through rule-based reasoning.
 ## Quick Start
 
 ```bash
-# From PyPI (once published)
 pip install drbrain
-
-# From source (development)
-git clone https://github.com/UynajGI/DrBrain.git
-cd DrBrain
-uv sync && uv pip install -e .
-
 drbrain setup
 ```
 
-`drbrain setup` detects your AI platforms (Claude Code, Codex, Cursor, Cline, Windsurf, Qwen, Copilot)
-and injects agent entries so your coding agent can use DrBrain skills directly.
-
-Then drop PDFs into `data/spool/inbox/` and let your agent take it from there — or use the CLI yourself.
+`drbrain setup` detects your AI platforms and injects agent entries so your coding
+agent can use DrBrain skills directly. Then drop PDFs into `data/spool/inbox/` and
+let your agent take it from there — or use the CLI yourself.
 
 ## What It Does
 
