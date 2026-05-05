@@ -15,7 +15,7 @@ uv run ruff format .            # format
 uv run pytest --cov=drbrain --cov-report=term  # coverage report
 ```
 
-Key user commands: `setup`, `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`.
+Key user commands: `setup`, `ingest`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`.
 
 ## Architecture
 
@@ -95,6 +95,8 @@ workspace/<name>/      # Paper subsets: workspace.yaml + refs/papers.json
 - **LLM fallback chain**: `acall_with_fallback()` iterates through configured model list in `config.local.yaml`; first successful parse wins, `None` if all exhausted. Supports any litellm provider (OpenAI, Anthropic, Ollama, plus OpenAI-compatible endpoints like DeepSeek/Zhipu/Bailian).
 - **No vector embeddings**: BM25 (`query/bm25.py`) for search over concepts + arguments. No vector DB dependency.
 - **Symbol-driven reasoning**: Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, isomorphism detection — all rule-based, zero embeddings.
+- **KG reasoning enhancement**: TransE-based complex query operators (project/intersect/union/negate) in `graph/query_embeddings.py`. LLM↔KG bidirectional iterative reasoning with TBox/RBox validation (`reason --bidirectional`). Embedding-driven path rule mining from TransE relations (`closure --mine-rules`). Subgraph-to-text description via LLM (`graph describe`).
+- **Data quality**: `drbrain audit` with 15 severity-graded rules. PDF pre-validation (encryption/corruption via PyMuPDF). 3 non-blocking ingest quality gates. PageIndex TOC verification with LLM correction loop.
 - **Ecosystem enrichment**: `arxiv` library for arXiv metadata; CrossRef API (`crossref.py`) for DOI resolution and cross-validation; `pyalex` library for OpenAlex title search and author identity; Semantic Scholar (with API key support). Rate-limited with configurable cache TTL.
 - **Graph-based discovery**: `detect_research_seeds()` finds stale problems, unaddressed gaps, debate zones, technology cliffs, cross-domain isomorphism, and confidence collapse patterns. `generate_hypotheses()` produces actionable research hypotheses from these patterns.
 - **Section provenance**: `section` field flows from LLM extraction → DB → L1-L4 reasoning modules. Enables section-aware confidence decay, counterfactual weighting, isomorphism signatures, hypothesis evidence grounding, and contradiction detection.
