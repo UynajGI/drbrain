@@ -31,8 +31,11 @@ def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
     }
 
 
-def _mock_load_config(cfg: dict):
-    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
+def _make_ctx(cfg: dict):
+    """Create a minimal typer.Context mock with config pre-loaded."""
+    ctx = mock.MagicMock(spec=typer.Context)
+    ctx.obj = {"config": cfg}
+    return ctx
 
 
 @mock.patch("drbrain.query.tree_retrieval.acall_with_fallback")
@@ -190,15 +193,16 @@ def test_query_cmd_tree_paper_missing_tree():
 
         cfg = _make_minimal_config(f"{td}/test.db", str(papers_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                query_cmd(
-                    "What is the methodology?",
-                    paper="test_paper",
-                )
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            query_cmd(
+                ctx,
+                "What is the methodology?",
+                paper="test_paper",
+            )
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 @mock.patch("drbrain.cli.commands.query_by_structure")
@@ -229,8 +233,8 @@ def test_query_cmd_tree_success(mock_qbs):
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
 
-        with _mock_load_config(cfg):
-            query_cmd("What is the methodology?", paper="test_paper")
+        ctx = _make_ctx(cfg)
+        query_cmd(ctx, "What is the methodology?", paper="test_paper")
 
         output = sys.stdout.getvalue()
         sys.stdout = old_stdout
@@ -264,20 +268,21 @@ def test_query_cmd_tree_no_relevant(mock_qbs):
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
 
-        with _mock_load_config(cfg):
-            query_cmd(
-                "Does not exist in this paper",
-                paper="test_paper",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                neighbors=0,
-                json_output=False,
-                jsonl=False,
-            )
+        ctx = _make_ctx(cfg)
+        query_cmd(
+            ctx,
+            "Does not exist in this paper",
+            paper="test_paper",
+            type_filter=None,
+            arg_type=None,
+            year_start=None,
+            year_end=None,
+            min_confidence=None,
+            limit=20,
+            neighbors=0,
+            json_output=False,
+            jsonl=False,
+        )
 
         output = sys.stdout.getvalue()
         sys.stdout = old_stdout
@@ -313,8 +318,8 @@ def test_query_cmd_tree_json_output(mock_qbs):
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
 
-        with _mock_load_config(cfg):
-            query_cmd("question", paper="test_paper", json_output=True)
+        ctx = _make_ctx(cfg)
+        query_cmd(ctx, "question", paper="test_paper", json_output=True)
 
         output = sys.stdout.getvalue()
         sys.stdout = old_stdout
@@ -337,12 +342,12 @@ def test_query_cmd_tree_paper_not_found():
 
         cfg = _make_minimal_config(f"{td}/test.db", str(papers_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                query_cmd("question", paper="nonexistent_paper")
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            query_cmd(ctx, "question", paper="nonexistent_paper")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_query_cmd_bm25_unchanged():
@@ -369,21 +374,22 @@ def test_query_cmd_bm25_unchanged():
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
 
-        with _mock_load_config(cfg):
-            # No --paper flag → should use BM25
-            query_cmd(
-                "sample",
-                paper=None,
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                neighbors=0,
-                json_output=False,
-                jsonl=False,
-            )
+        ctx = _make_ctx(cfg)
+        # No --paper flag → should use BM25
+        query_cmd(
+            ctx,
+            "sample",
+            paper=None,
+            type_filter=None,
+            arg_type=None,
+            year_start=None,
+            year_end=None,
+            min_confidence=None,
+            limit=20,
+            neighbors=0,
+            json_output=False,
+            jsonl=False,
+        )
 
         output = sys.stdout.getvalue()
         sys.stdout = old_stdout

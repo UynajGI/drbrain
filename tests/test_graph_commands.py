@@ -28,6 +28,13 @@ def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
     }
 
 
+def _make_ctx(cfg: dict):
+    """Create a minimal typer.Context mock with config pre-loaded."""
+    ctx = mock.MagicMock(spec=typer.Context)
+    ctx.obj = {"config": cfg}
+    return ctx
+
+
 def test_graph_neighbors_concept():
     """graph neighbors shows concept neighbors with path info."""
     with tempfile.TemporaryDirectory() as td:
@@ -51,15 +58,16 @@ def test_graph_neighbors_concept():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                neighbors_cmd(
-                    node_label="method_x",
-                    hops=1,
-                    relation=None,
-                    direction="both",
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            neighbors_cmd(
+                ctx,
+                node_label="method_x",
+                hops=1,
+                relation=None,
+                direction="both",
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -86,18 +94,19 @@ def test_graph_neighbors_node_not_found():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                try:
-                    neighbors_cmd(
-                        node_label="nonexistent",
-                        hops=1,
-                        relation=None,
-                        direction="both",
-                        json_output=False,
-                        workspace=None,
-                    )
-                except typer.Exit:
-                    pass
+            try:
+                ctx = _make_ctx(cfg)
+                neighbors_cmd(
+                    ctx,
+                    node_label="nonexistent",
+                    hops=1,
+                    relation=None,
+                    direction="both",
+                    json_output=False,
+                    workspace=None,
+                )
+            except typer.Exit:
+                pass
         finally:
             sys.stdout = old_stdout
 
@@ -128,14 +137,15 @@ def test_graph_path_direct_connection():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                path_cmd(
-                    src_label="method_x",
-                    dst_label="gap_y",
-                    max_length=6,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            path_cmd(
+                ctx,
+                src_label="method_x",
+                dst_label="gap_y",
+                max_length=6,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -172,14 +182,15 @@ def test_graph_path_two_hop():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                path_cmd(
-                    src_label="m1",
-                    dst_label="m3",
-                    max_length=6,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            path_cmd(
+                ctx,
+                src_label="m1",
+                dst_label="m3",
+                max_length=6,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -203,14 +214,15 @@ def test_graph_path_src_not_found():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                path_cmd(
-                    src_label="nonexistent",
-                    dst_label="anything",
-                    max_length=6,
-                    json_output=False,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            path_cmd(
+                ctx,
+                src_label="nonexistent",
+                dst_label="anything",
+                max_length=6,
+                json_output=False,
+                workspace=None,
+            )
             assert False, "Should have raised Exit"
         except Exception as e:
             assert hasattr(e, "exit_code") and e.exit_code == 1
@@ -244,14 +256,15 @@ def test_graph_path_no_path():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                path_cmd(
-                    src_label="m1",
-                    dst_label="g1",
-                    max_length=6,
-                    json_output=False,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            path_cmd(
+                ctx,
+                src_label="m1",
+                dst_label="g1",
+                max_length=6,
+                json_output=False,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -286,14 +299,15 @@ def test_graph_related_concepts():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "paper_b", "paper_c"],
-                    mode="concepts",
-                    min_shared=2,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "paper_b", "paper_c"],
+                mode="concepts",
+                min_shared=2,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -337,14 +351,15 @@ def test_graph_related_concepts_min_shared():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "paper_b", "paper_c"],
-                    mode="concepts",
-                    min_shared=3,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "paper_b", "paper_c"],
+                mode="concepts",
+                min_shared=3,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -381,14 +396,15 @@ def test_graph_related_edges():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "paper_b"],
-                    mode="edges",
-                    min_shared=2,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "paper_b"],
+                mode="edges",
+                min_shared=2,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -427,14 +443,15 @@ def test_graph_related_graph_mode():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "paper_b"],
-                    mode="graph",
-                    min_shared=2,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "paper_b"],
+                mode="graph",
+                min_shared=2,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -461,14 +478,15 @@ def test_graph_related_paper_not_found():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "nonexistent"],
-                    mode="concepts",
-                    min_shared=2,
-                    json_output=False,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "nonexistent"],
+                mode="concepts",
+                min_shared=2,
+                json_output=False,
+                workspace=None,
+            )
             assert False, "Should have raised Exit"
         except Exception as e:
             assert hasattr(e, "exit_code") and e.exit_code == 1
@@ -489,14 +507,15 @@ def test_graph_related_too_few_papers():
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a"],
-                    mode="concepts",
-                    min_shared=2,
-                    json_output=False,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a"],
+                mode="concepts",
+                min_shared=2,
+                json_output=False,
+                workspace=None,
+            )
             assert False, "Should have raised Exit"
         except Exception as e:
             assert hasattr(e, "exit_code") and e.exit_code == 1
@@ -525,14 +544,15 @@ def test_graph_related_no_shared():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.graph_commands.load_config", return_value=cfg):
-                related_cmd(
-                    paper_id=["paper_a", "paper_b"],
-                    mode="concepts",
-                    min_shared=2,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            related_cmd(
+                ctx,
+                paper_id=["paper_a", "paper_b"],
+                mode="concepts",
+                min_shared=2,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 

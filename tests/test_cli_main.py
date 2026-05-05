@@ -184,9 +184,10 @@ def test_app_queue_resolve_both_flags():
             "llm": {"models": []},
             "dirs": {"reports": str(reports_dir)},
         }
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-            try:
-                queue_resolve_cmd(1, accept=True, reject=True)
-                assert False, "Should have raised"
-            except Exception:
-                pass  # typer.Exit is expected
+        ctx = mock.MagicMock()
+        ctx.obj = {"config": cfg}
+        try:
+            queue_resolve_cmd(ctx, 1, accept=True, reject=True)
+            assert False, "Should have raised"
+        except Exception:
+            pass  # typer.Exit is expected

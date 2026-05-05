@@ -223,8 +223,11 @@ def _make_minimal_config(db_path: str, papers_dir: str) -> dict:
     }
 
 
-def _mock_load_config(cfg: dict):
-    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
+def _make_ctx(cfg: dict):
+    """Create a minimal typer.Context mock with config pre-loaded."""
+    ctx = mock.MagicMock(spec=typer.Context)
+    ctx.obj = {"config": cfg}
+    return ctx
 
 
 def test_query_cmd_graph_relation_invalid():
@@ -241,27 +244,28 @@ def test_query_cmd_graph_relation_invalid():
 
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                query_cmd(
-                    text="test",
-                    neighbors=2,
-                    relation="bogus_relation",
-                    direction="both",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    json_output=False,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            query_cmd(
+                ctx,
+                text="test",
+                neighbors=2,
+                relation="bogus_relation",
+                direction="both",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                json_output=False,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_query_cmd_graph_direction_invalid():
@@ -278,27 +282,28 @@ def test_query_cmd_graph_direction_invalid():
 
         cfg = _make_minimal_config(db_path, str(papers_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                query_cmd(
-                    text="test",
-                    neighbors=2,
-                    relation=None,
-                    direction="sideways",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    json_output=False,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            query_cmd(
+                ctx,
+                text="test",
+                neighbors=2,
+                relation=None,
+                direction="sideways",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                json_output=False,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_query_cmd_graph_expansion_includes_concepts():
@@ -323,24 +328,28 @@ def test_query_cmd_graph_expansion_includes_concepts():
         old_stdout = sys.stdout
         capture = io.StringIO()
         sys.stdout = capture
+        ctx = _make_ctx(cfg)
+        old_stdout = sys.stdout
+        capture = io.StringIO()
+        sys.stdout = capture
         try:
-            with _mock_load_config(cfg):
-                query_cmd(
-                    text="method_x",
-                    neighbors=2,
-                    relation=None,
-                    direction="both",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    json_output=True,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
+            query_cmd(
+                ctx,
+                text="method_x",
+                neighbors=2,
+                relation=None,
+                direction="both",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                json_output=True,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -385,23 +394,24 @@ def test_query_cmd_graph_relation_filter():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with _mock_load_config(cfg):
-                query_cmd(
-                    text="method_x",
-                    neighbors=1,
-                    relation="addresses",
-                    direction="both",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    json_output=True,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            query_cmd(
+                ctx,
+                text="method_x",
+                neighbors=1,
+                relation="addresses",
+                direction="both",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                json_output=True,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -437,23 +447,24 @@ def test_query_cmd_graph_backward_compat():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with _mock_load_config(cfg):
-                query_cmd(
-                    text="method_x",
-                    neighbors=2,
-                    relation=None,
-                    direction="both",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    json_output=True,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            query_cmd(
+                ctx,
+                text="method_x",
+                neighbors=2,
+                relation=None,
+                direction="both",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                json_output=True,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -495,24 +506,25 @@ def test_query_cmd_hybrid_boost():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with _mock_load_config(cfg):
-                query_cmd(
-                    text="hub",
-                    neighbors=0,
-                    hybrid=True,
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    relation=None,
-                    direction="both",
-                    json_output=True,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            query_cmd(
+                ctx,
+                text="hub",
+                neighbors=0,
+                hybrid=True,
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                relation=None,
+                direction="both",
+                json_output=True,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -552,24 +564,25 @@ def test_query_cmd_hybrid_off_by_default():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with _mock_load_config(cfg):
-                query_cmd(
-                    text="method_x",
-                    neighbors=0,
-                    hybrid=False,
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    min_confidence=None,
-                    limit=20,
-                    relation=None,
-                    direction="both",
-                    json_output=True,
-                    jsonl=False,
-                    paper=None,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            query_cmd(
+                ctx,
+                text="method_x",
+                neighbors=0,
+                hybrid=False,
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                min_confidence=None,
+                limit=20,
+                relation=None,
+                direction="both",
+                json_output=True,
+                jsonl=False,
+                paper=None,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 

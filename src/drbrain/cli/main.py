@@ -50,12 +50,19 @@ app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 
 
 @app.callback()
-def _main_callback() -> None:
-    """Called before every command. Sets up logging."""
+def _main_callback(ctx: typer.Context) -> None:
+    """Called before every command. Sets up logging and loads config."""
     setup_logging()
-    # Log command invocation from argv
+    from drbrain.config import load_config
+    from drbrain.log import get_session_id
+
+    # Load config once, cache in context
+    ctx.ensure_object(dict)
+    ctx.obj["config"] = load_config()
+
+    # Log command invocation
     cmd = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(no args)"
-    logger.info(f"CLI invoked: {cmd}")
+    logger.info(f"CLI invoked [{get_session_id()}]: {cmd}")
 
 
 app.command("setup")(setup_cmd)

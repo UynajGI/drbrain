@@ -6,7 +6,7 @@ import json
 
 import typer
 
-from drbrain.cli.commands import _resolve_node_type, _resolve_workspace_papers, load_config
+from drbrain.cli.commands import _resolve_node_type, _resolve_workspace_papers
 from drbrain.graph.engine import GraphEngine
 from drbrain.storage.database import Database
 
@@ -15,6 +15,7 @@ graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
 
 @graph_app.command("neighbors")
 def neighbors_cmd(
+    ctx: typer.Context,
     node_label: str = typer.Argument(..., help="Concept label or paper ID"),
     hops: int = typer.Option(1, "--hops", "-n", help="Number of hops"),
     relation: str = typer.Option(
@@ -33,7 +34,7 @@ def neighbors_cmd(
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Traverse graph from a node, showing neighbors with path info."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     # Parse relation filter
@@ -147,6 +148,7 @@ def neighbors_cmd(
 
 @graph_app.command("path")
 def path_cmd(
+    ctx: typer.Context,
     src_label: str = typer.Argument(..., help="Source node label"),
     dst_label: str = typer.Argument(..., help="Destination node label"),
     max_length: int = typer.Option(6, "--max-length", help="Maximum path length (BFS cutoff)"),
@@ -156,7 +158,7 @@ def path_cmd(
     """Find shortest path between two nodes in the knowledge graph."""
     import networkx as nx
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     graph = GraphEngine()
@@ -259,6 +261,7 @@ def path_cmd(
 
 @graph_app.command("related")
 def related_cmd(
+    ctx: typer.Context,
     paper_id: list[str] = typer.Argument(..., help="Two or more paper local_id values"),
     mode: str = typer.Option(
         "concepts",
@@ -275,7 +278,7 @@ def related_cmd(
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Analyze shared concepts and connections across multiple papers."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     if len(paper_id) < 2:

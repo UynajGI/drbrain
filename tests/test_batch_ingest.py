@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import typer
+
 from drbrain.cli.commands import ingest_cmd
 from drbrain.extractor.concept import ExtractedConcepts
 from drbrain.parser.mineru_parser import ParsedPaper
@@ -35,6 +37,13 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
     }
 
 
+def _make_ctx(cfg: dict):
+    """Create a minimal typer.Context mock with config pre-loaded."""
+    ctx = mock.MagicMock(spec=typer.Context)
+    ctx.obj = {"config": cfg}
+    return ctx
+
+
 def _make_parsed_paper(idx: int = 0) -> ParsedPaper:
     """Create a dummy ParsedPaper with unique metadata."""
     return ParsedPaper(
@@ -63,12 +72,6 @@ def _make_concepts(idx: int = 0) -> ExtractedConcepts:
     return ExtractedConcepts(data)
 
 
-def _common_mocks(db_path: str, reports_dir: str):
-    """Return a context manager that mocks load_config."""
-    cfg = _make_minimal_config(db_path, reports_dir)
-    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
-
-
 def test_ingest_single_file():
     """ingest_cmd processes a single PDF file successfully."""
     with tempfile.TemporaryDirectory() as td:
@@ -79,12 +82,12 @@ def test_ingest_single_file():
         pdf_path = Path(td) / "test.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
+        ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
         with (
-            _common_mocks(str(db_path), str(reports_dir)),
             mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)),
             mock.patch("drbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)),
         ):
-            ingest_cmd([str(pdf_path)])
+            ingest_cmd(ctx, [str(pdf_path)])
 
         from drbrain.storage.database import Database
 
@@ -118,12 +121,12 @@ def test_ingest_directory():
             idx = call_idx[0] - 1  # Use the last assigned index
             return _make_concepts(idx)
 
+        ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
         with (
-            _common_mocks(str(db_path), str(reports_dir)),
             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
         ):
-            ingest_cmd([str(pdfs_dir)])
+            ingest_cmd(ctx, [str(pdfs_dir)])
 
         from drbrain.storage.database import Database
 
@@ -164,12 +167,12 @@ def test_ingest_skips_failed_papers():
             idx = paper_idx[0] - 1
             return _make_concepts(idx)
 
+        ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
         with (
-            _common_mocks(str(db_path), str(reports_dir)),
             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract),
             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
         ):
-            ingest_cmd([str(pdfs_dir)])
+            ingest_cmd(ctx, [str(pdfs_dir)])
 
         # Should have attempted all 3 files
         assert call_count == 3
@@ -206,12 +209,12 @@ def test_ingest_multiple_files():
             idx = call_idx[0] - 1
             return _make_concepts(idx)
 
+        ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
         with (
-            _common_mocks(str(db_path), str(reports_dir)),
             mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
             mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
         ):
-            ingest_cmd([str(pdf1), str(pdf2)])
+            ingest_cmd(ctx, [str(pdf1), str(pdf2)])
 
         from drbrain.storage.database import Database
 
@@ -228,9 +231,12 @@ def test_ingest_exits_when_no_pdfs():
     with tempfile.TemporaryDirectory() as td:
         empty_dir = Path(td) / "empty"
         empty_dir.mkdir()
+        db_path = Path(td) / "test.db"
 
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
         try:
-            ingest_cmd([str(empty_dir)])
+            ingest_cmd(ctx, [str(empty_dir)])
             assert False, "Should have raised Exit"
         except click.exceptions.Exit as e:
             assert e.exit_code == 1

@@ -34,8 +34,11 @@ def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
     }
 
 
-def _mock_load_config(cfg: dict):
-    return mock.patch("drbrain.cli.commands.load_config", return_value=cfg)
+def _make_ctx(cfg: dict):
+    """Create a minimal typer.Context mock with config pre-loaded."""
+    ctx = mock.MagicMock(spec=typer.Context)
+    ctx.obj = {"config": cfg}
+    return ctx
 
 
 # -- citations_cmd --
@@ -50,12 +53,12 @@ def test_citations_cmd_not_found():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                citations_cmd("nonexistent")
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            citations_cmd(ctx, "nonexistent")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_citations_cmd_invalid_type():
@@ -67,12 +70,12 @@ def test_citations_cmd_invalid_type():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                citations_cmd("nonexistent", "bogus")
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            citations_cmd(ctx, "nonexistent", "bogus")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_citations_cmd_success():
@@ -103,14 +106,12 @@ def test_citations_cmd_success():
         db.commit()
         db.close()
 
-        with (
-            _mock_load_config(cfg),
-            mock.patch(
-                "drbrain.storage.citation_graph.query_citation_graph",
-                return_value=fake_result,
-            ),
+        ctx = _make_ctx(cfg)
+        with mock.patch(
+            "drbrain.storage.citation_graph.query_citation_graph",
+            return_value=fake_result,
         ):
-            citations_cmd("p1")
+            citations_cmd(ctx, "p1")
 
 
 def test_citations_cmd_json_output():
@@ -137,14 +138,12 @@ def test_citations_cmd_json_output():
         db.commit()
         db.close()
 
-        with (
-            _mock_load_config(cfg),
-            mock.patch(
-                "drbrain.storage.citation_graph.query_citation_graph",
-                return_value=fake_result,
-            ),
+        ctx = _make_ctx(cfg)
+        with mock.patch(
+            "drbrain.storage.citation_graph.query_citation_graph",
+            return_value=fake_result,
         ):
-            citations_cmd("p1", "all", json_output=True)
+            citations_cmd(ctx, "p1", "all", json_output=True)
 
 
 # -- check_citations_cmd --
@@ -159,12 +158,12 @@ def test_check_citations_cmd_no_input():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                check_citations_cmd()
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            check_citations_cmd(ctx)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_check_citations_cmd_from_file():
@@ -196,8 +195,8 @@ def test_check_citations_cmd_from_file():
         tf = Path(td) / "test.txt"
         tf.write_text("According to Smith (2020)...")
 
+        ctx = _make_ctx(cfg)
         with (
-            _mock_load_config(cfg),
             mock.patch(
                 "drbrain.extractor.citation_check.extract_citations",
                 return_value=[
@@ -209,7 +208,7 @@ def test_check_citations_cmd_from_file():
                 return_value=fake_citations,
             ),
         ):
-            check_citations_cmd(file=str(tf))
+            check_citations_cmd(ctx, file=str(tf))
 
 
 def test_check_citations_cmd_json_output():
@@ -238,8 +237,8 @@ def test_check_citations_cmd_json_output():
         db.commit()
         db.close()
 
+        ctx = _make_ctx(cfg)
         with (
-            _mock_load_config(cfg),
             mock.patch(
                 "drbrain.extractor.citation_check.extract_citations",
                 return_value=[
@@ -251,7 +250,7 @@ def test_check_citations_cmd_json_output():
                 return_value=fake_citations,
             ),
         ):
-            check_citations_cmd("Smith (2020)", json_output=True)
+            check_citations_cmd(ctx, "Smith (2020)", json_output=True)
 
 
 # -- report_cmd --
@@ -263,12 +262,12 @@ def test_report_cmd_not_found():
 
     with tempfile.TemporaryDirectory() as td:
         cfg = _make_minimal_config("/tmp/x.db", str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            try:
-                report_cmd("nonexistent")
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            report_cmd(ctx, "nonexistent")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_report_cmd_displays_report():
@@ -316,8 +315,8 @@ def test_report_cmd_displays_report():
         (reports_dir / "p1.json").write_text(json.dumps(report_data))
 
         cfg = _make_minimal_config("/tmp/x.db", str(reports_dir))
-        with _mock_load_config(cfg):
-            report_cmd("p1")  # Should not raise
+        ctx = _make_ctx(cfg)
+        report_cmd(ctx, "p1")  # Should not raise
 
 
 # -- closure_cmd --
@@ -330,8 +329,8 @@ def test_closure_cmd_empty_graph():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            closure_cmd()  # Should not raise
+        ctx = _make_ctx(cfg)
+        closure_cmd(ctx)  # Should not raise
 
 
 def test_closure_cmd_with_edges():
@@ -350,8 +349,8 @@ def test_closure_cmd_with_edges():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            closure_cmd()
+        ctx = _make_ctx(cfg)
+        closure_cmd(ctx)
 
 
 # -- seed_cmd --
@@ -364,8 +363,8 @@ def test_seed_cmd_empty_graph():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            seed_cmd()
+        ctx = _make_ctx(cfg)
+        seed_cmd(ctx)
 
 
 # -- list_cmd --
@@ -378,8 +377,8 @@ def test_list_cmd_no_papers():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            list_cmd()  # Should not raise
+        ctx = _make_ctx(cfg)
+        list_cmd(ctx)  # Should not raise
 
 
 def test_list_cmd_with_papers():
@@ -395,8 +394,8 @@ def test_list_cmd_with_papers():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            list_cmd()
+        ctx = _make_ctx(cfg)
+        list_cmd(ctx)
 
 
 # -- stats_cmd --
@@ -409,8 +408,8 @@ def test_stats_cmd_empty_db():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            stats_cmd()
+        ctx = _make_ctx(cfg)
+        stats_cmd(ctx)
 
 
 def test_stats_cmd_with_data():
@@ -428,8 +427,8 @@ def test_stats_cmd_with_data():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            stats_cmd()
+        ctx = _make_ctx(cfg)
+        stats_cmd(ctx)
 
 
 # -- query_cmd --
@@ -442,18 +441,19 @@ def test_query_cmd_no_results():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            query_cmd(
-                "nonexistent concept",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                limit=20,
-                neighbors=0,
-                json_output=False,
-                jsonl=False,
-            )
+        ctx = _make_ctx(cfg)
+        query_cmd(
+            ctx,
+            "nonexistent concept",
+            type_filter=None,
+            arg_type=None,
+            year_start=None,
+            year_end=None,
+            limit=20,
+            neighbors=0,
+            json_output=False,
+            jsonl=False,
+        )
 
 
 def test_query_cmd_with_results():
@@ -470,19 +470,20 @@ def test_query_cmd_with_results():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            query_cmd(
-                "transformer",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
-                min_confidence=None,
-                limit=20,
-                neighbors=0,
-                json_output=False,
-                jsonl=False,
-            )
+        ctx = _make_ctx(cfg)
+        query_cmd(
+            ctx,
+            "transformer",
+            type_filter=None,
+            arg_type=None,
+            year_start=None,
+            year_end=None,
+            min_confidence=None,
+            limit=20,
+            neighbors=0,
+            json_output=False,
+            jsonl=False,
+        )
 
 
 # -- export_cmd --
@@ -501,8 +502,8 @@ def test_export_cmd_bibtex():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            export_cmd(local_id="p1", format="bib", json_output=True)
+        ctx = _make_ctx(cfg)
+        export_cmd(ctx, local_id="p1", format="bib", json_output=True)
 
 
 def test_export_cmd_unsupported_format():
@@ -512,11 +513,11 @@ def test_export_cmd_unsupported_format():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            try:
-                export_cmd(local_id="nonexistent", format="csv")
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            export_cmd(ctx, local_id="nonexistent", format="csv")
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 # -- queue_cmd --
@@ -529,8 +530,8 @@ def test_queue_cmd_empty():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            queue_cmd()
+        ctx = _make_ctx(cfg)
+        queue_cmd(ctx)
 
 
 def test_queue_cmd_with_items():
@@ -547,8 +548,8 @@ def test_queue_cmd_with_items():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            queue_cmd()
+        ctx = _make_ctx(cfg)
+        queue_cmd(ctx)
 
 
 # -- queue_resolve_cmd --
@@ -568,8 +569,8 @@ def test_queue_resolve_accept():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            queue_resolve_cmd(qid, accept=True, reject=False)
+        ctx = _make_ctx(cfg)
+        queue_resolve_cmd(ctx, qid, accept=True, reject=False)
 
 
 def test_queue_resolve_reject():
@@ -586,8 +587,8 @@ def test_queue_resolve_reject():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            queue_resolve_cmd(qid, accept=False, reject=True)
+        ctx = _make_ctx(cfg)
+        queue_resolve_cmd(ctx, qid, accept=False, reject=True)
 
 
 def test_queue_resolve_both_flags():
@@ -597,12 +598,12 @@ def test_queue_resolve_both_flags():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            try:
-                queue_resolve_cmd(1, accept=True, reject=True)
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            queue_resolve_cmd(ctx, 1, accept=True, reject=True)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_queue_resolve_neither_flag():
@@ -612,12 +613,12 @@ def test_queue_resolve_neither_flag():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            try:
-                queue_resolve_cmd(1, accept=False, reject=False)
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            queue_resolve_cmd(ctx, 1, accept=False, reject=False)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 # -- timeline_cmd --
@@ -630,8 +631,8 @@ def test_timeline_cmd_no_data():
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        with _mock_load_config(cfg):
-            timeline_cmd("NonexistentConcept")
+        ctx = _make_ctx(cfg)
+        timeline_cmd(ctx, "NonexistentConcept")
 
 
 def test_timeline_cmd_with_data():
@@ -649,8 +650,8 @@ def test_timeline_cmd_with_data():
         db.commit()
         db.close()
 
-        with _mock_load_config(cfg):
-            timeline_cmd("Transformer")
+        ctx = _make_ctx(cfg)
+        timeline_cmd(ctx, "Transformer")
 
 
 # -- JSON output --
@@ -663,8 +664,11 @@ def test_ingest_json_on_empty_dir():
     with tempfile.TemporaryDirectory() as td:
         empty_dir = Path(td) / "empty"
         empty_dir.mkdir()
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
         try:
-            ingest_cmd([str(empty_dir)], json_output=True)
+            ingest_cmd(ctx, [str(empty_dir)], json_output=True)
             assert False, "Should have raised Exit"
         except typer.Exit as e:
             assert e.exit_code == 1
@@ -765,31 +769,26 @@ def test_check_cmd_all_configured():
     """check_cmd passes when all dependencies and config are set."""
     from drbrain.cli.commands import check_cmd
 
-    with (
-        tempfile.TemporaryDirectory() as td,
-        mock.patch("drbrain.cli.commands.load_config") as mock_cfg,
-    ):
+    with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
         (Path(td) / "config.yaml").touch()
 
-        mock_cfg.return_value = _make_minimal_config(str(db_path), str(reports_dir))
-        check_cmd()  # Should not raise
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+        ctx = _make_ctx(cfg)
+        check_cmd(ctx)  # Should not raise
 
 
 def test_check_cmd_missing_config():
-    """check_cmd exits with code 1 when config.yaml is missing."""
+    """check_cmd exits with code 1 when config.yaml is missing (detected at filesystem level)."""
     from drbrain.cli.commands import check_cmd
 
-    with (
-        mock.patch(
-            "drbrain.cli.commands.load_config", side_effect=FileNotFoundError("Config not found")
-        ),
-        mock.patch("pathlib.Path.exists", return_value=False),
-    ):
+    cfg = _make_minimal_config("/tmp/test.db", "/tmp/reports")
+    ctx = _make_ctx(cfg)
+    with mock.patch("pathlib.Path.exists", return_value=False):
         try:
-            check_cmd()
+            check_cmd(ctx)
             assert False, "Should have raised Exit"
         except typer.Exit as e:
             assert e.exit_code == 1
@@ -799,10 +798,7 @@ def test_check_cmd_missing_llm_key():
     """check_cmd warns when LLM model has no API key."""
     from drbrain.cli.commands import check_cmd
 
-    with (
-        tempfile.TemporaryDirectory() as td,
-        mock.patch("drbrain.cli.commands.load_config") as mock_cfg,
-    ):
+    with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         reports_dir.mkdir()
@@ -812,8 +808,8 @@ def test_check_cmd_missing_llm_key():
         cfg["llm"]["models"] = [
             {"provider": "openai", "model": "gpt-4", "api_key": "", "base_url": None}
         ]
-        mock_cfg.return_value = cfg
-        check_cmd()  # Should warn, not raise
+        ctx = _make_ctx(cfg)
+        check_cmd(ctx)  # Should warn, not raise
 
 
 # -- repair_cmd --
@@ -828,12 +824,12 @@ def test_repair_cmd_no_args():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                repair_cmd(local_id=None, all=False, workspace=None)
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            repair_cmd(ctx, local_id=None, all=False, workspace=None)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 def test_repair_cmd_dry_run():
@@ -854,13 +850,13 @@ def test_repair_cmd_dry_run():
             {"field": "title", "old": "Test Paper", "new": "Fixed Title", "source": "crossref"}
         ]
 
-        with (
-            _mock_load_config(cfg),
-            mock.patch(
-                "drbrain.services.repair.repair_paper", return_value=fake_repairs
-            ) as mock_repair,
-        ):
-            repair_cmd(local_id="p1", all=False, workspace=None, dry_run=True, json_output=False)
+        ctx = _make_ctx(cfg)
+        with mock.patch(
+            "drbrain.services.repair.repair_paper", return_value=fake_repairs
+        ) as mock_repair:
+            repair_cmd(
+                ctx, local_id="p1", all=False, workspace=None, dry_run=True, json_output=False
+            )
             mock_repair.assert_called_once()
             assert mock_repair.call_args[1].get("dry_run") is True
 
@@ -874,7 +870,7 @@ def test_backup_cmd_list_empty():
 
     with mock.patch("drbrain.storage.backup.list_backups", return_value=[]):
         with mock.patch("typer.echo") as mock_echo:
-            backup_cmd(list_only=True, json_output=False)
+            backup_cmd(None, list_only=True, json_output=False)
             mock_echo.assert_any_call("No backups found.")
 
 
@@ -886,7 +882,7 @@ def test_import_cmd_invalid_source():
     from drbrain.cli.commands import import_cmd
 
     try:
-        import_cmd(source="xxx", path="dummy.bib")
+        import_cmd(None, source="xxx", path="dummy.bib")
         assert False, "Should have raised Exit"
     except typer.Exit as e:
         assert e.exit_code == 1
@@ -897,7 +893,7 @@ def test_import_cmd_file_not_found():
     from drbrain.cli.commands import import_cmd
 
     try:
-        import_cmd(source="zotero", path="/nonexistent/path/zotero.sqlite")
+        import_cmd(None, source="zotero", path="/nonexistent/path/zotero.sqlite")
         assert False, "Should have raised Exit"
     except typer.Exit as e:
         assert e.exit_code == 1
@@ -915,12 +911,12 @@ def test_translate_cmd_paper_not_found():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                translate_cmd(local_id="nonexistent")
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            translate_cmd(ctx, local_id="nonexistent")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 # -- analyze_cmd --
@@ -935,12 +931,12 @@ def test_analyze_cmd_no_args():
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
 
-        with _mock_load_config(cfg):
-            try:
-                analyze_cmd(local_id=None, workspace=None)
-                assert False, "Should have raised Exit"
-            except typer.Exit as e:
-                assert e.exit_code == 1
+        ctx = _make_ctx(cfg)
+        try:
+            analyze_cmd(ctx, local_id=None, workspace=None)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
 
 
 # -- clean_cmd --
@@ -960,7 +956,7 @@ def test_clean_cmd_empty_dirs():
                 "reports": f"{td}/reports",
             },
         }
-        with _mock_load_config(cfg):
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
             clean_cmd(force=True, config_path="config.yaml")
 
 
@@ -975,20 +971,21 @@ def test_query_cmd_no_results_message():
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
 
-        with _mock_load_config(cfg):
-            with mock.patch("typer.echo") as mock_echo:
-                query_cmd(
-                    "xyzzy_nonexistent_concept",
-                    type_filter=None,
-                    arg_type=None,
-                    year_start=None,
-                    year_end=None,
-                    limit=20,
-                    neighbors=0,
-                    json_output=False,
-                    jsonl=False,
-                )
-                mock_echo.assert_any_call("No results for: xyzzy_nonexistent_concept")
+        ctx = _make_ctx(cfg)
+        with mock.patch("typer.echo") as mock_echo:
+            query_cmd(
+                ctx,
+                "xyzzy_nonexistent_concept",
+                type_filter=None,
+                arg_type=None,
+                year_start=None,
+                year_end=None,
+                limit=20,
+                neighbors=0,
+                json_output=False,
+                jsonl=False,
+            )
+            mock_echo.assert_any_call("No results for: xyzzy_nonexistent_concept")
 
 
 def test_closure_cmd_dry_run_does_not_persist():
@@ -1021,8 +1018,8 @@ def test_closure_cmd_dry_run_does_not_persist():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-                closure_cmd(dry_run=True, json_output=True, workspace=None, rule=None)
+            ctx = _make_ctx(cfg)
+            closure_cmd(ctx, dry_run=True, json_output=True, workspace=None, rule=None)
         finally:
             sys.stdout = old_stdout
 
@@ -1073,13 +1070,14 @@ def test_closure_cmd_rule_filter():
         capture = io.StringIO()
         sys.stdout = capture
         try:
-            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-                closure_cmd(
-                    rule=["gap_addressed"],
-                    dry_run=True,
-                    json_output=True,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            closure_cmd(
+                ctx,
+                rule=["gap_addressed"],
+                dry_run=True,
+                json_output=True,
+                workspace=None,
+            )
         finally:
             sys.stdout = old_stdout
 
@@ -1109,13 +1107,14 @@ def test_closure_cmd_rule_invalid():
         }
 
         try:
-            with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-                closure_cmd(
-                    rule=["nonexistent_rule"],
-                    dry_run=True,
-                    json_output=False,
-                    workspace=None,
-                )
+            ctx = _make_ctx(cfg)
+            closure_cmd(
+                ctx,
+                rule=["nonexistent_rule"],
+                dry_run=True,
+                json_output=False,
+                workspace=None,
+            )
             assert False, "Should have raised Exit"
         except Exception as e:
             assert hasattr(e, "exit_code") and e.exit_code == 1
@@ -1148,13 +1147,14 @@ def test_closure_cmd_backward_compat():
             "bm25": {"k1": 1.5, "b": 0.75},
         }
 
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
-            closure_cmd(
-                rule=None,
-                dry_run=False,
-                json_output=False,
-                workspace=None,
-            )
+        ctx = _make_ctx(cfg)
+        closure_cmd(
+            ctx,
+            rule=None,
+            dry_run=False,
+            json_output=False,
+            workspace=None,
+        )
 
         db = Database(db_path)
         edge_count_after = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]

@@ -31,6 +31,7 @@ console = Console()
 
 
 def ingest_cmd(
+    ctx: typer.Context,
     paths: list[str] = typer.Argument(
         None, help="PDF file(s) or directory. Defaults to data/spool/inbox/."
     ),
@@ -43,8 +44,8 @@ def ingest_cmd(
     Accepts single file, multiple files, or a directory of PDFs.
     Defaults to data/spool/inbox/ when no paths provided.
     """
+    cfg = ctx.obj["config"]
     if not paths:
-        cfg = load_config()
         # Expose API tokens to libraries that read them from environment
         import os as _os
 
@@ -72,7 +73,6 @@ def ingest_cmd(
             typer.echo("No PDF files found.", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
     db = Database(cfg["db"]["path"])
     dedup = DedupEngine(db)
 
@@ -516,6 +516,7 @@ def _enrich_doi_from_openalex(
 
 
 def citations_cmd(
+    ctx: typer.Context,
     local_id: str = typer.Argument(..., help="Paper local_id"),
     ctype: str = typer.Option(
         "all", "--type", "-t", help="Query type: refs, citing, shared-refs, all"
@@ -543,7 +544,7 @@ def citations_cmd(
         typer.echo("Type must be: refs, citing, shared-refs, all", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     paper = db.get_paper(local_id)
@@ -603,6 +604,7 @@ def citations_cmd(
 
 
 def check_citations_cmd(
+    ctx: typer.Context,
     text: str = typer.Argument(None, help="Text to check citations in"),
     file: str = typer.Option(None, "--file", "-f", help="Read text from file"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
@@ -623,7 +625,7 @@ def check_citations_cmd(
         typer.echo("Provide text or use --file", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     from drbrain.extractor.citation_check import extract_citations, match_citations
@@ -660,11 +662,12 @@ def check_citations_cmd(
 
 
 def report_cmd(
+    ctx: typer.Context,
     local_id: str,
     json_output: bool = typer.Option(False, "--json", help="Output full report JSON to stdout"),
 ):
     """Display single-paper report."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     report_dir = Path(cfg["dirs"]["reports"])
     report_path = report_dir / f"{local_id}.json"
     if not report_path.exists():
@@ -702,6 +705,7 @@ def report_cmd(
 
 
 def closure_cmd(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Output inferred edges but do not persist to database"
@@ -743,7 +747,7 @@ def closure_cmd(
             typer.echo(f"Valid rules: {', '.join(sorted(valid_rules))}", err=True)
             raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     paper_ids = _resolve_workspace_papers(workspace)
@@ -780,11 +784,12 @@ def closure_cmd(
 
 
 def seed_cmd(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Detect research seeds from graph patterns."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     paper_ids = _resolve_workspace_papers(workspace)
@@ -804,10 +809,11 @@ def seed_cmd(
 
 
 def list_cmd(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """List all papers in database."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     papers = db.get_all_papers()
     db.close()
@@ -831,11 +837,12 @@ def list_cmd(
 
 
 def stats_cmd(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Database statistics."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     ph_counts = 0
     if workspace:
@@ -933,6 +940,7 @@ def stats_cmd(
 
 
 def query_cmd(
+    ctx: typer.Context,
     text: str,
     type_filter: str = typer.Option(
         None, "--type-filter", help="Filter by concept type (Problem, Method, etc.)"
@@ -974,7 +982,7 @@ def query_cmd(
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
     """Query concepts and arguments with BM25 + filters, or use PageIndex tree retrieval."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
 
     # --- Tree retrieval path ---
     # Normalize: when called directly (not through typer CLI), OptionInfo is still the default
@@ -1273,6 +1281,7 @@ def query_cmd(
 
 
 def export_cmd(
+    ctx: typer.Context,
     local_id: str = typer.Argument(None, help="Paper local_id"),
     format: str = typer.Option("bib", "--format", "-f", help="Export format: bib, ris, md"),
     all: bool = typer.Option(False, "--all", help="Export all papers"),
@@ -1291,7 +1300,7 @@ def export_cmd(
         typer.echo(f"Unknown format: {format}. Use bib, ris, or md.", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     if all:
@@ -1359,10 +1368,11 @@ def _export_paper_to_meta(db: Database, local_id: str) -> dict:
 
 
 def queue_cmd(
+    ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """List all pending confidence queue items."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     pending = db.get_queue_pending()
     db.close()
@@ -1400,6 +1410,7 @@ def queue_cmd(
 
 
 def queue_resolve_cmd(
+    ctx: typer.Context,
     queue_id: int,
     accept: bool = typer.Option(False, "--accept", help="Accept the queue item"),
     reject: bool = typer.Option(False, "--reject", help="Reject the queue item"),
@@ -1421,7 +1432,7 @@ def queue_resolve_cmd(
             typer.echo("Error: specify --accept or --reject", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     from drbrain.extractor.queue import resolve_accept, resolve_reject
@@ -1443,6 +1454,7 @@ def queue_resolve_cmd(
 
 
 def queue_resolve_all_cmd(
+    ctx: typer.Context,
     accept: bool = typer.Option(False, "--accept", help="Accept all pending items"),
     reject: bool = typer.Option(False, "--reject", help="Reject all pending items"),
     type_filter: str = typer.Option(
@@ -1469,7 +1481,7 @@ def queue_resolve_all_cmd(
             typer.echo("Error: specify --accept or --reject", err=True)
         raise typer.Exit(1)
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     from drbrain.extractor.queue import resolve_all
@@ -1503,11 +1515,12 @@ def queue_resolve_all_cmd(
 
 
 def timeline_cmd(
+    ctx: typer.Context,
     concept: str,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Show concept evolution over time."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     evolution = db.get_concept_evolution(concept)
 
@@ -1564,6 +1577,7 @@ def timeline_cmd(
 
 
 def delete_cmd(
+    ctx: typer.Context,
     local_id: str,
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     rm_files: bool = typer.Option(False, "--rm-files", help="Also delete paper directory"),
@@ -1572,7 +1586,7 @@ def delete_cmd(
     """Delete a paper and all its associated data from the graph."""
     import shutil as _shutil
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     paper = db.get_paper(local_id)
@@ -1619,6 +1633,7 @@ def delete_cmd(
 
 
 def backup_cmd(
+    ctx: typer.Context,
     output: str = typer.Option(None, "--output", "-o", help="Custom output path"),
     list_only: bool = typer.Option(False, "--list", help="List existing backups"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
@@ -1645,7 +1660,7 @@ def backup_cmd(
             typer.echo(f"  {b.name} ({size_mb:.1f} MB)")
         return
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     db_path = Path(cfg.get("db", {}).get("path", "data/drbrain.db"))
     backup_dir = Path(cfg.get("dirs", {}).get("backups", "data/backups"))
@@ -1681,13 +1696,14 @@ def backup_cmd(
 
 
 def lineage_cmd(
+    ctx: typer.Context,
     author_id: str = typer.Argument(None, help="OpenAlex author ID (e.g., A5023806754)"),
     list_all: bool = typer.Option(False, "--list", help="List all actors with paper counts"),
     name: str = typer.Option(None, "--name", "-n", help="Search actors by display name"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
     """Explore author/research lineage via OpenAlex deduplicated IDs."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     if list_all:
@@ -1800,8 +1816,7 @@ def _show_actor(cfg: dict, author_id: str) -> None:
     if connected_papers:
         typer.echo(f"\nShared actor connections ({len(connected_papers)}):")
         # Resolve connected papers to their actors
-        cfg2 = load_config()
-        db2 = Database(cfg2["db"]["path"])
+        db2 = Database(cfg["db"]["path"])
         for pid in connected_papers:
             paper = db2.get_paper(pid)
             title = paper["title"][:80] if paper else pid
@@ -1819,11 +1834,13 @@ def _show_actor(cfg: dict, author_id: str) -> None:
         db2.close()
 
 
-def check_cmd():
+def check_cmd(ctx: typer.Context):
     """Check dependencies, configuration, and environment variables."""
     console = Console()
     warnings = []
     errors = []
+
+    cfg = ctx.obj["config"]
 
     console.print("\n[bold]DrBrain — Dependency & Configuration Check[/bold]\n")
 
@@ -1906,10 +1923,8 @@ def check_cmd():
             "No config.local.yaml — using base config values (env var placeholders unresolved)"
         )
 
-    # Load config and check key values
+    # Check key values in config
     try:
-        cfg = load_config()
-
         console.print("\n[bold]API Keys & Tokens[/bold]")
         table4 = Table(show_header=False, box=None, padding=(0, 2))
 
@@ -1966,7 +1981,6 @@ def check_cmd():
     console.print("\n[bold]Directories[/bold]")
     table5 = Table(show_header=False, box=None, padding=(0, 2))
     try:
-        cfg = load_config()
         dirs_config = cfg.get("dirs", {})
         dir_paths = (
             list(dirs_config.values())
@@ -2000,7 +2014,6 @@ def check_cmd():
     console.print("\n[bold]Database[/bold]")
     table6 = Table(show_header=False, box=None, padding=(0, 2))
     try:
-        cfg = load_config()
         db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
         p = Path(db_path)
         if p.exists():
@@ -2019,7 +2032,6 @@ def check_cmd():
     console.print("\n[bold]Library[/bold]")
     table_lib = Table(show_header=False, box=None, padding=(0, 2))
     try:
-        cfg = load_config()
         db = Database(cfg["db"]["path"])
         paper_count = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
         concept_count = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
@@ -2063,7 +2075,6 @@ def check_cmd():
     console.print("\n[bold]API Connectivity[/bold]")
     table_api = Table(show_header=False, box=None, padding=(0, 2))
     try:
-        cfg = load_config()
         mineru_token = cfg.get("mineru", {}).get("token", "")
         if mineru_token and not mineru_token.startswith("${"):
             import urllib.request as _urllib
@@ -2188,6 +2199,7 @@ def check_cmd():
 
 
 def analyze_cmd(
+    ctx: typer.Context,
     local_id: str = typer.Argument(None, help="Paper local_id (single paper mode)"),
     papers: str = typer.Option(None, "--papers", help="Comma-separated paper IDs"),
     query: str = typer.Option(None, "--query", help="BM25 search query to select papers"),
@@ -2222,7 +2234,7 @@ def analyze_cmd(
 
     from drbrain.report.analyzer import analyze_paper
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     llm_models = cfg.get("llm", {}).get("models", [])
@@ -2589,6 +2601,7 @@ def ws_rename_cmd(
 
 
 def repair_cmd(
+    ctx: typer.Context,
     local_id: str = typer.Argument(None, help="Paper local_id"),
     all: bool = typer.Option(False, "--all", help="Repair all papers"),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
@@ -2598,7 +2611,7 @@ def repair_cmd(
     """Repair paper metadata via CrossRef, arXiv, and OpenAlex."""
     from drbrain.services.repair import repair_paper
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     if all or workspace:
@@ -2651,6 +2664,7 @@ def repair_cmd(
 
 
 def import_cmd(
+    ctx: typer.Context,
     source: str = typer.Argument(..., help="Source type: zotero or bibtex"),
     path: str = typer.Argument(..., help="Path to zotero.sqlite or .bib file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview only"),
@@ -2698,7 +2712,7 @@ def import_cmd(
                 )
         return
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     imported = []
     for paper in papers:
@@ -2739,6 +2753,7 @@ def import_cmd(
 
 
 def translate_cmd(
+    ctx: typer.Context,
     local_id: str = typer.Argument(..., help="Paper local_id"),
     target_lang: str = typer.Option(
         "zh", "--lang", "-l", help="Target language code: zh, en, ja, etc."
@@ -2749,7 +2764,7 @@ def translate_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
     """Translate a paper's markdown via LLM."""
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     paper = db.get_paper(local_id)
@@ -2819,6 +2834,7 @@ def translate_cmd(
 
 
 def build_cmd(
+    ctx: typer.Context,
     paper_id: list[str] = typer.Argument(
         None, help="Paper IDs to build graph for. Omit for all unprocessed."
     ),
@@ -2830,7 +2846,7 @@ def build_cmd(
     """Build knowledge graph from ingested papers using 5-stage LLM extraction."""
     from drbrain.extractor.concept import build_graph_from_tree
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
     # Select papers to process
@@ -2970,6 +2986,7 @@ def build_cmd(
 
 
 def embed_cmd(
+    ctx: typer.Context,
     dim: int = typer.Option(128, "--dim", help="Embedding dimension"),
     epochs: int = typer.Option(100, "--epochs", help="Training epochs"),
     retrain: bool = typer.Option(False, "--retrain", help="Force retrain"),
@@ -2977,7 +2994,7 @@ def embed_cmd(
     """Train TransE graph embeddings for link prediction and similarity."""
     from drbrain.graph.embedding import TransE
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     graph.load_from_db(db)
@@ -3009,12 +3026,13 @@ def embed_cmd(
 
 
 def reason_cmd(
+    ctx: typer.Context,
     question: str = typer.Argument(..., help="Question to reason about using the knowledge graph"),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     from drbrain.extractor.reasoner import ReasonerAgent
 
-    cfg = load_config()
+    cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     graph.load_from_db(db)
