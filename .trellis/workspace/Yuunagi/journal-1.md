@@ -161,3 +161,37 @@ Fix OpenAlex enrichment in repair (authors, abstract, citation_count, volume, pa
 ### Next Steps
 
 - None - task complete
+
+
+## Session 5: PyPI publish + skills completeness + docs
+
+**Date**: 2026-05-05
+**Task**: PyPI publish + skills completeness + docs
+**Branch**: `main`
+
+### Summary
+
+PyPI publish: build config (hatchling, classifiers, urls), publish workflow (tag→TestPyPI, release→PyPI). Skills: 7 new skills (show/export/audit/translate/graph/import/index), clawhub.yaml now 12 total. Docs: getting-started (pipx/uvx, cross-platform ~/DrBrain/), CLI reference (35+ commands), architecture (TBox/RBox, reasoning modules), contributing (codebase tour).
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `704b545` | (see git log) |
+| `6e0b1ed` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
