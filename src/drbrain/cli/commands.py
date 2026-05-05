@@ -3285,6 +3285,9 @@ def build_cmd(
     paper_id: list[str] = typer.Argument(
         None, help="Paper IDs to build graph for. Omit for all unprocessed."
     ),
+    all_papers: bool = typer.Option(
+        False, "--all", help="Build graph for all papers in the database"
+    ),
     skip_refine: bool = typer.Option(
         False, "--skip-refine", help="Skip iterative refinement stage"
     ),
@@ -3297,7 +3300,9 @@ def build_cmd(
     db = Database(cfg["db"]["path"])
 
     # Select papers to process
-    if paper_id:
+    if all_papers:
+        papers = db.get_all_papers()
+    elif paper_id:
         papers = []
         for pid in paper_id:
             p = db.get_paper(pid)
