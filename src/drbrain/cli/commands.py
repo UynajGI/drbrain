@@ -3418,8 +3418,6 @@ def build_cmd(
         typer.echo(f"  Valid: {valid_count} | Rejected: {rejected}")
         all_results.append({"paper_id": pid, "concepts": valid_count, "relations": len(relations)})
 
-    db.close()
-
     if json_output:
         typer.echo(json.dumps({"results": all_results}, indent=2, ensure_ascii=False))
     elif all_results:
@@ -3435,6 +3433,8 @@ def build_cmd(
         typer.echo(
             f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers"
         )
+
+    db.close()
 
 
 def embed_cmd(
