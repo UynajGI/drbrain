@@ -71,13 +71,6 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 - **Editable install**: `uv pip install -e .` once after `uv sync` if `ModuleNotFoundError: No module named 'drbrain'`.
 - **typer OptionInfo**: In tests, typer `Option` defaults appear as `OptionInfo` objects — use `isinstance(param, typer.models.OptionInfo)` to extract `.default`.
 
-## Guidelines
-
-1. **Use code-review-graph MCP tools first** for code exploration (semantic_search_nodes, query_graph, detect_changes) — fall back to Grep/Read only when the graph doesn't cover it.
-2. **Surgical changes**: touch only what the task requires. Don't refactor adjacent code. Match existing style.
-3. **Simplicity first**: no abstractions for single-use, no speculative features, no error handling for impossible states.
-4. **Goal-driven**: define verifiable success criteria before implementing. Write the test first, then make it pass.
-
 ## Behavioral Guidelines
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.

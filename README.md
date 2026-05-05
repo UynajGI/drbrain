@@ -40,6 +40,7 @@ uv run drbrain analyze <id> --full  # knowledge frontier analysis
 | `drbrain import` | Import from Zotero or BibTeX | ✅ |
 | `drbrain translate` | Translate paper markdown via LLM | — |
 | `drbrain audit` | Data quality scan (15 rules, severity-graded) | ✅ |
+| `drbrain ask` | Natural language KGQA (BM25 → graph traversal → LLM answer) | ✅ |
 | `drbrain show` | Detailed single-paper view (metadata, concepts, edges) | ✅ |
 | `drbrain index` | Rebuild BM25 search index | ✅ |
 | `drbrain graph query` | Complex embedding-based queries (project/intersect/union) | ✅ |
