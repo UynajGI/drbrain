@@ -38,3 +38,7 @@ docs/superpowers/skills/
 
 # Learning notes (open source project studies)
 docs/learn/
+# Added by code-review-graph
+.code-review-graph/
+.mcp.json
+.claude/
