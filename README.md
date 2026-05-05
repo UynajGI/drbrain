@@ -23,13 +23,13 @@ find research gaps, and infer new relationships through rule-based reasoning.
 ## Quick Start
 
 ```bash
-pip install drbrain
+pipx install drbrain     # or: uvx drbrain
 drbrain setup
 ```
 
-`drbrain setup` detects your AI platforms and injects agent entries so your coding
-agent can use DrBrain skills directly. Then drop PDFs into `data/spool/inbox/` and
-let your agent take it from there — or use the CLI yourself.
+This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on macOS/Linux,
+`%USERPROFILE%/DrBrain` on Windows). `drbrain setup` detects your AI platforms and injects
+agent entries so your coding agent can use DrBrain skills directly.
 
 ## What It Does
 
@@ -46,6 +46,13 @@ let your agent take it from there — or use the CLI yourself.
 | **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
 | **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
 | **Audit** | Data quality scan | 15 severity-graded rules, PDF pre-validation, ingest quality gates |
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) -- from install to first query
+- [CLI Reference](docs/cli-reference.md) -- all commands with examples
+- [Architecture](docs/architecture.md) -- system design and reasoning modules
+- [Contributing](docs/contributing.md) -- how to add commands, modules, and skills
 
 ## Works With Your Agent
 

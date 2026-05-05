@@ -1,0 +1,658 @@
+# CLI Reference
+
+All DrBrain commands, grouped by function. Every command supports `--json` for machine-readable output unless otherwise noted.
+
+---
+
+## Setup and Maintenance
+
+### `drbrain setup`
+
+Initialize DrBrain -- generate config, create directories, validate environment.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--quick` | `-q` | Skip interactive prompts, use defaults |
+
+```bash
+drbrain setup
+drbrain setup --quick
+```
+
+### `drbrain check`
+
+Check dependencies, configuration, and environment variables. Reports package versions, external tool availability, API connectivity, and data directory status.
+
+```bash
+drbrain check
+```
+
+### `drbrain audit`
+
+Scan the library for data quality issues using 15 severity-graded rules.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--severity` | `-s` | Minimum severity: `error`, `warning`, `info` (default: `warning`) |
+| `--workspace` | `-w` | Limit audit to a workspace |
+| `--json` | `-j` | Output as JSON |
+
+```bash
+drbrain audit
+drbrain audit --severity error
+drbrain audit --workspace nlp --json
+```
+
+### `drbrain clean`
+
+Clear data directories (database, cache, logs, papers, reports). Keeps inbox PDFs intact.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--force` | `-f` | Skip confirmation prompt |
+| `--config` | `-c` | Config file path (default: `config.yaml`) |
+
+```bash
+drbrain clean --force
+```
+
+---
+
+## Ingestion
+
+### `drbrain ingest`
+
+Parse PDFs, extract metadata from 5 sources, and build section tree. Accepts PDF files, directories, or defaults to `data/spool/inbox/`.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output machine-readable JSON |
+
+```bash
+drbrain ingest                           # all PDFs in inbox
+drbrain ingest paper.pdf                 # single file
+drbrain ingest dir1/ dir2/               # multiple directories
+drbrain ingest paper1.pdf paper2.pdf     # multiple files
+drbrain ingest --json                    # JSON output for pipelines
+```
+
+### `drbrain build`
+
+Extract concepts and relations via 5-stage LLM pipeline. Processes all `uploaded` papers by default.
+
+| Flag | Description |
+|------|-------------|
+| `--all` | Build graph for all papers in database |
+| `--skip-refine` | Skip iterative refinement stage (saves LLM cost) |
+| `--json` | Output JSON |
+
+```bash
+drbrain build                      # all unprocessed papers
+drbrain build p6a321e              # single paper
+drbrain build p6a321e p3b452c      # multiple papers
+drbrain build --all                # re-extract everything
+drbrain build --skip-refine        # faster, less polished
+drbrain build p6a321e --json
+```
+
+---
+
+## Query and Search
+
+### `drbrain query`
+
+Query concepts and arguments with BM25 keyword search and optional graph enhancement.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--type-filter` | | Filter by concept type (Problem, Method, etc.) |
+| `--arg-type` | | Filter by argument claim type |
+| `--year-start` | | Minimum year |
+| `--year-end` | | Maximum year |
+| `--min-confidence` | | Minimum confidence threshold |
+| `--limit` | | Maximum results (default: 20) |
+| `--neighbors` | `-n` | Expand results by N hops of graph traversal |
+| `--relation` | `-R` | Comma-separated relation types to follow |
+| `--direction` | `-D` | Traversal direction: forward, backward, both (default: both) |
+| `--hybrid` | | Boost results by graph centrality (PageRank) |
+| `--paper` | | Paper local_id for PageIndex tree retrieval |
+| `--workspace` | `-w` | Limit to workspace |
+| `--json` / `--jsonl` | | Output format |
+
+```bash
+drbrain query "transformer attention"
+drbrain query "deep learning" --type-filter Method --year-start 2020
+drbrain query "reinforcement learning" --neighbors 2 --hybrid
+drbrain query "residual connections" --paper p6a321e
+drbrain query "model compression" --workspace ml-systems --json
+```
+
+### `drbrain ask`
+
+Ask a natural language question -- retrieves relevant concepts from the KG and generates a concise answer with citations.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--top` | `-k` | Number of graph concepts to retrieve (default: 5) |
+| `--json` | | Output JSON |
+
+```bash
+drbrain ask "Is attention better than CNN for NLP?"
+drbrain ask "What causes catastrophic forgetting?" --top 10 --json
+```
+
+### `drbrain index`
+
+Build or rebuild the BM25 search index. Run this after adding or modifying papers if query results seem stale.
+
+| Flag | Description |
+|------|-------------|
+| `--rebuild` | Force full index rebuild |
+| `--json` | Output JSON |
+
+```bash
+drbrain index
+drbrain index --rebuild
+drbrain index --rebuild --json
+```
+
+---
+
+## Graph Exploration
+
+### `drbrain graph neighbors`
+
+Traverse the graph from a node, showing neighbors with path information.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--hops` | `-n` | Number of hops (default: 1) |
+| `--relation` | `-R` | Comma-separated relation types to filter by |
+| `--direction` | `-D` | forward, backward, or both (default: both) |
+| `--json` | | Output JSON |
+| `--workspace` | `-w` | Limit to workspace |
+
+```bash
+drbrain graph neighbors Attention
+drbrain graph neighbors "Transformer" --hops 2
+drbrain graph neighbors "Curriculum Learning" --relation extends,addresses --direction forward
+drbrain graph neighbors p6a321e --workspace nlp --json
+```
+
+### `drbrain graph path`
+
+Find the shortest path between two nodes in the knowledge graph.
+
+| Flag | Description |
+|------|-------------|
+| `--max-length` | Maximum path length (default: 6) |
+| `--json` | Output JSON |
+| `--workspace` | `-w` | Limit to workspace |
+
+```bash
+drbrain graph path Attention "Transformer"
+drbrain graph path "Dropout" "Batch Normalization" --max-length 4 --json
+```
+
+### `drbrain graph related`
+
+Analyze shared concepts and connections across multiple papers.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--mode` | `-m` | Analysis mode: `concepts` (SQL label intersection), `graph` (1-hop neighbor intersection), `edges` (shared edge patterns) |
+| `--min-shared` | | Minimum number of papers a concept must appear in (default: 2) |
+| `--json` | | Output JSON |
+| `--workspace` | `-w` | Limit to workspace |
+
+```bash
+drbrain graph related p6a321e p3b452c
+drbrain graph related p6a321e p3b452c p9c781d --mode edges --min-shared 3
+drbrain graph related p6a321e p3b452c --mode graph --json
+```
+
+### `drbrain graph describe`
+
+Generate a natural language description of the subgraph centered on a node.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--depth` | `-n` | Number of hops to traverse (default: 1) |
+| `--json` | | Output JSON |
+| `--workspace` | `-w` | Limit to workspace |
+
+```bash
+drbrain graph describe Attention
+drbrain graph describe "Reinforcement Learning" --depth 2
+```
+
+### `drbrain graph query`
+
+Execute embedding-based complex queries over TransE embeddings. Requires trained embeddings (`drbrain embed`).
+
+**Query DSL types:** `project`, `intersect`, `union`, `negate`
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--top` | `-k` | Number of results (default: 10) |
+| `--json` | | Output JSON |
+
+```bash
+drbrain graph query '{"type":"project","entity":"Attention","relation":"addresses"}'
+drbrain graph query '{"type":"intersect","queries":[{"type":"project","entity":"LLM","relation":"addresses"},{"type":"project","entity":"Scaling","relation":"addresses"}]}' --top 5 --json
+```
+
+### `drbrain graph traverse-from`
+
+Traverse the graph starting from a section title.
+
+```bash
+drbrain graph traverse-from "Related Work" --depth 2
+drbrain graph traverse-from "Experiments" --direction forward --json
+```
+
+---
+
+## Citations
+
+### `drbrain citations`
+
+Query the citation graph for a paper: references, citing papers, and shared-reference analysis.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--type` | `-t` | Query type: `refs`, `citing`, `shared-refs`, `all` (default: `all`) |
+| `--limit` | `-l` | Max results per type (default: 200) |
+| `--sort` | `-s` | Sort: `cited_by_count:desc`, `publication_date:desc`, `relevance_score:desc` |
+| `--workspace` | `-w` | Limit to workspace |
+| `--json` | | Output JSON |
+
+```bash
+drbrain citations p6a321e
+drbrain citations p6a321e --type citing --sort publication_date:desc
+drbrain citations p6a321e --type shared-refs --workspace nlp
+```
+
+### `drbrain check-citations`
+
+Verify in-text citations against your local library. Extracts (Author, Year) patterns from text and matches them.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--file` | `-f` | Read text from file |
+| `--json` | | Output JSON |
+
+```bash
+drbrain check-citations "Transformer (Vaswani et al., 2017) introduced..."
+drbrain check-citations --file draft.md --json
+```
+
+---
+
+## Analysis
+
+### `drbrain analyze`
+
+Run a knowledge frontier analysis including research seeds, causal chains, hypotheses, and cross-domain patterns.
+
+**Paper selection (mutually exclusive, first match wins):**
+- `<local_id>` -- single paper
+- `--papers p1,p2,...` -- specific papers
+- `--query "text"` -- BM25 search then analyze matches
+- `--discover "question"` -- LLM graph exploration to find relevant papers
+- `--workspace ws` -- all papers in workspace
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--papers` | | Comma-separated paper IDs |
+| `--query` | | BM25 search query |
+| `--discover` | | LLM graph discovery question |
+| `--workspace` | `-w` | Workspace boundary scan |
+| `--full` | `-f` | Full analysis (slower, more thorough) |
+| `--json` | | Output JSON |
+
+```bash
+drbrain analyze p6a321e --full
+drbrain analyze --papers p6a321e,p3b452c --full
+drbrain analyze --query "large language models" --full
+drbrain analyze --discover "knowledge distillation in NLP"
+drbrain analyze --workspace nlp --full --json
+```
+
+### `drbrain seed`
+
+Detect research seeds from graph patterns. Seeds include stale problems, unaddressed gaps, debate zones, technology cliffs, and confidence collapse patterns.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--workspace` | `-w` | Limit to workspace |
+| `--json` | | Output JSON |
+
+```bash
+drbrain seed
+drbrain seed --workspace cv --json
+```
+
+### `drbrain closure`
+
+Run rule-based closure on the full graph to infer new edges via symbolic or hybrid inference.
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Output inferred edges but do not persist to database |
+| `--rule` | Run only named rule(s). Repeatable. Omit for all. |
+| `--workspace` | `-w` | Limit to workspace |
+| `--mode` | Inference mode: `symbolic` or `hybrid` (default: `symbolic`) |
+| `--mine-rules` | Mine path rules from TransE embeddings |
+| `--min-confidence` | Minimum confidence for mined rules (default: 0.6) |
+| `--ground` | Ground transitive rules as concrete triples (t-norm) |
+| `--json` | Output JSON |
+
+**Available rules:** `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, `transitive_closure`, `asymmetric_violations`, `method_supersedes_problem`, `challenge_chain`, `gap_inheritance`, `indirect_support`
+
+```bash
+drbrain closure
+drbrain closure --rule transitive_closure --rule challenge_chain
+drbrain closure --mode hybrid --workspace nlp
+drbrain closure --dry-run --json
+drbrain closure --mine-rules --min-confidence 0.7 --ground
+```
+
+### `drbrain reason`
+
+LLM agent that reasons over the knowledge graph using tool-calling. The agent has access to `search_concepts`, `get_neighbors`, and `find_path` tools.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--bidirectional` | `-b` | Use bidirectional LLM-KG iterative reasoning (validates hypotheses against graph constraints) |
+| `--max-rounds` | `-r` | Maximum hypothesis-revision rounds (default: 3) |
+
+```bash
+drbrain reason "What are the main approaches to reducing hallucination?"
+drbrain reason "Is dropout effective for transformer regularization?" --bidirectional --max-rounds 5
+```
+
+### `drbrain embed`
+
+Train TransE graph embeddings for link prediction and entity similarity.
+
+| Flag | Description |
+|------|-------------|
+| `--dim` | Embedding dimension (default: 128) |
+| `--epochs` | Training epochs (default: 100) |
+| `--retrain` | Force retrain from scratch |
+
+```bash
+drbrain embed
+drbrain embed --dim 256 --epochs 200
+drbrain embed --retrain
+```
+
+### `drbrain report`
+
+Display a single-paper report with graph coverage and concept statistics.
+
+```bash
+drbrain report p6a321e
+drbrain report p6a321e --json
+```
+
+### `drbrain timeline`
+
+Show concept evolution over time -- when it first appeared, adoption trend, and year-by-year confidence.
+
+```bash
+drbrain timeline "Attention"
+drbrain timeline "Reinforcement Learning" --json
+```
+
+### `drbrain lineage`
+
+Explore author/research lineage via OpenAlex deduplicated IDs.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--list` | | List all actors with paper counts |
+| `--name` | `-n` | Search actors by display name |
+| `--json` | | Output JSON |
+
+```bash
+drbrain lineage --list
+drbrain lineage --name "Hinton"
+drbrain lineage A5023806754 --json
+```
+
+---
+
+## Export and Import
+
+### `drbrain export`
+
+Export paper metadata to BibTeX, RIS, or Markdown.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--format` | `-f` | Export format: `bib`, `ris`, `md` (default: `bib`) |
+| `--all` | | Export all papers |
+| `--output` | `-o` | Output file path |
+| `--json` | | Output JSON |
+
+```bash
+drbrain export p6a321e --format bib
+drbrain export --all --format ris -o library.ris
+drbrain export p6a321e --format md --json
+```
+
+### `drbrain import`
+
+Import papers from Zotero, BibTeX, or Endnote.
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Preview only |
+| `--json` | Output JSON |
+| `--list-collections` | List collections and exit (Zotero only) |
+| `--collection` | Filter by collection key (Zotero only) |
+| `--api-key` | Zotero API key (for Web API mode) |
+| `--library-id` | Zotero library ID (for Web API mode) |
+| `--library-type` | Zotero library type: `user` or `group` |
+| `--no-pdf` | Skip PDF detection/download |
+| `--import-collections` | Create workspaces per collection after import |
+
+```bash
+drbrain import zotero ~/zotero.sqlite
+drbrain import zotero ~/zotero.sqlite --collection ABC123 --import-collections
+drbrain import zotero . --api-key xyz --library-id 12345
+drbrain import bibtex references.bib
+drbrain import endnote export.xml
+drbrain import endnote library.ris --dry-run
+```
+
+---
+
+## Library Management
+
+### `drbrain list`
+
+List all papers in the database.
+
+```bash
+drbrain list
+drbrain list --json
+```
+
+### `drbrain show`
+
+Show detailed view of a single paper: metadata, concepts (grouped by type), arguments, outgoing/incoming edges.
+
+```bash
+drbrain show p6a321e
+drbrain show p6a321e --json
+```
+
+### `drbrain stats`
+
+Display database statistics: paper counts, concept counts by type, relation distribution, recent activity.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--workspace` | `-w` | Limit to workspace |
+| `--json` | | Output JSON |
+
+```bash
+drbrain stats
+drbrain stats --workspace nlp
+```
+
+### `drbrain delete`
+
+Delete a paper and all its associated data from the graph.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--force` | `-f` | Skip confirmation prompt |
+| `--rm-files` | | Also delete paper directory |
+| `--json` | | Output JSON |
+
+```bash
+drbrain delete p6a321e --force
+drbrain delete p6a321e --rm-files --force
+```
+
+### `drbrain repair`
+
+Repair paper metadata via CrossRef, arXiv, and OpenAlex APIs. Fixes missing DOIs, author names, journal info, and more.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--all` | | Repair all papers |
+| `--workspace` | `-w` | Limit to workspace |
+| `--dry-run` | | Preview only, no changes |
+| `--json` | | Output JSON |
+
+```bash
+drbrain repair p6a321e
+drbrain repair --all --dry-run
+drbrain repair --workspace nlp --json
+```
+
+### `drbrain translate`
+
+Translate a paper's markdown via LLM with placeholder-protected chunking, concurrent translation, and resume-from-interruption.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--lang` | `-l` | Target language code: `zh`, `en`, `ja`, etc. (default: `zh`) |
+| `--force` | `-f` | Force re-translation even if output exists |
+| `--json` | | Output JSON |
+
+```bash
+drbrain translate p6a321e --lang zh
+drbrain translate p6a321e --lang en --force
+drbrain translate p6a321e --lang ja --json
+```
+
+### `drbrain backup`
+
+Create or list tar.gz backups of papers, database, and workspace.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output` | `-o` | Custom output path |
+| `--list` | | List existing backups |
+| `--json` | | Output JSON |
+
+```bash
+drbrain backup
+drbrain backup -o ~/backups/drbrain-$(date +%Y%m%d).tar.gz
+drbrain backup --list
+```
+
+### `drbrain queue`
+
+List all pending confidence queue items (concepts, aliases, or relations flagged for human review).
+
+```bash
+drbrain queue
+drbrain queue --json
+```
+
+### `drbrain queue resolve`
+
+Resolve a queue item: accept or reject.
+
+| Flag | Description |
+|------|-------------|
+| `--accept` | Accept the queue item |
+| `--reject` | Reject the queue item |
+| `--json` | Output JSON |
+
+```bash
+drbrain queue resolve 42 --accept
+drbrain queue resolve 42 --reject
+```
+
+### `drbrain queue resolve-all`
+
+Batch resolve all pending queue items.
+
+| Flag | Description |
+|------|-------------|
+| `--accept` / `--reject` | Accept or reject all |
+| `--type` | Filter by item type (concept, alias, relation) |
+| `--max-conf` | Only process items with confidence <= this value |
+| `--json` | Output JSON |
+
+```bash
+drbrain queue resolve-all --accept --type concept --max-conf 0.3
+drbrain queue resolve-all --reject --type alias
+```
+
+---
+
+## Workspace Management (`drbrain ws`)
+
+Workspaces are named subsets of papers for focused analysis.
+
+### `drbrain ws create`
+
+```bash
+drbrain ws create nlp --description "NLP papers"
+```
+
+### `drbrain ws list`
+
+```bash
+drbrain ws list
+```
+
+### `drbrain ws show`
+
+```bash
+drbrain ws show nlp
+drbrain ws show nlp --json
+```
+
+### `drbrain ws add`
+
+```bash
+drbrain ws add nlp p6a321e p3b452c
+```
+
+### `drbrain ws remove`
+
+```bash
+drbrain ws remove nlp p3b452c
+```
+
+### `drbrain ws rename`
+
+```bash
+drbrain ws rename nlp nlp-transformers
+```
+
+### `drbrain ws delete`
+
+```bash
+drbrain ws delete nlp
+```

@@ -32,3 +32,31 @@ skills:
   - name: drbrain/workspace-analysis
     path: skills/workspace-analysis
     description: "Manage paper workspaces — create subsets, cross-paper concept analysis, export BibTeX/RIS/Markdown"
+
+  - name: drbrain/show
+    path: skills/show
+    description: "View paper at any depth — metadata, concepts by type, arguments, and knowledge graph edges"
+
+  - name: drbrain/export
+    path: skills/export
+    description: "Export papers to BibTeX, RIS, or Markdown — single paper, all papers, or workspace-scoped"
+
+  - name: drbrain/audit
+    path: skills/audit
+    description: "Data quality scan across the entire library — 15 rules at error, warning, and info severity"
+
+  - name: drbrain/translate
+    path: skills/translate
+    description: "Translate paper markdown via LLM — placeholder-protected chunking with resume from interruption"
+
+  - name: drbrain/graph
+    path: skills/graph
+    description: "Knowledge graph operations — traverse neighbors, find shortest paths, cross-paper concept analysis"
+
+  - name: drbrain/import
+    path: skills/import
+    description: "Import papers from Zotero (local/Web API), BibTeX .bib files, and Endnote .xml/.ris exports"
+
+  - name: drbrain/index
+    path: skills/index
+    description: "Rebuild the BM25 search index — run after ingest/build when search results are stale"
