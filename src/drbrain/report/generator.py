@@ -74,15 +74,21 @@ class PaperReport:
             "arguments": self.arguments,
             "references": [
                 {
-                    "title": r.title, "year": r.year, "ids": r.ids,
-                    "in_graph": r.in_graph, "local_id": r.local_id,
+                    "title": r.title,
+                    "year": r.year,
+                    "ids": r.ids,
+                    "in_graph": r.in_graph,
+                    "local_id": r.local_id,
                 }
                 for r in self.references
             ],
             "citations": [
                 {
-                    "title": r.title, "year": r.year, "ids": r.ids,
-                    "in_graph": r.in_graph, "local_id": r.local_id,
+                    "title": r.title,
+                    "year": r.year,
+                    "ids": r.ids,
+                    "in_graph": r.in_graph,
+                    "local_id": r.local_id,
                 }
                 for r in self.citations
             ],

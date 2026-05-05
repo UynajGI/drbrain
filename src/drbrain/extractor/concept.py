@@ -185,7 +185,10 @@ def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConce
         # The section provenance is already captured in each argument's section field.
         log.debug(
             "Cross-section %s: target=%r from %d sections (%s)",
-            rel_type, target, len(sections_seen), ", ".join(sections_seen.keys()),
+            rel_type,
+            target,
+            len(sections_seen),
+            ", ".join(sections_seen.keys()),
         )
 
     if new_relations:
@@ -382,8 +385,10 @@ async def build_graph_from_tree(
         corrections = await _refine_extraction(concepts, relations, models)
 
     return {
-        "concepts": concepts, "relations": relations,
-        "merges": merges, "corrections": corrections,
+        "concepts": concepts,
+        "relations": relations,
+        "merges": merges,
+        "corrections": corrections,
     }
 
 
@@ -401,8 +406,11 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
 
 
 async def _extract_entities(
-    md_path: Path, structure: list[dict], leaves: list[dict],
-    ontology: dict[str, list[str]], models: list[dict],
+    md_path: Path,
+    structure: list[dict],
+    leaves: list[dict],
+    ontology: dict[str, list[str]],
+    models: list[dict],
 ) -> list[dict]:
     """Stage 2: Per leaf node, extract concepts with subcategories."""
     import json as _json
@@ -450,7 +458,8 @@ async def _extract_relations(concepts: list[dict], models: list[dict]) -> list[d
 
 
 async def _resolve_coreferences(
-    concepts: list[dict], models: list[dict],
+    concepts: list[dict],
+    models: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """Stage 4: LLM merges duplicate entity labels."""
     concept_list = [f"{c['label']}: {c['type']}" for c in concepts]
@@ -481,7 +490,9 @@ async def _resolve_coreferences(
 
 
 async def _refine_extraction(
-    concepts: list[dict], relations: list[dict], models: list[dict],
+    concepts: list[dict],
+    relations: list[dict],
+    models: list[dict],
 ) -> list[dict]:
     """Stage 5: LLM self-reviews and corrects the extraction."""
     prompt = REFINE_PROMPT.read_text(encoding="utf-8")
@@ -569,8 +580,9 @@ def find_similar_labels(db, threshold: float = 0.6) -> list[tuple[str, str, floa
 def _label_similarity(a: str, b: str) -> float:
     """Jaccard similarity between two label word sets."""
     import re
-    a_words = set(re.split(r'[\s\-_]+', a.strip().lower()))
-    b_words = set(re.split(r'[\s\-_]+', b.strip().lower()))
+
+    a_words = set(re.split(r"[\s\-_]+", a.strip().lower()))
+    b_words = set(re.split(r"[\s\-_]+", b.strip().lower()))
     if not a_words or not b_words:
         return 0.0
     union = a_words | b_words

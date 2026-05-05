@@ -1,12 +1,10 @@
 """Tests for LLM agent graph reasoner."""
+
 import tempfile
 from pathlib import Path
-from unittest import mock
 
-import asyncio
-
-from drbrain.graph.engine import GraphEngine
 from drbrain.extractor.reasoner import ReasonerAgent
+from drbrain.graph.engine import GraphEngine
 
 
 def test_reasoner_tool_definitions():
@@ -22,6 +20,7 @@ def test_reasoner_tool_definitions():
 def test_reasoner_search_tool():
     """search_concepts tool calls BM25 search."""
     from drbrain.storage.database import Database
+
     with tempfile.TemporaryDirectory() as td:
         db = Database(Path(td) / "test.db")
         db.insert_paper("p1", "Test", 2024, "uploaded")

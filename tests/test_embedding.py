@@ -1,7 +1,9 @@
 """Tests for TransE graph embeddings."""
+
 import numpy as np
-from drbrain.graph.engine import GraphEngine
+
 from drbrain.graph.embedding import TransE
+from drbrain.graph.engine import GraphEngine
 
 
 def test_transe_training_converges():

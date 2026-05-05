@@ -1,4 +1,5 @@
 """TransE knowledge graph embeddings."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -96,7 +97,9 @@ class TransE:
         r = self.relations.get(relation)
         if h is None or r is None:
             return []
-        scores = [(e, float(np.linalg.norm(h + r - v))) for e, v in self.entities.items() if e != head]
+        scores = [
+            (e, float(np.linalg.norm(h + r - v))) for e, v in self.entities.items() if e != head
+        ]
         scores.sort(key=lambda x: x[1])
         return scores[:top_k]
 

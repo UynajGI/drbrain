@@ -1,4 +1,5 @@
 """Confidence queue: routing, resolution, consensus detection."""
+
 from __future__ import annotations
 
 import json
@@ -22,16 +23,20 @@ def route_item(
         return {"action": "weak", "queue_id": None}
     else:
         qid = db.insert_queue_item(
-            source_paper, item_type, json.dumps(item_data), confidence,
+            source_paper,
+            item_type,
+            json.dumps(item_data),
+            confidence,
         )
         return {"action": "queued", "queue_id": qid}
 
 
-def check_consensus(db: Database, label: str, min_papers: int = 3, min_confidence: float = 0.8) -> bool:
+def check_consensus(
+    db: Database, label: str, min_papers: int = 3, min_confidence: float = 0.8
+) -> bool:
     """Check if a concept label has consensus (N+ papers with high confidence)."""
     row = db.conn.execute(
-        "SELECT COUNT(DISTINCT c.local_id), AVG(c.confidence) "
-        "FROM concepts c WHERE c.label = ?",
+        "SELECT COUNT(DISTINCT c.local_id), AVG(c.confidence) FROM concepts c WHERE c.label = ?",
         (label,),
     ).fetchone()
     if row is None:

@@ -1,4 +1,5 @@
 """Tests for delete paper functionality."""
+
 import tempfile
 from pathlib import Path
 
@@ -28,7 +29,9 @@ def test_delete_paper_removes_concepts_and_edges():
         assert concepts[0] == 0
 
         # Verify edge is gone
-        edges = db.conn.execute("SELECT COUNT(*) FROM edges WHERE src_id = 'p1' OR dst_id = 'p1'").fetchone()
+        edges = db.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE src_id = 'p1' OR dst_id = 'p1'"
+        ).fetchone()
         assert edges[0] == 0
 
         # Verify paper_ids is gone
@@ -49,7 +52,9 @@ def test_delete_paper_removes_arguments():
         counts = db.delete_paper("p1")
         assert counts["arguments"] == 1
 
-        args = db.conn.execute("SELECT COUNT(*) FROM arguments WHERE source_paper = 'p1'").fetchone()
+        args = db.conn.execute(
+            "SELECT COUNT(*) FROM arguments WHERE source_paper = 'p1'"
+        ).fetchone()
         assert args[0] == 0
         db.close()
 
@@ -65,7 +70,9 @@ def test_delete_paper_removes_queue_items():
         counts = db.delete_paper("p1")
         assert counts["queue_items"] == 1
 
-        items = db.conn.execute("SELECT COUNT(*) FROM confidence_queue WHERE source_paper = 'p1'").fetchone()
+        items = db.conn.execute(
+            "SELECT COUNT(*) FROM confidence_queue WHERE source_paper = 'p1'"
+        ).fetchone()
         assert items[0] == 0
         db.close()
 
