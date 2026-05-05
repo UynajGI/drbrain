@@ -756,6 +756,12 @@ def closure_cmd(
     ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
     mode: str = typer.Option("symbolic", "--mode", help="Inference mode: symbolic or hybrid"),
+    mine_rules: bool = typer.Option(
+        False, "--mine-rules", help="Mine path rules from TransE embeddings"
+    ),
+    min_confidence: float = typer.Option(
+        0.6, "--min-confidence", help="Minimum confidence for mined rules (0.0-1.0)"
+    ),
 ):
     """Run rule-based closure on the full graph."""
     # Normalize typer OptionInfo objects when calling directly (not via CLI)
@@ -767,6 +773,10 @@ def closure_cmd(
         json_output = json_output.default
     if isinstance(mode, typer.models.OptionInfo):
         mode = mode.default
+    if isinstance(mine_rules, typer.models.OptionInfo):
+        mine_rules = mine_rules.default
+    if isinstance(min_confidence, typer.models.OptionInfo):
+        min_confidence = min_confidence.default
 
     valid_rules = {
         "creates_debate",
@@ -796,6 +806,18 @@ def closure_cmd(
 
     inferred = graph.closure(mode=mode)
 
+    # ── Embedding-driven rule mining ───────────────────────────────────
+    if mine_rules:
+        from drbrain.extractor.rule_miner import mine_path_rules
+
+        mined_rules = mine_path_rules(graph, db, min_confidence=min_confidence, top_k=20)
+        mined_edges = _apply_mined_rules(graph, mined_rules)
+        inferred.extend(mined_edges)
+        if not json_output:
+            typer.echo(
+                f"Mined {len(mined_rules)} path rules from embeddings -> {len(mined_edges)} inferred edges"
+            )
+
     if rule is not None:
         rule_set = set(rule)
         inferred = [e for e in inferred if e["relation"] in rule_set]
@@ -822,6 +844,106 @@ def closure_cmd(
         typer.echo(
             f"  {edge['src']} --[{edge['relation']}]--> {edge['dst']} (via {edge.get('via', 'unknown')})"
         )
+
+
+def _apply_mined_rules(graph, mined_rules: list[dict]) -> list[dict]:
+    """Apply mined path rules to the graph, returning inferred edges.
+
+    Each mined rule has `body_path` (list of relations) and `head` (inferred relation).
+    Matches the path pattern in the graph and infers direct edges with the head relation.
+    """
+    if not mined_rules:
+        return []
+
+    inferred: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for rule in mined_rules:
+        body = rule["body_path"]
+        head = rule["head"]
+        confidence = rule.get("confidence", 0.5)
+
+        if len(body) < 2:
+            continue
+
+        # Build pattern matches: for each 2-hop path matching body_path,
+        # infer the head relation between source and target.
+        # body_path: [r_i, r_j] means: src -[r_i]-> mid -[r_j]-> dst => src -[head]-> dst
+        # Convert to (relation, direction) pattern for matching
+        pattern = [(rel, "forward") for rel in body]
+
+        matches = _match_pattern(graph, pattern)
+        for src, dst in matches:
+            edge_key = (src, dst, head)
+            if edge_key not in seen:
+                seen.add(edge_key)
+                rule_name = f"mined:{head}"
+                inferred.append(
+                    {
+                        "src": src,
+                        "dst": dst,
+                        "relation": head,
+                        "via": rule_name,
+                        "confidence": round(float(confidence), 4),
+                    }
+                )
+
+    return inferred
+
+
+def _match_pattern(graph, pattern: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Find all node pairs matching a relation path pattern.
+
+    Pattern is a list of (relation, direction) steps where direction is
+    always "forward" (src → dst along the relation edge).
+    """
+    from collections import defaultdict
+
+    if len(pattern) < 2:
+        return []
+
+    # Build adjacency indices for each relation in the pattern
+    rel_indices = []
+    for rel, direction in pattern:
+        idx: dict[str, set[str]] = defaultdict(set)
+        for u, v, data in graph.graph.edges(data=True):
+            if data["relation"] == rel:
+                if direction == "forward":
+                    idx[v].add(u)  # given v, find u where u→v
+                else:
+                    idx[u].add(v)
+        rel_indices.append(idx)
+
+    first_idx = rel_indices[0]
+    results: list[tuple[str, str]] = []
+    visited_edges: set[tuple[str, str, str]] = set()
+
+    for middle_node, prev_nodes in first_idx.items():
+        for prev in prev_nodes:
+            end_nodes = _extend_chain(graph, rel_indices[1:], middle_node)
+            for end in end_nodes:
+                edge_key = (prev, end, pattern[0][0])
+                if edge_key not in visited_edges:
+                    visited_edges.add(edge_key)
+                    results.append((prev, end))
+
+    return results
+
+
+def _extend_chain(graph, remaining_indices: list[dict[str, set[str]]], current: str) -> set[str]:
+    """Recursively extend a chain through remaining relation indices."""
+    if not remaining_indices:
+        return {current}
+
+    idx = remaining_indices[0]
+    next_nodes = idx.get(current, set())
+    if not remaining_indices[1:]:
+        return next_nodes
+
+    result: set[str] = set()
+    for node in next_nodes:
+        result |= _extend_chain(graph, remaining_indices[1:], node)
+    return result
 
 
 def seed_cmd(
