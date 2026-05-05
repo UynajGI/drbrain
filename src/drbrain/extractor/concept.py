@@ -393,16 +393,81 @@ async def build_graph_from_tree(
 
 
 async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str, list[str]]:
-    """Stage 1: LLM suggests domain-specific subcategories under 6 TBox types."""
+    """Stage 1: Iterative ontology extension with plateau detection.
+
+    Builds domain-specific subcategories under 6 TBox types by iteratively
+    sampling document sections, extending the ontology, and stopping when
+    new subcategories drop below threshold (inspired by 2511.11017).
+    """
+    import json as _json
+    import random
+
+    from loguru import logger as _onto_log
+
+    valid_types = {"Problem", "Method", "Conclusion", "Gap", "Debate", "Actor"}
     structure_json = get_document_structure_json(structure)
     prompt = ONTOLOGY_PROMPT.read_text(encoding="utf-8")
-    user = f"Document Structure:\n{structure_json}"
-    data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
+
+    # Initial ontology from full structure overview
+    data = await acall_with_fallback(
+        prompt=f"Document Structure:\n{structure_json}",
+        models=models,
+        system_prompt=prompt,
+    )
     if not data:
         return {}
-    # Filter to only valid TBox types with list values
-    valid_types = {"Problem", "Method", "Conclusion", "Gap", "Debate", "Actor"}
-    return {k: v for k, v in data.items() if k in valid_types and isinstance(v, list)}
+
+    ontology = {k: v for k, v in data.items() if k in valid_types and isinstance(v, list)}
+    prev_total = sum(len(v) for v in ontology.values())
+    _onto_log.info(f"Ontology round 1: {prev_total} subcategories across {len(ontology)} types")
+
+    # Collect leaf nodes for sampling
+    leaves = _collect_leaf_nodes(structure)
+    if not leaves:
+        return ontology
+
+    # Iterative extension
+    sample_size = min(5, len(leaves))
+    for round_num in range(2, 7):  # max 6 rounds
+        # Sample new sections
+        sampled = random.sample(leaves, min(sample_size, len(leaves)))
+        context = "\n---\n".join(
+            f"{leaf.get('title', '')}:\n{_json.dumps(leaf, indent=2, default=str)}"
+            for leaf in sampled
+        )
+
+        data = await acall_with_fallback(
+            prompt=(
+                f"Current Ontology:\n{_json.dumps(ontology, indent=2)}\n\nNew Sections:\n{context}"
+            ),
+            models=models,
+            system_prompt=f"{prompt}\n\nExtend the ontology with new subcategories "
+            f"found in the new sections. Add only genuinely NEW categories "
+            f"not already present. Do not remove existing entries.",
+        )
+        if not data:
+            break
+
+        # Merge new subcategories
+        new_count = 0
+        for k, v in data.items():
+            if k in valid_types and isinstance(v, list):
+                existing = set(ontology.get(k, []))
+                for item in v:
+                    if item not in existing:
+                        ontology.setdefault(k, []).append(item)
+                        new_count += 1
+
+        total = sum(len(v) for v in ontology.values())
+        _onto_log.info(f"Ontology round {round_num}: +{new_count} new, {total} total")
+
+        # Plateau detection: stop when growth is minimal
+        if new_count < 2:
+            _onto_log.info(f"Ontology plateau reached at round {round_num}")
+            break
+        prev_total = total
+
+    return ontology
 
 
 async def _extract_entities(
