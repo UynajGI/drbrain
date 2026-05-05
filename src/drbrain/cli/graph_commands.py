@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import typer
 
@@ -610,10 +611,145 @@ def graph_query_cmd(
     db.close()
 
     if json_output:
-        typer.echo(_json.dumps(results, indent=2, ensure_ascii=False))
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False))
     else:
         if not results:
             typer.echo("No results found (embeddings may not be trained).")
             return
         for r in results:
             typer.echo(f"  {r['label']:40s}  score={r['score']:.4f}")
+
+
+@graph_app.command("traverse-from")
+def traverse_from_cmd(
+    ctx: typer.Context,
+    section: str = typer.Argument(..., help="Section title to start from"),
+    depth: int = typer.Option(2, "--depth", "-d", help="Graph traversal depth"),
+    direction: str = typer.Option(
+        "both", "--direction", help="Traversal direction: forward, backward, both"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    workspace: str = typer.Option(None, "--workspace", "-w"),
+):
+    """Hybrid tree+graph traversal: start from a section, find its concepts, traverse graph.
+
+    Walks the document tree to find all child sections, discovers concepts
+    anchored to those sections, then traverses the knowledge graph from them.
+    """
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    paper_ids = _resolve_workspace_papers(workspace)
+
+    # 1. Find paper(s) with tree.json that contain this section
+    papers_dir = Path(cfg.dirs.papers)
+    section_title = section.strip()
+
+    # Search all papers for tree.json containing the section
+    all_section_names: set[str] = {section_title}
+    for pid_dir in sorted(papers_dir.iterdir()):
+        if not pid_dir.is_dir():
+            continue
+        tree_path = pid_dir / "tree.json"
+        if not tree_path.exists():
+            continue
+        try:
+            tree = json.loads(tree_path.read_text())
+            structure = tree.get("structure", [])
+
+            # Collect matching section and all descendants
+            def _find_section(nodes: list[dict], target: str) -> list[str]:
+                names = []
+                for node in nodes:
+                    t = node.get("title", "")
+                    if target.lower() in t.lower() or t.lower() in target.lower():
+                        names.append(t)
+
+                        # Collect all children as descendants
+                        def _descendants(n: list[dict]) -> list[str]:
+                            ds = []
+                            for child in n:
+                                ct = child.get("title", "")
+                                if ct:
+                                    ds.append(ct)
+                                ds.extend(_descendants(child.get("nodes", [])))
+                            return ds
+
+                        names.extend(_descendants(node.get("nodes", [])))
+                        return names
+                    found = _find_section(node.get("nodes", []), target)
+                    if found:
+                        names.extend(found)
+                return names
+
+            found = _find_section(structure, section_title)
+            all_section_names.update(found)
+        except Exception:
+            pass
+
+    if not all_section_names:
+        typer.echo(f"No section matching '{section}' found in any paper tree.", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    typer.echo(f"Tree: {len(all_section_names)} section(s) under '{section_title}'")
+
+    # 2. Find concepts anchored to these sections
+    section_list = list(all_section_names)
+    placeholders = ",".join("?" for _ in section_list)
+    rows = db.conn.execute(
+        f"SELECT DISTINCT label, type FROM concepts WHERE section IN ({placeholders})",
+        section_list,
+    ).fetchall()
+
+    if not rows:
+        typer.echo("No concepts found in these sections.")
+        db.close()
+        return
+
+    concepts = [{"label": r[0], "type": r[1]} for r in rows]
+    typer.echo(f"Concepts: {len(concepts)} found in section tree")
+
+    # 3. Graph traversal from found concepts
+    graph = GraphEngine()
+    graph.load_from_db(db, paper_ids=paper_ids)
+    all_neighbors: list[dict] = []
+    seen: set[str] = set()
+
+    for c in concepts:
+        label = c["label"]
+        neighbors = graph.traverse(label, max_depth=depth, direction=direction)
+        for n in neighbors:
+            key = (n.get("src", ""), n.get("dst", ""), n.get("relation", ""))
+            if key not in seen:
+                seen.add(key)
+                n["source_concept"] = label
+                n["source_section"] = c.get("type", "")
+                all_neighbors.append(n)
+
+    db.close()
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "tree_sections": list(all_section_names),
+                    "source_concepts": len(concepts),
+                    "neighbors": all_neighbors,
+                },
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return
+
+    typer.echo(f"Graph neighbors: {len(all_neighbors)} edges")
+    by_concept: dict[str, list] = {}
+    for n in all_neighbors:
+        by_concept.setdefault(n["source_concept"], []).append(n)
+    for src, edges in by_concept.items():
+        typer.echo(f"\n  [{src}]")
+        for e in edges[:5]:
+            typer.echo(f"    --{e.get('relation', '?')}--> {e.get('dst', '?')}")
+        if len(edges) > 5:
+            typer.echo(f"    ... and {len(edges) - 5} more")
