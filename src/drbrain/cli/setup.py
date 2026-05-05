@@ -20,7 +20,7 @@ INJECTION_MAP: dict[str, list[tuple[str, str]]] = {
         ("mcp.json.j2", ".mcp.json"),
     ],
     "codex": [("AGENTS.md.j2", "AGENTS.md")],
-    "qwen": [("QWEN.md.j2", "QWEN.md")],
+    "qwen": [("QWEN.md.j2", ".qwen/QWEN.md")],
     "cursor": [(".cursorrules.j2", ".cursorrules")],
     "cline": [(".clinerules.j2", ".clinerules")],
     "windsurf": [(".windsurfrules.j2", ".windsurfrules")],

@@ -1,11 +1,11 @@
-# DrBrain — Qwen Entry
+# DrBrain — GitHub Copilot Instructions
 
 This wrapper is intentionally light. Full shared project instructions are in `AGENTS.md` at the repository root. **Read `AGENTS.md` before proceeding with any task.**
 
 ## Quick Reference
 
 - Shared entry doc: `AGENTS.md`
-- CLI: `drbrain --help`
-- Skills: `.qwen/skills/*/SKILL.md`
-- Key commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `ask`
+- CLI entry point: `drbrain --help`
+- Skills: `.claude/skills/*/SKILL.md`
+- Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"`
