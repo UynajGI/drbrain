@@ -717,7 +717,7 @@ def traverse_from_cmd(
 
     for c in concepts:
         label = c["label"]
-        neighbors = graph.traverse(label, max_depth=depth, direction=direction)
+        neighbors = graph.traverse({label}, hops=depth, direction=direction)
         for n in neighbors:
             key = (n.get("src", ""), n.get("dst", ""), n.get("relation", ""))
             if key not in seen:

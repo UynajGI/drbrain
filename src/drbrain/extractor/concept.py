@@ -146,43 +146,37 @@ def validate_extraction(concepts: ExtractedConcepts) -> list[str]:
 
 
 def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConcepts:
-    """Link arguments across sections that share targets.
+    """Log cross-section argument patterns for debugging.
 
-    For arguments with the same target but different sections, adds
-    synthetic relations (cross_section_support / cross_section_challenge).
+    Detects arguments referencing the same target from different sections
+    and logs the pattern. No graph edges are created — section provenance
+    is already captured in each argument's section field.
     """
     from collections import defaultdict
 
-    # Group arguments by target
     by_target: dict[str, list[ExtractedArgument]] = defaultdict(list)
     for arg in concepts.arguments:
         target = arg.target.strip()
         if target:
             by_target[target].append(arg)
 
-    new_relations = []
     for target, args in by_target.items():
-        # Collect unique sections
-        sections_seen: dict[str, str] = {}  # section -> claim_type
+        sections_seen: dict[str, str] = {}
         for arg in args:
             section = arg.section.strip()
             claim_type = arg.claim_type.strip().lower()
             if section and section not in sections_seen:
                 sections_seen[section] = claim_type
 
-        # Only link if args come from 2+ different sections
         if len(sections_seen) < 2:
             continue
 
-        # Determine relation type: challenge if opposing claim_types exist
         claim_types = set(sections_seen.values())
         has_opposition = ("limitation" in claim_types and "advantage" in claim_types) or (
             "challenges" in claim_types and "supports" in claim_types
         )
         rel_type = "cross_section_challenge" if has_opposition else "cross_section_support"
 
-        # Cross-section argument links are logged, not added as graph edges.
-        # The section provenance is already captured in each argument's section field.
         log.debug(
             "Cross-section %s: target=%r from %d sections (%s)",
             rel_type,
@@ -191,8 +185,6 @@ def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConce
             ", ".join(sections_seen.keys()),
         )
 
-    if new_relations:
-        concepts.relations.extend(new_relations)
     return concepts
 
 
@@ -402,7 +394,8 @@ def _tree_position_weight(node: dict, depth: int = 0, max_depth: int = 5) -> flo
 def _build_tree_edges(structure: list[dict], parent_id: str = "root") -> list[dict]:
     """Create 'contains' edges from tree parent-child relationships.
 
-    Returns list of {src, dst, relation: 'contains'} for graph ingestion.
+    Returns list of {head, rel, tail} matching the LLM extraction format
+    so build_cmd's edge insertion loop handles them correctly.
     Uses section titles as node identifiers.
     """
     edges = []
@@ -411,9 +404,9 @@ def _build_tree_edges(structure: list[dict], parent_id: str = "root") -> list[di
         if title:
             edges.append(
                 {
-                    "src": parent_id if parent_id != "root" else "document",
-                    "dst": title,
-                    "relation": "contains",
+                    "head": parent_id if parent_id != "root" else "document",
+                    "rel": "contains",
+                    "tail": title,
                     "weight": 0.9,
                 }
             )
