@@ -148,6 +148,106 @@ def get_work_by_doi(
         return None
 
 
+def _reconstruct_abstract(inverted_index: dict | None) -> str:
+    """Reconstruct plain-text abstract from OpenAlex inverted index.
+
+    OpenAlex stores abstracts as {"the": [0, 5], "cat": [1], ...} where values
+    are word-position lists.  We rebuild the word sequence and join with spaces.
+    """
+    if not inverted_index:
+        return ""
+    positioned: list[tuple[int, str]] = []
+    for word, positions in inverted_index.items():
+        for pos in positions:
+            positioned.append((pos, word))
+    positioned.sort(key=lambda x: x[0])
+    return " ".join(w for _, w in positioned)
+
+
+def get_work_enriched(doi: str, token: str | None = None) -> dict[str, Any] | None:
+    """Fetch a work by DOI with full metadata useful for repair/enrichment.
+
+    Returns a dict with keys: doi, title, year, openalex_id, abstract,
+    cited_by_count, journal, authors, volume, pages.
+    Returns None on API error or when the work is not found.
+    """
+    if not doi:
+        return None
+
+    clean_doi = re.sub(r"^https?://doi\.org/", "", doi)
+    fields = _select_fields(
+        [
+            "id",
+            "doi",
+            "title",
+            "publication_year",
+            "ids",
+            "abstract_inverted_index",
+            "cited_by_count",
+            "cited_by_api_url",
+            "authorships",
+            "biblio",
+            "primary_location",
+        ]
+    )
+    url = f"{OPENALEX_BASE}/works/doi:{urllib.parse.quote(clean_doi)}?select={fields}"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if token:
+        headers["User-Agent"] = f"DrBrain (mailto:{token})"
+
+    try:
+        resp = _get_session().get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data or "error" in data:
+            return None
+
+        doi_val = data.get("doi", "")
+        if doi_val:
+            doi_val = re.sub(r"^https?://doi\.org/", "", doi_val)
+
+        abstract = _reconstruct_abstract(data.get("abstract_inverted_index"))
+
+        loc = data.get("primary_location") or {}
+        source = loc.get("source") or {}
+        journal = source.get("display_name", "")
+
+        authorships = data.get("authorships") or []
+        author_names: list[str] = []
+        for ship in authorships:
+            author = ship.get("author")
+            if author and author.get("display_name"):
+                author_names.append(author["display_name"])
+        authors = " and ".join(author_names) if author_names else ""
+
+        biblio = data.get("biblio") or {}
+        volume = biblio.get("volume") or ""
+        first_page = biblio.get("first_page") or ""
+        last_page = biblio.get("last_page") or ""
+        if first_page and last_page:
+            pages = f"{first_page}-{last_page}"
+        elif first_page:
+            pages = first_page
+        else:
+            pages = ""
+
+        return {
+            "doi": doi_val or None,
+            "title": data.get("title", ""),
+            "year": data.get("publication_year"),
+            "openalex_id": data.get("id", ""),
+            "abstract": abstract,
+            "cited_by_count": data.get("cited_by_count", 0),
+            "journal": journal,
+            "authors": authors,
+            "volume": volume,
+            "pages": pages,
+        }
+    except requests.RequestException:
+        logger.exception("OpenAlex API error")
+        return None
+
+
 def get_work_references(
     openalex_id: str, token: str | None = None, max_retries: int = 2, retry_delay: float = 1.0
 ) -> list[dict[str, Any]]:

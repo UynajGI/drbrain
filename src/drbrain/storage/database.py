@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS papers (
     citation_count INTEGER DEFAULT 0,
     volume TEXT DEFAULT '',
     pages TEXT DEFAULT '',
+    authors TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -146,6 +147,7 @@ class Database:
         migrations = [
             (1, "paper_type", self._migrate_add_paper_type),
             (2, "venue_columns", self._migrate_add_venue_columns),
+            (3, "authors", self._migrate_add_authors),
         ]
 
         for version, name, fn in migrations:
@@ -178,6 +180,12 @@ class Database:
             self.conn.execute("ALTER TABLE papers ADD COLUMN volume TEXT DEFAULT ''")
         if "pages" not in cols:
             self.conn.execute("ALTER TABLE papers ADD COLUMN pages TEXT DEFAULT ''")
+
+    def _migrate_add_authors(self) -> None:
+        """Add authors column if missing."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "authors" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN authors TEXT DEFAULT ''")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -223,11 +231,12 @@ class Database:
         citation_count: int = 0,
         volume: str = "",
         pages: str = "",
+        authors: str = "",
     ) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type, "
-            "journal, publisher, citation_count, volume, pages) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "journal, publisher, citation_count, volume, pages, authors) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 local_id,
                 title,
@@ -239,6 +248,7 @@ class Database:
                 citation_count,
                 volume,
                 pages,
+                authors,
             ),
         )
 
@@ -345,7 +355,7 @@ class Database:
         """Return all papers as list of dicts."""
         rows = self.conn.execute(
             "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, "
-            "p.journal, p.publisher, p.citation_count, p.volume, p.pages, p.created_at, "
+            "p.journal, p.publisher, p.citation_count, p.volume, p.pages, p.authors, p.created_at, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id"
         ).fetchall()
@@ -361,6 +371,7 @@ class Database:
             "citation_count",
             "volume",
             "pages",
+            "authors",
             "created_at",
             "doi",
             "arxiv",
@@ -373,7 +384,7 @@ class Database:
         """Get a single paper by local_id."""
         row = self.conn.execute(
             "SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status, "
-            "p.journal, p.publisher, p.citation_count, p.volume, p.pages, "
+            "p.journal, p.publisher, p.citation_count, p.volume, p.pages, p.authors, "
             "pi.doi, pi.arxiv, pi.s2_id, pi.openalex_id "
             "FROM papers p LEFT JOIN paper_ids pi ON p.local_id = pi.local_id "
             "WHERE p.local_id = ?",
@@ -393,6 +404,7 @@ class Database:
             "citation_count",
             "volume",
             "pages",
+            "authors",
             "doi",
             "arxiv",
             "s2_id",

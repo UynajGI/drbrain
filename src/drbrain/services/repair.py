@@ -146,22 +146,33 @@ def _repair_via_arxiv(db, paper: dict) -> list[dict]:
 
 
 def _enrich_via_openalex(db, paper: dict) -> list[dict]:
-    """Fetch abstract, citation_count, and authors from OpenAlex."""
+    """Fetch abstract, citation_count, authors, volume, pages from OpenAlex."""
     title = paper.get("title", "")
     doi = paper.get("doi")
     if not title and not doi:
         return []
 
     try:
+        from drbrain.extractor.openalex import get_work_enriched, search_authors_by_work
+
+        enriched = None
         if doi:
-            from drbrain.extractor.openalex import get_work_by_doi
+            enriched = get_work_enriched(doi)
+        if not enriched and title:
+            from drbrain.extractor.openalex import search_work_by_title
 
-            data = get_work_by_doi(doi)
-        else:
-            from drbrain.parser.mineru_parser import _fetch_openalex_metadata
+            work = search_work_by_title(title)
+            if work and work.get("doi"):
+                enriched = get_work_enriched(work["doi"])
 
-            t, y, oa_id, journal, cited = _fetch_openalex_metadata(title)
-            data = {"title": t, "publication_year": y, "cited_by_count": cited} if t else None
+        # Fetch authors separately in case enriched didn't include them
+        authors_str = enriched.get("authors", "") if enriched else ""
+        if not authors_str and (doi or title):
+            authors_list = search_authors_by_work(doi=doi, title=title)
+            if authors_list:
+                authors_str = " and ".join(
+                    a.get("display_name", "") for a in authors_list if a.get("display_name")
+                )
     except Exception:
         try:
             logger.exception("OpenAlex enrichment failed")
@@ -170,25 +181,63 @@ def _enrich_via_openalex(db, paper: dict) -> list[dict]:
         return []
 
     repairs = []
-    if data:
-        if not paper.get("abstract") and data.get("abstract"):
+    if enriched and isinstance(enriched, dict):
+        if not paper.get("abstract") and enriched.get("abstract"):
             repairs.append(
                 {
                     "field": "abstract",
                     "old": "",
-                    "new": data["abstract"][:2000],
+                    "new": enriched["abstract"][:2000],
                     "source": "OpenAlex",
                 }
             )
-        if not paper.get("citation_count") and data.get("cited_by_count"):
+        if not paper.get("citation_count") and enriched.get("cited_by_count"):
             repairs.append(
                 {
                     "field": "citation_count",
                     "old": 0,
-                    "new": data["cited_by_count"],
+                    "new": enriched["cited_by_count"],
                     "source": "OpenAlex",
                 }
             )
+        if not paper.get("journal") and enriched.get("journal"):
+            repairs.append(
+                {
+                    "field": "journal",
+                    "old": "",
+                    "new": enriched["journal"],
+                    "source": "OpenAlex",
+                }
+            )
+        if not paper.get("volume") and enriched.get("volume"):
+            repairs.append(
+                {
+                    "field": "volume",
+                    "old": "",
+                    "new": enriched["volume"],
+                    "source": "OpenAlex",
+                }
+            )
+        if not paper.get("pages") and enriched.get("pages"):
+            repairs.append(
+                {
+                    "field": "pages",
+                    "old": "",
+                    "new": enriched["pages"],
+                    "source": "OpenAlex",
+                }
+            )
+
+    if authors_str and not paper.get("authors"):
+        repairs.append(
+            {
+                "field": "authors",
+                "old": "",
+                "new": authors_str,
+                "source": "OpenAlex",
+            }
+        )
+
     return repairs
 
 
@@ -266,6 +315,18 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
             elif r["field"] == "citation_count":
                 db.conn.execute(
                     "UPDATE papers SET citation_count = ? WHERE local_id = ?", (r["new"], local_id)
+                )
+            elif r["field"] == "authors":
+                db.conn.execute(
+                    "UPDATE papers SET authors = ? WHERE local_id = ?", (r["new"], local_id)
+                )
+            elif r["field"] == "volume":
+                db.conn.execute(
+                    "UPDATE papers SET volume = ? WHERE local_id = ?", (r["new"], local_id)
+                )
+            elif r["field"] == "pages":
+                db.conn.execute(
+                    "UPDATE papers SET pages = ? WHERE local_id = ?", (r["new"], local_id)
                 )
         db.commit()
 

@@ -438,3 +438,461 @@ def test_repair_paper_handles_repair_fn_exception():
     # _repair_via_arxiv should still have produced repairs
     arxiv_repairs = [r for r in repairs if r["source"] == "arXiv"]
     assert len(arxiv_repairs) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: _enrich_via_openalex (via repair_paper)
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_via_openalex_doi_path_returns_abstract_and_citation():
+    """DOI path: get_work_enriched returns abstract + cited_by_count, both applied."""
+    db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", abstract="", citation_count=0))
+
+    enriched = {
+        "doi": "10.1234/testdoi",
+        "title": "Test Paper",
+        "year": 2024,
+        "openalex_id": "https://openalex.org/W123",
+        "abstract": "This is an abstract from OpenAlex.",
+        "cited_by_count": 42,
+        "journal": "Test Journal",
+        "authors": "Alice Smith and Bob Jones",
+        "volume": "15",
+        "pages": "100-120",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    fields = {r["field"] for r in oa_repairs}
+    assert "abstract" in fields
+    assert "citation_count" in fields
+    assert "journal" in fields
+    assert "authors" in fields
+    assert "volume" in fields
+    assert "pages" in fields
+
+    abstract_r = next(r for r in oa_repairs if r["field"] == "abstract")
+    assert "abstract from OpenAlex" in abstract_r["new"]
+
+    citation_r = next(r for r in oa_repairs if r["field"] == "citation_count")
+    assert citation_r["new"] == 42
+
+
+def test_enrich_via_openalex_title_path_returns_abstract_and_citation():
+    """Title path (no DOI): search_work_by_title + get_work_enriched returns enriched data."""
+    db = FakeDB(paper=_make_paper(doi=None, title="Some Title", abstract=""))
+
+    enriched = {
+        "doi": "10.5678/found",
+        "title": "Some Title",
+        "year": 2023,
+        "openalex_id": "https://openalex.org/W456",
+        "abstract": "Abstract via title search.",
+        "cited_by_count": 17,
+        "journal": "Another Journal",
+        "authors": "Carol Davis",
+        "volume": "",
+        "pages": "",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_work_by_title",
+            return_value={"doi": "10.5678/found", "title": "Some Title"},
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    fields = {r["field"] for r in oa_repairs}
+    assert "abstract" in fields
+    assert "citation_count" in fields
+    assert "authors" in fields
+
+
+def test_enrich_via_openalex_authors_only():
+    """When enriched has no authors but search_authors_by_work returns them."""
+    db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", authors=""))
+
+    enriched = {
+        "doi": "10.1234/testdoi",
+        "title": "Test Paper",
+        "year": 2024,
+        "openalex_id": "https://openalex.org/W123",
+        "abstract": "",
+        "cited_by_count": 0,
+        "journal": "",
+        "authors": "",
+        "volume": "",
+        "pages": "",
+    }
+
+    authors_list = [
+        {
+            "author_id": "A1234567890",
+            "display_name": "Eve Green",
+            "orcid": None,
+            "raw_affiliation": [],
+        },
+        {
+            "author_id": "A0987654321",
+            "display_name": "Frank Blue",
+            "orcid": None,
+            "raw_affiliation": [],
+        },
+    ]
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=authors_list,
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    fields = {r["field"] for r in oa_repairs}
+    assert "authors" in fields
+
+    authors_r = next(r for r in oa_repairs if r["field"] == "authors")
+    assert "Eve Green" in authors_r["new"]
+    assert "Frank Blue" in authors_r["new"]
+
+
+def test_enrich_via_openalex_no_doi_no_title_returns_empty():
+    """When paper has neither DOI nor title, enrich returns empty."""
+    db = FakeDB(paper=_make_paper(title="", doi=None))
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    assert len(oa_repairs) == 0
+
+
+def test_enrich_via_openalex_handles_api_exception():
+    """When OpenAlex API raises, no OpenAlex repairs are emitted."""
+    db = FakeDB(paper=_make_paper(doi="10.1234/testdoi"))
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            side_effect=RuntimeError("OpenAlex API down"),
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    assert len(oa_repairs) == 0
+
+
+def test_repair_paper_applies_authors_to_db():
+    """With dry_run=False, authors repair triggers papers UPDATE."""
+    db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", authors=""))
+
+    enriched = {
+        "doi": "10.1234/testdoi",
+        "title": "Test Paper",
+        "year": 2024,
+        "openalex_id": "https://openalex.org/W123",
+        "abstract": "",
+        "cited_by_count": 0,
+        "journal": "",
+        "authors": "Alice Smith",
+        "volume": "",
+        "pages": "",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repair_paper(db, "p1", dry_run=False)
+
+    assert db._committed
+    authors_updates = [
+        (sql, params) for sql, params in db._executed if "UPDATE papers SET authors" in sql
+    ]
+    assert len(authors_updates) == 1
+    assert authors_updates[0][1] == ("Alice Smith", "p1")
+
+
+def test_repair_paper_applies_volume_pages_to_db():
+    """With dry_run=False, volume and pages repairs trigger papers UPDATE."""
+    db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", volume="", pages=""))
+
+    enriched = {
+        "doi": "10.1234/testdoi",
+        "title": "Test Paper",
+        "year": 2024,
+        "openalex_id": "https://openalex.org/W123",
+        "abstract": "",
+        "cited_by_count": 0,
+        "journal": "",
+        "authors": "",
+        "volume": "42",
+        "pages": "200-250",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repair_paper(db, "p1", dry_run=False)
+
+    assert db._committed
+    volume_updates = [
+        (sql, params) for sql, params in db._executed if "UPDATE papers SET volume" in sql
+    ]
+    pages_updates = [
+        (sql, params) for sql, params in db._executed if "UPDATE papers SET pages" in sql
+    ]
+    assert len(volume_updates) == 1
+    assert len(pages_updates) == 1
+    assert volume_updates[0][1] == ("42", "p1")
+    assert pages_updates[0][1] == ("200-250", "p1")
+
+
+def test_enrich_via_openalex_paper_already_has_data_skips():
+    """When paper already has abstract/cited_by_count/authors, no OpenAlex repair emitted."""
+    db = FakeDB(
+        paper=_make_paper(
+            doi="10.1234/testdoi",
+            abstract="Existing abstract",
+            citation_count=10,
+            authors="Existing Author",
+            volume="1",
+            pages="1-10",
+            journal="Existing Journal",
+        )
+    )
+
+    enriched = {
+        "doi": "10.1234/testdoi",
+        "title": "Test Paper",
+        "year": 2024,
+        "openalex_id": "https://openalex.org/W123",
+        "abstract": "New abstract",
+        "cited_by_count": 42,
+        "journal": "New Journal",
+        "authors": "New Author",
+        "volume": "2",
+        "pages": "11-20",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            return_value=enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    assert len(oa_repairs) == 0
+
+
+def test_enrich_via_openalex_doi_path_fallback_to_title():
+    """When get_work_enriched returns None for DOI, falls back to title search."""
+    db = FakeDB(paper=_make_paper(doi="10.broken/doi", title="Real Title", abstract=""))
+
+    enriched = {
+        "doi": "10.5678/title-found",
+        "title": "Real Title",
+        "year": 2023,
+        "openalex_id": "https://openalex.org/W789",
+        "abstract": "Abstract via title fallback.",
+        "cited_by_count": 5,
+        "journal": "",
+        "authors": "",
+        "volume": "",
+        "pages": "",
+    }
+
+    with (
+        patch(
+            "drbrain.services.repair._repair_via_crossref",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_arxiv",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.services.repair._repair_via_title_year",
+            return_value=[],
+        ),
+        patch(
+            "drbrain.extractor.openalex.get_work_enriched",
+            side_effect=lambda doi: None if doi == "10.broken/doi" else enriched,
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_work_by_title",
+            return_value={"doi": "10.5678/title-found"},
+            create=True,
+        ),
+        patch(
+            "drbrain.extractor.openalex.search_authors_by_work",
+            return_value=None,
+            create=True,
+        ),
+    ):
+        repairs = repair_paper(db, "p1", dry_run=True)
+
+    oa_repairs = [r for r in repairs if r["source"] == "OpenAlex"]
+    assert len(oa_repairs) > 0
+    fields = {r["field"] for r in oa_repairs}
+    assert "abstract" in fields
+    assert "citation_count" in fields
