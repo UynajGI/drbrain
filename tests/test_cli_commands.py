@@ -1160,3 +1160,195 @@ def test_closure_cmd_backward_compat():
         edge_count_after = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
         db.close()
         assert edge_count_after > edge_count_before
+
+
+# -- New tests for coverage boost --
+
+
+def test_show_cmd_nonexistent_paper():
+    """show_cmd raises typer.Exit(1) when paper is not found."""
+    from drbrain.cli.commands import show_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+
+        try:
+            show_cmd(ctx, "nonexistent-paper-id")
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
+
+
+def test_show_cmd_json_output_for_nonexistent_paper():
+    """show_cmd --json still raises Exit for missing paper."""
+    from drbrain.cli.commands import show_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+
+        try:
+            show_cmd(ctx, "nonexistent-paper-id", json_output=True)
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
+
+
+def test_fetch_cmd_doi_parsing():
+    """_resolve_identifier detects DOIs (starts with '10.')."""
+    from drbrain.services.fetch import _resolve_identifier
+
+    doi, title, arxiv_id = _resolve_identifier("10.1234/example.doi")
+    assert doi == "10.1234/example.doi"
+    assert title is None
+    assert arxiv_id is None
+
+
+def test_fetch_cmd_doi_parsing_slash():
+    """_resolve_identifier detects DOI-style strings with '/' and no spaces."""
+    from drbrain.services.fetch import _resolve_identifier
+
+    doi, title, arxiv_id = _resolve_identifier("prefix/suffix")
+    assert doi == "prefix/suffix"
+    assert title is None
+    assert arxiv_id is None
+
+
+def test_fetch_cmd_arxiv_flag():
+    """_resolve_identifier with is_arxiv=True returns arxiv_id, not doi/title."""
+    from drbrain.services.fetch import _resolve_identifier
+
+    doi, title, arxiv_id = _resolve_identifier("2301.12345", is_arxiv=True)
+    assert doi is None
+    assert title is None
+    assert arxiv_id == "2301.12345"
+
+    # Even a DOI-like string is treated as arXiv ID when flag is set
+    doi2, title2, arxiv_id2 = _resolve_identifier("10.1234/foo", is_arxiv=True)
+    assert arxiv_id2 == "10.1234/foo"
+    assert doi2 is None
+
+
+def test_fetch_cmd_title_fallback():
+    """_resolve_identifier treats plain text as a title (no DOI, no arXiv flag)."""
+    from drbrain.services.fetch import _resolve_identifier
+
+    doi, title, arxiv_id = _resolve_identifier("Graph Neural Networks for Reasoning")
+    assert doi is None
+    assert title == "Graph Neural Networks for Reasoning"
+    assert arxiv_id is None
+
+
+def test_clean_cmd_force_no_password():
+    """clean --force works when no admin password is configured."""
+    from drbrain.cli.commands import clean_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {
+            "db": {"path": f"{td}/nonexistent.db"},
+            "dirs": {
+                "cache": f"{td}/cache",
+                "logs": f"{td}/logs",
+                "papers": f"{td}/papers",
+                "reports": f"{td}/reports",
+            },
+            # No admin.password_hash — has_password() returns False
+        }
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+            # Should not prompt for password and not raise Exit
+            clean_cmd(force=True, config_path="config.yaml")
+
+
+def test_clean_cmd_force_with_password_requires_prompt():
+    """clean --force prompts for password when admin password is configured."""
+    from drbrain.auth import hash_password
+    from drbrain.cli.commands import clean_cmd
+
+    pw_hash = hash_password("test123")
+
+    with tempfile.TemporaryDirectory() as td:
+        # Create actual directories so clean_cmd finds targets to clean
+        # (otherwise it short-circuits with "Nothing to clean" before password check)
+        for sub in ("cache", "logs", "papers", "reports"):
+            (Path(td) / sub).mkdir()
+
+        cfg = {
+            "db": {"path": f"{td}/nonexistent.db"},
+            "dirs": {
+                "cache": f"{td}/cache",
+                "logs": f"{td}/logs",
+                "papers": f"{td}/papers",
+                "reports": f"{td}/reports",
+            },
+            "admin": {"password_hash": pw_hash},
+        }
+        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+            with mock.patch("typer.prompt") as mock_prompt:
+                mock_prompt.return_value = "test123"
+                clean_cmd(force=True, config_path="config.yaml")
+                mock_prompt.assert_called_once()
+                assert "Admin password" in mock_prompt.call_args[0][0]
+
+
+def test_repair_nonexistent_paper():
+    """repair_paper returns error dict for nonexistent paper."""
+    from drbrain.services.repair import repair_paper
+
+    db = Database(":memory:")
+    result = repair_paper(db, "nonexistent-id")
+    assert isinstance(result, list)
+    assert len(result) >= 1
+    assert any(r.get("field") == "error" for r in result)
+    db.close()
+
+
+def test_repair_cmd_nonexistent_paper():
+    """repair_cmd raises typer.Exit(1) when paper is not found."""
+    from drbrain.cli.commands import repair_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+
+        try:
+            repair_cmd(
+                ctx,
+                local_id="nonexistent-id",
+                all=False,
+                workspace=None,
+                dry_run=False,
+                json_output=False,
+            )
+            assert False, "Should have raised Exit"
+        except typer.Exit as e:
+            assert e.exit_code == 1
+
+
+def test_audit_cmd_runs_empty_library():
+    """audit_papers on an empty in-memory database returns empty list."""
+    from pathlib import Path
+
+    from drbrain.services.audit import audit_papers
+
+    db = Database(":memory:")
+    issues = audit_papers(db, Path("data/papers"), severity="warning")
+    assert isinstance(issues, list)
+    assert len(issues) == 0
+    db.close()
+
+
+def test_audit_cmd_all_severity_levels():
+    """audit_papers accepts error, warning, and info severity levels."""
+    from pathlib import Path
+
+    from drbrain.services.audit import audit_papers
+
+    db = Database(":memory:")
+    for sev in ("error", "warning", "info"):
+        issues = audit_papers(db, Path("data/papers"), severity=sev)
+        assert isinstance(issues, list)
+    db.close()

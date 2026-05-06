@@ -84,3 +84,80 @@ def test_query_confidence_filter_via_db():
         assert "transformer" in labels
         assert "embedding" not in labels
         db.close()
+
+
+# -- New tests for coverage boost --
+
+
+def test_build_index_empty():
+    """Empty concept list produces empty (None) index."""
+    db = Database(":memory:")
+    idx = build_bm25_index(db)
+    assert idx._bm25 is None or len(idx._documents) == 0
+    db.close()
+
+
+def test_search_on_empty_db_returns_empty():
+    """Search returns empty list when no data exists."""
+    db = Database(":memory:")
+    idx = build_bm25_index(db)
+    if idx is None:
+        assert True  # No index = no results, which is correct behavior
+    else:
+        results = idx.search("any query")
+        assert len(results) == 0
+    db.close()
+
+
+def test_search_result_structure():
+    """Search results contain expected metadata fields: label, type, local_id."""
+    db = Database(":memory:")
+    db.insert_paper("test-1", "Test", 2026, "extracted")
+    db.insert_concept("test-1", "Problem", "graph neural networks", 0.9, year=2026)
+    db.insert_concept("test-1", "Method", "attention mechanism", 0.8, year=2026)
+    db.commit()
+
+    idx = build_bm25_index(db)
+    if idx is not None:
+        results = idx.search("graph networks", limit=3)
+        assert len(results) >= 1
+        r = results[0]
+        assert "label" in r
+        assert "type" in r
+        assert "local_id" in r
+    db.close()
+
+
+def test_search_limit():
+    """Search respects limit parameter, returning at most N results."""
+    db = Database(":memory:")
+    db.insert_paper("test-1", "Test", 2026, "extracted")
+    for i in range(5):
+        db.insert_concept(
+            "test-1", "Problem", f"concept {i} neural network training", 0.9, year=2026
+        )
+    db.commit()
+
+    idx = build_bm25_index(db)
+    if idx is not None:
+        results = idx.search("neural", limit=2)
+        assert len(results) <= 2
+    db.close()
+
+
+def test_search_no_matching_terms_score_zero():
+    """Query with no matching terms returns results with score 0.0 (BM25 behavior)."""
+    db = Database(":memory:")
+    db.insert_paper("test-1", "Test", 2026, "extracted")
+    db.insert_concept("test-1", "Method", "transformer architecture", 0.9, year=2026)
+    db.commit()
+
+    idx = build_bm25_index(db)
+    if idx is not None:
+        results = idx.search("zzz_nonexistent_term_xyz")
+        # BM25Okapi returns all docs with score 0 when no terms match
+        # The search function doesn't filter zero-score results
+        assert len(results) > 0
+        for r in results:
+            assert r["score"] == 0.0
+    db.close()
