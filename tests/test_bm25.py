@@ -161,3 +161,46 @@ def test_search_no_matching_terms_score_zero():
         for r in results:
             assert r["score"] == 0.0
     db.close()
+
+
+# -- tokenize() edge cases --
+
+
+def test_tokenize_empty():
+    from drbrain.query.bm25 import tokenize
+
+    assert tokenize("") == []
+
+
+def test_tokenize_mixed_case():
+    from drbrain.query.bm25 import tokenize
+
+    assert tokenize("Hello WORLD") == ["hello", "world"]
+
+
+def test_tokenize_punctuation():
+    from drbrain.query.bm25 import tokenize
+
+    result = tokenize("hello, world!")
+    assert result == ["hello", "world"]
+
+
+def test_bm25_search_custom_params():
+    """BM25Search accepts custom k1 and b."""
+    bm25 = BM25Search()
+    bm25.add_document("doc1", "Concept", "hello world")
+    bm25.add_document("doc2", "Concept", "foo bar")
+    bm25.build(k1=2.0, b=0.5)
+    results = bm25.search("hello")
+    assert len(results) >= 1
+    assert results[0]["label"] == "hello world"
+
+
+def test_bm25_search_no_results():
+    """Search for term not in any document returns all docs with score 0.0."""
+    bm25 = BM25Search()
+    bm25.add_document("doc1", "Concept", "hello world")
+    bm25.build()
+    results = bm25.search("quantum")
+    # BM25 returns all docs with score 0 when no terms match
+    assert all(r["score"] == 0.0 for r in results)

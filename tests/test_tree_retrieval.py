@@ -9,6 +9,10 @@ import typer
 
 from drbrain.query.tree_retrieval import (
     _ask_llm_for_relevant_nodes,
+    _build_remaining_structure,
+    _build_top_level_structure,
+    _collect_all_leaf_ids,
+    _expand_branch,
     _get_node_title,
     query_by_structure,
 )
@@ -464,3 +468,155 @@ def test_get_node_title_in_nested_structure():
     ]
     assert _get_node_title(structure, "0000-0") == "Child"
     assert _get_node_title(structure, "0000") == "Root"
+
+
+# -- Additional helper function tests for coverage --
+
+
+def test_get_node_title_empty_structure():
+    """_get_node_title returns '' for empty structure."""
+    assert _get_node_title([], "n1") == ""
+
+
+def test_get_node_title_missing_node():
+    """_get_node_title returns '' for node not in structure."""
+    structure = [{"title": "A", "node_id": "n1", "nodes": []}]
+    assert _get_node_title(structure, "n2") == ""
+
+
+def test_collect_all_leaf_ids_single():
+    """_collect_all_leaf_ids finds single leaf."""
+    structure = [
+        {
+            "title": "root",
+            "node_id": "root",
+            "nodes": [{"title": "leaf1", "node_id": "leaf1", "nodes": []}],
+        }
+    ]
+    leaves = _collect_all_leaf_ids(structure)
+    assert "leaf1" in leaves
+    assert "root" not in leaves
+
+
+def test_collect_all_leaf_ids_nested():
+    """_collect_all_leaf_ids finds all leaves in nested tree."""
+    structure = [
+        {
+            "title": "root",
+            "node_id": "root",
+            "nodes": [
+                {
+                    "title": "mid",
+                    "node_id": "mid",
+                    "nodes": [{"title": "leaf1", "node_id": "leaf1", "nodes": []}],
+                },
+                {"title": "leaf2", "node_id": "leaf2", "nodes": []},
+            ],
+        }
+    ]
+    leaves = _collect_all_leaf_ids(structure)
+    assert "leaf1" in leaves
+    assert "leaf2" in leaves
+    assert "root" not in leaves
+    assert "mid" not in leaves
+
+
+def test_build_remaining_structure_filters_read():
+    """_build_remaining_structure excludes already-read leaf nodes."""
+    structure = [
+        {"title": "Intro", "node_id": "n1", "nodes": []},
+        {"title": "Methods", "node_id": "n2", "nodes": []},
+    ]
+    result = _build_remaining_structure(structure, {"n1"})
+    parsed = json.loads(result)
+    assert len(parsed) == 1
+    assert parsed[0]["node_id"] == "n2"
+
+
+def test_build_remaining_structure_empty():
+    """_build_remaining_structure returns '{}' when all nodes read."""
+    structure = [{"title": "A", "node_id": "n1", "nodes": []}]
+    result = _build_remaining_structure(structure, {"n1"})
+    assert result == "{}"
+
+
+def test_build_top_level_structure_depth1():
+    """_build_top_level_structure with depth=1 shows only top-level with child_count."""
+    structure = [
+        {
+            "title": "A",
+            "node_id": "n1",
+            "nodes": [
+                {"title": "A1", "node_id": "n1a", "nodes": []},
+                {"title": "A2", "node_id": "n1b", "nodes": []},
+            ],
+        },
+        {"title": "B", "node_id": "n2", "nodes": []},
+    ]
+    result = _build_top_level_structure(structure, depth=1)
+    assert any(n["node_id"] == "n1" for n in result)
+    assert any(n["node_id"] == "n2" for n in result)
+    # n1 should have child_count since depth=1 collapses children
+    n1 = [n for n in result if n["node_id"] == "n1"][0]
+    assert n1["child_count"] == 2
+    assert n1["children"] == []
+
+
+def test_build_top_level_structure_depth2():
+    """_build_top_level_structure with depth=2 includes one level of children."""
+    structure = [
+        {
+            "title": "A",
+            "node_id": "n1",
+            "nodes": [
+                {"title": "A1", "node_id": "n1a", "nodes": []},
+                {"title": "A2", "node_id": "n1b", "nodes": []},
+            ],
+        },
+        {"title": "B", "node_id": "n2", "nodes": []},
+    ]
+    result = _build_top_level_structure(structure, depth=2)
+    assert any(n["node_id"] == "n1" for n in result)
+    assert any(n["node_id"] == "n2" for n in result)
+    # Children should be expanded at depth=2
+    n1 = [n for n in result if n["node_id"] == "n1"][0]
+    assert len(n1["children"]) == 2
+
+
+def test_expand_branch_includes_children():
+    """_expand_branch returns children of selected nodes."""
+    structure = [
+        {
+            "title": "root",
+            "node_id": "root",
+            "nodes": [
+                {
+                    "title": "child1",
+                    "node_id": "child1",
+                    "nodes": [{"title": "grandchild1", "node_id": "grandchild1", "nodes": []}],
+                },
+                {"title": "child2", "node_id": "child2", "nodes": []},
+            ],
+        }
+    ]
+    result = _expand_branch(structure, {"root"})
+    node_ids = {n["node_id"] for n in result}
+    assert "child1" in node_ids
+    assert "child2" in node_ids
+    # root itself should NOT be in result (its children are returned)
+    assert "root" not in node_ids
+
+
+def test_expand_branch_leaf_node():
+    """_expand_branch on a leaf node returns the node itself."""
+    structure = [{"title": "leaf", "node_id": "leaf1", "nodes": []}]
+    result = _expand_branch(structure, {"leaf1"})
+    assert len(result) == 1
+    assert result[0]["node_id"] == "leaf1"
+
+
+def test_expand_branch_no_match():
+    """_expand_branch with non-matching IDs returns empty list."""
+    structure = [{"title": "A", "node_id": "n1", "nodes": []}]
+    result = _expand_branch(structure, {"nonexistent"})
+    assert result == []

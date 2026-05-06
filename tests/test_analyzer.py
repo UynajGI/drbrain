@@ -381,3 +381,53 @@ def test_paper_null_year():
 
     assert result["paper"]["year"] is None
     assert result["paper"]["title"] == "No Year"
+
+
+# -- Real Database tests (no mocking of DB layer) --
+
+
+def test_analyze_paper_nonexistent_real_db():
+    """analyze_paper returns error dict for missing paper using real Database."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    graph = GraphEngine()
+    result = analyze_paper(db, graph, "nonexistent")
+    assert "error" in result
+    db.close()
+
+
+def test_analyze_paper_empty_concepts_real_db():
+    """analyze_paper handles paper with no concepts using real Database."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Empty Concepts Paper", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+    result = analyze_paper(db, graph, "p1")
+    assert result["paper"]["local_id"] == "p1"
+    assert result["paper"]["title"] == "Empty Concepts Paper"
+    assert len(result.get("seeds", [])) >= 0
+    assert result["causal_chains"] == []
+    db.close()
+
+
+def test_analyze_paper_full_false_real_db():
+    """analyze_paper with full=False skips counterfactual/hypotheses/isomorphism."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Test Paper", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+    result = analyze_paper(db, graph, "p1", full=False)
+    assert "seeds" in result
+    assert "causal_chains" in result
+    assert "critical_nodes" not in result
+    assert "hypotheses" not in result
+    assert "isomorphisms" not in result
+    db.close()
