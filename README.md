@@ -64,8 +64,8 @@ entry files into your project so your agent can discover and use skills directly
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `CLAUDE.md` + `.claude-plugin/` + `.mcp.json` |
 | [Codex](https://openai.com/codex) / OpenClaw | `AGENTS.md` |
 | [Cline](https://github.com/cline/cline) | `.clinerules` |
-| [Qwen](https://qwen.ai/) | `QWEN.md` |
-| [Cursor](https://cursor.sh) | `.cursorrules` |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) | `.qwen/QWEN.md` |
+| [Cursor](https://cursor.sh) | `.cursor/rules/drbrain.mdc` |
 | [Windsurf](https://codeium.com/windsurf) | `.windsurfrules` |
 | [GitHub Copilot](https://github.com/features/copilot) | `.github/copilot-instructions.md` |
 
