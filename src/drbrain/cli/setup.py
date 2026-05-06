@@ -21,7 +21,10 @@ INJECTION_MAP: dict[str, list[tuple[str, str]]] = {
     ],
     "codex": [("AGENTS.md.j2", "AGENTS.md")],
     "qwen": [("QWEN.md.j2", ".qwen/QWEN.md")],
-    "cursor": [(".cursorrules.j2", ".cursorrules")],
+    "cursor": [
+        ("drbrain.mdc.j2", ".cursor/rules/drbrain.mdc"),
+        (".cursorrules.j2", ".cursorrules"),
+    ],
     "cline": [(".clinerules.j2", ".clinerules")],
     "windsurf": [(".windsurfrules.j2", ".windsurfrules")],
     "copilot": [("copilot-instructions.md.j2", ".github/copilot-instructions.md")],
