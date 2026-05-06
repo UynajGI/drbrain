@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
-- **Last Active**: 2026-05-05
+- **Total Sessions**: 6
+- **Last Active**: 2026-05-06
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~197 | Active |
+| `journal-1.md` | ~231 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-05-06 | Password-protect clean + skill-creator format rewrite | `236de2c`, `06881a9` | `main` |
 | 5 | 2026-05-05 | PyPI publish + skills completeness + docs | `704b545`, `6e0b1ed` | `main` |
 | 4 | 2026-05-05 | OpenAlex enrichment + Engineering maturity | `21a7f1c`, `d510706`, `28160ae`, `08855df`, `6021958` | `main` |
 | 3 | 2026-05-05 | Session 2026-05-05 (round 3): Bug hunting, tree+graph, coverage tests | `5f7d65e`, `9f4407e`, `68476cc`, `a7b1603`, `a341e3c` | `main` |

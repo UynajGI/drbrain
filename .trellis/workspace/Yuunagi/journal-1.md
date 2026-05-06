@@ -195,3 +195,37 @@ PyPI publish: build config (hatchling, classifiers, urls), publish workflow (tag
 ### Next Steps
 
 - None - task complete
+
+
+## Session 6: Password-protect clean + skill-creator format rewrite
+
+**Date**: 2026-05-06
+**Task**: Password-protect clean + skill-creator format rewrite
+**Branch**: `main`
+
+### Summary
+
+Password-protect clean --force with salted SHA-256 (auth.py, setup --change-password). Rewrite all 12 skills to skill-creator format (pushy descriptions, imperative body, 2-3 examples each). Fix install docs from uvx to uv tool install.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `236de2c` | (see git log) |
+| `06881a9` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
