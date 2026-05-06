@@ -448,3 +448,211 @@ def test_landscape_papers_without_year():
     assert isinstance(result, dict)
     assert len(result["timeline"]) == 0
     db.close()
+
+
+# --- Paradigm shift tests ---
+
+
+def test_paradigm_replacement_detected():
+    """Type 1: old method declining, new method growing, challenges edge = paradigm shift."""
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    # OldMethod: 3 papers in 2018, 1 in 2022 (declining)
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_old1', 'Old Method Paper', 2018, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_old2', 'Old Method Paper 2', 2018, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_old3', 'Old Method Paper 3', 2018, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_old4', 'Old Method Paper 4', 2022, 'extracted')"
+    )
+    # NewMethod: 2 papers in 2022, 1 in 2023 (growing)
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_new1', 'New Method Paper', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_new2', 'New Method Paper 2', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_new3', 'New Method Paper 3', 2023, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_old1', 'Method', 'OldMethod', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_old2', 'Method', 'OldMethod', 0.8, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_old3', 'Method', 'OldMethod', 0.7, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_old4', 'Method', 'OldMethod', 0.6, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_new1', 'Method', 'NewMethod', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_new2', 'Method', 'NewMethod', 0.8, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_new3', 'Method', 'NewMethod', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES ('NewMethod', 'OldMethod', 'challenges', 'p_new1', 0.9)"
+    )
+    db.commit()
+
+    from drbrain.graph.engine import GraphEngine
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = detect_paradigm_shifts(graph, db)
+    assert isinstance(results, list)
+    # Should detect OldMethod -> NewMethod shift
+    replacement = [r for r in results if r.get("type") == "replacement"]
+    assert len(replacement) >= 1
+    r = replacement[0]
+    assert r["old_concept"] == "OldMethod"
+    assert r["new_concept"] == "NewMethod"
+    db.close()
+
+
+def test_paradigm_no_decline_no_flag():
+    """When old method is NOT declining, don't flag as paradigm shift."""
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    # Both old and new are in same year (no decline data)
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Old', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'New', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p1', 'Method', 'OldMethod', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p2', 'Method', 'NewMethod', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES ('NewMethod', 'OldMethod', 'challenges', 'p2', 0.5)"
+    )
+    db.commit()
+
+    from drbrain.graph.engine import GraphEngine
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = detect_paradigm_shifts(graph, db)
+    replacement = [r for r in results if r.get("type") == "replacement"]
+    assert len(replacement) == 0  # No decline = no paradigm shift
+    db.close()
+
+
+def test_paradigm_explosion_detected():
+    """Type 2: concept explodes 0->many papers in short time with descendants."""
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    for i in range(5):
+        db.conn.execute(
+            f"INSERT INTO papers (local_id, title, year, status) VALUES ('p_exp{i}', 'Explosion Paper {i}', 2022, 'extracted')"
+        )
+        db.conn.execute(
+            f"INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_exp{i}', 'Method', 'ExplodingConcept', 0.95, 'method')"
+        )
+    # Add descendant edge
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_exp0', 'Method', 'DerivedFromExplosion', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES ('ExplodingConcept', 'DerivedFromExplosion', 'extends', 'p_exp0', 0.8)"
+    )
+    db.commit()
+
+    from drbrain.graph.engine import GraphEngine
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = detect_paradigm_shifts(graph, db, explosion_threshold=5, descendant_threshold=1)
+    # With 5 papers in one year + extends edge = explosion-type paradigm
+    explosion = [r for r in results if r.get("type") == "explosion"]
+    assert len(explosion) >= 1
+    e = explosion[0]
+    assert e["concept"] == "ExplodingConcept"
+    assert e["paper_count"] >= 3
+    db.close()
+
+
+def test_paradigm_cross_domain_invasion():
+    """Type 3: method crosses domain boundary via applies edge."""
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    # NLP concept applied to CV paper
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_nlp', 'NLP Paper', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_cv1', 'CV Paper 1', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_cv2', 'CV Paper 2', 2022, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_nlp', 'Method', 'Transformer', 0.95, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_cv1', 'Method', 'VisionTransformer', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) VALUES ('p_cv2', 'Method', 'SwinTransformer', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES ('Transformer', 'VisionTransformer', 'applies', 'p_nlp', 0.9)"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES ('VisionTransformer', 'SwinTransformer', 'extends', 'p_cv1', 0.8)"
+    )
+    db.commit()
+
+    from drbrain.graph.engine import GraphEngine
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = detect_paradigm_shifts(graph, db)
+    invasion = [r for r in results if r.get("type") == "cross_domain"]
+    assert len(invasion) >= 1
+    iv = invasion[0]
+    assert iv["source_concept"] == "Transformer"
+    assert iv["target_concept"] == "VisionTransformer"
+    assert len(iv.get("cascade", [])) >= 1  # SwinTransformer cascaded
+    db.close()
+
+
+def test_paradigm_empty_graph():
+    """Empty graph returns empty list, no crash."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    results = detect_paradigm_shifts(graph, db)
+    assert results == []
+    db.close()

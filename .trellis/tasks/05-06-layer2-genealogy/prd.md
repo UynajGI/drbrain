@@ -10,7 +10,17 @@ Show how knowledge develops — concept lineage trees, paper descendants, domain
 
 ## ✅ Feature 2: `drbrain descendants <paper_id>` — DONE
 
-## Feature 3: `drbrain landscape <workspace>` (TDD)
+## Feature 3: `drbrain landscape <workspace>` (TDD) — DONE
+
+## Feature 4: `drbrain paradigm [concept]` (TDD)
+
+Three detection modes:
+1. **替代型**: Old method declines 50%+ over 3yr, new method grows fast, `challenges` edge
+2. **引爆型**: Concept explodes 0→8+ papers in 2yr, spawns 3+ `extends`/`refines` descendants
+3. **跨域入侵**: `applies` edge crosses domain boundary, cascading in new domain
+
+Configurable thresholds in `config.yaml` under `paradigm:` section.
+`--workspace` flag scans entire workspace.
 
 领域全景：ASCII 时间线 + 关键论文 + 未解决 gap 持久性 + 争议区。
 

@@ -3894,3 +3894,48 @@ def _render_landscape(result: dict, top_n: int):
         typer.echo(f"\nDebates ({len(debates)}):")
         for d in debates[:top_n]:
             typer.echo(f"  * {d['description'][:120]} ({d.get('concept', '')})")
+
+
+def paradigm_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(None, help="Concept to check for paradigm shifts"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Scan entire workspace"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Detect paradigm shifts -- replacement, explosion, or cross-domain invasion."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    # Resolve workspace
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    paper_ids = None
+    if workspace:
+        from drbrain.storage.workspace import load_workspace_papers
+
+        try:
+            paper_ids = load_workspace_papers(workspace)
+        except (FileNotFoundError, OSError):
+            paper_ids = []
+
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+
+    results = detect_paradigm_shifts(graph, db, concept=concept, paper_ids=paper_ids)
+
+    if json_output:
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+    else:
+        if not results:
+            typer.echo("No paradigm shifts detected.")
+        else:
+            type_labels = {
+                "replacement": "Replacement",
+                "explosion": "Explosion",
+                "cross_domain": "Cross-Domain",
+            }
+            for r in results:
+                typer.echo(f"\n[{type_labels.get(r['type'], r['type'])}] {r['description']}")
+
+    db.close()

@@ -292,6 +292,160 @@ def _to_mermaid(nodes: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def detect_paradigm_shifts(
+    graph: GraphEngine,
+    db: Database,
+    concept: str | None = None,
+    paper_ids: list[str] | None = None,
+    decline_threshold: float = 0.5,
+    growth_threshold: int = 3,
+    explosion_threshold: int = 8,
+    descendant_threshold: int = 3,
+    cascade_threshold: int = 1,
+) -> list[dict]:
+    """Detect paradigm shifts: replacement, explosion, cross-domain.
+
+    Returns list of shift dicts, each with: type, description, concepts involved.
+
+    Args:
+        concept: Optional concept label to filter explosion detection.
+        paper_ids: Optional list of paper IDs to scope detection to a workspace.
+        decline_threshold: Fraction decline to flag replacement (default 0.5 = 50%).
+        growth_threshold: Min new-method papers for replacement.
+        explosion_threshold: Min total papers for explosion detection.
+        descendant_threshold: Min descendant concepts for explosion (PRD: 3+).
+        cascade_threshold: Min cascaded concepts for cross-domain detection.
+    """
+    results: list[dict] = []
+
+    # Type 1: Replacement -- find challenges edges where old is declining
+    challenge_edges = db.conn.execute(
+        "SELECT src_id, dst_id, weight FROM edges WHERE relation = 'challenges'"
+    ).fetchall()
+
+    for src_id, dst_id, conf in challenge_edges:
+        # Count papers per year for old concept (dst_id = being challenged)
+        old_years = db.conn.execute(
+            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
+            (dst_id,),
+        ).fetchall()
+
+        # Count papers per year for new concept
+        new_years = db.conn.execute(
+            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
+            (src_id,),
+        ).fetchall()
+
+        if len(old_years) >= 2 and len(new_years) >= 2:
+            max_old_year = max(y for y, _ in old_years)
+            old_recent = sum(c for y, c in old_years if y >= max_old_year - 2)
+            old_old = sum(c for y, c in old_years if y < max_old_year - 2)
+
+            if old_old > 0 and old_recent / old_old <= (1 - decline_threshold):
+                new_total = sum(c for _, c in new_years)
+                if new_total >= growth_threshold:
+                    results.append(
+                        {
+                            "type": "replacement",
+                            "old_concept": dst_id,
+                            "new_concept": src_id,
+                            "description": f"{src_id} is replacing {dst_id} (decline: {old_recent}/{old_old}, new: {new_total})",
+                            "confidence": conf,
+                        }
+                    )
+
+    # Type 2: Explosion -- concept with rapid growth + descendants
+    if concept:
+        concept_labels = [concept]
+    elif paper_ids:
+        # Filter concepts to only those appearing in workspace papers
+        placeholders = ",".join("?" for _ in paper_ids)
+        concept_labels = [
+            r[0]
+            for r in db.conn.execute(
+                f"SELECT DISTINCT c.label FROM concepts c "
+                f"WHERE c.local_id IN ({placeholders}) AND c.type IN ('Method', 'Problem')",
+                paper_ids,
+            ).fetchall()
+        ]
+    else:
+        concept_labels = [
+            r[0]
+            for r in db.conn.execute(
+                "SELECT DISTINCT label FROM concepts WHERE type IN ('Method', 'Problem')"
+            ).fetchall()
+        ]
+
+    for clabel in concept_labels:
+        year_counts = db.conn.execute(
+            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
+            (clabel,),
+        ).fetchall()
+
+        total = sum(c for _, c in year_counts)
+        if total >= explosion_threshold and len(year_counts) <= 2:
+            # Check for descendant concepts via graph
+            descendants = []
+            if clabel in graph.graph:
+                for n in graph.graph.neighbors(clabel):
+                    for edge_data in graph.graph[clabel][n].values():
+                        rel = edge_data.get("relation", "")
+                        if rel in ("extends", "refines", "applies"):
+                            descendants.append(n)
+
+            if len(descendants) >= descendant_threshold:
+                results.append(
+                    {
+                        "type": "explosion",
+                        "concept": clabel,
+                        "paper_count": total,
+                        "descendants": descendants[:10],
+                        "description": f"{clabel} exploded to {total} papers with {len(descendants)} descendant concepts",
+                    }
+                )
+
+    # Type 3: Cross-domain invasion -- applies edges with cascading
+    applies_edges = db.conn.execute(
+        "SELECT src_id, dst_id, weight FROM edges WHERE relation = 'applies'"
+    ).fetchall()
+
+    for src_id, dst_id, conf in applies_edges:
+        # Check if dst has further descendants (cascade in new domain)
+        cascade = []
+        visited = {src_id, dst_id}
+        queue = [dst_id]
+        while queue and len(cascade) <= 5:
+            node = queue.pop(0)
+            if node not in graph.graph:
+                continue
+            for n in graph.graph.neighbors(node):
+                if n in visited:
+                    continue
+                visited.add(n)
+                for edge_data in graph.graph[node][n].values():
+                    rel = edge_data.get("relation", "")
+                    if rel in ("extends", "refines", "applies"):
+                        cascade.append(n)
+                        queue.append(n)
+
+        if len(cascade) >= cascade_threshold:
+            results.append(
+                {
+                    "type": "cross_domain",
+                    "source_concept": src_id,
+                    "target_concept": dst_id,
+                    "cascade": cascade[:10],
+                    "description": f"{src_id} crossed domains via {dst_id}, spawned {len(cascade)} concepts",
+                    "confidence": conf,
+                }
+            )
+
+    return results
+
+
 def landscape_workspace(
     db: Database,
     workspace_path: str | None = None,
