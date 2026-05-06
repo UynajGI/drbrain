@@ -104,34 +104,58 @@ def find_isomorphic_patterns(graph: GraphEngine) -> list[IsomorphicMapping]:
     """Find all pairs of nodes with isomorphic relation signatures.
 
     Groups nodes by their relation signature and finds pairs within groups.
+    Confidence combines Jaccard similarity (0.7 weight) and label
+    similarity (0.3 weight).
     """
     if graph.graph.number_of_nodes() == 0:
         return []
 
-    # Group nodes by their signature (as a frozenset for hashing)
-    sig_groups: dict[frozenset, list[str]] = defaultdict(list)
+    # Build raw signatures for each node (as dicts, not frozenset)
+    node_sigs: dict[str, dict] = {}
     for node in graph.graph.nodes():
         sig = _relation_signature(graph, node)
         if sig:
-            sig_key = frozenset(sig.items())
-            sig_groups[sig_key].append(node)
+            node_sigs[node] = sig
+
+    # Group nodes by frozenset key (identical signatures)
+    sig_groups: dict[frozenset, list[str]] = defaultdict(list)
+    for node, sig in node_sigs.items():
+        sig_key = frozenset(sig.items())
+        sig_groups[sig_key].append(node)
+
+    from drbrain.extractor.concept import _label_similarity
 
     mappings: list[IsomorphicMapping] = []
-    for sig, nodes in sig_groups.items():
+    for sig_items, nodes in sig_groups.items():
         if len(nodes) < 2:
             continue
 
-        # Create pairwise mappings
-        structure_desc = ", ".join(f"{rel}: {count}" for rel, count in sorted(sig))
+        raw_sig = dict(sig_items)
+        structure_desc = ", ".join(f"{rel}: {count}" for rel, count in sorted(raw_sig.items()))
 
         for i in range(len(nodes)):
             for j in range(i + 1, len(nodes)):
+                # Jaccard from raw signatures
+                sig_i = node_sigs[nodes[i]]
+                sig_j = node_sigs[nodes[j]]
+                set_i = set(sig_i.items())
+                set_j = set(sig_j.items())
+                intersection = set_i & set_j
+                union = set_i | set_j
+                jaccard = len(intersection) / len(union) if union else 0.0
+
+                # Label similarity
+                label_sim = _label_similarity(nodes[i], nodes[j])
+
+                # Combined confidence
+                confidence = jaccard * 0.7 + label_sim * 0.3
+
                 mappings.append(
                     IsomorphicMapping(
                         source_domain=nodes[i],
                         target_domain=nodes[j],
                         shared_structure=structure_desc,
-                        confidence=0.6,
+                        confidence=round(confidence, 4),
                     )
                 )
 

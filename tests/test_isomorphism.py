@@ -198,3 +198,59 @@ def test_relation_signature_mixed_in_out():
     sig = _relation_signature(g, "Node_X", section_map=section_map)
     assert "in:addresses@Methods" in sig
     assert "out:extends@Results" in sig
+
+
+# -- Confidence scoring (no longer hardcoded 0.6) --
+
+
+def test_isomorphism_confidence_not_hardcoded():
+    """Different pairs should get different confidence scores."""
+    g = _make_graph(
+        [
+            ("M1", "Problem_X", "addresses", "p1"),
+            ("M2", "Problem_X", "addresses", "p1"),
+            ("M3", "Problem_Y", "addresses", "p2"),
+            ("M4", "Problem_Y", "addresses", "p2"),
+            ("M5", "Problem_Z", "supports", "p3"),
+        ]
+    )
+    mappings = find_isomorphic_patterns(g)
+    # Problem_X and Problem_Y should form one pair
+    # M1, M2, M3, M4 share the same sig -> multiple pairs among them
+    assert len(mappings) >= 2
+    confidences = [m.confidence for m in mappings]
+    # Should not all be the same value
+    assert len(set(round(c, 4) for c in confidences)) > 1
+
+
+def test_isomorphism_high_label_similarity():
+    """Concepts with similar labels should get higher confidence."""
+    g = GraphEngine()
+    g.graph.add_node("graph_neural_network")
+    g.graph.add_node("graph_neural_networks")
+    g.graph.add_node("Problem_X")
+    g.graph.add_node("Problem_Y")
+    g.add_edge("graph_neural_network", "Problem_X", "solves", "p1")
+    g.add_edge("graph_neural_networks", "Problem_Y", "solves", "p1")
+
+    mappings = find_isomorphic_patterns(g)
+    assert len(mappings) >= 1
+    # _label_similarity("graph_neural_network", "graph_neural_networks") is high
+    assert mappings[0].confidence > 0.5
+
+
+def test_isomorphism_low_label_similarity():
+    """Concepts with very different labels should get lower confidence."""
+    g = GraphEngine()
+    g.graph.add_node("transformer")
+    g.graph.add_node("random_forest")
+    g.graph.add_node("Problem_A")
+    g.graph.add_node("Problem_B")
+    g.add_edge("transformer", "Problem_A", "solves", "p1")
+    g.add_edge("random_forest", "Problem_B", "solves", "p1")
+
+    mappings = find_isomorphic_patterns(g)
+    assert len(mappings) >= 1
+    # transformer vs random_forest should have very low label similarity
+    # Jaccard=1.0 (same sig), label_sim ~ 0 → confidence ~ 0.7
+    assert mappings[0].confidence < 0.8
