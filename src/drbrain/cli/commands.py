@@ -2704,6 +2704,15 @@ def clean_cmd(
             typer.echo("Cancelled.")
             return
 
+    if force:
+        from drbrain.auth import has_password, verify_password
+
+        if has_password(cfg):
+            pw = typer.prompt("Admin password", hide_input=True)
+            if not verify_password(pw, cfg["admin"]["password_hash"]):
+                typer.echo("Wrong password.", err=True)
+                raise typer.Exit(1)
+
     for d in existing:
         p = Path(d)
         if p.is_file():

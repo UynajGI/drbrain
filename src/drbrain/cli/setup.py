@@ -320,8 +320,46 @@ def setup_cmd(
     quick: bool = typer.Option(
         False, "--quick", "-q", help="Skip interactive prompts, use defaults"
     ),
+    change_password: bool = typer.Option(
+        False, "--change-password", help="Change the admin password"
+    ),
 ):
     """Initialize DrBrain — generate config, create directories, validate environment."""
+    # ── --change-password: verify old, set new, write config, exit ──
+    if change_password:
+        from drbrain.auth import has_password, hash_password, verify_password
+        from drbrain.config import load_config
+
+        cfg = load_config()
+        if not has_password(cfg):
+            typer.echo("No admin password is currently set.", err=True)
+            raise typer.Exit(1)
+
+        old_pw = typer.prompt("Current admin password", hide_input=True)
+        if not verify_password(old_pw, cfg["admin"]["password_hash"]):
+            typer.echo("Wrong password.", err=True)
+            raise typer.Exit(1)
+
+        new_pw = typer.prompt("New admin password", hide_input=True)
+        new_confirm = typer.prompt("Confirm new admin password", hide_input=True)
+        if new_pw != new_confirm:
+            typer.echo("Passwords don't match.", err=True)
+            raise typer.Exit(1)
+
+        from pathlib import Path
+
+        import yaml
+
+        config_path = Path("config.local.yaml")
+        if config_path.exists():
+            local = yaml.safe_load(config_path.read_text()) or {}
+        else:
+            local = {}
+        local.setdefault("admin", {})["password_hash"] = hash_password(new_pw)
+        config_path.write_text(yaml.dump(local, default_flow_style=False, allow_unicode=True))
+        typer.echo("Admin password updated.")
+        return
+
     # If config.local.yaml already exists, offer to re-run or validate only
     if Path("config.local.yaml").exists() and not quick:
         typer.echo("config.local.yaml already exists.\n")
@@ -456,6 +494,21 @@ def setup_cmd(
     crossref_email = typer.prompt("  CrossRef email (optional)", default="", show_default=False)
     openalex_token = typer.prompt("  OpenAlex token (optional)", default="", hide_input=True)
 
+    # ── Admin Password ──
+    typer.echo()
+    typer.echo("── Admin Password (optional) ──")
+    typer.echo("  Protects destructive commands like 'drbrain clean --force'.")
+    admin_password_hash = ""
+    if typer.confirm("  Set an admin password?", default=False):
+        pw = typer.prompt("  Password", hide_input=True)
+        pw_confirm = typer.prompt("  Confirm password", hide_input=True)
+        if pw == pw_confirm:
+            from drbrain.auth import hash_password
+
+            admin_password_hash = hash_password(pw)
+        else:
+            typer.echo("  Passwords don't match. Skipping.")
+
     # ── Review ──
     typer.echo()
     typer.echo("── Review ──")
@@ -489,6 +542,8 @@ def setup_cmd(
         "llm": {"models": models},
         "mineru": {"token": mineru_token},
     }
+    if admin_password_hash:
+        config["admin"] = {"password_hash": admin_password_hash}
     if api_cfg:
         config["api"] = api_cfg
 
