@@ -19,6 +19,7 @@ from drbrain.cli.commands import (
     closure_cmd,
     delete_cmd,
     embed_cmd,
+    evolve_cmd,
     export_cmd,
     fetch_cmd,
     import_cmd,
@@ -101,6 +102,7 @@ app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
 app.command("build")(build_cmd)
 app.command("embed")(embed_cmd)
+app.command("evolve")(evolve_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

@@ -3802,3 +3802,47 @@ def ask_cmd(
     typer.echo(f"\nQ: {question_text}\n")
     typer.echo(f"A: {answer}\n")
     typer.echo(f"(based on {len(results)} graph concepts)")
+
+
+def evolve_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(..., help="Concept label to trace evolution of"),
+    direction: str = typer.Option(
+        "both",
+        "--direction",
+        "-d",
+        help="Traversal direction: ancestors, descendants, both",
+    ),
+    max_depth: int = typer.Option(3, "--max-depth", "-n", help="Max traversal depth"),
+    mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show how a concept evolved — its ancestors and descendants in the knowledge graph."""
+    if direction not in ("ancestors", "descendants", "both"):
+        typer.echo("--direction must be: ancestors, descendants, both", err=True)
+        raise typer.Exit(1)
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.graph.genealogy import evolve_concept, format_tree
+
+    trees = evolve_concept(graph, db, concept, direction=direction, max_depth=max_depth)
+
+    if not trees:
+        db.close()
+        typer.echo(f"No concept found matching: {concept}")
+        raise typer.Exit(0)
+
+    if json_output:
+        typer.echo(json.dumps(trees, indent=2, ensure_ascii=False, default=str))
+    elif mermaid:
+        typer.echo(format_tree(trees, mermaid=True))
+    else:
+        typer.echo(f"\nEvolution of: {concept}\n")
+        for root in trees:
+            typer.echo(format_tree([root]))
+
+    db.close()
