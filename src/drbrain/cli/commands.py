@@ -3819,3 +3819,78 @@ def descendants_cmd(
         typer.echo(format_tree([tree]))
 
     db.close()
+
+
+def landscape_cmd(
+    ctx: typer.Context,
+    workspace: str = typer.Argument(None, help="Workspace name or path"),
+    top_n: int = typer.Option(5, "--top-n", help="Top concepts/items to show"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show a domain landscape -- timeline, persistent gaps, and debates."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    # Resolve workspace
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    paper_ids = None
+    if workspace:
+        from drbrain.storage.workspace import load_workspace_papers
+
+        try:
+            paper_ids = load_workspace_papers(workspace)
+        except (FileNotFoundError, OSError):
+            paper_ids = []
+
+    from drbrain.graph.genealogy import landscape_workspace
+
+    result = landscape_workspace(db, workspace_path=workspace, paper_ids=paper_ids)
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    elif "error" in result:
+        typer.echo(f"Error: {result['error']}", err=True)
+    else:
+        _render_landscape(result, top_n)
+
+    db.close()
+
+
+def _render_landscape(result: dict, top_n: int):
+    """Render landscape as ASCII timeline."""
+    timeline = result.get("timeline", [])
+    if not timeline:
+        typer.echo("No papers found.")
+        return
+
+    typer.echo("\nLandscape")
+    typer.echo("=" * 60)
+
+    current_year = None
+    for entry in timeline:
+        year = entry["year"]
+        title = entry["title"]
+
+        if year != current_year:
+            current_year = year
+            typer.echo(f"\n  {year}  ", nl=False)
+        else:
+            typer.echo("        ", nl=False)
+
+        typer.echo(f"{title}")
+
+        for concept in entry.get("key_concepts", [])[:top_n]:
+            typer.echo(f"        +- {concept['label']} [{concept['type']}]")
+
+    gaps = result.get("gaps", [])
+    if gaps:
+        typer.echo(f"\nPersistent gaps ({len(gaps)}):")
+        for g in gaps[:top_n]:
+            typer.echo(f"  * {g['description'][:120]} ({g.get('concept', '')})")
+
+    debates = result.get("debates", [])
+    if debates:
+        typer.echo(f"\nDebates ({len(debates)}):")
+        for d in debates[:top_n]:
+            typer.echo(f"  * {d['description'][:120]} ({d.get('concept', '')})")

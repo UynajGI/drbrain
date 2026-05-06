@@ -26,6 +26,7 @@ from drbrain.cli.commands import (
     import_cmd,
     index_cmd,
     ingest_cmd,
+    landscape_cmd,
     lineage_cmd,
     list_cmd,
     query_cmd,
@@ -103,6 +104,7 @@ app.command("build")(build_cmd)
 app.command("embed")(embed_cmd)
 app.command("evolve")(evolve_cmd)
 app.command("descendants")(descendants_cmd)
+app.command("landscape")(landscape_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

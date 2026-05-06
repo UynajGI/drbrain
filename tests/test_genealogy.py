@@ -346,3 +346,105 @@ def test_trace_descendants_generations_limit():
     assert grandchildren[0]["local_id"] == "p2"
 
     db.close()
+
+
+# --- Landscape tests ---
+
+
+def test_landscape_empty_workspace():
+    """Landscape handles empty/nonexistent workspace gracefully."""
+    from drbrain.graph.genealogy import landscape_workspace
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    result = landscape_workspace(db, workspace_path="nonexistent-ws")
+    assert isinstance(result, dict)
+    assert "timeline" in result
+    assert len(result["timeline"]) == 0
+    db.close()
+
+
+def test_landscape_empty_papers():
+    """Landscape with workspace containing no papers returns empty result."""
+    from drbrain.graph.genealogy import landscape_workspace
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    result = landscape_workspace(db, paper_ids=[])
+    assert isinstance(result, dict)
+    assert "timeline" in result
+    assert "gaps" in result
+    assert "debates" in result
+    assert len(result["timeline"]) == 0
+    assert len(result["gaps"]) == 0
+    assert len(result["debates"]) == 0
+    db.close()
+
+
+def test_landscape_basic_timeline():
+    """Landscape produces timeline with year-ordered entries."""
+    from drbrain.graph.genealogy import landscape_workspace
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Old Paper', 2018, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'New Paper', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Method A', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Method', 'Method B', 0.8, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('Method A', 'Method B', 'extends', 'p1', 0.7)"
+    )
+    db.commit()
+
+    result = landscape_workspace(db, paper_ids=["p1", "p2"])
+    assert isinstance(result, dict)
+    assert "timeline" in result
+    assert len(result["timeline"]) >= 2
+    years = [e["year"] for e in result["timeline"]]
+    assert years == sorted(years)
+    db.close()
+
+
+def test_landscape_no_paper_ids():
+    """Landscape with no workspace or paper_ids returns error."""
+    from drbrain.graph.genealogy import landscape_workspace
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    result = landscape_workspace(db)
+    assert isinstance(result, dict)
+    assert "error" in result
+    db.close()
+
+
+def test_landscape_papers_without_year():
+    """Landscape handles papers with null year gracefully."""
+    from drbrain.graph.genealogy import landscape_workspace
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'No Year Paper', NULL, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Concept X', 0.9, 'method')"
+    )
+    db.commit()
+
+    result = landscape_workspace(db, paper_ids=["p1"])
+    # Papers without year are excluded from timeline
+    assert isinstance(result, dict)
+    assert len(result["timeline"]) == 0
+    db.close()
