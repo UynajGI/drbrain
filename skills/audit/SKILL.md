@@ -1,16 +1,21 @@
 ---
 name: audit
 description: >
-  Scan the entire library for data quality issues. Use this skill whenever the user asks to "check my
-  library quality", "audit papers", "find data issues", "verify data integrity", "are there problems
-  with my papers", or wants to diagnose why certain papers are missing metadata, concepts, or edges.
+  Scan the entire library for data quality issues across 15 severity-graded rules. Use this skill
+  whenever the user asks to "check my library quality", "audit my papers", "find data issues",
+  "verify data integrity", "are there problems with my papers?", "diagnose missing metadata",
+  "why are some papers incomplete?", or wants a health report on their knowledge graph. Also use
+  when the user notices search results are incomplete, analysis output seems noisy, or before
+  running large-scale analysis (seed, closure) to ensure the underlying data is clean. Trigger
+  proactively when the user expresses concern about paper quality, asks why certain papers lack
+  concepts or edges, or wants to clean up the library.
 ---
 
 # Data Quality Audit
 
-Run a 15-rule scan across all papers in the library, organized into three severity levels: error
-(must-fix), warning (should-fix), and info (nice-to-know). Produces a structured report showing
-which papers have which issues.
+Run a 15-rule scan across all papers, organized into three severity levels: error (must-fix),
+warning (should-fix), and info (nice-to-know). Produces a structured report showing which papers
+have which issues, with fix guidance for each rule.
 
 ## Quick Start
 
@@ -18,30 +23,53 @@ which papers have which issues.
 drbrain audit
 ```
 
-## What It Does
+## What It Checks
 
-Runs 15 rules against every paper:
+**Error rules (2):** `missing_title`, `missing_md`
+**Warning rules (8):** `missing_doi`, `missing_abstract`, `missing_year`, `missing_journal`,
+  `missing_authors`, `short_md`, `empty_tree`, `low_concept_count`, `unresolved_env`
+**Info rules (4):** `no_edges`, `placeholder_status`, `old_placeholder`, `duplicate_title`
 
-**Error rules (2):**
-- `missing_title` — paper has no title or an empty title
-- `missing_md` — no raw.md file exists (ingest likely failed)
+## Common Patterns
 
-**Warning rules (8):**
-- `missing_doi` — no DOI, arXiv ID, or Semantic Scholar ID
-- `missing_abstract` — abstract field is empty
-- `missing_year` — year is NULL
-- `missing_journal` — journal field is empty
-- `missing_authors` — no Actor-type concepts (no author extracted)
-- `short_md` — raw.md exists but is under 200 bytes (likely failed parse)
-- `empty_tree` — tree.json missing or empty
-- `low_concept_count` — fewer than 3 concepts (shallow extraction)
-- `unresolved_env` — title contains `${}` (environment variable not resolved)
+**Quick health check before analysis:**
+```bash
+drbrain audit --severity error
+```
+If this returns issues, something is fundamentally broken — fix before running analysis.
 
-**Info rules (3):**
-- `no_edges` — has concepts but zero knowledge graph edges
-- `placeholder_status` — paper has status "placeholder" (imported but not ingested)
-- `old_placeholder` — placeholder older than 30 days
-- `duplicate_title` — normalized title matches another paper
+**Full audit before `drbrain analyze` or `drbrain seed`:**
+```bash
+drbrain audit
+```
+Fix warnings first. Papers with missing abstracts, years, or journals produce noisy results.
+
+**Find stale placeholders:**
+```bash
+drbrain audit --severity info --json | jq '.[] | select(.rule == "old_placeholder")'
+```
+
+**Workspace-specific audit:**
+```bash
+drbrain audit --workspace attention-methods
+```
+
+**Fix common issues:**
+- `missing_md` / `empty_tree`: re-run `drbrain ingest`
+- `missing_doi` / `missing_authors` / `missing_abstract`: run `drbrain repair --all`
+- `low_concept_count` / `no_edges`: re-run `drbrain build`
+
+## Examples
+
+**Full audit with JSON for scripting:**
+```bash
+drbrain audit --severity info --json | jq 'group_by(.severity) | map({severity: .[0].severity, count: length})'
+```
+
+**Check a workspace for issues before submission:**
+```bash
+drbrain audit --workspace paper-draft --severity warning
+```
 
 ## CLI Reference
 
@@ -52,29 +80,4 @@ Runs 15 rules against every paper:
 | `drbrain audit --severity info` | All issues including info-level |
 | `drbrain audit --json` | Machine-readable JSON output |
 | `drbrain audit --workspace <name>` | Audit only papers in a workspace |
-
-## Common Patterns
-
-**Quick health check:**
-```bash
-drbrain audit --severity error
-```
-If this returns issues, something is fundamentally broken (missing titles, failed parses).
-
-**Before running analysis:**
-```bash
-drbrain audit
-```
-Fix warnings before running `drbrain analyze` or `drbrain seed`. Papers with missing abstracts,
-years, or journals produce noisy or incomplete analysis results.
-
-**Find stale placeholders:**
-```bash
-drbrain audit --severity info | grep placeholder
-```
-Placeholders older than 30 days likely need attention — either ingest the PDF or delete the paper.
-
-**Fix common issues:**
-- `missing_md` / `empty_tree`: re-run `drbrain ingest <id>`
-- `missing_doi` / `missing_authors` / `missing_abstract`: run `drbrain repair --all`
-- `low_concept_count` / `no_edges`: re-run `drbrain build <id>`
+| `drbrain repair --all` | Auto-fix missing metadata from CrossRef/arXiv |

@@ -1,9 +1,13 @@
 ---
 name: translate
 description: >
-  Translate a paper's markdown via LLM. Use this skill whenever the user asks to "translate this paper",
-  "translate to Chinese", "translate to English", "convert this paper to Japanese", or needs a
-  machine-translated version of an ingested paper.
+  Translate a paper's markdown to another language via LLM. Use this skill whenever the user asks to
+  "translate this paper", "translate to Chinese", "translate to English", "convert this paper to
+  Japanese", "machine translate this PDF", or needs a translated version of an ingested paper for
+  reading or sharing. Also use when the user mentions language barriers with a paper, wants to read
+  a non-English paper in their native language, or has a paper they need in a different language for
+  collaboration. Trigger proactively when the user discusses non-English content or expresses
+  difficulty reading a paper due to language.
 ---
 
 # Paper Translation
@@ -14,12 +18,11 @@ Supports resume from interruption and concurrent chunk translation.
 
 ## Prerequisites
 
-The paper must be ingested first (`drbrain ingest`). Translation works on the `raw.md` file, so
-the paper needs a successful parse phase.
+The paper must be ingested first (parse phase must succeed). Verify:
 
 ```bash
-drbrain list                    # verify paper is in library
-drbrain show <id>               # confirm raw.md exists
+drbrain list                          # confirm paper is in library
+drbrain show p3f8a2                   # confirm raw.md exists
 ```
 
 ## Quick Start
@@ -33,19 +36,9 @@ drbrain translate p3f8a2 --lang zh
 - Reads the paper's `raw.md` and splits it into chunks at natural boundaries
 - Protects placeholders (code blocks, math, images, URLs) from translation
 - Translates each chunk concurrently via configured LLM models with exponential backoff retry
-- Reassembles chunks with placeholders restored, writing output to `data/papers/<id>/translated_<lang>.md`
+- Reassembles chunks with placeholders restored to `data/papers/<id>/translated_<lang>.md`
 - On interruption, saves progress — re-running resumes from where it left off
 - `--force` re-translates even if output already exists
-
-## CLI Reference
-
-| Command | What it does |
-|---------|--------------|
-| `drbrain translate <id> --lang zh` | Translate to Chinese (default) |
-| `drbrain translate <id> --lang en` | Translate to English |
-| `drbrain translate <id> --lang ja` | Translate to Japanese |
-| `drbrain translate <id> --force` | Re-translate, overwriting existing output |
-| `drbrain translate <id> --json` | JSON output with progress info |
 
 ## Common Patterns
 
@@ -54,13 +47,12 @@ drbrain translate p3f8a2 --lang zh
 drbrain translate p3f8a2 --lang zh
 ```
 
-**Resume after interruption:**
+**Resume after interruption (same command):**
 ```bash
-# Just re-run the same command — it picks up where it left off
 drbrain translate p3f8a2 --lang zh
 ```
 
-**Re-translate with better model or target language:**
+**Re-translate with a different target language:**
 ```bash
 drbrain translate p3f8a2 --lang en --force
 ```
@@ -69,3 +61,25 @@ drbrain translate p3f8a2 --lang en --force
 ```bash
 ls data/papers/p3f8a2/translated_*.md
 ```
+
+## Examples
+
+**Translate a Chinese paper to English:**
+```bash
+drbrain translate p7b1c4 --lang en
+```
+
+**Force re-translate an existing translation:**
+```bash
+drbrain translate p3f8a2 --lang ja --force
+```
+
+## CLI Reference
+
+| Command | What it does |
+|---------|--------------|
+| `drbrain translate <id> --lang zh` | Translate to Chinese |
+| `drbrain translate <id> --lang en` | Translate to English |
+| `drbrain translate <id> --lang ja` | Translate to Japanese |
+| `drbrain translate <id> --force` | Re-translate, overwriting existing output |
+| `drbrain translate <id> --json` | JSON output with progress info |

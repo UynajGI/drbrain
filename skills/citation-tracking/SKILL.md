@@ -1,74 +1,83 @@
 ---
 name: citation-tracking
 description: >
-  Track and analyze citation relationships between papers. Use this skill whenever the user wants to
-  explore who cites whom, find shared references between papers, verify that in-text citations match
-  their library, discover papers that should know about each other but don't (unlinked via shared
-  refs), or understand the citation neighborhood of a paper. Also use when the user asks about
-  "citation graph", "who cites this?", "find related work", "are these papers connected?", or wants
-  to check if their writing properly cites papers in the library.
+  Track and analyze citation relationships between papers. Use this skill whenever the user asks
+  "who cites this?", "what does this paper reference?", "find related work", "are these papers
+  connected?", "show me the citation graph", "check my citations", or wants to discover papers that
+  share references but don't cite each other (knowledge frontier signal). Also use when the user
+  mentions "shared references", "citation neighborhood", "verify citations", wants to check if their
+  writing properly cites papers in the library, or needs to explore the intellectual lineage of a
+  research area. Trigger proactively whenever the user discusses citation relationships, asks about
+  paper-to-paper connections, or wants to validate reference lists.
 ---
 
 # Citation Tracking
 
 Analyze citation relationships to map the knowledge frontier. The citation graph reveals hidden
-connections, missing links, and shared intellectual heritage.
+connections, missing links between research communities, and shared intellectual heritage.
 
-## Core queries
+## Workflow
 
-### References and citations
-
-```bash
-drbrain citations <local_id>                    # Both refs and citing papers
-drbrain citations <local_id> --type refs          # Only what this paper references
-drbrain citations <local_id> --type citing         # Only papers that cite this one
-drbrain citations <local_id> --type all --json     # Full structured output
-```
-
-### Shared references (frontier signal)
-
-The most valuable citation analysis for knowledge frontier work:
+### Step 1: Basic citation queries
 
 ```bash
-drbrain citations <local_id> --type shared-refs
+drbrain citations p3f8a2                    # both refs and citing papers
+drbrain citations p3f8a2 --type refs          # only what this paper references
+drbrain citations p3f8a2 --type citing         # only papers that cite this one
+drbrain citations p3f8a2 --type all --json     # full structured output
 ```
 
-This finds papers that cite the same references as the target paper. Papers marked `unlinked` share
-references but don't cite each other — this is a knowledge frontier signal. Two groups working on
-the same problem, reading the same literature, but not aware of each other.
+### Step 2: Shared-reference analysis (frontier signal)
 
-High `shared_count` with `unlinked` status is a strong indicator of a research gap or parallel
-discovery. These paper pairs are candidates for:
-- Literature reviews that bridge communities
-- Collaborative opportunities
-- Identifying duplicated effort
+```bash
+drbrain citations p3f8a2 --type shared-refs
+```
 
-### Citation verification
+Papers marked `unlinked` share references but don't cite each other. This is a knowledge frontier
+signal: two groups working on the same problem, reading the same literature, but unaware of each
+other. High `shared_count` with `unlinked` status indicates:
+- Parallel discovery worth investigating
+- Literature review opportunities that bridge communities
+- Potential duplicated effort
 
-Check if in-text citations in your writing match papers in the library:
+### Step 3: Citation verification
+
+Check if in-text citations in writing match papers in the library:
 
 ```bash
 drbrain check-citations "Smith (2023) proposed a method that Jones et al. (2022) extended."
 drbrain check-citations --file draft.txt
 ```
 
-Output shows `✓` for matched citations and `✗` for unmatched ones. Unmatched citations might be in
-the library under a different name variant (check aliases) or genuinely missing (needs ingest).
+Output shows matched and unmatched citations. Unmatched ones may exist under a different name
+variant or need ingest.
 
-## Workspace-scoped citation analysis
-
-Combine with workspaces for focused analysis:
+### Step 4: Workspace-scoped analysis
 
 ```bash
-drbrain citations <local_id> --type shared-refs --workspace <name>
+drbrain citations p3f8a2 --type shared-refs --workspace attention-methods
 ```
 
-## Export
+## Examples
 
-Export citation data for use in papers:
-
+**Find unlinked papers that share references (frontier detection):**
 ```bash
-drbrain export <local_id> --format bib
-drbrain export <local_id> --format ris
-drbrain export --workspace <name> --format bib
+drbrain citations p3f8a2 --type shared-refs --json | jq '.[] | select(.status == "unlinked")'
 ```
+
+**Verify a draft's citations against the library:**
+```bash
+drbrain check-citations --file intro-draft.txt
+```
+
+## CLI Reference
+
+| Command | What it does |
+|---------|--------------|
+| `drbrain citations <id>` | Both refs and citing papers |
+| `drbrain citations <id> --type refs` | References only |
+| `drbrain citations <id> --type citing` | Papers citing this one |
+| `drbrain citations <id> --type shared-refs` | Shared-reference frontier signals |
+| `drbrain citations <id> -w <ws>` | Workspace-scoped citation analysis |
+| `drbrain check-citations "<text>"` | Verify in-text citations |
+| `drbrain check-citations --file <path>` | Verify citations in a file |

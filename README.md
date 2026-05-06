@@ -23,7 +23,7 @@ find research gaps, and infer new relationships through rule-based reasoning.
 ## Quick Start
 
 ```bash
-pipx install drbrain     # or: uvx drbrain
+pipx install drbrain     # or: uv tool install drbrain
 drbrain setup
 ```
 

@@ -8,20 +8,19 @@
 
 ## Installation
 
-DrBrain is a CLI tool. **pipx** or **uvx** is the recommended way to install it — both
-create an isolated environment so DrBrain doesn't interfere with your other Python projects.
+DrBrain is a CLI tool. **pipx** or **uv tool install** are the recommended ways to install
+it — both create an isolated environment so DrBrain doesn't interfere with your other projects.
 
-### pipx (recommended)
+### pipx
 
 ```bash
 pipx install drbrain
-drbrain setup
 ```
 
-### uvx (one-shot, no install)
+### uv
 
 ```bash
-uvx drbrain setup
+uv tool install drbrain
 ```
 
 ### pip

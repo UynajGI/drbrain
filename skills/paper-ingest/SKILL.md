@@ -1,18 +1,21 @@
 ---
 name: paper-ingest
 description: >
-  Ingest PDFs into the DrBrain knowledge graph. Use this skill whenever the user wants to add papers
-  to their library, import PDFs, process academic papers, or build up their research collection. Also
-  use when the user mentions downloading papers, adding to their library, or needs to parse and
-  extract concepts from academic PDFs. This is the first step for any research workflow — papers must
-  be ingested before they can be analyzed.
+  Ingest PDFs into the DrBrain knowledge graph — parse, identify, and extract structured concepts
+  and arguments from academic papers. Use this skill whenever the user wants to add papers to their
+  library, import PDFs, process academic papers, build up their research collection, or has new PDFs
+  to work with. Also use when the user mentions downloading papers, "add this to my library",
+  "process these PDFs", "ingest my arXiv downloads", or needs papers parsed before they can be
+  queried or analyzed. This is the mandatory first step for any research workflow — papers must be
+  ingested before they can be searched, analyzed, or cited. Trigger proactively whenever the user
+  has PDF files they want to work with in DrBrain.
 ---
 
 # Paper Ingest
 
-Add papers to the DrBrain knowledge graph. This pipeline parses the PDF (MinerU CLI → PyMuPDF
-fallback), extracts structured concepts and arguments via LLM, resolves paper identity (DOI/arXiv),
-fetches citations, and runs graph inference.
+Add papers to the DrBrain knowledge graph via a 9-stage pipeline: PDF parsing (MinerU CLI with
+PyMuPDF fallback), identity resolution (DOI/arXiv via 5-source cross-validation), document tree
+structuring, LLM concept/argument extraction, citation expansion, and graph closure inference.
 
 ## Prerequisites
 
@@ -24,53 +27,61 @@ Papers go into `data/spool/inbox/`. The ingest command scans this directory by d
 
 ## Workflow
 
-### Basic ingest
+### Step 1: Add papers to the inbox
+
+Place PDFs in `data/spool/inbox/`, then run:
 
 ```bash
-# Put PDFs in the inbox and run:
 drbrain ingest
+```
 
-# Or ingest specific files:
+Or target specific files directly:
+
+```bash
 drbrain ingest paper1.pdf paper2.pdf
-
-# Ingest a directory:
 drbrain ingest /path/to/papers/
 ```
 
-### Check results
-
-After ingest, verify everything worked:
+### Step 2: Verify results
 
 ```bash
-drbrain list                    # See all papers
-drbrain report <local_id>       # Detailed per-paper report
+drbrain list                      # see all papers
+drbrain show p3f8a2               # inspect a specific paper
 ```
 
-### Handle failures
+### Step 3: Handle failures
 
-If a paper fails to process, it moves to `data/spool/pending/`. Check why:
+Failed papers move to `data/spool/pending/`. Diagnose with:
 
 ```bash
 cat data/spool/pending/pending.jsonl
 ```
 
-Common failures and fixes:
-- **PDF parse error**: The PDF may be scanned or corrupted. Check with `drbrain check` that PyMuPDF is
-  available as a fallback.
-- **LLM extraction failed**: All configured LLM models were exhausted. Check API keys with `drbrain
-  check`.
-- **No DOI found**: The paper couldn't be identified. This is usually fine — concepts are still
-  extracted, just without external enrichment.
+Common failures:
+- **PDF parse error**: the PDF may be scanned or corrupted. PyMuPDF fallback should handle most cases.
+- **LLM extraction failed**: all configured models exhausted. Check API keys with `drbrain check`.
+- **No DOI found**: paper couldn't be identified externally. Concepts are still extracted.
 
-### What happens during ingest
+## Examples
 
-The pipeline runs 9 stages automatically:
-1. Parse PDF to markdown (MinerU CLI → PyMuPDF)
-2. Identify paper (DOI/arXiv/title matching)
-3. Build document tree structure
-4. Extract concepts + arguments via LLM
-5. Validate against schema rules
-6. Queue low-confidence items for review
-7. Align concepts with canonical IDs
-8. Expand citations (Semantic Scholar / CrossRef / OpenAlex)
-9. Run graph closure inference
+**Ingest a single paper directly:**
+```bash
+drbrain ingest ~/Downloads/attention-is-all-you-need.pdf
+drbrain show p3f8a2
+```
+
+**Batch ingest from arXiv downloads:**
+```bash
+drbrain ingest ~/Downloads/arxiv-papers/
+drbrain list
+```
+
+## CLI Reference
+
+| Command | What it does |
+|---------|--------------|
+| `drbrain ingest` | Process all PDFs in `data/spool/inbox/` |
+| `drbrain ingest <file>` | Ingest specific PDF files |
+| `drbrain ingest <dir>` | Ingest all PDFs in a directory |
+| `drbrain list` | List all papers in the library |
+| `drbrain show <id>` | Inspect a paper's metadata and concepts |

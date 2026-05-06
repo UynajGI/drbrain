@@ -15,48 +15,48 @@ keywords:
 skills:
   - name: drbrain/research-analysis
     path: skills/research-analysis
-    description: "Knowledge frontier analysis — detect research seeds, causal chains, hypotheses, and cross-domain isomorphism"
+    description: "Knowledge frontier analysis — detect research gaps/seeds, causal chains, hypotheses, cross-domain isomorphism. Use whenever exploring research strategy, asking 'what should I research next?', or analyzing field dynamics across the library."
 
   - name: drbrain/paper-ingest
     path: skills/paper-ingest
-    description: "Ingest PDFs into the knowledge graph — MinerU parsing, 5-source cross-validation, tree structuring"
+    description: "Ingest PDFs into the knowledge graph — MinerU parsing, 5-source identity resolution, LLM concept extraction. Use whenever adding papers, processing PDFs, or building the research collection. Mandatory first step before any analysis."
 
   - name: drbrain/paper-query
     path: skills/paper-query
-    description: "Query papers via BM25 search with graph-enhanced hybrid ranking and neighbor traversal"
+    description: "Search and explore the library — BM25 keyword search, graph-enhanced hybrid ranking, tree-based section retrieval. Use whenever searching by topic, asking 'what do I have about X?', or deep-reading paper sections."
 
   - name: drbrain/citation-tracking
     path: skills/citation-tracking
-    description: "Citation graph analysis — shared-reference detection, citation verification, multi-source expansion"
+    description: "Citation graph analysis — shared-reference frontier detection, citation verification, reference tracking. Use whenever asking 'who cites this?', checking if papers are connected, or verifying in-text citations against the library."
 
   - name: drbrain/workspace-analysis
     path: skills/workspace-analysis
-    description: "Manage paper workspaces — create subsets, cross-paper concept analysis, export BibTeX/RIS/Markdown"
+    description: "Manage paper subsets for focused research — create workspaces, curate reading lists, scope analysis to a domain. Use whenever organizing papers into projects, preparing literature reviews, or grouping by topic."
 
   - name: drbrain/show
     path: skills/show
-    description: "View paper at any depth — metadata, concepts by type, arguments, and knowledge graph edges"
+    description: "View paper contents at any depth — metadata, concepts by type, arguments with evidence, graph edges. Use whenever inspecting a paper by ID, checking ingest/build quality, or looking up a paper's DOI/title/journal."
 
   - name: drbrain/export
     path: skills/export
-    description: "Export papers to BibTeX, RIS, or Markdown — single paper, all papers, or workspace-scoped"
+    description: "Export papers to BibTeX, RIS, or Markdown. Use whenever generating .bib files for LaTeX, exporting for Zotero/Mendeley, creating reading lists, or moving metadata to a reference manager."
 
   - name: drbrain/audit
     path: skills/audit
-    description: "Data quality scan across the entire library — 15 rules at error, warning, and info severity"
+    description: "Data quality scan across the entire library — 15 severity-graded rules. Use whenever checking library health, diagnosing missing metadata, verifying integrity before large-scale analysis, or investigating search/completeness issues."
 
   - name: drbrain/translate
     path: skills/translate
-    description: "Translate paper markdown via LLM — placeholder-protected chunking with resume from interruption"
+    description: "Translate paper markdown via LLM — placeholder-protected chunking with resume from interruption. Use whenever translating papers between languages (Chinese, English, Japanese), reading non-native papers, or sharing translations."
 
   - name: drbrain/graph
     path: skills/graph
-    description: "Knowledge graph operations — traverse neighbors, find shortest paths, cross-paper concept analysis"
+    description: "Direct knowledge graph operations — traverse neighbors, find shortest paths, cross-paper concept analysis. Use whenever exploring concept connections, finding paths between nodes, or analyzing what papers share in common."
 
   - name: drbrain/import
     path: skills/import
-    description: "Import papers from Zotero (local/Web API), BibTeX .bib files, and Endnote .xml/.ris exports"
+    description: "Import papers from Zotero (local/Web API), BibTeX .bib files, and Endnote .xml/.ris exports. Use whenever migrating from another reference manager, bootstrapping a new library, or combining paper collections."
 
   - name: drbrain/index
     path: skills/index
-    description: "Rebuild the BM25 search index — run after ingest/build when search results are stale"
+    description: "Rebuild the BM25 search index. Use whenever search returns stale/empty results after ingest or build, or when recently added papers don't appear in queries."

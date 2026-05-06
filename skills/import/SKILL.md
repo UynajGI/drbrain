@@ -1,9 +1,13 @@
 ---
 name: import
 description: >
-  Import papers from reference managers into the DrBrain library. Use this skill whenever the user
-  wants to "import from Zotero", "add my bibtex library", "migrate references from Endnote", "import
-  my existing collection", or bring papers in from an external reference manager.
+  Import papers from external reference managers into the DrBrain library. Use this skill whenever
+  the user wants to "import from Zotero", "add my BibTeX library", "migrate references from
+  Endnote", "import my existing collection", "bring in papers from my reference manager", or
+  transition from another tool to DrBrain. Also use when the user mentions having papers in Zotero,
+  a .bib file, an Endnote XML export, or a RIS file, and wants to add them to the knowledge graph.
+  Trigger proactively whenever the user discusses moving from another reference manager, combining
+  multiple paper collections, or bootstrapping their DrBrain library from existing sources.
 ---
 
 # Import Papers
@@ -26,30 +30,52 @@ drbrain import bibtex references.bib
 drbrain import endnote library.xml
 ```
 
-## What It Does
+## Source-specific details
 
 ### Zotero
-Two modes:
-- **Local SQLite**: point to `zotero.sqlite` (typically in `~/Zotero/`). Auto-detects PDFs in the
-  adjacent `storage/` directory.
-- **Web API**: requires `--api-key` and `--library-id`. Fetches papers from Zotero's cloud sync.
 
-Options:
-- `--collection <key>`: filter by collection
-- `--list-collections`: list all collections and exit
-- `--no-pdf`: skip PDF detection
-- `--import-collections`: create workspaces per collection after import
-- `--library-type user|group`: for Web API mode
-- `--dry-run`: preview only, no database writes
+Two modes: local SQLite (auto-detects adjacent PDFs) and Web API (`--api-key`, `--library-id`).
+
+```bash
+drbrain import zotero ~/Zotero/zotero.sqlite --list-collections    # preview
+drbrain import zotero ~/Zotero/zotero.sqlite --collection <key>    # filter
+drbrain import zotero ~/Zotero/zotero.sqlite --no-pdf              # metadata only
+drbrain import zotero ~/Zotero/zotero.sqlite --import-collections   # workspaces per collection
+drbrain import zotero ~/Zotero/zotero.sqlite --dry-run             # preview only
+```
 
 ### BibTeX
-Parse `.bib` files using Python's `bibtexparser`. Extracts title, authors, year, DOI, journal, and
-abstract. Supports standard BibTeX entry types (article, inproceedings, book, etc.).
+
+Parses `.bib` files via `bibtexparser`. Extracts title, authors, year, DOI, journal, abstract.
+Supports standard entry types (article, inproceedings, book, etc.).
 
 ### Endnote
-Two formats:
-- `.xml`: Endnote XML export
-- `.ris`: RIS format (common export format)
+
+Supports `.xml` (Endnote XML export) and `.ris` (common export format).
+
+## What to do after import
+
+Imported papers have status `placeholder` (metadata only):
+
+1. If PDFs were detected (Zotero local mode): `drbrain ingest`
+2. If no PDFs: `drbrain repair --all` to fill missing metadata from CrossRef/arXiv
+
+## Examples
+
+**Full Zotero migration with workspaces:**
+```bash
+drbrain import zotero ~/Zotero/zotero.sqlite --list-collections
+drbrain import zotero ~/Zotero/zotero.sqlite --import-collections
+drbrain ingest
+drbrain repair --all
+```
+
+**Import a shared BibTeX file with preview:**
+```bash
+drbrain import bibtex ~/Downloads/iclr2024.bib --dry-run
+drbrain import bibtex ~/Downloads/iclr2024.bib
+drbrain repair --all
+```
 
 ## CLI Reference
 
@@ -57,41 +83,8 @@ Two formats:
 |---------|--------------|
 | `drbrain import zotero <path>` | Import from Zotero local DB |
 | `drbrain import zotero <path> --list-collections` | List Zotero collections |
-| `drbrain import zotero <path> --collection <key>` | Import one collection |
-| `drbrain import zotero <path> --no-pdf` | Skip PDF detection |
 | `drbrain import zotero <path> --dry-run` | Preview without importing |
 | `drbrain import zotero <key> --api-key X --library-id Y` | Zotero Web API |
-| `drbrain import bibtex <file>` | Import from .bib |
-| `drbrain import endnote <file>` | Import from .xml or .ris |
+| `drbrain import bibtex <file>` | Import from .bib file |
+| `drbrain import endnote <file>` | Import from .xml or .ris file |
 | `drbrain import <src> <path> --json` | JSON output |
-
-## Common Patterns
-
-**Full Zotero migration:**
-```bash
-# 1. List collections to see what's there
-drbrain import zotero ~/Zotero/zotero.sqlite --list-collections
-
-# 2. Import everything (with PDFs)
-drbrain import zotero ~/Zotero/zotero.sqlite
-
-# 3. Import as workspaces
-drbrain import zotero ~/Zotero/zotero.sqlite --import-collections
-
-# 4. Process the papers
-drbrain ingest
-drbrain build
-drbrain repair --all
-```
-
-**Import from a shared BibTeX file:**
-```bash
-drbrain import bibtex ~/Downloads/iclr2024.bib --dry-run   # preview first
-drbrain import bibtex ~/Downloads/iclr2024.bib              # then import
-drbrain repair --all                                         # enrich metadata
-```
-
-**After import — what to do:**
-- Imported papers have status `placeholder`. They exist as metadata only.
-- If PDFs were detected (Zotero local mode), `drbrain ingest` will process them.
-- If no PDFs, run `drbrain repair --all` to fill in missing metadata from CrossRef/arXiv.
