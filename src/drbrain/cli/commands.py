@@ -19,6 +19,7 @@ from drbrain.dedup.resolver import DedupEngine, PaperIDs
 from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
 from drbrain.query.tree_retrieval import query_by_structure
+from drbrain.services.fetch import _resolve_identifier, fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
     images_dir,
@@ -556,6 +557,46 @@ def _enrich_doi_from_openalex(
         return None
 
 
+def fetch_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="DOI, title, or arXiv ID to fetch"),
+    arxiv: bool = typer.Option(False, "--arxiv", help="Treat identifier as arXiv ID"),
+):
+    """Fetch a paper: find PDF from open access sources -> download -> ingest."""
+    # Normalize typer params when called directly (not through CLI)
+    if isinstance(arxiv, typer.models.OptionInfo):
+        arxiv = arxiv.default
+
+    cfg = ctx.obj["config"]
+
+    doi, title, arxiv_id = _resolve_identifier(identifier, is_arxiv=arxiv)
+
+    fetch_cfg = cfg.get("fetch", {})
+
+    typer.echo(f"Fetching: {identifier}")
+    result = fetch_paper(doi=doi, title=title, arxiv_id=arxiv_id, fetch_config=fetch_cfg)
+
+    if not result:
+        typer.echo("Could not find a downloadable PDF from any source.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"  Downloaded: {result['pdf_path']}")
+
+    # Ingest the downloaded paper
+    pdf_path = Path(result["pdf_path"])
+    db = Database(cfg["db"]["path"])
+    dedup = DedupEngine(db)
+    ingest_result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=False)
+    db.close()
+
+    if ingest_result.get("ok"):
+        typer.echo(f"  Ingested: {ingest_result.get('local_id')}")
+        typer.echo(f"  Next: drbrain build {ingest_result.get('local_id')}")
+    else:
+        typer.echo(f"  Ingest failed: {ingest_result.get('error', 'unknown error')}", err=True)
+        raise typer.Exit(1)
+
+
 def citations_cmd(
     ctx: typer.Context,
     local_id: str = typer.Argument(..., help="Paper local_id"),
@@ -571,6 +612,9 @@ def citations_cmd(
     ),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    fetch_interested: bool = typer.Option(
+        False, "--fetch-interested", help="Interactively select and fetch placeholder papers"
+    ),
 ):
     """Query citation graph for a paper: refs, citing, shared-refs."""
     # Normalize typer params when called directly (not through CLI)
@@ -580,6 +624,8 @@ def citations_cmd(
         workspace = workspace.default
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
+    if isinstance(fetch_interested, typer.models.OptionInfo):
+        fetch_interested = fetch_interested.default
 
     if ctype not in ("refs", "citing", "shared-refs", "all"):
         typer.echo("Type must be: refs, citing, shared-refs, all", err=True)
@@ -642,6 +688,128 @@ def citations_cmd(
         for sr in result["shared_refs"]:
             tag = " [unlinked]" if sr["status"] == "unlinked" else ""
             typer.echo(f"  - {sr['shared_with_title']} ({sr['shared_count']} shared){tag}")
+
+    # --fetch-interested: interactive selection and batch fetch
+    if fetch_interested:
+        _fetch_citations_interested(ctx, result)
+
+
+def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:
+    """Interactively let user select and fetch papers from citation results."""
+    # Collect selectable papers: refs + citing, with DOI
+    selectable: list[dict] = []
+    seen_dois: set[str] = set()
+
+    for source in ("refs", "citing"):
+        for entry in result.get(source, []):
+            doi = entry.get("doi", "")
+            if not doi or not doi.startswith("10."):
+                continue
+            if doi in seen_dois:
+                continue
+            seen_dois.add(doi)
+
+            # Skip papers that already have a PDF
+            local_id = entry.get("local_id", "") or ""
+            if local_id:
+                from drbrain.storage.paths import paper_dir, source_pdf_path
+
+                papers_root = Path(ctx.obj["config"].get("dirs", {}).get("papers", "data/papers"))
+                pdir = paper_dir(Path(papers_root), local_id)
+                if source_pdf_path(pdir).exists():
+                    typer.echo(
+                        f"  Skipping {local_id} ({entry.get('title', '')[:60]}) — already downloaded"
+                    )
+                    continue
+
+            selectable.append(entry)
+
+    if not selectable:
+        typer.echo("No placeholder papers available to fetch (all have PDFs or no DOI).")
+        return
+
+    # Show selectable papers
+    typer.echo(f"\n--- Selectable Papers ({len(selectable)}) ---")
+    for i, entry in enumerate(selectable):
+        title = (entry.get("title", "") or "")[:70]
+        doi = entry.get("doi", "")
+        year = entry.get("year", "")
+        local_id = entry.get("local_id", "") or "?"
+        typer.echo(f"  [{i + 1}] {title} ({year})  DOI: {doi}  local: {local_id}")
+
+    # Get user selection
+    choice = typer.prompt(
+        "\nEnter numbers (comma-separated) to fetch, or 'a' for all, or Enter to skip"
+    ).strip()
+
+    if not choice:
+        return
+
+    if choice.lower() == "a":
+        indices = list(range(len(selectable)))
+    else:
+        try:
+            indices = [int(x.strip()) - 1 for x in choice.split(",") if x.strip().isdigit()]
+        except ValueError:
+            typer.echo("Invalid selection.", err=True)
+            return
+
+    if not indices:
+        return
+
+    # Fetch selected papers concurrently (respect max_concurrent from config)
+    cfg = ctx.obj["config"]
+    fetch_cfg = cfg.get("fetch", {})
+    max_concurrent = fetch_cfg.get("max_concurrent", 3)
+
+    def _fetch_one(entry: dict) -> tuple[bool, str]:
+        """Fetch and ingest a single paper. Returns (ok, local_id_or_error)."""
+        doi = entry.get("doi")
+        title = entry.get("title")
+        typer.echo(f"\nFetching: {doi} — {title}")
+
+        result_fetch = fetch_paper(doi=doi, title=title, fetch_config=fetch_cfg)
+        if not result_fetch:
+            return (False, "failed to fetch PDF URL")
+        typer.echo(f"  Downloaded: {result_fetch['pdf_path']}")
+
+        pdf_path = Path(result_fetch["pdf_path"])
+        if not pdf_path.exists():
+            return (False, f"PDF not found at {pdf_path}")
+
+        db = Database(cfg["db"]["path"])
+        dedup = DedupEngine(db)
+        ingest_result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=False)
+        db.close()
+        if ingest_result.get("ok"):
+            return (True, ingest_result.get("local_id", "unknown"))
+        else:
+            return (False, ingest_result.get("error", "unknown ingest error"))
+
+    valid_entries = [selectable[idx] for idx in indices if 0 <= idx < len(selectable)]
+    success = 0
+    fail = 0
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from loguru import logger
+
+    with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        future_map = {executor.submit(_fetch_one, entry): entry for entry in valid_entries}
+        for future in as_completed(future_map):
+            try:
+                ok, msg = future.result()
+                if ok:
+                    typer.echo(f"  Ingested: {msg}")
+                    success += 1
+                else:
+                    typer.echo(f"  Failed: {msg}", err=True)
+                    fail += 1
+            except Exception as exc:
+                logger.exception(f"Unexpected fetch error: {exc}")
+                fail += 1
+
+    typer.echo(f"\nFetch complete: {success} succeeded, {fail} failed")
 
 
 def check_citations_cmd(

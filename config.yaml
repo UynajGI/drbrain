@@ -48,3 +48,12 @@ extract:
 queue:
   weak_threshold: 0.7
   auto_accept: 0.9
+
+fetch:
+  max_concurrent: 3
+  timeout_per_fetch: 60
+  user_agent: "DrBrain/0.1"
+  fallback_order: ["openalex", "arxiv", "unpaywall", "doi_direct"]
+  unpaywall_email: ""
+  institutional_proxy: ""
+  proxy_type: ""

@@ -99,6 +99,19 @@ class QueueConfig(_ConfigBase):
 
 
 @dataclass
+class FetchConfig(_ConfigBase):
+    max_concurrent: int = 3
+    timeout_per_fetch: int = 60
+    user_agent: str = "DrBrain/0.1"
+    fallback_order: list[str] = field(
+        default_factory=lambda: ["openalex", "arxiv", "unpaywall", "doi_direct"]
+    )
+    unpaywall_email: str = ""
+    institutional_proxy: str = ""
+    proxy_type: str = ""  # "ezproxy" or "url_prefix"
+
+
+@dataclass
 class Config(_ConfigBase):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
@@ -108,6 +121,7 @@ class Config(_ConfigBase):
     extract: ExtractConfig = field(default_factory=ExtractConfig)
     bm25: BM25Config = field(default_factory=BM25Config)
     queue: QueueConfig = field(default_factory=QueueConfig)
+    fetch: FetchConfig = field(default_factory=FetchConfig)
 
     @classmethod
     def from_yaml(
@@ -148,6 +162,7 @@ class Config(_ConfigBase):
             extract=ExtractConfig(**cfg.get("extract", {})),
             bm25=BM25Config(**cfg.get("bm25", {})),
             queue=QueueConfig(**cfg.get("queue", {})),
+            fetch=FetchConfig(**cfg.get("fetch", {})),
         )
 
 

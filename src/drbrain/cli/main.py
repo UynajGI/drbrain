@@ -20,6 +20,7 @@ from drbrain.cli.commands import (
     delete_cmd,
     embed_cmd,
     export_cmd,
+    fetch_cmd,
     import_cmd,
     index_cmd,
     ingest_cmd,
@@ -71,6 +72,7 @@ def _main_callback(ctx: typer.Context) -> None:
 
 app.command("setup")(setup_cmd)
 app.command("ingest")(ingest_cmd)
+app.command("fetch")(fetch_cmd)
 app.command("citations")(citations_cmd)
 app.command("check-citations")(check_citations_cmd)
 app.command("report")(report_cmd)
