@@ -42,3 +42,4 @@ docs/learn/
 .code-review-graph/
 .mcp.json
 .claude/
+.coverage.*
