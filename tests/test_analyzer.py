@@ -431,3 +431,362 @@ def test_analyze_paper_full_false_real_db():
     assert "hypotheses" not in result
     assert "isomorphisms" not in result
     db.close()
+
+
+# -- LLM path tests (models=) and cross-paper insights --
+
+
+def _async_return(value):
+    """Return an async function that yields a fixed value."""
+
+    async def _inner(*a, **kw):
+        return value
+
+    return _inner
+
+
+# -- add_cross_paper_insights tests --
+
+
+def test_add_cross_paper_insights_no_db():
+    """No db returns reports unchanged."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+
+    reports = [{"paper": {"local_id": "p1", "title": "Paper 1"}}]
+    result = add_cross_paper_insights(reports, db=None)
+    assert result is reports
+    assert "cross_paper_insights" not in result[0]
+
+
+def test_add_cross_paper_insights_single_report():
+    """Single report returns unchanged (fewer than 2 reports)."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+
+    db = MagicMock()
+    reports = [{"paper": {"local_id": "p1", "title": "Paper 1"}}]
+    result = add_cross_paper_insights(reports, db=db)
+    assert result is reports
+    assert "cross_paper_insights" not in result[0]
+
+
+def test_add_cross_paper_insights_same_paper_skip():
+    """Same paper Method and Problem does not produce cross-paper insights."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p1', 'Paper 1', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'CNN', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Problem', 'CNN problem', 0.9, 'intro')"
+    )
+    db.commit()
+
+    reports = [{"paper": {"local_id": "p1", "title": "Paper 1"}}]
+    result = add_cross_paper_insights(reports, db=db)
+    # Single report, so early return
+    assert result is reports
+    assert "cross_paper_insights" not in result[0]
+    db.close()
+
+
+def test_add_cross_paper_insights_basic():
+    """Two papers with Method and Problem concepts produce cross-paper insights."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p1', 'Graph Neural Networks', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p2', 'Graph Classification', 2026, 'extracted')"
+    )
+    # Method from p1 shares words with Problem from p2 -> Jaccard > 0.3
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'graph neural network', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Problem', 'neural network classification', 0.9, 'intro')"
+    )
+    db.commit()
+
+    reports = [
+        {"paper": {"local_id": "p1", "title": "Graph Neural Networks"}},
+        {"paper": {"local_id": "p2", "title": "Graph Classification"}},
+    ]
+    result = add_cross_paper_insights(reports, db=db)
+    assert isinstance(result, list)
+    # cross_paper_insights added to first report
+    assert "cross_paper_insights" in result[0]
+    insights = result[0]["cross_paper_insights"]
+    assert len(insights) >= 1
+    # Each insight has the expected keys
+    insight = insights[0]
+    assert "method" in insight
+    assert "method_paper" in insight
+    assert "problem" in insight
+    assert "problem_paper" in insight
+    assert "similarity" in insight
+    db.close()
+
+
+def test_add_cross_paper_insights_no_similarity():
+    """Two papers with completely unrelated Method/Problem produce no insights."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p1', 'Paper 1', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p2', 'Paper 2', 2026, 'extracted')"
+    )
+    # Completely unrelated labels — no shared words
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'xyzqwerty', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Problem', 'foobarbaz', 0.9, 'intro')"
+    )
+    db.commit()
+
+    reports = [
+        {"paper": {"local_id": "p1", "title": "Paper 1"}},
+        {"paper": {"local_id": "p2", "title": "Paper 2"}},
+    ]
+    result = add_cross_paper_insights(reports, db=db)
+    assert "cross_paper_insights" not in result[0]
+    db.close()
+
+
+def test_add_cross_paper_insights_same_paper_skip_in_loop():
+    """Two papers where one has both Method and Problem — same-pair skipped in loop."""
+    from drbrain.report.analyzer import add_cross_paper_insights
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p1', 'Paper A', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) "
+        "VALUES ('p2', 'Paper B', 2026, 'extracted')"
+    )
+    # p1 has both Method and Problem with overlapping words
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'deep learning model', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Problem', 'learning model task', 0.9, 'intro')"
+    )
+    # p2 has a Problem that overlaps with p1's Method
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Problem', 'deep learning task', 0.9, 'intro')"
+    )
+    db.commit()
+
+    reports = [
+        {"paper": {"local_id": "p1", "title": "Paper A"}},
+        {"paper": {"local_id": "p2", "title": "Paper B"}},
+    ]
+    result = add_cross_paper_insights(reports, db=db)
+    assert "cross_paper_insights" in result[0]
+    insights = result[0]["cross_paper_insights"]
+    # Should have cross-paper insights (p1 Method -> p2 Problem)
+    # but NOT same-paper (p1 Method -> p1 Problem)
+    for insight in insights:
+        assert insight["method_paper"] != insight["problem_paper"]
+    db.close()
+
+
+# -- analyze_paper with models= tests (mock LLM) --
+
+
+def test_analyze_paper_with_models_executive_summary():
+    """models param triggers executive_summary via LLM mock."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Test Paper", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+
+    models = [{"provider": "openai", "model": "gpt-4o", "api_key": "test"}]
+
+    with patch(
+        "drbrain.extractor.llm_client.acall_text_with_fallback",
+        new=_async_return("This is a mock executive summary."),
+    ):
+        result = analyze_paper(db, graph, "p1", models=models)
+
+    assert "executive_summary" in result
+    assert result["executive_summary"] == "This is a mock executive summary."
+    db.close()
+
+
+def test_analyze_paper_with_models_enhances_seeds():
+    """models param with seeds triggers seed enhancement via LLM mock."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Seed Test Paper", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+    # Make sure detect_research_seeds returns seeds with 'concept' key
+    with patch.object(
+        graph,
+        "detect_research_seeds",
+        return_value=[
+            {"concept": "test concept", "type": "stale_problem", "description": "Some gap"}
+        ],
+    ):
+        models = [{"provider": "openai", "model": "gpt-4o", "api_key": "test"}]
+
+        # First call: executive_summary, second: seed enhancement
+        with patch(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            new=_async_return("Try transformer-based approach."),
+        ):
+            result = analyze_paper(db, graph, "p1", models=models)
+
+        assert "executive_summary" in result
+        # Seeds should have suggested_solutions added
+        assert len(result["seeds"]) >= 1
+        assert "suggested_solutions" in result["seeds"][0]
+    db.close()
+
+
+def test_analyze_paper_with_models_graph_summary():
+    """models param triggers graph_summary via LLM + describe_subgraph mocks."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Graph Summary Test", 2026, "extracted")
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Transformer', 0.95, 'method')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    models = [{"provider": "openai", "model": "gpt-4o", "api_key": "test"}]
+
+    with (
+        patch(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            new=_async_return("Mock summary"),
+        ),
+        patch(
+            "drbrain.services.graph_to_text.describe_subgraph",
+            new=_async_return("Transformer is connected to attention mechanism."),
+        ),
+    ):
+        result = analyze_paper(db, graph, "p1", models=models)
+
+    assert "executive_summary" in result
+    assert "graph_summary" in result
+    assert "Transformer" in result["graph_summary"]
+    db.close()
+
+
+def test_analyze_paper_models_empty_seeds():
+    """models param with no seeds skips seed enhancement."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Empty Seeds Test", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+
+    models = [{"provider": "openai", "model": "gpt-4o", "api_key": "test"}]
+
+    # Only executive_summary call (no seed enhancement)
+    with (
+        patch.object(graph, "detect_research_seeds", return_value=[]),
+        patch(
+            "drbrain.extractor.llm_client.acall_text_with_fallback",
+            new=_async_return("Mock summary for empty seeds."),
+        ),
+    ):
+        result = analyze_paper(db, graph, "p1", models=models)
+
+    assert "executive_summary" in result
+    assert result["executive_summary"] == "Mock summary for empty seeds."
+    assert result["seeds"] == []
+    db.close()
+
+
+def test_analyze_paper_full_true_real_graph():
+    """full=True with real graph and concepts includes all analysis sections."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Full Analysis", 2026, "extracted")
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Problem', 'test problem', 0.9, 'intro')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    result = analyze_paper(db, graph, "p1", full=True)
+
+    assert "critical_nodes" in result
+    assert "hypotheses" in result
+    assert "isomorphisms" in result
+    assert "summary" in result
+    assert "seeds" in result
+    # Summary counts match array lengths
+    s = result["summary"]
+    assert s["critical_nodes"] == len(result["critical_nodes"])
+    assert s["hypotheses"] == len(result["hypotheses"])
+    assert s["isomorphisms"] == len(result["isomorphisms"])
+    db.close()
+
+
+def test_analyze_paper_summary_counts():
+    """Summary counts match actual array lengths."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.insert_paper("p1", "Count Test", 2026, "extracted")
+    db.commit()
+    graph = GraphEngine()
+
+    result = analyze_paper(db, graph, "p1", full=False)
+    s = result["summary"]
+    assert s["seeds"] == len(result["seeds"])
+    assert s["causal_chains"] == len(result["causal_chains"])
+    assert s["critical_nodes"] == len(result.get("critical_nodes", []))
+    assert s["hypotheses"] == len(result.get("hypotheses", []))
+    assert s["isomorphisms"] == len(result.get("isomorphisms", []))
+    db.close()
