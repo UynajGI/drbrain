@@ -227,3 +227,122 @@ def test_evolve_both_direction():
     assert len(grandchild) >= 1
     assert grandchild[0]["label"] == "Concept 2"
     db.close()
+
+
+def test_trace_descendants_not_found():
+    """trace_descendants returns None for unknown paper."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import trace_descendants
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    result = trace_descendants(db, graph, "nonexistent")
+    assert result is None
+    db.close()
+
+
+def test_trace_descendants_no_children():
+    """Paper with no edges returns root-only tree."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import trace_descendants
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Lonely Paper', 2020, 'extracted')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    result = trace_descendants(db, graph, "p1")
+    assert result is not None
+    assert result["local_id"] == "p1"
+    assert result["children"] == []
+    db.close()
+
+
+def test_trace_descendants_with_edges():
+    """Paper with concept edges returns tree with descendant papers."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import trace_descendants
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Original', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Descendant Paper', 2021, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Orig Concept', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Method', 'Desc Concept', 0.9, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('Orig Concept', 'Desc Concept', 'extends', 'p1', 0.8)"
+    )
+    db.commit()
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    result = trace_descendants(db, graph, "p1", generations=1)
+    assert result is not None
+    assert len(result["children"]) == 1
+    child = result["children"][0]
+    assert child["local_id"] == "p2"
+    assert "Descendant Paper" in child["label"]
+    assert child["relation"] == "extends"
+    db.close()
+
+
+def test_trace_descendants_generations_limit():
+    """trace_descendants respects generations limit."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import trace_descendants
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    for i in range(4):
+        pid = f"p{i}"
+        db.conn.execute(
+            f"INSERT INTO papers (local_id, title, year, status) "
+            f"VALUES ('{pid}', 'Paper {i}', {2020 + i}, 'extracted')"
+        )
+        db.conn.execute(
+            f"INSERT INTO concepts (local_id, type, label, confidence, section) "
+            f"VALUES ('{pid}', 'Method', 'Concept {i}', 0.9, 'method')"
+        )
+    # Chain: C0 → C1 → C2 → C3
+    for i in range(3):
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES (?, ?, 'extends', ?, 0.8)",
+            (f"Concept {i}", f"Concept {i + 1}", f"p{i}"),
+        )
+    db.commit()
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    # generations=1: only direct descendants (p1)
+    result = trace_descendants(db, graph, "p0", generations=1)
+    assert len(result["children"]) == 1
+    assert result["children"][0]["local_id"] == "p1"
+
+    # generations=2: p1 and p2
+    result = trace_descendants(db, graph, "p0", generations=2)
+    children = result["children"]
+    assert len(children) == 1
+    assert children[0]["local_id"] == "p1"
+    grandchildren = children[0]["children"]
+    assert len(grandchildren) == 1
+    assert grandchildren[0]["local_id"] == "p2"
+
+    db.close()

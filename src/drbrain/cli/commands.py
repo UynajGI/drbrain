@@ -1965,68 +1965,6 @@ def queue_resolve_all_cmd(
     typer.echo(f"{result['count']} item(s) {action}ed.")
 
 
-def timeline_cmd(
-    ctx: typer.Context,
-    concept: str,
-    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
-):
-    """Show concept evolution over time."""
-    cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    evolution = db.get_concept_evolution(concept)
-
-    if not evolution:
-        db.close()
-        if json_output:
-            typer.echo(json.dumps({"label": concept, "evolution": [], "signal": None}))
-        else:
-            typer.echo(f"No data for concept: {concept}")
-        return
-
-    row = db.conn.execute(
-        "SELECT type FROM concepts WHERE label = ? LIMIT 1", (concept,)
-    ).fetchone()
-    ctype = row[0] if row else "unknown"
-
-    signal_info = db.get_concept_signal(concept)
-
-    db.close()
-
-    if json_output:
-        data = {
-            "label": concept,
-            "type": ctype,
-            "evolution": evolution,
-            "signal": signal_info["signal"] if signal_info else None,
-        }
-        typer.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
-        return
-
-    typer.echo(f"\nConcept: {concept} ({ctype})")
-
-    trend_labels = {
-        "first_appeared": "— first appeared",
-        "growing": "— rapid adoption",
-        "declining": "— declining",
-        "stable": "",
-    }
-
-    for entry in evolution:
-        year = entry["year"]
-        count = entry["count"]
-        avg_conf = entry["avg_conf"]
-        trend = entry.get("trend", "stable")
-        label = trend_labels.get(trend, "")
-
-        line = f"  {year}: {count} paper{'s' if count > 1 else ''} (avg confidence {avg_conf:.2f})"
-        if label:
-            line += f" {label}"
-        typer.echo(line)
-
-    if signal_info:
-        typer.echo(f"Status: {signal_info['signal'].upper()}")
-
-
 def delete_cmd(
     ctx: typer.Context,
     local_id: str,
@@ -3844,5 +3782,40 @@ def evolve_cmd(
         typer.echo(f"\nEvolution of: {concept}\n")
         for root in trees:
             typer.echo(format_tree([root]))
+
+    db.close()
+
+
+def descendants_cmd(
+    ctx: typer.Context,
+    paper_id: str = typer.Argument(..., help="Paper local_id to trace descendants of"),
+    generations: int = typer.Option(
+        3, "--generations", "-g", help="Number of generations to trace"
+    ),
+    mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Trace a paper's academic offspring — who cited, extended, or refined it."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.graph.genealogy import format_tree, trace_descendants
+
+    tree = trace_descendants(db, graph, paper_id, generations=generations)
+
+    if tree is None:
+        db.close()
+        typer.echo(f"Paper not found: {paper_id}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(tree, indent=2, ensure_ascii=False, default=str))
+    elif mermaid:
+        typer.echo(format_tree([tree], mermaid=True))
+    else:
+        typer.echo(f"\nDescendants of: {paper_id}\n")
+        typer.echo(format_tree([tree]))
 
     db.close()

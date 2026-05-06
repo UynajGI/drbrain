@@ -18,6 +18,7 @@ from drbrain.cli.commands import (
     clean_cmd,
     closure_cmd,
     delete_cmd,
+    descendants_cmd,
     embed_cmd,
     evolve_cmd,
     export_cmd,
@@ -37,7 +38,6 @@ from drbrain.cli.commands import (
     seed_cmd,
     show_cmd,
     stats_cmd,
-    timeline_cmd,
     translate_cmd,
     ws_add_cmd,
     ws_create_cmd,
@@ -88,7 +88,6 @@ app.command("export")(export_cmd)
 app.command("queue")(queue_cmd)
 app.command("queue resolve")(queue_resolve_cmd)
 app.command("queue resolve-all")(queue_resolve_all_cmd)
-app.command("timeline")(timeline_cmd)
 app.command("delete")(delete_cmd)
 app.command("lineage")(lineage_cmd)
 app.command("ask")(ask_cmd)
@@ -103,6 +102,7 @@ app.command("translate")(translate_cmd)
 app.command("build")(build_cmd)
 app.command("embed")(embed_cmd)
 app.command("evolve")(evolve_cmd)
+app.command("descendants")(descendants_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

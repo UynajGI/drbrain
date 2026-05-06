@@ -180,6 +180,83 @@ def _reroot_with_ancestors(nodes: list[dict]) -> list[dict]:
     return roots
 
 
+def trace_descendants(
+    db: Database,
+    graph: GraphEngine,
+    local_id: str,
+    generations: int = 3,
+) -> dict | None:
+    """Trace a paper's academic offspring via concept graph edges.
+
+    Returns a tree dict rooted at the given paper, with children being
+    papers that extend, refine, apply, challenge, or cite its concepts.
+
+    Returns None if the paper is not found.
+    """
+    paper = db.get_paper(local_id)
+    if not paper:
+        return None
+
+    root = {
+        "label": paper.get("title", local_id),
+        "local_id": local_id,
+        "year": paper.get("year"),
+        "relation": None,
+        "children": [],
+    }
+
+    follow_relations = {"extends", "refines", "applies", "challenges", "cites"}
+    visited_papers: set[str] = {local_id}
+
+    # BFS: (parent_node, depth) — depth 0 = root paper
+    queue = deque([(root, 0)])
+
+    while queue:
+        parent, depth = queue.popleft()
+        if depth >= generations:
+            continue
+
+        concepts = db.conn.execute(
+            "SELECT label FROM concepts WHERE local_id = ?", (parent["local_id"],)
+        ).fetchall()
+
+        for (concept_label,) in concepts:
+            if concept_label not in graph.graph:
+                continue
+
+            for dst_label in graph.graph.neighbors(concept_label):
+                for edge_data in graph.graph[concept_label][dst_label].values():
+                    rel = edge_data.get("relation", "")
+                    if rel not in follow_relations:
+                        continue
+
+                    child_rows = db.conn.execute(
+                        "SELECT DISTINCT local_id FROM concepts WHERE label = ?",
+                        (dst_label,),
+                    ).fetchall()
+
+                    for (child_local_id,) in child_rows:
+                        if child_local_id in visited_papers:
+                            continue
+                        visited_papers.add(child_local_id)
+
+                        child_paper = db.get_paper(child_local_id)
+                        if not child_paper:
+                            continue
+
+                        child = {
+                            "label": child_paper.get("title", child_local_id),
+                            "local_id": child_local_id,
+                            "year": child_paper.get("year"),
+                            "relation": rel,
+                            "children": [],
+                        }
+                        parent.setdefault("children", []).append(child)
+                        queue.append((child, depth + 1))
+
+    return root
+
+
 def format_tree(nodes: list[dict], indent: str = "", mermaid: bool = False) -> str:
     """Format lineage tree as text or Mermaid diagram."""
     if mermaid:
