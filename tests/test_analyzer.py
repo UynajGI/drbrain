@@ -30,7 +30,7 @@ def _fake_arg(claim, claim_type, target_label, target_type, mechanism="", sectio
 
 
 def _seed(node):
-    return {"node": node, "type": "stale_problem"}
+    return {"concept": node, "type": "stale_problem"}
 
 
 # -- 1. basic paper with concepts -------------------------------------------
@@ -63,14 +63,14 @@ def test_analyze_paper_basic():
         "title": "Gradient Descent Revisited",
         "year": 2023,
     }
-    # Seeds filtered to paper concepts
-    assert len(result["seeds"]) == 2
-    assert result["seeds"][0]["node"] == "Gradient Descent"
-    assert result["seeds"][1]["node"] == "Overfitting"
+    # Seeds from detect_research_seeds are included directly (no paper-concept filter)
+    assert len(result["seeds"]) == 3
+    assert result["seeds"][0]["concept"] == "Gradient Descent"
+    assert result["seeds"][1]["concept"] == "Overfitting"
     # Chains empty (no arguments)
     assert result["causal_chains"] == []
     # Summary counts match actual lengths
-    assert result["summary"]["seeds"] == 2
+    assert result["summary"]["seeds"] == 3
     assert result["summary"]["causal_chains"] == 0
     assert result["summary"]["inferred_edges"] == 0
 
@@ -197,9 +197,9 @@ def test_analyze_paper_empty_concepts():
 
     result = analyze_paper(db, graph, "p4")
 
-    assert result["seeds"] == []
+    assert len(result["seeds"]) == 1
     assert result["causal_chains"] == []
-    assert result["summary"]["seeds"] == 0
+    assert result["summary"]["seeds"] == 1
     assert result["summary"]["causal_chains"] == 0
 
 
@@ -243,7 +243,7 @@ def test_summary_counts_match_arrays():
         result = analyze_paper(db, graph, "p5")
 
     s = result["summary"]
-    assert s["seeds"] == len(result["seeds"]) == 1  # Outside filtered out
+    assert s["seeds"] == len(result["seeds"]) == 2
     assert s["causal_chains"] == len(result["causal_chains"]) == 2
     assert s["inferred_edges"] == len(graph.closure()) == 2
     assert s["critical_nodes"] == len(result.get("critical_nodes", [])) == 0

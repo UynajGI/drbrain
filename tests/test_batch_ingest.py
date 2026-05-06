@@ -7,7 +7,6 @@ from unittest import mock
 import typer
 
 from drbrain.cli.commands import ingest_cmd
-from drbrain.extractor.concept import ExtractedConcepts
 from drbrain.parser.mineru_parser import ParsedPaper
 
 
@@ -55,23 +54,6 @@ def _make_parsed_paper(idx: int = 0) -> ParsedPaper:
     )
 
 
-def _make_concepts(idx: int = 0) -> ExtractedConcepts:
-    """Create dummy ExtractedConcepts with unique labels."""
-    data = {
-        "problems": [{"label": f"Test Problem {idx}", "confidence": 0.9}],
-        "methods": [{"label": f"Test Method {idx}", "confidence": 0.9}],
-        "conclusions": [],
-        "debates": [],
-        "gaps": [],
-        "actors": [],
-        "relations": [
-            {"head": f"Test Method {idx}", "rel": "addresses", "tail": f"Test Problem {idx}"}
-        ],
-        "arguments": [],
-    }
-    return ExtractedConcepts(data)
-
-
 def test_ingest_single_file():
     """ingest_cmd processes a single PDF file successfully."""
     with tempfile.TemporaryDirectory() as td:
@@ -83,10 +65,7 @@ def test_ingest_single_file():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with (
-            mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)),
-            mock.patch("drbrain.cli.commands.extract_concepts", return_value=_make_concepts(0)),
-        ):
+        with mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)):
             ingest_cmd(ctx, [str(pdf_path)])
 
         from drbrain.storage.database import Database
@@ -117,15 +96,8 @@ def test_ingest_directory():
             call_idx[0] += 1
             return _make_parsed_paper(idx)
 
-        def concepts_side_effect(text, models):
-            idx = call_idx[0] - 1  # Use the last assigned index
-            return _make_concepts(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with (
-            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
-            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
-        ):
+        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
         from drbrain.storage.database import Database
@@ -163,15 +135,8 @@ def test_ingest_skips_failed_papers():
             paper_idx[0] += 1
             return _make_parsed_paper(idx)
 
-        def concepts_side_effect(text, models):
-            idx = paper_idx[0] - 1
-            return _make_concepts(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with (
-            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract),
-            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
-        ):
+        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
         # Should have attempted all 3 files
@@ -205,15 +170,8 @@ def test_ingest_multiple_files():
             call_idx[0] += 1
             return _make_parsed_paper(idx)
 
-        def concepts_side_effect(text, models):
-            idx = call_idx[0] - 1
-            return _make_concepts(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with (
-            mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect),
-            mock.patch("drbrain.cli.commands.extract_concepts", side_effect=concepts_side_effect),
-        ):
+        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect):
             ingest_cmd(ctx, [str(pdf1), str(pdf2)])
 
         from drbrain.storage.database import Database

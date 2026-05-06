@@ -80,22 +80,15 @@ def test_extract_arxiv_from_filename_no_match():
 
 def test_fetch_arxiv_metadata_success():
     """_fetch_arxiv_metadata returns title and year from arXiv API."""
-    mock_xml = """<?xml version="1.0"?>
-<feed>
-  <entry>
-    <title>Feed Title</title>
-    <title>Real Paper Title</title>
-    <published>2024-03-15T00:00:00Z</published>
-  </entry>
-</feed>"""
+    mock_paper = unittest.mock.Mock()
+    mock_paper.title = "Real Paper Title"
+    mock_paper.published = unittest.mock.Mock()
+    mock_paper.published.year = 2024
 
-    with unittest.mock.patch("urllib.request.urlopen") as mock_urlopen:
-        mock_resp = unittest.mock.Mock()
-        mock_resp.read.return_value = mock_xml.encode("utf-8")
-        mock_resp.__enter__ = unittest.mock.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = unittest.mock.Mock(return_value=False)
-        mock_urlopen.return_value = mock_resp
+    mock_client = unittest.mock.Mock()
+    mock_client.results.return_value = iter([mock_paper])
 
+    with unittest.mock.patch("arxiv.Client", return_value=mock_client):
         title, year = _fetch_arxiv_metadata("2401.12345")
         assert title == "Real Paper Title"
         assert year == 2024
@@ -111,21 +104,15 @@ def test_fetch_arxiv_metadata_error_returns_none():
 
 def test_fetch_arxiv_metadata_single_title():
     """Uses single title when only one is present."""
-    mock_xml = """<?xml version="1.0"?>
-<feed>
-  <entry>
-    <title>Only Title</title>
-    <published>2023-01-01T00:00:00Z</published>
-  </entry>
-</feed>"""
+    mock_paper = unittest.mock.Mock()
+    mock_paper.title = "Only Title"
+    mock_paper.published = unittest.mock.Mock()
+    mock_paper.published.year = 2023
 
-    with unittest.mock.patch("urllib.request.urlopen") as mock_urlopen:
-        mock_resp = unittest.mock.Mock()
-        mock_resp.read.return_value = mock_xml.encode("utf-8")
-        mock_resp.__enter__ = unittest.mock.Mock(return_value=mock_resp)
-        mock_resp.__exit__ = unittest.mock.Mock(return_value=False)
-        mock_urlopen.return_value = mock_resp
+    mock_client = unittest.mock.Mock()
+    mock_client.results.return_value = iter([mock_paper])
 
+    with unittest.mock.patch("arxiv.Client", return_value=mock_client):
         title, year = _fetch_arxiv_metadata("2301.00001")
         assert title == "Only Title"
 
@@ -230,7 +217,7 @@ def test_fallback_pymupdf_empty_markdown_uses_text():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         mock_page = unittest.mock.Mock()
-        mock_page.get_text.side_effect = ["", "plain text content"]
+        mock_page.get_text.return_value = "plain text content"
 
         mock_doc = unittest.mock.Mock()
         mock_doc.close = unittest.mock.Mock()
@@ -390,6 +377,19 @@ def test_parser_full_extract_flow_with_fallback():
                 "drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)
             ),
             unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+            unittest.mock.patch(
+                "drbrain.parser.mineru_parser._resolve_metadata",
+                return_value={
+                    "title": "Test Title",
+                    "year": 2024,
+                    "doi": None,
+                    "s2_id": None,
+                    "openalex_id": None,
+                    "journal": "",
+                    "publisher": "",
+                    "citation_count": 0,
+                },
+            ),
         ):
             parser = MinerUParser(max_retries=1, retry_delay=0.01)
             result = parser.extract(pdf_path)
@@ -824,6 +824,19 @@ def test_extract_single_with_mineru_success():
             ),
             unittest.mock.patch(
                 "drbrain.extractor.openalex.search_authors_by_work", return_value=[]
+            ),
+            unittest.mock.patch(
+                "drbrain.parser.mineru_parser._resolve_metadata",
+                return_value={
+                    "title": "Paper Title",
+                    "year": 2024,
+                    "doi": "10.1234/test",
+                    "s2_id": None,
+                    "openalex_id": None,
+                    "journal": "",
+                    "publisher": "",
+                    "citation_count": 0,
+                },
             ),
         ):
             result = parser._extract_single(Path("/fake/paper.pdf"))

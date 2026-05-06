@@ -75,15 +75,11 @@ def test_closure_incremental_vs_full_closure():
     assert full_set == incr_set
 
 
-def test_ingest_auto_closure():
-    """ingest_cmd automatically runs closure after paper ingest."""
-    # This is a higher-level test: verify that _ingest_single_paper
-    # calls closure after graph loading.
-    # We test this by checking the ingest pipeline code path.
+def test_ingest_single_paper_succeeds():
+    """_ingest_single_paper completes successfully with mocked extract_pdf."""
+    # Verify that _ingest_single_paper runs the parse-identify-store pipeline.
     from drbrain.cli.commands import _ingest_single_paper
     from drbrain.dedup.resolver import DedupEngine
-    from drbrain.extractor.canonical import SmartAligner
-    from drbrain.graph.engine import GraphEngine
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
@@ -117,9 +113,7 @@ def test_ingest_auto_closure():
         }
 
         db = Database(str(db_path))
-        graph = GraphEngine()
         dedup = DedupEngine(db)
-        aligner = SmartAligner(db, models=cfg["llm"]["models"])
 
         # Create a minimal PDF file
         pdf_path = papers_dir / "test.pdf"
@@ -139,33 +133,14 @@ def test_ingest_auto_closure():
             raw_md="# Test\n\nContent.",
         )
 
-        # Mock concept extraction
-        from drbrain.extractor.concept import ExtractedConcepts
+        with mock.patch("drbrain.cli.commands.extract_pdf", return_value=parsed):
+            result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=True)
 
-        extracted = ExtractedConcepts(
-            {
-                "problems": [{"label": "Test Problem", "confidence": 0.9}],
-                "methods": [],
-                "conclusions": [],
-                "debates": [],
-                "gaps": [],
-                "actors": [],
-                "relations": [],
-            }
-        )
-
-        with (
-            mock.patch("drbrain.cli.commands.extract_pdf", return_value=parsed),
-            mock.patch("drbrain.cli.commands.extract_concepts", return_value=extracted),
-        ):
-            result = _ingest_single_paper(
-                pdf_path, cfg, db, graph, dedup, aligner, 0.7, 0.9, json_mode=True
-            )
-
-        # Verify closure ran (check that concepts table has data)
-        concepts = db.get_concepts_by_paper(result["local_id"])
-        assert len(concepts) > 0
-        # Closure should have run - verify no error was raised
+        # Verify paper was inserted
         assert result["ok"] is True
+        assert result["local_id"] is not None
+        paper = db.get_paper(result["local_id"])
+        assert paper is not None
+        assert paper["title"] == "Test Paper"
 
         db.close()

@@ -95,6 +95,19 @@ def test_parser_succeeds_on_first_try():
             "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+        unittest.mock.patch(
+            "drbrain.parser.mineru_parser._resolve_metadata",
+            return_value={
+                "title": "Title",
+                "year": 2024,
+                "doi": None,
+                "s2_id": None,
+                "openalex_id": None,
+                "journal": "",
+                "publisher": "",
+                "citation_count": 0,
+            },
+        ),
     ):
         parser = MinerUParser(token="test", max_retries=3, retry_delay=0.01)
         result = parser.extract("/tmp/test.pdf")

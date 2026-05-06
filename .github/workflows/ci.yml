@@ -34,4 +34,4 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv pip install -e .
-      - run: uv run pytest -m "not integration" --cov=drbrain --cov-report=term-missing
+      - run: uv run pytest -m "not integration" --cov=drbrain --cov-report=term-missing --cov-fail-under=65
