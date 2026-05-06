@@ -43,6 +43,20 @@ drbrain audit --severity error
 drbrain audit --workspace nlp --json
 ```
 
+### `drbrain fetch`
+
+Fetch a paper from open access sources — find PDF → download → ingest. Uses a 5-stage fallback: arXiv, OpenAlex OA, Unpaywall, direct DOI resolution, title-based arXiv search.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--arxiv` | | Treat identifier as arXiv ID |
+
+```bash
+drbrain fetch 10.1234/example.doi
+drbrain fetch --arxiv 1706.03762
+drbrain fetch "Attention Is All You Need"
+```
+
 ### `drbrain clean`
 
 Clear data directories (database, cache, logs, papers, reports). Keeps inbox PDFs intact.

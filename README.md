@@ -45,6 +45,7 @@ agent entries so your coding agent can use DrBrain skills directly.
 | **Export** | BibTeX, RIS, Markdown | Full library or workspace export with complete venue metadata (journal, volume, pages) |
 | **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
 | **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
+| **Fetch** | PDF acquisition from OA sources | 5-stage fallback (arXiv, OpenAlex, Unpaywall, direct DOI), institutional proxy support |
 | **Audit** | Data quality scan | 15 severity-graded rules, PDF pre-validation, ingest quality gates |
 
 ## Documentation

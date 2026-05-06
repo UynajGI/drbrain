@@ -12,7 +12,7 @@ uv run ruff check . && uv run ruff format .
 uv run pytest --cov=drbrain --cov-report=term
 ```
 
-Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`.
+Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`, `fetch`, `embed`, `reason`.
 
 ## Architecture
 
