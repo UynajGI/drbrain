@@ -138,6 +138,15 @@ CREATE TABLE IF NOT EXISTS citation_cache (
     PRIMARY KEY (source_paper, target_title)
 );
 
+CREATE TABLE IF NOT EXISTS build_stages (
+    paper_id TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    result_json TEXT DEFAULT '',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (paper_id, stage)
+);
+
 CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -172,6 +181,7 @@ class Database:
             (2, "venue_columns", self._migrate_add_venue_columns),
             (3, "authors", self._migrate_add_authors),
             (4, "node_id", self._migrate_add_node_id),
+            (5, "edge_provenance", self._migrate_add_edge_provenance),
         ]
 
         for version, name, fn in migrations:
@@ -219,6 +229,14 @@ class Database:
         arg_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(arguments)").fetchall()]
         if "node_id" not in arg_cols:
             self.conn.execute("ALTER TABLE arguments ADD COLUMN node_id TEXT DEFAULT ''")
+
+    def _migrate_add_edge_provenance(self) -> None:
+        """Add node_id and section columns to edges for provenance chain."""
+        edge_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(edges)").fetchall()]
+        if "node_id" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN node_id TEXT DEFAULT ''")
+        if "section" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN section TEXT DEFAULT ''")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -341,12 +359,19 @@ class Database:
         return cur.lastrowid
 
     def insert_edge(
-        self, src_id: str, dst_id: str, relation: str, source_paper: str, weight: float = 1.0
+        self,
+        src_id: str,
+        dst_id: str,
+        relation: str,
+        source_paper: str,
+        weight: float = 1.0,
+        node_id: str = "",
+        section: str = "",
     ) -> None:
-        """Insert an edge between concepts."""
+        """Insert an edge between concepts with tree provenance."""
         self.conn.execute(
-            "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-            (src_id, dst_id, relation, source_paper, weight),
+            "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight, node_id, section) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (src_id, dst_id, relation, source_paper, weight, node_id, section),
         )
 
     def insert_alias(self, variant: str, canonical_id: str) -> None:

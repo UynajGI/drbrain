@@ -15,6 +15,9 @@
 - `cfg["key"]["path"]` without fallback — use `cfg.db.path` (typed Config dataclass).
 - `write_text()` without tmp→rename — use atomic writes for all filesystem writes.
 - `urllib.request` — use `requests.Session` with `urllib3.Retry` adapter.
+- `from .module import *` — wildcard imports hide dependency chains and pollute namespaces. Always import explicit names.
+- `json_str.replace('None', 'null')` or similar string-replace on LLM JSON output — corrupts string values containing those substrings. Use `json_repair` library or schema-constrained generation instead.
+- Logger that re-serializes and writes entire log file on every `.info()` call — O(n²) I/O. For JSONL/metrics logs, append one line at a time; for structured logs, batch writes or use loguru.
 
 ## Required Patterns
 

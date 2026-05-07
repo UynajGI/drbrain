@@ -468,11 +468,15 @@ async def build_graph_from_tree(
 
 
 async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str, list[str]]:
-    """Stage 1: Iterative ontology extension with plateau detection.
+    """Stage 1: Tree-to-ontology with iterative extension + plateau detection.
 
-    Builds domain-specific subcategories under 6 TBox types by iteratively
-    sampling document sections, extending the ontology, and stopping when
-    new subcategories drop below threshold (inspired by 2511.11017).
+    Upgrades the document TOC hierarchy to ontology classes under TBox 6 types.
+    Section headings (e.g., "3.1.1 Datasets") become ontology subcategories,
+    preserving the author-crafted structure. Iterative sampling extends the
+    ontology with content-level discoveries.
+
+    Synthesis: PageIndex tree-structure (author intent) × 2511.11017 iterative
+    ontology expansion (LLM-guided).
     """
     import json as _json
     import random
@@ -480,12 +484,21 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
     from loguru import logger as _onto_log
 
     valid_types = {"Problem", "Method", "Conclusion", "Gap", "Debate", "Actor"}
-    structure_json = get_document_structure_json(structure)
     prompt = ONTOLOGY_PROMPT.read_text(encoding="utf-8")
 
-    # Initial ontology from full structure overview
+    # Build hierarchical structure summary: show parent-child relationships
+    tree_hierarchy_text = _build_tree_hierarchy_text(structure)
+
+    # Initial ontology from hierarchical TOC (preserves author structure)
     data = await acall_with_fallback(
-        prompt=f"Document Structure:\n{structure_json}",
+        prompt=(
+            f"Document Section Hierarchy (TOC with parent-child relationships):\n"
+            f"{tree_hierarchy_text}\n\n"
+            f"Map section headings to ontology subcategories under the 6 TBox types: "
+            f"{', '.join(sorted(valid_types))}. Preserve the TOC hierarchy: "
+            f"child sections should map to subcategories of their parent section's type "
+            f"when semantically appropriate."
+        ),
         models=models,
         system_prompt=prompt,
     )
@@ -494,17 +507,18 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
 
     ontology = {k: v for k, v in data.items() if k in valid_types and isinstance(v, list)}
     prev_total = sum(len(v) for v in ontology.values())
-    _onto_log.info(f"Ontology round 1: {prev_total} subcategories across {len(ontology)} types")
+    _onto_log.info(
+        f"Ontology round 1 (from TOC): {prev_total} subcategories across {len(ontology)} types"
+    )
 
-    # Collect leaf nodes for sampling
+    # Collect leaf nodes for content-level sampling
     leaves = _collect_leaf_nodes(structure)
     if not leaves:
         return ontology
 
-    # Iterative extension
+    # Iterative extension: sample leaf content for additions beyond TOC
     sample_size = min(5, len(leaves))
-    for round_num in range(2, 7):  # max 6 rounds
-        # Sample new sections
+    for round_num in range(2, 7):
         sampled = random.sample(leaves, min(sample_size, len(leaves)))
         context = "\n---\n".join(
             f"{leaf.get('title', '')}:\n{_json.dumps(leaf, indent=2, default=str)}"
@@ -523,7 +537,6 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
         if not data:
             break
 
-        # Merge new subcategories
         new_count = 0
         for k, v in data.items():
             if k in valid_types and isinstance(v, list):
@@ -536,13 +549,41 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
         total = sum(len(v) for v in ontology.values())
         _onto_log.info(f"Ontology round {round_num}: +{new_count} new, {total} total")
 
-        # Plateau detection: stop when growth is minimal
         if new_count < 2:
             _onto_log.info(f"Ontology plateau reached at round {round_num}")
             break
         prev_total = total
 
     return ontology
+
+
+def _build_tree_hierarchy_text(structure: list[dict], indent: int = 0) -> str:
+    """Render TOC hierarchy with parent-child relationships for ontology mapping.
+
+    Output format:
+        ├── 3. Methodology [depth=1]
+        │   ├── 3.1 Dataset Construction [depth=2]
+        │   │   └── 3.1.1 Data Sources [depth=3]
+        │   └── 3.2 Evaluation Metrics [depth=2]
+
+    This preserves the author's organizational intent so the LLM can map
+    section hierarchy to ontology class hierarchy.
+    """
+    lines: list[str] = []
+
+    def _walk(nodes: list[dict], depth: int, prefix: str = ""):
+        for i, node in enumerate(nodes):
+            title = node.get("title", "(untitled)")
+            is_last = i == len(nodes) - 1
+            connector = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{connector}{title} [depth={depth}]")
+            children = node.get("nodes", []) or node.get("children", [])
+            if children:
+                child_prefix = prefix + ("    " if is_last else "│   ")
+                _walk(children, depth + 1, child_prefix)
+
+    _walk(structure, 0)
+    return "\n".join(lines)
 
 
 def _apply_tree_weights(concepts: list[dict], leaves: list[dict], structure: list[dict]) -> None:
@@ -633,10 +674,12 @@ async def _extract_entities(
         if not data:
             return []
         concepts = data.get("concepts", [])
-        # Tag each concept with its source section for tree+graph traversal
+        # Tag each concept with its source section + node_id for tree provenance
         section_title = leaf.get("title", "")
+        leaf_node_id = leaf.get("node_id", "")
         for c in concepts:
             c["section"] = section_title
+            c["node_id"] = leaf_node_id
         return concepts
 
     tasks = [_extract_one(leaf) for leaf in ordered_leaves]
@@ -651,14 +694,33 @@ async def _extract_entities(
 
 
 async def _extract_relations(concepts: list[dict], models: list[dict]) -> list[dict]:
-    """Stage 3: LLM connects entities with TBox relations."""
+    """Stage 3: LLM connects entities with TBox relations.
+
+    Each relation inherits node_id and section from its head (source) concept,
+    maintaining the provenance chain: edge → concept → tree node → paper.
+    """
+    # Build label→concept lookup for provenance transfer
+    concept_map: dict[str, dict] = {}
+    for c in concepts:
+        key = c.get("label", "").strip().lower()
+        if key:
+            concept_map[key] = c
+
     concept_list = [f"{c['label']}: {c['type']}" for c in concepts]
     prompt = RELATIONS_PROMPT.read_text(encoding="utf-8")
     user = prompt.format(concepts="\n".join(concept_list))
     data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt)
     if not data:
         return []
-    return data.get("relations", [])
+    relations = data.get("relations", [])
+    # Attach provenance from source concept
+    for r in relations:
+        head_label = r.get("head", "").strip().lower()
+        src = concept_map.get(head_label)
+        if src:
+            r["node_id"] = src.get("node_id", "")
+            r["section"] = src.get("section", "")
+    return relations
 
 
 async def _resolve_coreferences(

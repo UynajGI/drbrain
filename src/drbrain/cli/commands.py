@@ -3553,7 +3553,9 @@ def build_cmd(
             if ctype not in valid_types or not label:
                 rejected += 1
                 continue
-            db.insert_concept(pid, ctype, label, conf, section=c.get("section", ""))
+            db.insert_concept(
+                pid, ctype, label, conf, section=c.get("section", ""), node_id=c.get("node_id", "")
+            )
             valid_count += 1
 
         # Insert relations
@@ -3563,7 +3565,14 @@ def build_cmd(
             tail = r.get("tail", "")
             if head and rel and tail:
                 try:
-                    db.insert_edge(head, tail, rel, pid)
+                    db.insert_edge(
+                        head,
+                        tail,
+                        rel,
+                        pid,
+                        node_id=r.get("node_id", ""),
+                        section=r.get("section", ""),
+                    )
                 except Exception:
                     pass  # duplicate edge or invalid reference
 
