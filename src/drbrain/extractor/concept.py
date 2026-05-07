@@ -549,8 +549,17 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
         total = sum(len(v) for v in ontology.values())
         _onto_log.info(f"Ontology round {round_num}: +{new_count} new, {total} total")
 
-        if new_count < 2:
-            _onto_log.info(f"Ontology plateau reached at round {round_num}")
+        # Adaptive plateau detection: stop when growth is negligible
+        # Absolute floor: no new elements at all
+        if new_count == 0:
+            _onto_log.info(f"Ontology plateau reached at round {round_num} (zero growth)")
+            break
+        # Relative threshold: new elements < 5% of total ontology size
+        if total > 0 and new_count / total < 0.05:
+            _onto_log.info(
+                f"Ontology plateau reached at round {round_num} "
+                f"(relative: {new_count}/{total} = {new_count / total:.3f})"
+            )
             break
         prev_total = total
 
