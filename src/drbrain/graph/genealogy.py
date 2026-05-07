@@ -664,6 +664,78 @@ def analyze_difficulty(db: Database) -> dict:
     return result
 
 
+def analyze_frontier(db: Database) -> dict:
+    """Composite knowledge frontier: gaps, debates, recency, paradigm shifts.
+
+    Synthesizes existing analysis functions into a single frontier report.
+    Uses gap classification, debate detection, paper recency to identify
+    active research fronts.
+
+    Returns dict with keys: active_gaps, debates, paradigm_shifts, summary.
+    """
+    from drbrain.graph.engine import GraphEngine
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    # 1. Gap recency — group gaps by paper year
+    gap_rows = db.conn.execute(
+        "SELECT c.label, c.section, c.node_id, c.local_id, p.year "
+        "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+        "WHERE c.type = 'Gap' AND p.year IS NOT NULL "
+        "ORDER BY p.year DESC"
+    ).fetchall()
+
+    # 2. Difficulty classification
+    difficulty = analyze_difficulty(db)
+
+    # 3. Active debates
+    seeds = graph.detect_research_seeds(db)
+    debates = [s for s in seeds if s["type"] == "debate_zone"]
+
+    # 4. Paradigm shifts (top-level concepts only)
+    shifts = detect_paradigm_shifts(graph, db, decline_threshold=0.3, growth_threshold=2)
+
+    # Compute recency-aware gaps: group by recency bucket
+    recent_year = max((r[4] or 0) for r in gap_rows) if gap_rows else 0
+    active_gaps: list[dict] = []
+    stale_gaps: list[dict] = []
+    for label, section, node_id, paper_id, year in gap_rows:
+        gap_info = {
+            "label": label,
+            "section": section or "",
+            "paper_id": paper_id or "",
+            "year": year or 0,
+            "provenance": _format_provenance(section or "", node_id or "", paper_id or ""),
+        }
+        if year and year >= recent_year - 3:
+            active_gaps.append(gap_info)
+        else:
+            stale_gaps.append(gap_info)
+
+    summary_parts = []
+    if active_gaps:
+        summary_parts.append(f"{len(active_gaps)} active gaps (last 3 years)")
+    if stale_gaps:
+        summary_parts.append(f"{len(stale_gaps)} stale gaps (older)")
+    if debates:
+        summary_parts.append(f"{len(debates)} active debates")
+    summary_parts.append(
+        f"limitation={len(difficulty['limitation'])}, "
+        f"future_work={len(difficulty['future_work'])}, "
+        f"discussion={len(difficulty['discussion'])}"
+    )
+
+    return {
+        "active_gaps": active_gaps,
+        "stale_gaps": stale_gaps,
+        "difficulty": difficulty,
+        "debates": debates,
+        "paradigm_shifts": shifts,
+        "summary": ", ".join(summary_parts),
+    }
+
+
 def _mermaid_nodes(lines: list[str], nodes: list[dict], parent_id: str | None):
     """Recursively add Mermaid nodes and edges."""
     for node in nodes:

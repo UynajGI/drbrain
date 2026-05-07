@@ -24,6 +24,7 @@ from drbrain.cli.commands import (
     evolve_cmd,
     export_cmd,
     fetch_cmd,
+    frontier_cmd,
     import_cmd,
     index_cmd,
     ingest_cmd,
@@ -113,6 +114,7 @@ app.command("paradigm")(paradigm_cmd)
 app.command("transfers")(transfers_cmd)
 app.command("isomorphism")(isomorphism_cmd)
 app.command("difficulty")(difficulty_cmd)
+app.command("frontier")(frontier_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

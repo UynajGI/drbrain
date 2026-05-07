@@ -4263,3 +4263,43 @@ def difficulty_cmd(
                         typer.echo(f"        {g['provenance']}")
 
     db.close()
+
+
+def frontier_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show knowledge frontier — active gaps, debates, and paradigm shifts."""
+    from drbrain.graph.genealogy import analyze_frontier
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    result = analyze_frontier(db)
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo("\nKnowledge Frontier")
+        typer.echo("=" * 50)
+        typer.echo(f"\n{result['summary']}\n")
+
+        active = result.get("active_gaps", [])
+        if active:
+            typer.echo(f"Active gaps ({len(active)}):")
+            for g in active[:10]:
+                typer.echo(f"  * {g['label']} ({g['year']})")
+                typer.echo(f"        {g['provenance']}")
+
+        debates = result.get("debates", [])
+        if debates:
+            typer.echo(f"\nActive debates ({len(debates)}):")
+            for d in debates[:5]:
+                typer.echo(f"  * {d['description'][:120]}")
+
+        shifts = result.get("paradigm_shifts", [])
+        if shifts:
+            typer.echo(f"\nParadigm shifts ({len(shifts)}):")
+            for s in shifts[:5]:
+                typer.echo(f"  [{s['type']}] {s['description'][:120]}")
+
+    db.close()

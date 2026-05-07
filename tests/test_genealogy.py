@@ -3,6 +3,7 @@ from drbrain.graph.genealogy import (
     _format_provenance,
     _get_concept_provenance,
     analyze_difficulty,
+    analyze_frontier,
     detect_paradigm_shifts,
     evolve_concept,
     find_transfer_opportunities,
@@ -1263,4 +1264,66 @@ def test_analyze_difficulty_provenance():
     g = result["limitation"][0]
     assert g["provenance"] == "[source: 5.2 Limitations of p1]"
     assert g["node_id"] == "0005.002"
+    db.close()
+
+
+# -- knowledge frontier --
+
+
+def test_analyze_frontier_empty():
+    """Frontier on empty DB returns empty result."""
+    db = Database(":memory:")
+    result = analyze_frontier(db)
+    assert result["active_gaps"] == []
+    assert result["stale_gaps"] == []
+    assert result["debates"] == []
+    assert "limitation=0" in result["summary"]
+    db.close()
+
+
+def test_analyze_frontier_with_data():
+    """Frontier synthesizes gaps, debates, and paradigm shifts."""
+    db = Database(":memory:")
+    # Recent paper with gap
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Recent', 2026, 'extracted')"
+    )
+    # Old paper with gap
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Old', 2010, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Recent Gap', 0.9, '5 Limitations')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Gap', 'Old Gap', 0.8, '6 Discussion')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) VALUES ('p1', 'Method', 'A', 0.9)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) VALUES ('p1', 'Method', 'B', 0.9)"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('A', 'Recent Gap', 'leaves_open', 'p1')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('A', 'Debate Target', 'supports', 'p1')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('B', 'Debate Target', 'challenges', 'p1')"
+    )
+    db.commit()
+    result = analyze_frontier(db)
+    assert len(result["active_gaps"]) == 1
+    assert result["active_gaps"][0]["label"] == "Recent Gap"
+    assert len(result["stale_gaps"]) == 1
+    assert result["stale_gaps"][0]["label"] == "Old Gap"
+    assert "1 active gaps" in result["summary"]
+    assert "1 stale gaps" in result["summary"]
     db.close()
