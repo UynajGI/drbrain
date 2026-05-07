@@ -4204,7 +4204,10 @@ def isomorphism_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Find structurally isomorphic subgraphs — concepts with similar relation patterns."""
-    from drbrain.extractor.isomorphism import find_isomorphic_patterns
+    from drbrain.extractor.isomorphism import (
+        enrich_isomorphisms_with_raptor,
+        find_isomorphic_patterns,
+    )
 
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
@@ -4212,6 +4215,7 @@ def isomorphism_cmd(
     graph.load_from_db(db)
 
     mappings = find_isomorphic_patterns(graph)
+    mappings = enrich_isomorphisms_with_raptor(mappings, db)
 
     if concept:
         mappings = [m for m in mappings if m.source_domain == concept or m.target_domain == concept]
@@ -4225,6 +4229,8 @@ def isomorphism_cmd(
                 "target": m.target_domain,
                 "shared_structure": m.shared_structure,
                 "confidence": m.confidence,
+                "raptor_source_context": m.raptor_source_context,
+                "raptor_target_context": m.raptor_target_context,
             }
             for m in mappings
         ]

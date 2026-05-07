@@ -207,33 +207,37 @@ async def build_raptor_tree(
         _embed_batch,
     )
 
-    # Step 1: Collect PageIndex leaf nodes
-    nodes = _collect_tree_nodes(paper_dir)
-    if len(nodes) < 3:
-        log.info("Too few PageIndex nodes (%d) for RAPTOR clustering", len(nodes))
-        return 0
-
-    node_texts = [n["text"] for n in nodes]
-    node_ids = [n["node_id"] for n in nodes]
     paper_id = paper_dir.name
     total_summaries = 0
 
-    # Step 2: Embed leaf nodes
-    vectors = _embed_batch(node_texts, embed_cfg)
-    if not vectors:
-        return 0
-
     conn = sqlite3.connect(str(db_path))
     try:
-        # Store PageIndex embeddings if not already present
-        for nid, txt, vec in zip(node_ids, node_texts, vectors):
-            blob = struct.pack(f"{len(vec)}f", *vec)
-            conn.execute(
-                "INSERT OR IGNORE INTO tree_vectors "
-                "(node_id, paper_id, embedding, content_hash, tree_layer) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (nid, paper_id, blob, _content_hash(txt), "pageindex"),
-            )
+        # Step 1: Read existing PageIndex vectors from DB (already stored by build_tree_vectors)
+        rows = conn.execute(
+            "SELECT node_id, embedding FROM tree_vectors "
+            "WHERE tree_layer = 'pageindex' AND paper_id = ?",
+            (paper_id,),
+        ).fetchall()
+
+        if len(rows) < 3:
+            log.info("Too few PageIndex vectors (%d) for RAPTOR clustering", len(rows))
+            return 0
+
+        # Collect node texts from tree.json (needed for LLM summarization)
+        nodes = _collect_tree_nodes(paper_dir)
+        node_text_map: dict[str, str] = {n["node_id"]: n["text"] for n in nodes}
+
+        node_ids: list[str] = []
+        node_texts: list[str] = []
+        vectors: list[list[float]] = []
+        for row in rows:
+            nid = row[0]
+            blob = row[1]
+            stored_dim = len(blob) // 4  # float32 = 4 bytes
+            vec = list(struct.unpack(f"{stored_dim}f", blob))
+            node_ids.append(nid)
+            node_texts.append(node_text_map.get(nid, ""))
+            vectors.append(vec)
 
         current_texts = node_texts
         current_ids = node_ids

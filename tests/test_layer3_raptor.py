@@ -143,8 +143,8 @@ async def test_summarize_cluster_returns_summary():
 def test_build_raptor_tree_stores_summaries():
     """build_raptor_tree creates tree_summaries rows for a paper.
 
-    Mocks embedding and LLM calls to verify the full pipeline:
-    embed → cluster → summarize → store → re-embed → repeat.
+    Pre-populates PageIndex vectors via build_tree_vectors, then verifies
+    RAPTOR reads them from DB: cluster → summarize → store → re-embed → repeat.
     """
     import asyncio
 
@@ -225,6 +225,12 @@ def test_build_raptor_tree_stores_summaries():
                 side_effect=_fake_summarize,
             ),
         ):
+            # Populate PageIndex vectors first (build_raptor_tree reads from DB)
+            from drbrain.services.embedding import build_tree_vectors
+
+            pageindex_count = build_tree_vectors(db_path, paper_dir, cfg.embed)
+            assert pageindex_count >= 3  # need enough nodes for RAPTOR
+
             from drbrain.extractor.raptor import build_raptor_tree
 
             count = asyncio.run(build_raptor_tree(paper_dir, db_path, cfg.embed))
@@ -310,6 +316,11 @@ def test_build_raptor_tree_stops_at_max_layers():
                 side_effect=_fake_summarize,
             ),
         ):
+            # Populate PageIndex vectors first
+            from drbrain.services.embedding import build_tree_vectors
+
+            build_tree_vectors(db_path, paper_dir, cfg.embed)
+
             from drbrain.extractor.raptor import build_raptor_tree
 
             count = asyncio.run(build_raptor_tree(paper_dir, db_path, cfg.embed, max_layers=1))
