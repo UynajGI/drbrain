@@ -169,7 +169,7 @@ Layer 3: LLM Agent Reasoning
 `extractor/hypothesis.py` -- Generates actionable research hypotheses from gaps, debates, technology cliffs, and confidence collapse patterns.
 
 ### Knowledge Genealogy
-`graph/genealogy.py` -- Concept lineage trees (`evolve`), academic offspring tracking (`descendants`), domain landscape with timeline/gaps/debates (`landscape`), paradigm shift detection (`paradigm`), cross-domain method transfer discovery (`transfers`). Gap and debate output includes PageIndex provenance (`[source: <section> of <paper>]`) via `_get_concept_provenance()`.
+`graph/genealogy.py` -- Concept lineage trees (`evolve`), academic offspring tracking (`descendants`), domain landscape with timeline/gaps/debates (`landscape`), paradigm shift detection (`paradigm`), cross-domain method transfer discovery (`transfers`). All five features include PageIndex provenance (`[source: <section> of <paper>]`) via `_get_concept_provenance()`. Text tree and Mermaid renderers show provenance inline.
 
 ### Structure-First Retrieval
 `query/tree_retrieval.py` -- Full PageIndex implementation. Iterative tree-search with adaptive depth navigation. Small skeletons get one-shot selection; large skeletons get top-level -> branch selection -> leaf selection.
