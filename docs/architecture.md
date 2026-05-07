@@ -236,7 +236,7 @@ Key tables:
 - `papers` -- title, year, journal, paper_type, status, abstract, citation_count
 - `paper_ids` -- doi, arxiv, s2_id, openalex_id (cross-reference)
 - `concepts` -- label, type, confidence, section, node_id, source_paper
-- `edges` -- src_id, dst_id, relation, source_paper, confidence
+- `edges` -- src_id, dst_id, relation, source_paper, confidence, node_id, section
 - `arguments` -- claim, claim_type, target, section, node_id, source_paper
 - `aliases` -- canonical_id, variant (for dedup)
 - `embeddings` -- TransE entity/relation vectors
@@ -245,6 +245,7 @@ Key tables:
 - `vector_metadata` -- embedding signature tracking (key, value)
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
+- `build_stages` -- per-paper pipeline stage status (paper_id, stage, status, result_json) for agent idempotency
 - `schema_versions` -- versioned migrations
 
 The database uses **WAL mode** for concurrent read/write access. Schema migrations are stored in `schema_versions` and applied automatically.
@@ -280,8 +281,11 @@ The `section` field flows from LLM extraction through the database and into all 
 ### Symbol-Driven Reasoning
 Graph closure rules, transitive closure, asymmetric detection, causal chains, confidence propagation, counterfactuals, and isomorphism detection are all rule-based. Zero embeddings required for core reasoning.
 
+### Agent-Based Pipeline
+The 5-stage LLM pipeline (`extractor/agent.py`) wraps each stage as a dedicated `BuildAgent` subclass (OntologyAgent, EntityAgent, RelationAgent, CorefAgent, RefineAgent). Agents have independent system prompts, input/output validation contracts, and idempotency guards via `build_stages` DB table. Inspired by 2511.11017's agent-based KG construction workflow.
+
 ### Concurrent Extraction
-The 5-stage LLM pipeline runs stage 2 (entity extraction) with 10-way concurrency on leaf nodes. Translation uses ThreadPoolExecutor for concurrent chunk translation.
+Stage 2 (entity extraction) runs with 10-way concurrency on leaf nodes. Translation uses ThreadPoolExecutor for concurrent chunk translation.
 
 ### Data Quality
 `drbrain audit` applies 15 severity-graded rules covering paper metadata, concept integrity, edge consistency, and graph structure. PDF pre-validation detects encryption and corruption before ingest. Three non-blocking quality gates run during ingest.
