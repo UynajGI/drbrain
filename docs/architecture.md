@@ -195,17 +195,17 @@ Standard BM25 over concept labels, arguments, and paper metadata. No vector embe
 - `--hybrid`: Applies multiplicative PageRank boost [1.0, 2.0] to re-rank BM25 results by graph centrality.
 
 ### PageIndex Tree Retrieval
-- `--paper <id>`: Bypasses BM25. Performs hierarchical tree search on a specific paper's section tree, using LLM-guided branch/leaf selection.
-- Collapsed tree mode (planned): flatten all tree nodes (PageIndex + RAPTOR summaries), embed query, cosine similarity retrieval. Replaces LLM navigation when vectors are available.
+- `--paper <id>`: Bypasses BM25. Performs **hybrid tree search** on a specific paper's section tree — LLM-guided branch/leaf selection (primary) augmented by vector similarity pre-filtering (auxiliary). Falls back to pure LLM navigation when vectors are unavailable.
+- Collapsed tree mode: `query_cross_paper()` flattens all tree nodes (PageIndex + RAPTOR summaries), embeds the query, and retrieves by cosine similarity across papers. Used by ReasonerAgent's `search_tree` tool.
 
-### RAPTOR Semantic Tree
-`extractor/raptor.py` — Recursive embedding → UMAP → GMM+BIC clustering → LLM summarization on PageIndex leaf nodes. Multi-layer summary tree with provenance chains. Collapsed tree retrieval across papers (Layer 4, planned). Inspired by RAPTOR (2401.18059).
+### RAPTOR Integration
+`extractor/raptor.py` builds the recursive semantic tree. `services/embedding.py::build_paper_tree_vectors` bridges PageIndex embeddings + RAPTOR summarization. `drbrain embed --tree` executes both in one pass. RAPTOR summaries are consumed by ReasonerAgent (`get_raptor_summaries` tool) and isomorphism (`enrich_isomorphisms_with_raptor`).
 
 ### Embedding Queries (`graph query`)
 Complex queries over TransE embeddings: projection, intersection, union, negation. Requires `drbrain embed`.
 
-### Lightweight Text Embeddings (planned)
-`drbrain embed` will also generate SBERT embeddings for tree nodes (PageIndex leaves + RAPTOR summaries). Stored in `tree_vectors` table. FAISS IndexFlatIP for cosine similarity search. Reference: ScholarAIO embedding engine (Qwen3-Embedding-0.6B, local inference).
+### Lightweight Text Embeddings
+`drbrain embed --tree` generates SBERT embeddings for tree nodes (PageIndex leaves + RAPTOR summaries) via `build_paper_tree_vectors`. Stored in `tree_vectors` table with `tree_layer` tags (`pageindex`, `raptor_L1`, etc.). `search_tree()` performs brute-force cosine similarity over all tree vectors. Provider: sentence-transformers (default: Qwen3-Embedding-0.6B). Reference: ScholarAIO embedding engine.
 
 ---
 

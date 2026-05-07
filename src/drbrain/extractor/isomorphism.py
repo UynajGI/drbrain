@@ -22,6 +22,14 @@ class IsomorphicMapping:
     target_domain: str
     shared_structure: str
     confidence: float = 0.0
+    raptor_source_context: list[dict] | None = None
+    raptor_target_context: list[dict] | None = None
+
+    def __post_init__(self):
+        if self.raptor_source_context is None:
+            self.raptor_source_context = []
+        if self.raptor_target_context is None:
+            self.raptor_target_context = []
 
 
 def _relation_signature(
@@ -158,5 +166,91 @@ def find_isomorphic_patterns(graph: GraphEngine) -> list[IsomorphicMapping]:
                         confidence=round(confidence, 4),
                     )
                 )
+
+    return mappings
+
+
+def enrich_isomorphisms_with_raptor(
+    mappings: list[IsomorphicMapping],
+    db,  # Database
+) -> list[IsomorphicMapping]:
+    """Enrich isomorphic mappings with RAPTOR cross-section summaries.
+
+    For each mapping, looks up the papers containing source/target concepts
+    and fetches RAPTOR summaries for semantic context.
+
+    Args:
+        mappings: List of IsomorphicMapping from find_isomorphic_patterns.
+        db: Database instance.
+
+    Returns:
+        Same mappings with raptor_source_context and raptor_target_context
+        populated (empty lists if no RAPTOR data exists).
+    """
+    if not db or not mappings:
+        return mappings
+
+    # Collect all unique concept labels
+    all_labels: set[str] = set()
+    for m in mappings:
+        all_labels.add(m.source_domain)
+        all_labels.add(m.target_domain)
+
+    if not all_labels:
+        return mappings
+
+    # Find which papers contain which concepts
+    placeholders = ",".join("?" for _ in all_labels)
+    rows = db.conn.execute(
+        f"SELECT DISTINCT label, local_id FROM concepts WHERE label IN ({placeholders})",
+        tuple(all_labels),
+    ).fetchall()
+
+    concept_papers: dict[str, list[str]] = defaultdict(list)
+    for label, local_id in rows:
+        concept_papers[label].append(local_id)
+
+    # Fetch RAPTOR summaries for all relevant papers
+    all_paper_ids: set[str] = set()
+    for papers in concept_papers.values():
+        all_paper_ids.update(papers)
+
+    raptor_cache: dict[str, list[dict]] = {}
+    if all_paper_ids:
+        import json
+
+        p_placeholders = ",".join("?" for _ in all_paper_ids)
+        raptor_rows = db.conn.execute(
+            f"SELECT paper_id, node_id, summary_text, source_node_ids, tree_layer "
+            f"FROM tree_summaries WHERE paper_id IN ({p_placeholders}) "
+            f"ORDER BY tree_layer",
+            tuple(all_paper_ids),
+        ).fetchall()
+
+        for row in raptor_rows:
+            pid = row[0]
+            if pid not in raptor_cache:
+                raptor_cache[pid] = []
+            raptor_cache[pid].append(
+                {
+                    "node_id": row[1],
+                    "summary_text": row[2],
+                    "source_node_ids": json.loads(row[3]) if row[3] else [],
+                    "tree_layer": row[4],
+                }
+            )
+
+    # Enrich each mapping
+    for m in mappings:
+        source_papers = concept_papers.get(m.source_domain, [])
+        target_papers = concept_papers.get(m.target_domain, [])
+
+        m.raptor_source_context = []
+        for pid in source_papers:
+            m.raptor_source_context.extend(raptor_cache.get(pid, []))
+
+        m.raptor_target_context = []
+        for pid in target_papers:
+            m.raptor_target_context.extend(raptor_cache.get(pid, []))
 
     return mappings

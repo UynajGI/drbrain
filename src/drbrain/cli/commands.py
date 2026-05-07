@@ -18,7 +18,7 @@ from drbrain.config import load_config
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
 from drbrain.graph.engine import GraphEngine
 from drbrain.parser.mineru_parser import extract_pdf
-from drbrain.query.tree_retrieval import query_by_structure
+from drbrain.query.tree_retrieval import query_by_structure_hybrid
 from drbrain.services.fetch import _resolve_identifier, fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
@@ -1453,13 +1453,22 @@ def query_cmd(
             raise typer.Exit(1)
 
         llm_models = cfg.get("llm", {}).get("models", [])
-        sections = asyncio.run(query_by_structure(text, paper_dir, llm_models))
+        db_path_val = cfg.get("db", {}).get("path", "data/drbrain.db")
+        from drbrain.config import EmbedConfig
+
+        embed_cfg_raw = cfg.get("embed", EmbedConfig())
+        embed_cfg = (
+            EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
+        )
+        sections = asyncio.run(
+            query_by_structure_hybrid(text, paper_dir, Path(db_path_val), llm_models, embed_cfg)
+        )
 
         if sections is None:
             if json_output:
                 typer.echo(
                     json.dumps(
-                        {"query": text, "paper": _paper, "mode": "pageindex", "sections": []},
+                        {"query": text, "paper": _paper, "mode": "hybrid", "sections": []},
                         ensure_ascii=False,
                     )
                 )
@@ -1470,7 +1479,7 @@ def query_cmd(
         if json_output:
             typer.echo(
                 json.dumps(
-                    {"query": text, "paper": _paper, "mode": "pageindex", "sections": sections},
+                    {"query": text, "paper": _paper, "mode": "hybrid", "sections": sections},
                     indent=2,
                     ensure_ascii=False,
                 )
@@ -1480,7 +1489,7 @@ def query_cmd(
         # Rich text output
         typer.echo(f"Query: {text}")
         typer.echo(f"  Paper: {_paper}")
-        typer.echo("  Mode: pageindex")
+        typer.echo("  Mode: hybrid (LLM + vector)")
         typer.echo(f"  Sections found: {len(sections)}")
         typer.echo()
 
@@ -3631,20 +3640,25 @@ def embed_cmd(
             return
 
         papers_dir = Path(cfg["dirs"]["papers"])
+        llm_models_raw = cfg.get("llm", {})
+        llm_models = (
+            llm_models_raw.get("models", [])
+            if hasattr(llm_models_raw, "get")
+            else getattr(llm_models_raw, "models", [])
+        )
+        bridge_mod = __import__("drbrain.services.embedding", fromlist=["build_paper_tree_vectors"])
         total = 0
         for paper_path in sorted(papers_dir.iterdir()):
             if not paper_path.is_dir():
                 continue
             count = asyncio.run(
-                __import__(
-                    "drbrain.services.embedding", fromlist=["build_tree_vectors"]
-                ).build_tree_vectors(db.path, paper_path, embed_cfg)
+                bridge_mod.build_paper_tree_vectors(paper_path, db.path, embed_cfg, llm_models)
             )
             if count:
-                typer.echo(f"  {paper_path.name}: {count} vectors")
+                typer.echo(f"  {paper_path.name}: {count} vectors+summaries")
             total += count
 
-        typer.echo(f"Tree vectors: {total} total")
+        typer.echo(f"Tree vectors+summaries: {total} total")
         db.close()
         return
     graph = GraphEngine()

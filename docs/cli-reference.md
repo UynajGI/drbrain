@@ -211,7 +211,7 @@ Query concepts and arguments with BM25 keyword search and optional graph enhance
 | `--relation` | `-R` | Comma-separated relation types to follow |
 | `--direction` | `-D` | Traversal direction: forward, backward, both (default: both) |
 | `--hybrid` | | Boost results by graph centrality (PageRank) |
-| `--paper` | | Paper local_id for PageIndex tree retrieval |
+| `--paper` | | Paper local_id for hybrid tree retrieval (LLM primary + vector auxiliary) |
 | `--workspace` | `-w` | Limit to workspace |
 | `--json` / `--jsonl` | | Output format |
 

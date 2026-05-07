@@ -320,3 +320,121 @@ def test_build_raptor_tree_stops_at_max_layers():
             layers = db.conn.execute("SELECT DISTINCT tree_layer FROM tree_summaries").fetchall()
             assert len(layers) == 1
             assert layers[0][0] == 1
+
+
+# ── Bridge: build_tree_vectors + build_raptor_tree ───────────────────────────
+
+
+def test_build_paper_tree_with_raptor_integration():
+    """Full pipeline: build_tree_vectors → build_raptor_tree produces both layers.
+
+    Verifies:
+    - tree_vectors has pageindex layer entries (from build_tree_vectors)
+    - tree_vectors has raptor_L* layer entries (from build_raptor_tree)
+    - tree_summaries has RAPTOR summary entries
+    - source_node_ids provenance is preserved
+    """
+    import asyncio
+
+    import numpy as np
+
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        paper_dir = base / "test-paper"
+        paper_dir.mkdir()
+        tree = {
+            "structure": [
+                {"node_id": "s1", "title": "Abstract"},
+                {
+                    "node_id": "s2",
+                    "title": "Introduction",
+                    "nodes": [
+                        {"node_id": "s2.1", "title": "Background"},
+                        {"node_id": "s2.2", "title": "Contributions"},
+                    ],
+                },
+                {
+                    "node_id": "s3",
+                    "title": "Methods",
+                    "nodes": [
+                        {"node_id": "s3.1", "title": "Algorithm"},
+                        {"node_id": "s3.2", "title": "Implementation"},
+                    ],
+                },
+                {"node_id": "s4", "title": "Results"},
+                {"node_id": "s5", "title": "Conclusion"},
+            ]
+        }
+        (paper_dir / "tree.json").write_text(json.dumps(tree), encoding="utf-8")
+        (paper_dir / "raw.md").write_text("# Test\n\nContent\n" * 8, encoding="utf-8")
+
+        db_path = base / "test.db"
+        db = Database(db_path)
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title) VALUES (?, ?)",
+            ("test-paper", "Test Paper"),
+        )
+        db.conn.commit()
+
+        emb_dim = 8
+
+        def _fake_embed(texts, cfg=None):
+            vecs = []
+            for i, _ in enumerate(texts):
+                v = np.random.RandomState(i).randn(emb_dim).astype("float32")
+                v = v / np.linalg.norm(v)
+                vecs.append(v.tolist())
+            return vecs
+
+        def _fake_summarize(texts, models):
+            return f"Summary of {len(texts)} sections: {texts[0][:30]}..."
+
+        from drbrain.config import Config, EmbedConfig
+
+        cfg = Config()
+        cfg.embed = EmbedConfig(provider="local")
+        llm_models = [{"provider": "openai", "model": "gpt-4o"}]
+
+        with (
+            mock.patch("drbrain.services.embedding._embed_batch", side_effect=_fake_embed),
+            mock.patch(
+                "drbrain.extractor.llm_client.acall_text_with_fallback",
+                side_effect=_fake_summarize,
+            ),
+        ):
+            from drbrain.services.embedding import build_paper_tree_vectors
+
+            total = asyncio.run(build_paper_tree_vectors(paper_dir, db_path, cfg.embed, llm_models))
+
+        # Should have both PageIndex vectors and RAPTOR summaries
+        assert total > 0
+
+        # Verify tree_vectors has pageindex layer
+        pageindex_count = db.conn.execute(
+            "SELECT COUNT(*) FROM tree_vectors WHERE tree_layer = 'pageindex'"
+        ).fetchone()[0]
+        assert pageindex_count > 0, "PageIndex tree_vectors should exist"
+
+        # Verify tree_vectors has RAPTOR layers
+        raptor_vec_count = db.conn.execute(
+            "SELECT COUNT(*) FROM tree_vectors WHERE tree_layer LIKE 'raptor_%'"
+        ).fetchone()[0]
+        assert raptor_vec_count > 0, "RAPTOR tree_vectors should exist"
+
+        # Verify tree_summaries has entries
+        summary_count = db.conn.execute("SELECT COUNT(*) FROM tree_summaries").fetchone()[0]
+        assert summary_count > 0, "tree_summaries should have RAPTOR entries"
+        assert summary_count == raptor_vec_count, (
+            f"Each RAPTOR summary should have a vector: {summary_count} summaries vs {raptor_vec_count} vectors"
+        )
+
+        # Verify provenance: summaries reference source node_ids from pageindex
+        for row in db.conn.execute("SELECT source_node_ids FROM tree_summaries"):
+            sources = json.loads(row[0])
+            assert isinstance(sources, list)
+            assert len(sources) >= 1
+            # Each source should be a valid pageindex node_id
+            for src in sources:
+                assert src.startswith("s"), f"Expected pageindex node_id, got {src}"

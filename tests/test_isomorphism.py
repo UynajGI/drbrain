@@ -339,3 +339,124 @@ def test_isomorphism_cmd_with_data():
         }
         ctx = type("Ctx", (), {"obj": {"config": cfg}})()
         isomorphism_cmd(ctx, concept=None, min_confidence=0.0, json_output=True)
+
+
+# ── RAPTOR-enriched isomorphism ──────────────────────────────────────────────
+
+
+def test_enrich_isomorphisms_with_raptor_context():
+    """isomorphism mappings enriched with RAPTOR cross-section summaries."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from drbrain.extractor.isomorphism import (
+        IsomorphicMapping,
+        enrich_isomorphisms_with_raptor,
+    )
+    from drbrain.storage.database import Database
+
+    mappings = [
+        IsomorphicMapping(
+            source_domain="GNN_v1",
+            target_domain="GNN_v2",
+            shared_structure="out:solves: 1",
+            confidence=0.95,
+        ),
+        IsomorphicMapping(
+            source_domain="CNN_v1",
+            target_domain="GNN_v1",
+            shared_structure="out:solves: 1",
+            confidence=0.80,
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(str(db_path))
+        # Insert paper and concepts
+        db.conn.execute("INSERT INTO papers (local_id, title) VALUES ('p1', 'Graph Methods')")
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'GNN_v1', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'GNN_v2', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'CNN_v1', 0.9)"
+        )
+        # Insert RAPTOR summaries for the paper
+        db.conn.execute(
+            "INSERT INTO tree_summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "raptor_p1_L1_abc",
+                "p1",
+                "Graph neural network architectures for scalable learning.",
+                json.dumps(["n1", "n2"]),
+                1,
+            ),
+        )
+        db.conn.execute(
+            "INSERT INTO tree_summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "raptor_p1_L1_def",
+                "p1",
+                "Convolutional methods for image classification tasks.",
+                json.dumps(["n3", "n4"]),
+                1,
+            ),
+        )
+        db.conn.commit()
+
+        enriched = enrich_isomorphisms_with_raptor(mappings, db)
+
+        assert len(enriched) == 2
+
+        # First mapping: GNN_v1 ↔ GNN_v2 (same paper p1, same GNN domain)
+        m0 = enriched[0]
+        assert m0.source_domain == "GNN_v1"
+        assert isinstance(m0.raptor_source_context, list)
+        assert len(m0.raptor_source_context) >= 1
+        assert "graph neural network" in m0.raptor_source_context[0]["summary_text"].lower()
+
+        # Second mapping: CNN_v1 ↔ GNN_v1
+        m1 = enriched[1]
+        assert isinstance(m1.raptor_target_context, list)
+        assert len(m1.raptor_target_context) >= 1
+
+
+def test_enrich_isomorphisms_without_raptor_data():
+    """Enrichment returns mappings unchanged when no RAPTOR data exists."""
+    import tempfile
+    from pathlib import Path
+
+    from drbrain.extractor.isomorphism import (
+        IsomorphicMapping,
+        enrich_isomorphisms_with_raptor,
+    )
+    from drbrain.storage.database import Database
+
+    mappings = [
+        IsomorphicMapping(
+            source_domain="X",
+            target_domain="Y",
+            shared_structure="out:solves: 1",
+            confidence=0.90,
+        ),
+    ]
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(str(db_path))
+        # No tree_summaries data
+
+        enriched = enrich_isomorphisms_with_raptor(mappings, db)
+        assert len(enriched) == 1
+        assert enriched[0].raptor_source_context == []
+        assert enriched[0].raptor_target_context == []
+        assert enriched[0].confidence == 0.90  # unchanged

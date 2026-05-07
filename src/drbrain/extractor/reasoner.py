@@ -118,6 +118,23 @@ class ReasonerAgent:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_raptor_summaries",
+                    "description": "Get RAPTOR cross-section summaries for a paper. Returns hierarchical summaries that capture themes across multiple sections.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paper_id": {
+                                "type": "string",
+                                "description": "Paper local_id",
+                            },
+                        },
+                        "required": ["paper_id"],
+                    },
+                },
+            },
         ]
 
     def _search_concepts(self, query: str, limit: int = 5) -> list[dict]:
@@ -222,6 +239,34 @@ class ReasonerAgent:
         results = query_cross_paper(query, self.db.path)
         return results
 
+    def _get_raptor_summaries(self, paper_id: str) -> list[dict]:
+        """Return RAPTOR cross-section summaries for a paper.
+
+        Queries tree_summaries table for hierarchical summaries
+        produced by the RAPTOR recursive semantic tree builder.
+        """
+        if not self.db:
+            return []
+
+        rows = self.db.conn.execute(
+            "SELECT node_id, paper_id, summary_text, source_node_ids, tree_layer "
+            "FROM tree_summaries WHERE paper_id = ? ORDER BY tree_layer",
+            (paper_id,),
+        ).fetchall()
+
+        import json
+
+        return [
+            {
+                "node_id": r[0],
+                "paper_id": r[1],
+                "summary_text": r[2],
+                "source_node_ids": json.loads(r[3]) if r[3] else [],
+                "tree_layer": r[4],
+            }
+            for r in rows
+        ]
+
     def _papers_dir(self) -> Path | None:
         """Resolve the papers data directory from DB config."""
         if not self.db:
@@ -303,6 +348,8 @@ class ReasonerAgent:
                             result = self._get_section_content(**args)
                         elif tc.function.name == "search_tree":
                             result = self._search_tree(**args)
+                        elif tc.function.name == "get_raptor_summaries":
+                            result = self._get_raptor_summaries(**args)
                         else:
                             result = []
                         messages.append(

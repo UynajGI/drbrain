@@ -226,6 +226,44 @@ def build_tree_vectors(
         conn.close()
 
 
+async def build_paper_tree_vectors(
+    paper_dir: Path,
+    db_path: Path,
+    embed_cfg: EmbedConfig | None = None,
+    llm_models: list[dict] | None = None,
+) -> int:
+    """Build PageIndex tree vectors + RAPTOR recursive summaries for a single paper.
+
+    Combines both layers:
+    1. build_tree_vectors — embed PageIndex leaf nodes
+    2. build_raptor_tree — recursive GMM clustering + LLM summarization
+
+    Args:
+        paper_dir: Paper directory with tree.json and raw.md.
+        db_path: SQLite database path.
+        embed_cfg: Embedding configuration.
+        llm_models: LLM model list for RAPTOR summarization.
+
+    Returns:
+        Total number of vectors + summaries created.
+    """
+    from drbrain.extractor.raptor import build_raptor_tree
+
+    pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg)
+
+    raptor_count = 0
+    if llm_models:
+        try:
+            raptor_count = await build_raptor_tree(paper_dir, db_path, embed_cfg, llm_models)
+        except Exception:
+            logger.warning(
+                "RAPTOR tree build failed for %s, PageIndex vectors still created",
+                paper_dir.name,
+            )
+
+    return pageindex_count + raptor_count
+
+
 # ── Search ───────────────────────────────────────────────────────────────────
 
 
