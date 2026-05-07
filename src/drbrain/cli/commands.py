@@ -3950,12 +3950,39 @@ def transfers_cmd(
         0.3, "--min-confidence", help="Minimum transfer confidence"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    history: bool = typer.Option(False, "--history", help="Show historical transfer timeline"),
 ):
     """Discover cross-domain method migration opportunities."""
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     graph.load_from_db(db)
+
+    if history:
+        from drbrain.graph.genealogy import find_transfer_history
+
+        results = find_transfer_history(db, graph)
+        if json_output:
+            typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        else:
+            if not results:
+                typer.echo("No historical transfers found.")
+            else:
+                typer.echo("\nCross-Domain Transfer History")
+                typer.echo("═" * 40)
+                current_year = None
+                for r in results:
+                    year = r.get("year", "?")
+                    if year != current_year:
+                        current_year = year
+                        typer.echo(f"\n{year}  ", nl=False)
+                    else:
+                        typer.echo("      ", nl=False)
+                    typer.echo(
+                        f"{r['source_concept']} → {r['target_concept']} ({r['confidence']:.2f})"
+                    )
+        db.close()
+        return
 
     from drbrain.graph.genealogy import (
         find_transfer_opportunities,

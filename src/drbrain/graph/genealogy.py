@@ -694,3 +694,56 @@ def _cluster_by_similarity(labels: list[str], threshold: float = 0.4) -> list[li
         if not matched:
             clusters.append([label])
     return clusters
+
+
+# --- Transfer history ---
+
+
+def find_transfer_history(db: Database, graph: GraphEngine) -> list[dict]:
+    """Return all historical applies edges as transfer timeline, ordered by year."""
+    edges = db.conn.execute(
+        "SELECT src_id, dst_id, weight FROM edges WHERE relation = 'applies'"
+    ).fetchall()
+
+    if not edges:
+        return []
+
+    results: list[dict] = []
+    for src_id, dst_id, conf in edges:
+        # Get year from the target concept's paper
+        year_row = db.conn.execute(
+            "SELECT p.year FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? AND p.year IS NOT NULL ORDER BY p.year LIMIT 1",
+            (dst_id,),
+        ).fetchone()
+        year = year_row[0] if year_row else None
+
+        # Get source concept's paper for context
+        src_row = db.conn.execute(
+            "SELECT p.title FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? LIMIT 1",
+            (src_id,),
+        ).fetchone()
+        src_title = src_row[0][:80] if src_row else src_id
+
+        tgt_row = db.conn.execute(
+            "SELECT p.title FROM papers p JOIN concepts c ON c.local_id = p.local_id "
+            "WHERE c.label = ? LIMIT 1",
+            (dst_id,),
+        ).fetchone()
+        tgt_title = tgt_row[0][:80] if tgt_row else dst_id
+
+        results.append(
+            {
+                "source_concept": src_id,
+                "source_title": src_title,
+                "target_concept": dst_id,
+                "target_title": tgt_title,
+                "relation": "applies",
+                "confidence": conf,
+                "year": year,
+            }
+        )
+
+    results.sort(key=lambda x: (x["year"] or 0, -x["confidence"]))
+    return results

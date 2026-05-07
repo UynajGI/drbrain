@@ -760,3 +760,61 @@ def test_find_transfer_opportunities_auto():
         r = results[0]
         assert "confidence" in r
     db.close()
+
+
+# --- Transfer history tests ---
+
+
+def test_find_transfer_history():
+    """Historical transfer history lists all applies edges with years."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import find_transfer_history
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Attention Paper', 2017, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'ViT Paper', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Transformer', 0.95, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Method', 'ViT', 0.95, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('Transformer', 'ViT', 'applies', 'p1', 0.9)"
+    )
+    db.commit()
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = find_transfer_history(db, graph)
+    assert isinstance(results, list)
+    assert len(results) >= 1
+    h = results[0]
+    assert h["source_concept"] == "Transformer"
+    assert h["target_concept"] == "ViT"
+    assert h["relation"] == "applies"
+    assert h["year"] == 2020  # year from ViT paper
+    db.close()
+
+
+def test_find_transfer_history_empty():
+    """No applies edges = empty list."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import find_transfer_history
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    results = find_transfer_history(db, graph)
+    assert results == []
+    db.close()
