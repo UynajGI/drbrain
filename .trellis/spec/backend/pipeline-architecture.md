@@ -9,6 +9,7 @@ Two-phase pipeline: lightweight ingest (PageIndex tree structuring) + 5-stage gr
 - **TOC-first, not blank-slate**: Academic papers have author-crafted TOC. Ontology is upgraded from tree structure, not built from zero. Do not apply 2511.11017's "ontology from scratch" pattern to papers with extractable TOC.
 - **node_id everywhere**: Every extracted concept, relation, and triple must carry `node_id` back to source tree node. No provenance = no trust.
 - **Cross-domain TBox**: Unlike 2511.11017's single-category e-commerce domain, DrBrain handles arbitrary academic disciplines. TBox 6 types (Concept, Method, Dataset, Metric, Phenomenon, Theory) are the universal upper ontology.
+- **Vectors augment retrieval, LLM does reasoning**: Text embeddings serve as pre-filters and candidate expansion in retrieval pipelines. They never make reasoning decisions — all inference, navigation, and judgment is LLM-driven. `provider=none` disables vectors entirely; the system must function correctly on pure LLM + BM25.
 
 ## Synthesis Architecture
 
@@ -129,6 +130,158 @@ class RefineAgent(BuildAgent):
 ```
 
 **Inter-agent protocol**: Agents do not share LLM context. Each receives structured input (pydantic model), returns structured output. The orchestrator (`build_graph_from_tree`) handles sequencing and passes data between agents via DB.
+
+### Dimension 5: RAPTOR-Tree Integration (PageIndex → RAPTOR → Retrieval → Reasoning)
+
+The full pipeline: PageIndex tree.json → `build_tree_vectors` (embed leaf nodes) → `build_raptor_tree` (GMM cluster + LLM summarize) → `tree_vectors` + `tree_summaries` tables → hybrid retrieval + reasoner tools + isomorphism enrichment.
+
+**Architectural Principle**: Vectors augment retrieval only (pre-filter / candidate expansion). All reasoning is LLM-driven. Vectors never make reasoning decisions.
+
+#### 1. Scope / Trigger
+- Trigger: `drbrain embed --tree` or `drbrain build --tree`
+- Layers: storage (tree_vectors/tree_summaries), extraction (RAPTOR), query (hybrid), reasoning (reasoner/isomorphism)
+
+#### 2. Signatures
+
+```python
+# services/embedding.py — bridge function
+async def build_paper_tree_vectors(
+    paper_dir: Path,
+    db_path: Path,
+    embed_cfg: EmbedConfig | None = None,
+    llm_models: list[dict] | None = None,
+) -> int:
+    """Build PageIndex tree vectors + RAPTOR recursive summaries for a single paper.
+    Returns total vectors+summaries created.
+    RAPTOR step is skipped gracefully if llm_models is empty/None.
+    """
+
+# query/tree_retrieval.py — hybrid retrieval
+async def query_by_structure_hybrid(
+    question: str,
+    paper_dir: Path,
+    db_path: Path,
+    models: list[dict],
+    cfg: EmbedConfig | None = None,  # None → pure LLM, no vectors
+    top_k: int = 5,
+) -> list[dict] | None:
+    """LLM-primary tree navigation with optional vector pre-filtering.
+    Returns [{node_id, title, content, source}] where source ∈ {llm, vector, llm+vector}.
+    """
+
+# extractor/reasoner.py — agent tool
+def _get_raptor_summaries(self, paper_id: str) -> list[dict]:
+    """Return RAPTOR summaries from tree_summaries table.
+    Returns [{node_id, paper_id, summary_text, source_node_ids, tree_layer}].
+    """
+
+# extractor/isomorphism.py — enrichment
+def enrich_isomorphisms_with_raptor(
+    mappings: list[IsomorphicMapping],
+    db: Database,
+) -> list[IsomorphicMapping]:
+    """Add raptor_source_context / raptor_target_context to each mapping."""
+```
+
+#### 3. Contracts
+
+**tree_vectors table**:
+| Column | Type | Description |
+|--------|------|-------------|
+| node_id | TEXT | PageIndex node ID or `raptor_{paper}_L{layer}_{uuid}` |
+| paper_id | TEXT | Source paper local_id |
+| embedding | BLOB | float32 array |
+| content_hash | TEXT | SHA-256 prefix for incremental update |
+| tree_layer | TEXT | `pageindex` or `raptor_L1` / `raptor_L2` ... |
+
+**tree_summaries table**:
+| Column | Type | Description |
+|--------|------|-------------|
+| node_id | TEXT | `raptor_{paper}_L{layer}_{uuid}` |
+| paper_id | TEXT | Source paper local_id |
+| summary_text | TEXT | LLM-generated cross-section summary |
+| source_node_ids | TEXT | JSON array of child node_ids (provenance chain) |
+| tree_layer | INTEGER | RAPTOR layer depth (1, 2, 3...) |
+
+**IsomorphicMapping**:
+| Field | Type | Description |
+|-------|------|-------------|
+| source_domain | str | First concept label |
+| target_domain | str | Second concept label |
+| shared_structure | str | Relation signature description |
+| confidence | float | Jaccard×0.7 + label_sim×0.3 |
+| raptor_source_context | list[dict] | RAPTOR summaries for source concept's papers |
+| raptor_target_context | list[dict] | RAPTOR summaries for target concept's papers |
+
+#### 4. Validation & Error Matrix
+
+| Condition | Behavior |
+|-----------|----------|
+| embed.provider = "none" | Skip all vector generation, return 0 |
+| Paper has < 3 PageIndex nodes | Skip RAPTOR (need ≥3 for GMM clustering) |
+| GMM finds ≤1 cluster | Stop RAPTOR recursion at current layer |
+| LLM summarization fails | Log warning, skip that cluster, continue |
+| llm_models is empty/None | Skip RAPTOR, build_tree_vectors only |
+| RAPTOR raises exception | Log warning, PageIndex vectors already stored |
+| cfg=None in hybrid query | Pure LLM navigation, source="llm" |
+| tree_vectors dimension mismatch | Log warning, skip that row |
+| No tree_summaries for paper | Return empty list (not error) |
+| Concept not in any paper | raptor_source_context = [] |
+
+#### 5. Good / Base / Bad Cases
+
+**Good**: Paper with 30+ PageIndex sections, local embedding, full LLM chain. `build_paper_tree_vectors` produces PageIndex embeddings + 3-layer RAPTOR tree with 10+ summaries. Hybrid query finds 5 sections (3 LLM-selected, 2 vector-boosted). Isomorphism enriched with relevant cross-section context.
+
+**Base**: Paper with 5 PageIndex sections. RAPTOR produces 1-2 summaries (single layer). Hybrid query works as pure LLM (too few vectors to help). Isomorphism has empty or minimal RAPTOR context — structural similarity only.
+
+**Bad**: No LLM models configured. `build_paper_tree_vectors` produces PageIndex vectors only, RAPTOR skipped. Hybrid query delegates to pure LLM (cfg=None path). Isomorphism mappings have no RAPTOR context. System functions correctly but without semantic enrichment.
+
+#### 6. Tests Required
+
+- Unit: `build_paper_tree_vectors` mocked → verify both `tree_vectors` pageindex layer AND `tree_summaries` rows exist
+- Unit: `build_paper_tree_vectors` with empty llm_models → verify only PageIndex vectors, no RAPTOR
+- Unit: `query_by_structure_hybrid` with cfg=None → verify source="llm", no vector augmentation
+- Unit: `_get_raptor_summaries` with populated tree_summaries → verify correct ordering by tree_layer
+- Unit: `enrich_isomorphisms_with_raptor` with no RAPTOR data → verify empty context lists
+- Integration: full `build_paper_tree_vectors` → `query_by_structure_hybrid` → verify sections returned
+- Integration: `enrich_isomorphisms_with_raptor` → verify raptor_source_context non-empty for known concepts
+
+#### 7. Wrong vs Correct
+
+##### Wrong
+```python
+# Building RAPTOR separately from PageIndex — vectors double-computed, provenance lost
+build_tree_vectors(db_path, paper_dir, embed_cfg)  # embeds all leaf nodes
+build_raptor_tree(paper_dir, db_path, embed_cfg, models)  # re-embeds same nodes
+# → Duplicate embeddings, different content_hash, tree_layer collision risk
+```
+
+##### Correct
+```python
+# Bridge function: PageIndex once → RAPTOR reuses stored vectors for first layer
+count = await build_paper_tree_vectors(paper_dir, db_path, embed_cfg, llm_models)
+# → build_tree_vectors stores pageindex layer
+# → build_raptor_tree embeds only RAPTOR summary nodes (raptor_L* layers)
+```
+
+##### Wrong
+```python
+# Pure vector retrieval — LLM has no say, black-box results
+results = search_tree(query, db_path, top_k=5)
+sections = [get_node_content(md_path, structure, r["node_id"]) for r in results]
+# → No LLM reasoning, no tree navigation, no fallback when vectors misrank
+```
+
+##### Correct
+```python
+# Hybrid: LLM navigation PRIMARY, vectors AUXILIARY
+sections = await query_by_structure_hybrid(
+    question, paper_dir, db_path, models, embed_cfg
+)
+# → LLM navigates tree structure, selects candidates
+# → Vectors pre-filter narrows search space
+# → cfg=None gracefully degrades to pure LLM
+```
 
 ### Good / Base / Bad Cases
 
