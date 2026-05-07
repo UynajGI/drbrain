@@ -446,6 +446,49 @@ def detect_paradigm_shifts(
     return results
 
 
+def _get_concept_provenance(
+    db: Database,
+    label: str,
+    ctype: str | None = None,
+) -> tuple[str, str, str]:
+    """Look up (section, node_id, paper_id) for a concept by label+type.
+
+    When ctype is None, matches any type (preferring higher confidence).
+    Returns the highest-confidence match. Returns ("", "", "") if not found.
+    """
+    if ctype:
+        row = db.conn.execute(
+            "SELECT section, node_id, local_id FROM concepts "
+            "WHERE LOWER(label) = LOWER(?) AND type = ? "
+            "ORDER BY confidence DESC LIMIT 1",
+            (label, ctype),
+        ).fetchone()
+    else:
+        row = db.conn.execute(
+            "SELECT section, node_id, local_id FROM concepts "
+            "WHERE LOWER(label) = LOWER(?) "
+            "ORDER BY confidence DESC LIMIT 1",
+            (label,),
+        ).fetchone()
+    if row is None:
+        return "", "", ""
+    return row[0] or "", row[1] or "", row[2] or ""
+
+
+def _format_provenance(section: str, node_id: str, paper_id: str) -> str:
+    """Format provenance fields into a human-readable string.
+
+    Returns '[source: <section> of <paper_id>]' or '[source: unknown]'.
+    """
+    if section and paper_id:
+        return f"[source: {section} of {paper_id}]"
+    if section:
+        return f"[source: {section}]"
+    if paper_id:
+        return f"[source: {paper_id}]"
+    return "[source: unknown]"
+
+
 def landscape_workspace(
     db: Database,
     workspace_path: str | None = None,
@@ -507,17 +550,32 @@ def landscape_workspace(
         for s in seeds:
             seed_type = s.get("type", "")
             if seed_type == "unaddressed_gap":
+                concept_label = s.get("concept", "")
+                section, node_id, paper_id = _get_concept_provenance(db, concept_label, "Gap")
+                provenance = _format_provenance(section, node_id, paper_id)
                 result["gaps"].append(
                     {
                         "description": s.get("description", ""),
-                        "concept": s.get("concept", ""),
+                        "concept": concept_label,
+                        "section": section,
+                        "node_id": node_id,
+                        "paper_id": paper_id,
+                        "provenance": provenance,
                     }
                 )
             elif seed_type == "debate_zone":
+                concept_label = s.get("concept", "")
+                # Look up the debate target's own provenance
+                section, node_id, paper_id = _get_concept_provenance(db, concept_label, None)
+                provenance = _format_provenance(section, node_id, paper_id)
                 result["debates"].append(
                     {
                         "description": s.get("description", ""),
-                        "concept": s.get("concept", ""),
+                        "concept": concept_label,
+                        "section": section,
+                        "node_id": node_id,
+                        "paper_id": paper_id,
+                        "provenance": provenance,
                     }
                 )
     except Exception:

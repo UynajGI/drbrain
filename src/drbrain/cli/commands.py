@@ -3966,13 +3966,19 @@ def _render_landscape(result: dict, top_n: int):
     if gaps:
         typer.echo(f"\nPersistent gaps ({len(gaps)}):")
         for g in gaps[:top_n]:
+            provenance = g.get("provenance", "")
             typer.echo(f"  * {g['description'][:120]} ({g.get('concept', '')})")
+            if provenance:
+                typer.echo(f"        {provenance}")
 
     debates = result.get("debates", [])
     if debates:
         typer.echo(f"\nDebates ({len(debates)}):")
         for d in debates[:top_n]:
+            provenance = d.get("provenance", "")
             typer.echo(f"  * {d['description'][:120]} ({d.get('concept', '')})")
+            if provenance:
+                typer.echo(f"        {provenance}")
 
 
 def paradigm_cmd(

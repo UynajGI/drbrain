@@ -1,5 +1,10 @@
 from drbrain.graph.engine import GraphEngine
-from drbrain.graph.genealogy import evolve_concept, format_tree
+from drbrain.graph.genealogy import (
+    _format_provenance,
+    _get_concept_provenance,
+    evolve_concept,
+    format_tree,
+)
 from drbrain.storage.database import Database
 
 
@@ -817,4 +822,166 @@ def test_find_transfer_history_empty():
     graph.load_from_db(db)
     results = find_transfer_history(db, graph)
     assert results == []
+    db.close()
+
+
+# -- Provenance helpers --
+
+
+def test_get_concept_provenance_found():
+    """Returns (section, node_id, paper_id) for existing concept."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Gap', 'Scalability', 0.9, '5.2 Limitations', '0005.002')"
+    )
+    db.commit()
+    section, node_id, paper_id = _get_concept_provenance(db, "Scalability", "Gap")
+    assert section == "5.2 Limitations"
+    assert node_id == "0005.002"
+    assert paper_id == "p1"
+    db.close()
+
+
+def test_get_concept_provenance_not_found():
+    """Returns empty strings for missing concept."""
+    db = Database(":memory:")
+    section, node_id, paper_id = _get_concept_provenance(db, "Nonexistent", "Gap")
+    assert section == ""
+    assert node_id == ""
+    assert paper_id == ""
+    db.close()
+
+
+def test_get_concept_provenance_null_type():
+    """Lookup with ctype=None matches any type."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Debate', 'Temperature Scaling', 0.85, '4.1 Comparison', '0004.001')"
+    )
+    db.commit()
+    section, node_id, paper_id = _get_concept_provenance(db, "Temperature Scaling", None)
+    assert section == "4.1 Comparison"
+    assert node_id == "0004.001"
+    assert paper_id == "p1"
+    db.close()
+
+
+def test_get_concept_provenance_highest_confidence():
+    """Returns the highest-confidence match when multiple exist."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Paper 1', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Paper 2', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Scalability', 0.5, '1 Intro')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p2', 'Gap', 'Scalability', 0.95, '5.2 Limitations')"
+    )
+    db.commit()
+    section, node_id, paper_id = _get_concept_provenance(db, "Scalability", "Gap")
+    assert section == "5.2 Limitations"  # higher confidence wins
+    assert paper_id == "p2"
+    db.close()
+
+
+def test_format_provenance_full():
+    """Full provenance with section and paper."""
+    result = _format_provenance("3.1 Methods", "0003.001", "paper-abc")
+    assert result == "[source: 3.1 Methods of paper-abc]"
+
+
+def test_format_provenance_section_only():
+    """Provenance with section but no paper."""
+    result = _format_provenance("5.2 Limitations", "", "")
+    assert result == "[source: 5.2 Limitations]"
+
+
+def test_format_provenance_paper_only():
+    """Provenance with paper but no section."""
+    result = _format_provenance("", "", "paper-abc")
+    assert result == "[source: paper-abc]"
+
+
+def test_format_provenance_unknown():
+    """Fallback when all fields empty."""
+    result = _format_provenance("", "", "")
+    assert result == "[source: unknown]"
+
+
+def test_landscape_workspace_includes_provenance():
+    """landscape_workspace enriches gaps and debates with provenance."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Comment', 2026, 'extracted')"
+    )
+    # Gap concept with provenance
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Gap', 'Scalability Gap', 0.9, '5.2 Limitations', '0005.002')"
+    )
+    # Method concept that leaves_open the gap
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    # Debate target
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'Temperature Scaling', 0.85, '4.1 Comparison')"
+    )
+    db.commit()
+
+    # Insert edges into DB (landscape_workspace creates its own GraphEngine)
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('GNN', 'Scalability Gap', 'leaves_open', 'p1')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('Author A', 'Temperature Scaling', 'supports', 'p1')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('Author B', 'Temperature Scaling', 'challenges', 'p2')"
+    )
+    db.commit()
+
+    from drbrain.graph.genealogy import landscape_workspace
+
+    result = landscape_workspace(db, paper_ids=["p1", "p2"])
+
+    # Gaps should have provenance
+    gaps = result.get("gaps", [])
+    assert len(gaps) >= 1
+    gap = gaps[0]
+    assert "section" in gap
+    assert "node_id" in gap
+    assert "paper_id" in gap
+    assert "provenance" in gap
+    assert gap["section"] == "5.2 Limitations"
+    assert "[source: 5.2 Limitations of p1]" in gap["provenance"]
+
+    # Debates should have provenance
+    debates = result.get("debates", [])
+    assert len(debates) >= 1
+    debate = debates[0]
+    assert "provenance" in debate
+
     db.close()
