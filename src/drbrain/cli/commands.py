@@ -1965,68 +1965,6 @@ def queue_resolve_all_cmd(
     typer.echo(f"{result['count']} item(s) {action}ed.")
 
 
-def timeline_cmd(
-    ctx: typer.Context,
-    concept: str,
-    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
-):
-    """Show concept evolution over time."""
-    cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    evolution = db.get_concept_evolution(concept)
-
-    if not evolution:
-        db.close()
-        if json_output:
-            typer.echo(json.dumps({"label": concept, "evolution": [], "signal": None}))
-        else:
-            typer.echo(f"No data for concept: {concept}")
-        return
-
-    row = db.conn.execute(
-        "SELECT type FROM concepts WHERE label = ? LIMIT 1", (concept,)
-    ).fetchone()
-    ctype = row[0] if row else "unknown"
-
-    signal_info = db.get_concept_signal(concept)
-
-    db.close()
-
-    if json_output:
-        data = {
-            "label": concept,
-            "type": ctype,
-            "evolution": evolution,
-            "signal": signal_info["signal"] if signal_info else None,
-        }
-        typer.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
-        return
-
-    typer.echo(f"\nConcept: {concept} ({ctype})")
-
-    trend_labels = {
-        "first_appeared": "— first appeared",
-        "growing": "— rapid adoption",
-        "declining": "— declining",
-        "stable": "",
-    }
-
-    for entry in evolution:
-        year = entry["year"]
-        count = entry["count"]
-        avg_conf = entry["avg_conf"]
-        trend = entry.get("trend", "stable")
-        label = trend_labels.get(trend, "")
-
-        line = f"  {year}: {count} paper{'s' if count > 1 else ''} (avg confidence {avg_conf:.2f})"
-        if label:
-            line += f" {label}"
-        typer.echo(line)
-
-    if signal_info:
-        typer.echo(f"Status: {signal_info['signal'].upper()}")
-
-
 def delete_cmd(
     ctx: typer.Context,
     local_id: str,
@@ -3802,3 +3740,280 @@ def ask_cmd(
     typer.echo(f"\nQ: {question_text}\n")
     typer.echo(f"A: {answer}\n")
     typer.echo(f"(based on {len(results)} graph concepts)")
+
+
+def evolve_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(..., help="Concept label to trace evolution of"),
+    direction: str = typer.Option(
+        "both",
+        "--direction",
+        "-d",
+        help="Traversal direction: ancestors, descendants, both",
+    ),
+    max_depth: int = typer.Option(3, "--max-depth", "-n", help="Max traversal depth"),
+    mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show how a concept evolved — its ancestors and descendants in the knowledge graph."""
+    if direction not in ("ancestors", "descendants", "both"):
+        typer.echo("--direction must be: ancestors, descendants, both", err=True)
+        raise typer.Exit(1)
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.graph.genealogy import evolve_concept, format_tree
+
+    trees = evolve_concept(graph, db, concept, direction=direction, max_depth=max_depth)
+
+    if not trees:
+        db.close()
+        typer.echo(f"No concept found matching: {concept}")
+        raise typer.Exit(0)
+
+    if json_output:
+        typer.echo(json.dumps(trees, indent=2, ensure_ascii=False, default=str))
+    elif mermaid:
+        typer.echo(format_tree(trees, mermaid=True))
+    else:
+        typer.echo(f"\nEvolution of: {concept}\n")
+        for root in trees:
+            typer.echo(format_tree([root]))
+
+    db.close()
+
+
+def descendants_cmd(
+    ctx: typer.Context,
+    paper_id: str = typer.Argument(..., help="Paper local_id to trace descendants of"),
+    generations: int = typer.Option(
+        3, "--generations", "-g", help="Number of generations to trace"
+    ),
+    mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Trace a paper's academic offspring — who cited, extended, or refined it."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.graph.genealogy import format_tree, trace_descendants
+
+    tree = trace_descendants(db, graph, paper_id, generations=generations)
+
+    if tree is None:
+        db.close()
+        typer.echo(f"Paper not found: {paper_id}", err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(tree, indent=2, ensure_ascii=False, default=str))
+    elif mermaid:
+        typer.echo(format_tree([tree], mermaid=True))
+    else:
+        typer.echo(f"\nDescendants of: {paper_id}\n")
+        typer.echo(format_tree([tree]))
+
+    db.close()
+
+
+def landscape_cmd(
+    ctx: typer.Context,
+    workspace: str = typer.Argument(None, help="Workspace name or path"),
+    top_n: int = typer.Option(5, "--top-n", help="Top concepts/items to show"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show a domain landscape -- timeline, persistent gaps, and debates."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    # Resolve workspace
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    paper_ids = None
+    if workspace:
+        from drbrain.storage.workspace import load_workspace_papers
+
+        try:
+            paper_ids = load_workspace_papers(workspace)
+        except (FileNotFoundError, OSError):
+            paper_ids = []
+
+    from drbrain.graph.genealogy import landscape_workspace
+
+    result = landscape_workspace(db, workspace_path=workspace, paper_ids=paper_ids)
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    elif "error" in result:
+        typer.echo(f"Error: {result['error']}", err=True)
+    else:
+        _render_landscape(result, top_n)
+
+    db.close()
+
+
+def _render_landscape(result: dict, top_n: int):
+    """Render landscape as ASCII timeline."""
+    timeline = result.get("timeline", [])
+    if not timeline:
+        typer.echo("No papers found.")
+        return
+
+    typer.echo("\nLandscape")
+    typer.echo("=" * 60)
+
+    current_year = None
+    for entry in timeline:
+        year = entry["year"]
+        title = entry["title"]
+
+        if year != current_year:
+            current_year = year
+            typer.echo(f"\n  {year}  ", nl=False)
+        else:
+            typer.echo("        ", nl=False)
+
+        typer.echo(f"{title}")
+
+        for concept in entry.get("key_concepts", [])[:top_n]:
+            typer.echo(f"        +- {concept['label']} [{concept['type']}]")
+
+    gaps = result.get("gaps", [])
+    if gaps:
+        typer.echo(f"\nPersistent gaps ({len(gaps)}):")
+        for g in gaps[:top_n]:
+            typer.echo(f"  * {g['description'][:120]} ({g.get('concept', '')})")
+
+    debates = result.get("debates", [])
+    if debates:
+        typer.echo(f"\nDebates ({len(debates)}):")
+        for d in debates[:top_n]:
+            typer.echo(f"  * {d['description'][:120]} ({d.get('concept', '')})")
+
+
+def paradigm_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(None, help="Concept to check for paradigm shifts"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Scan entire workspace"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Detect paradigm shifts -- replacement, explosion, or cross-domain invasion."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    # Resolve workspace
+    if isinstance(workspace, typer.models.OptionInfo):
+        workspace = workspace.default
+    paper_ids = None
+    if workspace:
+        from drbrain.storage.workspace import load_workspace_papers
+
+        try:
+            paper_ids = load_workspace_papers(workspace)
+        except (FileNotFoundError, OSError):
+            paper_ids = []
+
+    from drbrain.graph.genealogy import detect_paradigm_shifts
+
+    results = detect_paradigm_shifts(graph, db, concept=concept, paper_ids=paper_ids)
+
+    if json_output:
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+    else:
+        if not results:
+            typer.echo("No paradigm shifts detected.")
+        else:
+            type_labels = {
+                "replacement": "Replacement",
+                "explosion": "Explosion",
+                "cross_domain": "Cross-Domain",
+            }
+            for r in results:
+                typer.echo(f"\n[{type_labels.get(r['type'], r['type'])}] {r['description']}")
+
+    db.close()
+
+
+def transfers_cmd(
+    ctx: typer.Context,
+    from_ws: str = typer.Option(None, "--from", help="Source workspace (methods)"),
+    to_ws: str = typer.Option(None, "--to", help="Target workspace (problems)"),
+    auto: bool = typer.Option(False, "--auto", help="Auto-detect domains"),
+    min_confidence: float = typer.Option(
+        0.3, "--min-confidence", help="Minimum transfer confidence"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    history: bool = typer.Option(False, "--history", help="Show historical transfer timeline"),
+):
+    """Discover cross-domain method migration opportunities."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    if history:
+        from drbrain.graph.genealogy import find_transfer_history
+
+        results = find_transfer_history(db, graph)
+        if json_output:
+            typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        else:
+            if not results:
+                typer.echo("No historical transfers found.")
+            else:
+                typer.echo("\nCross-Domain Transfer History")
+                typer.echo("═" * 40)
+                current_year = None
+                for r in results:
+                    year = r.get("year", "?")
+                    if year != current_year:
+                        current_year = year
+                        typer.echo(f"\n{year}  ", nl=False)
+                    else:
+                        typer.echo("      ", nl=False)
+                    typer.echo(
+                        f"{r['source_concept']} → {r['target_concept']} ({r['confidence']:.2f})"
+                    )
+        db.close()
+        return
+
+    from drbrain.graph.genealogy import (
+        find_transfer_opportunities,
+        find_transfer_opportunities_auto,
+    )
+
+    if auto:
+        results = find_transfer_opportunities_auto(db, graph, min_confidence=min_confidence)
+    elif from_ws and to_ws:
+        src_papers = _resolve_workspace_papers(from_ws)
+        tgt_papers = _resolve_workspace_papers(to_ws)
+        results = find_transfer_opportunities(
+            db,
+            graph,
+            source_paper_ids=list(src_papers) if src_papers else [],
+            target_paper_ids=list(tgt_papers) if tgt_papers else [],
+            min_confidence=min_confidence,
+        )
+    else:
+        typer.echo(
+            "Use --from/--to for explicit workspaces, or --auto for automatic detection.", err=True
+        )
+        db.close()
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+    elif not results:
+        typer.echo("No transfer opportunities found.")
+    else:
+        for r in results:
+            typer.echo(f"  {r['source_method']} -> {r['target_problem']} ({r['confidence']:.2f})")
+
+    db.close()
