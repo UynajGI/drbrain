@@ -19,6 +19,7 @@ from drbrain.cli.commands import (
     closure_cmd,
     delete_cmd,
     descendants_cmd,
+    difficulty_cmd,
     embed_cmd,
     evolve_cmd,
     export_cmd,
@@ -111,6 +112,7 @@ app.command("landscape")(landscape_cmd)
 app.command("paradigm")(paradigm_cmd)
 app.command("transfers")(transfers_cmd)
 app.command("isomorphism")(isomorphism_cmd)
+app.command("difficulty")(difficulty_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

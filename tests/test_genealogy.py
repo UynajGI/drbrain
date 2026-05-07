@@ -2,6 +2,7 @@ from drbrain.graph.engine import GraphEngine
 from drbrain.graph.genealogy import (
     _format_provenance,
     _get_concept_provenance,
+    analyze_difficulty,
     detect_paradigm_shifts,
     evolve_concept,
     find_transfer_opportunities,
@@ -1195,4 +1196,71 @@ def test_transfers_include_provenance():
     assert "source_provenance" in t
     assert t["source_section"] == "3.1 Graph Methods"
     assert t["source_paper_id"] == "p1"
+    db.close()
+
+
+# -- difficulty map --
+
+
+def test_analyze_difficulty_empty():
+    """Empty DB returns all empty categories."""
+    db = Database(":memory:")
+    result = analyze_difficulty(db)
+    assert result["limitation"] == []
+    assert result["future_work"] == []
+    assert result["discussion"] == []
+    assert result["uncategorized"] == []
+    db.close()
+
+
+def test_analyze_difficulty_classifies():
+    """Gaps are classified by section title semantics."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Scalability', 0.9, '5.2 Limitations')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Better Metrics', 0.8, '6 Future Directions')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Generalizability', 0.7, '7 Discussion')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Gap', 'Unknown Gap', 0.6, '3 Methods')"
+    )
+    db.commit()
+    result = analyze_difficulty(db)
+    assert len(result["limitation"]) == 1
+    assert result["limitation"][0]["label"] == "Scalability"
+    assert len(result["future_work"]) == 1
+    assert result["future_work"][0]["label"] == "Better Metrics"
+    assert len(result["discussion"]) == 1
+    assert result["discussion"][0]["label"] == "Generalizability"
+    assert len(result["uncategorized"]) == 1
+    assert result["uncategorized"][0]["label"] == "Unknown Gap"
+    db.close()
+
+
+def test_analyze_difficulty_provenance():
+    """Each gap carries provenance info."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Gap', 'Scalability', 0.9, '5.2 Limitations', '0005.002')"
+    )
+    db.commit()
+    result = analyze_difficulty(db)
+    g = result["limitation"][0]
+    assert g["provenance"] == "[source: 5.2 Limitations of p1]"
+    assert g["node_id"] == "0005.002"
     db.close()

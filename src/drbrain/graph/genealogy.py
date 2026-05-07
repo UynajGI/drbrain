@@ -615,6 +615,55 @@ def landscape_workspace(
     return result
 
 
+def analyze_difficulty(db: Database) -> dict:
+    """Classify gaps by source section semantics to build a difficulty map.
+
+    Groups Gap concepts into:
+      - limitation: from sections with "limitation"/"weakness"/"shortcoming"
+      - future_work: from sections with "future"/"direction"/"open problem"
+      - discussion: from sections with "discussion"/"conclusion"
+      - uncategorized: everything else
+
+    Returns dict with keys: limitation, future_work, discussion, uncategorized.
+    Each value is a list of {label, section, paper_id, provenance}.
+    """
+    result: dict[str, list[dict]] = {
+        "limitation": [],
+        "future_work": [],
+        "discussion": [],
+        "uncategorized": [],
+    }
+
+    rows = db.conn.execute(
+        "SELECT label, section, node_id, local_id FROM concepts WHERE type = 'Gap'"
+    ).fetchall()
+
+    for label, section, node_id, paper_id in rows:
+        section_lower = (section or "").lower()
+        if any(kw in section_lower for kw in ("limitation", "weakness", "shortcoming")):
+            cat = "limitation"
+        elif any(
+            kw in section_lower for kw in ("future", "direction", "open problem", "open question")
+        ):
+            cat = "future_work"
+        elif any(kw in section_lower for kw in ("discussion", "conclusion")):
+            cat = "discussion"
+        else:
+            cat = "uncategorized"
+
+        result[cat].append(
+            {
+                "label": label,
+                "section": section or "",
+                "node_id": node_id or "",
+                "paper_id": paper_id or "",
+                "provenance": _format_provenance(section or "", node_id or "", paper_id or ""),
+            }
+        )
+
+    return result
+
+
 def _mermaid_nodes(lines: list[str], nodes: list[dict], parent_id: str | None):
     """Recursively add Mermaid nodes and edges."""
     for node in nodes:

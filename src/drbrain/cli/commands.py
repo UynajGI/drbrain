@@ -4227,3 +4227,39 @@ def isomorphism_cmd(
                 )
 
     db.close()
+
+
+def difficulty_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show a difficulty map — gaps classified by source section type."""
+    from drbrain.graph.genealogy import analyze_difficulty
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    result = analyze_difficulty(db)
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    else:
+        total = sum(len(v) for v in result.values())
+        if total == 0:
+            typer.echo("No gaps found. Run: drbrain build first.")
+        else:
+            typer.echo(f"\nDifficulty map ({total} gaps)")
+            typer.echo("=" * 50)
+            for cat, label in [
+                ("limitation", "Limitation gaps"),
+                ("future_work", "Future work gaps"),
+                ("discussion", "Discussion gaps"),
+                ("uncategorized", "Uncategorized gaps"),
+            ]:
+                items = result.get(cat, [])
+                if items:
+                    typer.echo(f"\n{label} ({len(items)}):")
+                    for g in items:
+                        typer.echo(f"  * {g['label']}")
+                        typer.echo(f"        {g['provenance']}")
+
+    db.close()
