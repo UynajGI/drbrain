@@ -5,6 +5,7 @@ from unittest import mock
 from drbrain.extractor.concept import (
     ExtractedConcepts,
     _collect_leaf_nodes,
+    _is_plateau_reached,
     _is_quality_content,
     _merge_concepts,
     extract_concepts_from_tree,
@@ -699,3 +700,30 @@ def test_tree_position_weight_by_depth():
     assert _tree_position_weight({"title": "Abstract"}, depth=0) == 0.6
     assert _tree_position_weight({"title": "Training Details"}, depth=5) >= 0.9
     assert 0.5 <= _tree_position_weight({"title": "Unknown"}, depth=2) <= 1.0
+
+
+# -- Plateau detection --
+
+
+def test_plateau_zero_growth():
+    """Zero new elements signals plateau."""
+    assert _is_plateau_reached(0, 10) is True
+
+
+def test_plateau_below_relative_threshold():
+    """New elements below 5% of total signals plateau."""
+    assert _is_plateau_reached(2, 100) is True  # 2%
+    assert _is_plateau_reached(4, 100) is True  # 4%
+    assert _is_plateau_reached(1, 21) is True  # 4.76%
+
+
+def test_plateau_above_threshold():
+    """Significant growth continues."""
+    assert _is_plateau_reached(3, 20) is False  # 15%
+    assert _is_plateau_reached(5, 50) is False  # 10%
+    assert _is_plateau_reached(10, 50) is False  # 20%
+
+
+def test_plateau_empty_total():
+    """Zero total with non-zero growth continues."""
+    assert _is_plateau_reached(5, 0) is False

@@ -549,21 +549,28 @@ async def _build_ontology(structure: list[dict], models: list[dict]) -> dict[str
         total = sum(len(v) for v in ontology.values())
         _onto_log.info(f"Ontology round {round_num}: +{new_count} new, {total} total")
 
-        # Adaptive plateau detection: stop when growth is negligible
-        # Absolute floor: no new elements at all
-        if new_count == 0:
-            _onto_log.info(f"Ontology plateau reached at round {round_num} (zero growth)")
-            break
-        # Relative threshold: new elements < 5% of total ontology size
-        if total > 0 and new_count / total < 0.05:
-            _onto_log.info(
-                f"Ontology plateau reached at round {round_num} "
-                f"(relative: {new_count}/{total} = {new_count / total:.3f})"
-            )
+        if _is_plateau_reached(new_count, total):
+            _onto_log.info(f"Ontology plateau reached at round {round_num}")
             break
         prev_total = total
 
     return ontology
+
+
+def _is_plateau_reached(new_count: int, total: int) -> bool:
+    """Adaptive plateau detection for iterative ontology extension.
+
+    Returns True when growth has diminished sufficiently:
+    - Zero growth: no new elements at all
+    - Relative threshold: new elements < 5% of total ontology size
+
+    Inspired by 2511.11017's iterative ontology expansion plateau detection.
+    """
+    if new_count == 0:
+        return True
+    if total > 0 and new_count / total < 0.05:
+        return True
+    return False
 
 
 def _build_tree_hierarchy_text(structure: list[dict], indent: int = 0) -> str:
