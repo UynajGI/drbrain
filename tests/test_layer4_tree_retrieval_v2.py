@@ -212,7 +212,7 @@ def test_query_by_structure_hybrid_llm_primary():
         qv[1] = 1.0
         qv = qv / np.linalg.norm(qv)
 
-        llm_response = '{"nodes": [{"node_id": "n1.1", "reason": "relevant"}]}'
+        llm_response = '{"node_ids": ["n1.1"], "reasoning": "most relevant to attention query"}'
 
         with (
             mock.patch(
@@ -276,7 +276,7 @@ def test_query_by_structure_hybrid_no_vectors_still_llm():
 
         from drbrain.query.tree_retrieval import query_by_structure_hybrid
 
-        llm_response = '{"nodes": [{"node_id": "n1", "reason": "matches query"}]}'
+        llm_response = '{"node_ids": ["n1"], "reasoning": "matches query"}'
 
         with mock.patch(
             "drbrain.query.tree_retrieval.acall_with_fallback",

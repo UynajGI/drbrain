@@ -573,6 +573,8 @@ class Database:
         self.conn.execute("DELETE FROM edges WHERE src_id = ? OR dst_id = ?", (local_id, local_id))
         self.conn.execute("DELETE FROM paper_ids WHERE local_id = ?", (local_id,))
         self.conn.execute("DELETE FROM confidence_queue WHERE source_paper = ?", (local_id,))
+        self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
+        self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (local_id,))
         self.conn.execute("DELETE FROM papers WHERE local_id = ?", (local_id,))
         self.commit()
 

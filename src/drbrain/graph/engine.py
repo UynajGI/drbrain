@@ -919,21 +919,29 @@ class GraphEngine:
         # Run standard closure
         inferred = self.closure()
 
-        # Collect all concept labels involved
-        labels: set[str] = set()
+        # Collect all concept IDs involved (closure uses src/dst = concept IDs)
+        cids: set[str] = set()
         for edge in inferred:
-            labels.add(edge.get("src_id", ""))
-            labels.add(edge.get("dst_id", ""))
+            cids.add(str(edge.get("src", "")))
+            cids.add(str(edge.get("dst", "")))
 
-        # Batch-fetch section contexts
-        section_map = self.get_section_contexts_batch(conn, list(labels))
+        # Fetch section contexts by concept ID (not label)
+        section_map: dict[str, dict] = {}
+        for cid in cids:
+            if not cid:
+                continue
+            ctx = self._get_section_by_cid(conn, cid)
+            if ctx:
+                section_map[cid] = ctx
 
         # Enrich edges
         enriched = []
         for edge in inferred:
             enriched_edge = dict(edge)
-            src_ctx = section_map.get(edge.get("src_id", ""))
-            dst_ctx = section_map.get(edge.get("dst_id", ""))
+            src_cid = str(edge.get("src", ""))
+            dst_cid = str(edge.get("dst", ""))
+            src_ctx = section_map.get(src_cid)
+            dst_ctx = section_map.get(dst_cid)
             if src_ctx:
                 enriched_edge["src_section"] = src_ctx.get("section", "")
                 enriched_edge["src_node_id"] = src_ctx.get("node_id", "")

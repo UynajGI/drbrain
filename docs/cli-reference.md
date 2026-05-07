@@ -83,10 +83,12 @@ Trace a paper's academic offspring — who cited, extended, refined, or challeng
 | `--generations` | `-g` | Number of generations to trace (default: 3) |
 | `--mermaid` | | Mermaid diagram output |
 | `--json` | | JSON output |
+| `--sections` | | Show section provenance for each concept |
 
 ```bash
 drbrain descendants p3f8a2
 drbrain descendants p3f8a2 --generations 5 --mermaid
+drbrain descendants p3f8a2 --sections
 ```
 
 ### `drbrain landscape`
@@ -129,6 +131,7 @@ Discover cross-domain method migration opportunities. Two modes: explicit worksp
 | `--history` | | Show historical cross-domain transfers |
 | `--min-confidence` | | Minimum transfer confidence (default: 0.3) |
 | `--json` | | JSON output |
+| `--sections` | | Show section provenance for transferred concepts |
 
 ```bash
 drbrain transfers --from nlp-ws --to cv-ws
@@ -468,17 +471,20 @@ drbrain reason "Is dropout effective for transformer regularization?" --bidirect
 ### `drbrain embed`
 
 Train TransE graph embeddings for link prediction and entity similarity.
+Use `--tree` to generate text embeddings for PageIndex and RAPTOR tree nodes.
 
 | Flag | Description |
 |------|-------------|
 | `--dim` | Embedding dimension (default: 128) |
 | `--epochs` | Training epochs (default: 100) |
 | `--retrain` | Force retrain from scratch |
+| `--tree` | Generate tree node text embeddings (PageIndex + RAPTOR) |
 
 ```bash
 drbrain embed
 drbrain embed --dim 256 --epochs 200
 drbrain embed --retrain
+drbrain embed --tree
 ```
 
 ### `drbrain report`

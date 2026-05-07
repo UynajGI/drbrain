@@ -105,6 +105,20 @@ bm25:
 extract:
   max_concurrent: 10 # parallel LLM calls during concept extraction
 
+# ── Embedding ─────────────────────────────────────────────────────
+# Text embeddings for tree nodes (PageIndex + RAPTOR). Not graph embeddings.
+embed:
+  provider: "local" # "local" | "openai-compat" | "none"
+  model: "Qwen/Qwen3-Embedding-0.6B" # sentence-transformers model (1024-dim)
+  device: "auto" # "auto" | "cpu" | "cuda"
+  top_k: 10 # default return count for vector search
+  source: "modelscope" # "modelscope" | "huggingface"
+  cache_dir: "~/.cache/modelscope/hub/models"
+  hf_endpoint: "" # HuggingFace mirror (optional)
+  api_base: "" # OpenAI-compat API base URL
+  api_key: "" # API key (prefer env var SCHOLARAIO_EMBED_API_KEY)
+  batch_size: 64
+
 # ── Quality Control ──────────────────────────────────────────────
 queue:
   weak_threshold: 0.7 # confidence below this → review queue

@@ -63,9 +63,7 @@ def _bic_gmm(x: list[list[float]], k: int) -> float:
 # ── GMM clustering ───────────────────────────────────────────────────────────
 
 
-def _gmm_cluster(
-    x: list[list[float]], n_samples: int, max_k: int = _RAPTOR_MAX_CLUSTERS
-) -> list[list[int]]:
+def _gmm_cluster(x: list[list[float]], max_k: int = _RAPTOR_MAX_CLUSTERS) -> list[list[int]]:
     """Cluster embeddings with GMM, selecting k via BIC.
 
     Returns list of cluster index lists.
@@ -74,6 +72,7 @@ def _gmm_cluster(
     from sklearn.mixture import GaussianMixture
 
     x_arr = np.asarray(x, dtype="float32")
+    n_samples = x_arr.shape[0]
 
     if n_samples < _RAPTOR_MIN_CLUSTER_SIZE + 1:
         return [list(range(n_samples))]
@@ -178,6 +177,7 @@ async def build_raptor_tree(
     paper_dir: Path,
     db_path: Path,
     embed_cfg: EmbedConfig | None = None,
+    models: list[dict] | None = None,
     max_layers: int = _RAPTOR_MAX_LAYERS,
 ) -> int:
     """Build RAPTOR recursive summary tree for a single paper.
@@ -192,6 +192,8 @@ async def build_raptor_tree(
         paper_dir: Paper directory with tree.json and raw.md.
         db_path: SQLite database path.
         embed_cfg: Embedding configuration.
+        models: LLM model list for summarization. If None or empty, falls back
+            to raw text concatenation (no LLM summarization).
         max_layers: Maximum recursive layers.
 
     Returns:
@@ -199,7 +201,11 @@ async def build_raptor_tree(
     """
     import sqlite3
 
-    from drbrain.services.embedding import _collect_tree_nodes, _embed_batch
+    from drbrain.services.embedding import (
+        _collect_tree_nodes,
+        _content_hash,
+        _embed_batch,
+    )
 
     # Step 1: Collect PageIndex leaf nodes
     nodes = _collect_tree_nodes(paper_dir)
@@ -221,8 +227,6 @@ async def build_raptor_tree(
     try:
         # Store PageIndex embeddings if not already present
         for nid, txt, vec in zip(node_ids, node_texts, vectors):
-            from drbrain.services.embedding import _content_hash
-
             blob = struct.pack(f"{len(vec)}f", *vec)
             conn.execute(
                 "INSERT OR IGNORE INTO tree_vectors "
@@ -242,7 +246,7 @@ async def build_raptor_tree(
 
             # Step 3: UMAP reduce → GMM cluster
             reduced = _umap_reduce(current_vecs)
-            clusters = _gmm_cluster(reduced, len(current_vecs))
+            clusters = _gmm_cluster(reduced)
 
             if len(clusters) <= 1:
                 log.info(
@@ -260,7 +264,7 @@ async def build_raptor_tree(
                 try:
                     summary = await _summarize_cluster(
                         cluster_texts,
-                        [],  # models from config, to be wired
+                        models or [],
                     )
                 except Exception:
                     log.warning(
@@ -314,8 +318,6 @@ async def build_raptor_tree(
 
             # Store RAPTOR node embeddings
             for nid, txt, vec in zip(current_ids, current_texts, current_vecs):
-                from drbrain.services.embedding import _content_hash
-
                 blob = struct.pack(f"{len(vec)}f", *vec)
                 conn.execute(
                     "INSERT OR REPLACE INTO tree_vectors "

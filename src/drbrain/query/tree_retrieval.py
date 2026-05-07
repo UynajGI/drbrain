@@ -512,14 +512,19 @@ async def query_by_structure_hybrid(
     full_skeleton = get_document_structure_json(structure)
     all_leaf_ids = _collect_all_leaf_ids(structure)
 
-    # Build system prompt for node selection
-    system_prompt = _SYSTEM_PROMPT.format(
+    # LLM navigation: send document structure + question
+    prompt = _ROUND1_PROMPT.format(
+        structure_json=full_skeleton,
         question=question,
         per_round=top_k * 2,  # get more candidates, narrow later
-        document=full_skeleton,
     )
 
-    llm_response = await acall_with_fallback(system_prompt, models=models, max_tokens=1000)
+    llm_response = await acall_with_fallback(
+        prompt=prompt,
+        models=models,
+        system_prompt=_SYSTEM_PROMPT,
+        max_tokens=1024,
+    )
 
     if not llm_response:
         return None
@@ -528,11 +533,13 @@ async def query_by_structure_hybrid(
     llm_selected: set[str] = set()
     try:
         data = json.loads(llm_response) if isinstance(llm_response, str) else llm_response
-        if isinstance(data, dict) and "nodes" in data:
-            for n in data["nodes"]:
-                nid = n.get("node_id", "")
-                if nid in all_leaf_ids:
-                    llm_selected.add(nid)
+        if isinstance(data, dict):
+            node_ids = data.get("node_ids", [])
+            if isinstance(node_ids, list):
+                for nid in node_ids:
+                    nid = str(nid)
+                    if nid in all_leaf_ids:
+                        llm_selected.add(nid)
     except (json.JSONDecodeError, TypeError):
         # Fallback: extract node_ids from text
         for line in llm_response.strip().split("\n"):

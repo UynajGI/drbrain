@@ -13,15 +13,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
-
-log = logging.getLogger(__name__)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -175,7 +174,7 @@ def build_tree_vectors(
 
     provider = _embed_provider(cfg)
     if provider == "none":
-        log.info("embed.provider=none; tree vector generation is disabled")
+        logger.info("embed.provider=none; tree vector generation is disabled")
         return 0
 
     nodes = _collect_tree_nodes(paper_dir)
@@ -268,13 +267,24 @@ def search_tree(
         # Embed query
         query_vec = _embed_batch([query], cfg)[0]
         qv = np.asarray(query_vec, dtype="float32")
+        query_dim = len(query_vec)
 
         # Cosine similarity over all stored vectors
         results = []
         for row in conn.execute(
             "SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors"
         ):
-            stored_vec = np.asarray(struct.unpack(f"{len(query_vec)}f", row[2]), dtype="float32")
+            blob = row[2]
+            stored_dim = len(blob) // 4  # float32 = 4 bytes
+            if stored_dim != query_dim:
+                logger.warning(
+                    "Dimension mismatch in tree_vectors node_id={}: stored={} query={}",
+                    row[0],
+                    stored_dim,
+                    query_dim,
+                )
+                continue
+            stored_vec = np.asarray(struct.unpack(f"{stored_dim}f", blob), dtype="float32")
             sim = float(np.dot(qv, stored_vec))
             results.append(
                 {

@@ -2166,6 +2166,8 @@ def _enrich_tree_with_sections(tree: dict, graph: GraphEngine, db: Database) -> 
         for key in ("concept", "label"):
             if key in node:
                 labels.append(str(node[key]))
+        for child in node.get("children", []):
+            _collect(child)
 
     _collect(tree)
     if not labels:
@@ -2178,6 +2180,8 @@ def _enrich_tree_with_sections(tree: dict, graph: GraphEngine, db: Database) -> 
             if key in node and node[key] in section_map:
                 node["section"] = section_map[node[key]]["section"]
                 node["node_id"] = section_map[node[key]]["node_id"]
+        for child in node.get("children", []):
+            _enrich(child)
 
     _enrich(tree)
 
@@ -4057,19 +4061,19 @@ def transfers_cmd(
                 raise typer.Exit(1)
 
         for r in results or []:
-            if "source_concept" in r:
-                labels.add(str(r["source_concept"]))
-            if "target_concept" in r:
-                labels.add(str(r["target_concept"]))
+            if "source_method" in r:
+                labels.add(str(r["source_method"]))
+            if "target_problem" in r:
+                labels.add(str(r["target_problem"]))
 
         section_map = graph.get_section_contexts_batch(db.conn, list(labels))
 
         # Enrich results
         for r in results or []:
-            if "source_concept" in r and r["source_concept"] in section_map:
-                r["source_section"] = section_map[r["source_concept"]]["section"]
-            if "target_concept" in r and r["target_concept"] in section_map:
-                r["target_section"] = section_map[r["target_concept"]]["section"]
+            if "source_method" in r and r["source_method"] in section_map:
+                r["source_section"] = section_map[r["source_method"]]["section"]
+            if "target_problem" in r and r["target_problem"] in section_map:
+                r["target_section"] = section_map[r["target_problem"]]["section"]
 
         if json_output:
             typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))

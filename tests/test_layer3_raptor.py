@@ -62,7 +62,7 @@ def test_gmm_cluster_returns_cluster_assignments():
     c3 = rng.randn(10, 5) + [0, 5, 0, 0, 0]
     x = np.vstack([c1, c2, c3]).astype("float32")
 
-    clusters = _gmm_cluster(x, n_samples=30, max_k=5)
+    clusters = _gmm_cluster(x, max_k=5)
     assert len(clusters) >= 2  # should find at least 2 clusters
 
     # Each sample should appear in exactly one cluster
@@ -79,7 +79,7 @@ def test_gmm_cluster_too_few_samples_returns_one_cluster():
     from drbrain.extractor.raptor import _gmm_cluster
 
     x = np.random.RandomState(1).randn(2, 5).astype("float32")
-    clusters = _gmm_cluster(x, n_samples=2)
+    clusters = _gmm_cluster(x.tolist())
     assert len(clusters) == 1
 
 
