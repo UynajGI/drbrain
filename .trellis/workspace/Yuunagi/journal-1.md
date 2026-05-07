@@ -268,3 +268,36 @@ Layer 2 complete — knowledge genealogy: evolve (concept lineage tree), descend
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 7-layer PageIndex tree-graph integration
+
+**Date**: 2026-05-07
+**Task**: 7-layer PageIndex tree-graph integration
+**Branch**: `main`
+
+### Summary
+
+Built 7-layer architecture integrating PageIndex tree structure into the knowledge graph engine. Layer 1 (DB schema): node_id provenance, tree_vectors/tree_summaries tables. Layer 2 (Embedding): EmbedConfig, build_tree_vectors, search_tree, ScholarAIO pattern. Layer 3 (RAPTOR): GMM+BIC+UMAP recursive semantic tree. Layer 4 (Retrieval v2): LLM-primary hybrid, cross-paper collapsed tree, BM25+vector scoring. Layer 5 (Graph): tree-aware traversal, section provenance. Layer 6 (ReasonerAgent): 3 tree tools. Layer 7 (CLI): embed --tree, --sections flags. Philosophy: light vectors for semantic nodes, LLM reasoning primary. 80 tests, 0 regressions.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4309535` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

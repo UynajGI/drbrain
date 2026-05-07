@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
+- **Total Sessions**: 8
 - **Last Active**: 2026-05-07
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~270 | Active |
+| `journal-1.md` | ~303 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-05-07 | 7-layer PageIndex tree-graph integration | `4309535` | `main` |
 | 7 | 2026-05-07 | Layer 2 — Knowledge Genealogy (evolve, descendants, landscape, paradigm, transfers, isomorphism) | `5870257`, `d98b23d`, `ec7cecf`, `cfb5f8f`, `48da39b`, `5caaebe`, `b08c18d` | `main` |
 | 6 | 2026-05-06 | Password-protect clean + skill-creator format rewrite | `236de2c`, `06881a9` | `main` |
 | 5 | 2026-05-05 | PyPI publish + skills completeness + docs | `704b545`, `6e0b1ed` | `main` |
