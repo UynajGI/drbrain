@@ -346,3 +346,36 @@ Deep synthesis (D1 Tree→Ontology, D2 node_id, D4 Agent stages). P0+P1: injecte
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Wire PageIndex-RAPTOR-tree full pipeline integration
+
+**Date**: 2026-05-08
+**Task**: Wire PageIndex-RAPTOR-tree full pipeline integration
+**Branch**: `main`
+
+### Summary
+
+Connected 4 gaps: (1) build_paper_tree_vectors bridges PageIndex+RAPTOR in embed --tree, (2) query --paper uses hybrid LLM+vector, (3) ReasonerAgent get_raptor_summaries tool, (4) isomorphism enriched with RAPTOR context. TDD: 6 new integration tests, 86 total passing. Architecture: vectors augment retrieval, LLM does reasoning.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b94accb` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
