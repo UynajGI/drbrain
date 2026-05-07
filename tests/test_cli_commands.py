@@ -1,4 +1,4 @@
-"""Tests for CLI commands: citations, check-citations, report, closure, seed, list, stats, query, export, queue, timeline."""
+"""Tests for CLI commands: citations, check-citations, report, closure, seed, list, stats, query, export, queue."""
 
 import json
 import tempfile
@@ -619,39 +619,6 @@ def test_queue_resolve_neither_flag():
             assert False, "Should have raised Exit"
         except typer.Exit as e:
             assert e.exit_code == 1
-
-
-# -- timeline_cmd --
-
-
-def test_timeline_cmd_no_data():
-    """timeline_cmd handles concept with no data."""
-    from drbrain.cli.commands import timeline_cmd
-
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-        ctx = _make_ctx(cfg)
-        timeline_cmd(ctx, "NonexistentConcept")
-
-
-def test_timeline_cmd_with_data():
-    """timeline_cmd shows concept evolution."""
-    from drbrain.cli.commands import timeline_cmd
-
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-
-        current_year = 2026
-        db = Database(str(db_path))
-        db.insert_paper("p1", "A", current_year, "uploaded")
-        db.insert_concept("p1", "Method", "Transformer", 0.9, year=current_year)
-        db.commit()
-        db.close()
-
-        ctx = _make_ctx(cfg)
-        timeline_cmd(ctx, "Transformer")
 
 
 # -- JSON output --
