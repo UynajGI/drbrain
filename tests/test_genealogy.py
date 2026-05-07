@@ -2,8 +2,11 @@ from drbrain.graph.engine import GraphEngine
 from drbrain.graph.genealogy import (
     _format_provenance,
     _get_concept_provenance,
+    detect_paradigm_shifts,
     evolve_concept,
+    find_transfer_opportunities,
     format_tree,
+    trace_descendants,
 )
 from drbrain.storage.database import Database
 
@@ -984,4 +987,212 @@ def test_landscape_workspace_includes_provenance():
     debate = debates[0]
     assert "provenance" in debate
 
+    db.close()
+
+
+# -- evolve provenance --
+
+
+def test_evolve_includes_section_provenance():
+    """evolve_concept tree nodes carry section and node_id."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Method', 'GNN', 0.9, '3.1 Methods', '0003.001')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    result = evolve_concept(graph, db, "GNN")
+    assert len(result) >= 1
+    assert result[0]["section"] == "3.1 Methods"
+    assert result[0]["node_id"] == "0003.001"
+    db.close()
+
+
+# -- descendants provenance --
+
+
+def test_descendants_includes_concept_bridge():
+    """trace_descendants child nodes carry via_concept and via_provenance."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Parent', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Child', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Method', 'GNN', 0.9, '3.1 Methods', '0003.001')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p2', 'Method', 'Improved GNN', 0.85, '2 Methods', '0002.001')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('GNN', 'Improved GNN', 'extends', 'p2')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    result = trace_descendants(db, graph, "p1")
+    assert result is not None
+    children = result.get("children", [])
+    assert len(children) >= 1
+    child = children[0]
+    assert "via_concept" in child
+    assert "via_provenance" in child
+    db.close()
+
+
+# -- paradigm provenance --
+
+
+def test_paradigm_replacement_includes_provenance():
+    """Replacement shifts carry old_provenance and new_provenance."""
+    db = Database(":memory:")
+    # OldMethod: 3 papers in 2008, 1 in 2015 → decline
+    for i, y in enumerate((2008, 2008, 2008, 2015)):
+        pid = f"old-p{i}"
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES (?, 'Old', ?, 'extracted')",
+            (pid, y),
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES (?, 'Method', 'OldMethod', 0.9, '3 Methods')",
+            (pid,),
+        )
+    # NewMethod: 3 papers in 2024-2026 → growing
+    for i, y in enumerate((2024, 2025, 2026)):
+        pid = f"new-p{i}"
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES (?, 'New', ?, 'extracted')",
+            (pid, y),
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES (?, 'Method', 'NewMethod', 0.9, '2 Methods')",
+            (pid,),
+        )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('NewMethod', 'OldMethod', 'challenges', 'new2026', 0.8)"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    results = detect_paradigm_shifts(graph, db, decline_threshold=0.4, growth_threshold=2)
+    replacements = [r for r in results if r["type"] == "replacement"]
+    assert len(replacements) >= 1
+    r = replacements[0]
+    assert "old_provenance" in r
+    assert "new_provenance" in r
+    db.close()
+
+
+def test_paradigm_explosion_includes_provenance():
+    """Explosion shifts carry provenance."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p1', 'Method', 'GNN', 0.9, '3.1 Methods')"
+    )
+    # Additional concepts with same label for explosion threshold
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence) "
+        "VALUES ('p1', 'Method', 'GNN', 0.8)"
+    )
+    # Descendant concepts
+    for v in ["GNNv2", "GNNv3", "GNNv4"]:
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', ?, 0.8)",
+            (v,),
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+            "VALUES ('GNN', ?, 'extends', 'p1')",
+            (v,),
+        )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    results = detect_paradigm_shifts(
+        graph, db, concept="GNN", explosion_threshold=1, descendant_threshold=3
+    )
+    explosions = [r for r in results if r["type"] == "explosion"]
+    assert len(explosions) >= 1
+    assert "provenance" in explosions[0]
+    assert explosions[0]["section"] == "3.1 Methods"
+    db.close()
+
+
+# -- transfer provenance --
+
+
+def test_transfers_include_provenance():
+    """find_transfer_opportunities enriches output with source_provenance."""
+    db = Database(":memory:")
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Method Paper', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Problem Paper', 2026, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p1', 'Method', 'GNN', 0.9, '3.1 Graph Methods', '0003.001')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section, node_id) "
+        "VALUES ('p2', 'Problem', 'Scalability', 0.85, '5.2 Limitations', '0005.002')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+        "VALUES ('GNN', 'Scalability', 'addresses', 'p1')"
+    )
+    db.commit()
+    graph = GraphEngine()
+    graph.load_from_db(db)
+    results = find_transfer_opportunities(
+        db, graph, source_paper_ids=["p1"], target_paper_ids=["p2"], min_confidence=0.0
+    )
+    assert len(results) >= 1
+    t = results[0]
+    assert "source_provenance" in t
+    assert t["source_section"] == "3.1 Graph Methods"
+    assert t["source_paper_id"] == "p1"
     db.close()

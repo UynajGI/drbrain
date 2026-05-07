@@ -4022,6 +4022,14 @@ def paradigm_cmd(
             }
             for r in results:
                 typer.echo(f"\n[{type_labels.get(r['type'], r['type'])}] {r['description']}")
+                prov = r.get("provenance") or r.get("source_provenance") or ""
+                if prov:
+                    typer.echo(f"        {prov}")
+                old_prov = r.get("old_provenance", "")
+                new_prov = r.get("new_provenance", "")
+                if old_prov and new_prov:
+                    typer.echo(f"        old: {old_prov}")
+                    typer.echo(f"        new: {new_prov}")
 
     db.close()
 

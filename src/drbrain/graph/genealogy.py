@@ -43,11 +43,14 @@ def evolve_concept(
         ).fetchone()
         year = year_row[0] if year_row else None
 
+        section, node_id, _ = _get_concept_provenance(db, label, ctype)
         root = {
             "label": label,
             "type": ctype,
             "local_id": local_id,
             "year": year,
+            "section": section,
+            "node_id": node_id,
             "relation": None,  # root has no incoming relation
             "children": [],
         }
@@ -244,11 +247,18 @@ def trace_descendants(
                         if not child_paper:
                             continue
 
+                        section, node_id, paper_id = _get_concept_provenance(db, dst_label)
+                        provenance = _format_provenance(
+                            section, node_id, paper_id or child_local_id
+                        )
                         child = {
                             "label": child_paper.get("title", child_local_id),
                             "local_id": child_local_id,
                             "year": child_paper.get("year"),
                             "relation": rel,
+                            "via_concept": dst_label,
+                            "via_section": section,
+                            "via_provenance": provenance,
                             "children": [],
                         }
                         parent.setdefault("children", []).append(child)
@@ -276,6 +286,16 @@ def _to_text_tree(nodes: list[dict], prefix: str = "") -> str:
         type_str = f" [{node.get('type', '')}]" if node.get("type") else ""
 
         lines.append(f"{prefix}{connector}{node['label']}{type_str}{year_str}{rel_str}")
+
+        # Show provenance for evolve nodes
+        section = node.get("section", "")
+        if section:
+            lines.append(f"{prefix}    source: {section}")
+
+        # Show bridge provenance for descendant nodes
+        via_prov = node.get("via_provenance", "")
+        if via_prov:
+            lines.append(f"{prefix}    {via_prov}")
 
         children = node.get("children", [])
         if children:
@@ -346,11 +366,15 @@ def detect_paradigm_shifts(
             if old_old > 0 and old_recent / old_old <= (1 - decline_threshold):
                 new_total = sum(c for _, c in new_years)
                 if new_total >= growth_threshold:
+                    old_sec, old_nid, old_pid = _get_concept_provenance(db, dst_id)
+                    new_sec, new_nid, new_pid = _get_concept_provenance(db, src_id)
                     results.append(
                         {
                             "type": "replacement",
                             "old_concept": dst_id,
                             "new_concept": src_id,
+                            "old_provenance": _format_provenance(old_sec, old_nid, old_pid),
+                            "new_provenance": _format_provenance(new_sec, new_nid, new_pid),
                             "description": f"{src_id} is replacing {dst_id} (decline: {old_recent}/{old_old}, new: {new_total})",
                             "confidence": conf,
                         }
@@ -397,12 +421,17 @@ def detect_paradigm_shifts(
                             descendants.append(n)
 
             if len(descendants) >= descendant_threshold:
+                section, node_id, paper_id = _get_concept_provenance(db, clabel)
                 results.append(
                     {
                         "type": "explosion",
                         "concept": clabel,
                         "paper_count": total,
                         "descendants": descendants[:10],
+                        "section": section,
+                        "node_id": node_id,
+                        "paper_id": paper_id,
+                        "provenance": _format_provenance(section, node_id, paper_id),
                         "description": f"{clabel} exploded to {total} papers with {len(descendants)} descendant concepts",
                     }
                 )
@@ -432,12 +461,14 @@ def detect_paradigm_shifts(
                         queue.append(n)
 
         if len(cascade) >= cascade_threshold:
+            src_sec, src_nid, src_pid = _get_concept_provenance(db, src_id)
             results.append(
                 {
                     "type": "cross_domain",
                     "source_concept": src_id,
                     "target_concept": dst_id,
                     "cascade": cascade[:10],
+                    "source_provenance": _format_provenance(src_sec, src_nid, src_pid),
                     "description": f"{src_id} crossed domains via {dst_id}, spawned {len(cascade)} concepts",
                     "confidence": conf,
                 }
@@ -589,10 +620,16 @@ def _mermaid_nodes(lines: list[str], nodes: list[dict], parent_id: str | None):
     for node in nodes:
         nid = node["label"].replace(" ", "_")[:50]
         year_str = f" ({node['year']})" if node.get("year") else ""
-        lines.append(f'    {nid}["{node["label"]}{year_str}"]')
+        section = node.get("section", "")
+        via_section = node.get("via_section", "")
+        tooltip = section or via_section or ""
+        tooltip_str = f"<br/>{tooltip}" if tooltip else ""
+        lines.append(f'    {nid}["{node["label"]}{year_str}{tooltip_str}"]')
         if parent_id:
             rel = node.get("relation", "")
-            lines.append(f"    {parent_id} -->|{rel}| {nid}")
+            via_prov = node.get("via_provenance", "")
+            edge_label = f"{rel}: {via_prov}" if via_prov else rel
+            lines.append(f"    {parent_id} -->|{edge_label}| {nid}")
         children = node.get("children", [])
         if children:
             _mermaid_nodes(lines, children, nid)
@@ -624,7 +661,14 @@ def find_transfer_opportunities(
     if not src_methods or not tgt_problems:
         return []
 
-    return _score_transfer_pairs(graph, src_methods, tgt_problems, min_confidence)
+    transfers = _score_transfer_pairs(graph, src_methods, tgt_problems, min_confidence)
+    for t in transfers:
+        section, node_id, paper_id = _get_concept_provenance(db, t["source_method"], "Method")
+        t["source_section"] = section
+        t["source_node_id"] = node_id
+        t["source_paper_id"] = paper_id
+        t["source_provenance"] = _format_provenance(section, node_id, paper_id)
+    return transfers
 
 
 def find_transfer_opportunities_auto(
@@ -667,6 +711,14 @@ def find_transfer_opportunities_auto(
                 continue
 
             transfers = _score_transfer_pairs(graph, m_cluster, p_cluster, min_confidence)
+            for t in transfers:
+                section, node_id, paper_id = _get_concept_provenance(
+                    db, t["source_method"], "Method"
+                )
+                t["source_section"] = section
+                t["source_node_id"] = node_id
+                t["source_paper_id"] = paper_id
+                t["source_provenance"] = _format_provenance(section, node_id, paper_id)
             results.extend(transfers)
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
