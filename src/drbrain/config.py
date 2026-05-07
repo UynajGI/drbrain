@@ -112,6 +112,35 @@ class FetchConfig(_ConfigBase):
 
 
 @dataclass
+class EmbedConfig(_ConfigBase):
+    """Semantic vector embedding configuration (ScholarAIO pattern).
+
+    Attributes:
+        provider: ``"local"`` | ``"openai-compat"`` | ``"none"``.
+        model: Sentence Transformer model name or HuggingFace ID.
+        cache_dir: Local model cache directory.
+        device: ``"auto"`` | ``"cpu"`` | ``"cuda"``.
+        top_k: Default number of results for vector search.
+        source: Model download source, ``"modelscope"`` | ``"huggingface"``.
+        hf_endpoint: Optional HuggingFace mirror URL.
+        api_base: OpenAI-compatible API base URL (``/v1`` prefix).
+        api_key: API key for cloud embedding.
+        batch_size: Batch size for embedding requests.
+    """
+
+    provider: str = "local"
+    model: str = "Qwen/Qwen3-Embedding-0.6B"
+    cache_dir: str = "~/.cache/modelscope/hub/models"
+    device: str = "auto"
+    top_k: int = 10
+    source: str = "modelscope"
+    hf_endpoint: str = ""
+    api_base: str = ""
+    api_key: str = ""
+    batch_size: int = 64
+
+
+@dataclass
 class Config(_ConfigBase):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
@@ -122,6 +151,7 @@ class Config(_ConfigBase):
     bm25: BM25Config = field(default_factory=BM25Config)
     queue: QueueConfig = field(default_factory=QueueConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
+    embed: EmbedConfig = field(default_factory=EmbedConfig)
 
     @classmethod
     def from_yaml(
@@ -163,6 +193,7 @@ class Config(_ConfigBase):
             bm25=BM25Config(**cfg.get("bm25", {})),
             queue=QueueConfig(**cfg.get("queue", {})),
             fetch=FetchConfig(**cfg.get("fetch", {})),
+            embed=EmbedConfig(**cfg.get("embed", {})),
         )
 
 

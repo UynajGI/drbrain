@@ -2,7 +2,7 @@
 
 # DrBrain
 
-**Vector-free, symbol-driven academic knowledge graph.**
+**Symbol-driven academic knowledge graph with lightweight vector retrieval.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
@@ -17,7 +17,8 @@ knowledge graph of academic papers — so it can search literature, trace causal
 find research gaps, and infer new relationships through rule-based reasoning.
 
 - Your paper library becomes a queryable knowledge graph with concept-level granularity.
-- Reasoning is symbol-driven: closure rules, confidence propagation, counterfactuals — zero vectors required.
+- Reasoning is symbol-driven: closure rules, confidence propagation, counterfactuals.
+- Lightweight vectors for retrieval: semantically-complete tree nodes only, never arbitrary chunks.
 - Built for AI agents: every feature is accessible through the CLI that your agent already uses.
 
 ## Quick Start
@@ -87,7 +88,9 @@ also get `.claude-plugin/` + `.mcp.json` injected for full plugin integration.
 
 DrBrain's agent-first design is inspired by [ScholarAIO](https://github.com/ZimoLiao/scholaraio) — the
 pioneering "research infrastructure for AI agents." DrBrain takes a different technical path:
-symbol-driven knowledge graph reasoning over vector-based semantic search.
+symbol-driven knowledge graph reasoning with lightweight vector retrieval for semantically-complete nodes
+(vs full-text chunk embedding). Tree-structured retrieval is inspired by
+[PageIndex](https://github.com/answerdotai/pageindex) and [RAPTOR](https://arxiv.org/abs/2401.18059).
 
 ## License
 

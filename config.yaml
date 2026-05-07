@@ -57,3 +57,15 @@ fetch:
   unpaywall_email: ""
   institutional_proxy: ""
   proxy_type: ""
+
+embed:
+  provider: "local"
+  model: "Qwen/Qwen3-Embedding-0.6B"
+  device: "auto"
+  top_k: 10
+  source: "modelscope"
+  cache_dir: "~/.cache/modelscope/hub/models"
+  hf_endpoint: ""
+  api_base: ""
+  api_key: ""
+  batch_size: 64

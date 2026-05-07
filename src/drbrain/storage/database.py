@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS concepts (
     label TEXT NOT NULL,
     confidence REAL DEFAULT 1.0,
     section TEXT DEFAULT '',
+    node_id TEXT DEFAULT '',
     first_seen INTEGER,
     last_seen INTEGER
 );
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS arguments (
     evidence_detail TEXT,
     mechanism TEXT DEFAULT '',
     section TEXT DEFAULT '',
+    node_id TEXT DEFAULT '',
     confidence REAL DEFAULT 1.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -75,6 +77,27 @@ CREATE TABLE IF NOT EXISTS embeddings (
     entity TEXT PRIMARY KEY,
     vec BLOB NOT NULL,
     dim INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tree_vectors (
+    node_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT '',
+    tree_layer TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS tree_summaries (
+    node_id TEXT PRIMARY KEY,
+    paper_id TEXT NOT NULL,
+    summary_text TEXT NOT NULL DEFAULT '',
+    source_node_ids TEXT NOT NULL DEFAULT '',
+    tree_layer INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS vector_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS confidence_queue (
@@ -148,6 +171,7 @@ class Database:
             (1, "paper_type", self._migrate_add_paper_type),
             (2, "venue_columns", self._migrate_add_venue_columns),
             (3, "authors", self._migrate_add_authors),
+            (4, "node_id", self._migrate_add_node_id),
         ]
 
         for version, name, fn in migrations:
@@ -186,6 +210,15 @@ class Database:
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
         if "authors" not in cols:
             self.conn.execute("ALTER TABLE papers ADD COLUMN authors TEXT DEFAULT ''")
+
+    def _migrate_add_node_id(self) -> None:
+        """Add node_id columns to concepts and arguments for tree provenance."""
+        concept_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concepts)").fetchall()]
+        if "node_id" not in concept_cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN node_id TEXT DEFAULT ''")
+        arg_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(arguments)").fetchall()]
+        if "node_id" not in arg_cols:
+            self.conn.execute("ALTER TABLE arguments ADD COLUMN node_id TEXT DEFAULT ''")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
@@ -298,11 +331,12 @@ class Database:
         confidence: float = 1.0,
         year: int | None = None,
         section: str = "",
+        node_id: str = "",
     ) -> int:
         """Insert a concept with temporal tracking. Returns concept_id."""
         cur = self.conn.execute(
-            "INSERT INTO concepts (local_id, type, label, confidence, section, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (local_id, ctype, label, confidence, section, year, year),
+            "INSERT INTO concepts (local_id, type, label, confidence, section, node_id, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (local_id, ctype, label, confidence, section, node_id, year, year),
         )
         return cur.lastrowid
 
@@ -444,11 +478,12 @@ class Database:
         mechanism: str = "",
         confidence: float = 1.0,
         section: str = "",
+        node_id: str = "",
     ) -> int:
         """Insert an argument unit. Returns arg_id."""
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
-            "evidence_type, evidence_detail, mechanism, section, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "evidence_type, evidence_detail, mechanism, section, node_id, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 source_paper,
                 claim,
@@ -459,6 +494,7 @@ class Database:
                 evidence_detail,
                 mechanism,
                 section,
+                node_id,
                 confidence,
             ),
         )

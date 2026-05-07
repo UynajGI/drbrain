@@ -2158,6 +2158,30 @@ def lineage_cmd(
         raise typer.Exit(1)
 
 
+def _enrich_tree_with_sections(tree: dict, graph: GraphEngine, db: Database) -> None:
+    """Recursively enrich a genealogy tree with section provenance."""
+    labels: list[str] = []
+
+    def _collect(node: dict) -> None:
+        for key in ("concept", "label"):
+            if key in node:
+                labels.append(str(node[key]))
+
+    _collect(tree)
+    if not labels:
+        return
+
+    section_map = graph.get_section_contexts_batch(db.conn, labels)
+
+    def _enrich(node: dict) -> None:
+        for key in ("concept", "label"):
+            if key in node and node[key] in section_map:
+                node["section"] = section_map[node[key]]["section"]
+                node["node_id"] = section_map[node[key]]["node_id"]
+
+    _enrich(tree)
+
+
 def _show_actor(cfg: dict, author_id: str) -> None:
     """Show detailed info for a single actor."""
     db = Database(cfg["db"]["path"])
@@ -3570,12 +3594,46 @@ def embed_cmd(
     dim: int = typer.Option(128, "--dim", help="Embedding dimension"),
     epochs: int = typer.Option(100, "--epochs", help="Training epochs"),
     retrain: bool = typer.Option(False, "--retrain", help="Force retrain"),
+    tree: bool = typer.Option(
+        False, "--tree", help="Generate tree node text embeddings (PageIndex + RAPTOR)"
+    ),
 ):
-    """Train TransE graph embeddings for link prediction and similarity."""
-    from drbrain.graph.embedding import TransE
-
+    """Train TransE graph embeddings. Use --tree for text embeddings."""
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
+
+    # --tree mode: text embeddings for tree nodes (Layer 2)
+    if tree:
+        import asyncio
+
+        from drbrain.config import EmbedConfig
+
+        embed_cfg = cfg.get("embed", EmbedConfig())
+        if isinstance(embed_cfg, dict):
+            embed_cfg = EmbedConfig(**embed_cfg)
+
+        if getattr(embed_cfg, "provider", "local") == "none":
+            typer.echo("embed.provider=none; tree vector generation is disabled")
+            db.close()
+            return
+
+        papers_dir = Path(cfg["dirs"]["papers"])
+        total = 0
+        for paper_path in sorted(papers_dir.iterdir()):
+            if not paper_path.is_dir():
+                continue
+            count = asyncio.run(
+                __import__(
+                    "drbrain.services.embedding", fromlist=["build_tree_vectors"]
+                ).build_tree_vectors(db.path, paper_path, embed_cfg)
+            )
+            if count:
+                typer.echo(f"  {paper_path.name}: {count} vectors")
+            total += count
+
+        typer.echo(f"Tree vectors: {total} total")
+        db.close()
+        return
     graph = GraphEngine()
     graph.load_from_db(db)
 
@@ -3590,6 +3648,8 @@ def embed_cmd(
     init_rels = None  # relations are re-learned each time (fewer, changes matter)
 
     db.clear_embeddings()
+    from drbrain.graph.embedding import TransE
+
     t = TransE(dim=dim, epochs=epochs)
     typer.echo(
         f"Training embeddings (dim={dim}, epochs={epochs}, "
@@ -3794,6 +3854,9 @@ def descendants_cmd(
     ),
     mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    sections: bool = typer.Option(
+        False, "--sections", help="Show section provenance for each concept"
+    ),
 ):
     """Trace a paper's academic offspring — who cited, extended, or refined it."""
     cfg = ctx.obj["config"]
@@ -3809,6 +3872,9 @@ def descendants_cmd(
         db.close()
         typer.echo(f"Paper not found: {paper_id}", err=True)
         raise typer.Exit(1)
+
+    if sections and tree:
+        _enrich_tree_with_sections(tree, graph, db)
 
     if json_output:
         typer.echo(json.dumps(tree, indent=2, ensure_ascii=False, default=str))
@@ -3951,12 +4017,81 @@ def transfers_cmd(
     ),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     history: bool = typer.Option(False, "--history", help="Show historical transfer timeline"),
+    sections: bool = typer.Option(
+        False, "--sections", help="Show section provenance for transferred concepts"
+    ),
 ):
     """Discover cross-domain method migration opportunities."""
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     graph.load_from_db(db)
+
+    if sections:
+        # Collect concept labels for section enrichment
+        labels: set[str] = set()
+        if history:
+            from drbrain.graph.genealogy import find_transfer_history
+
+            results = find_transfer_history(db, graph)
+        else:
+            from drbrain.graph.genealogy import (
+                find_transfer_opportunities,
+                find_transfer_opportunities_auto,
+            )
+
+            if auto:
+                results = find_transfer_opportunities_auto(db, graph, min_confidence=min_confidence)
+            elif from_ws and to_ws:
+                src_papers = _resolve_workspace_papers(from_ws)
+                tgt_papers = _resolve_workspace_papers(to_ws)
+                results = find_transfer_opportunities(
+                    db,
+                    graph,
+                    source_paper_ids=list(src_papers) if src_papers else [],
+                    target_paper_ids=list(tgt_papers) if tgt_papers else [],
+                    min_confidence=min_confidence,
+                )
+            else:
+                db.close()
+                raise typer.Exit(1)
+
+        for r in results or []:
+            if "source_concept" in r:
+                labels.add(str(r["source_concept"]))
+            if "target_concept" in r:
+                labels.add(str(r["target_concept"]))
+
+        section_map = graph.get_section_contexts_batch(db.conn, list(labels))
+
+        # Enrich results
+        for r in results or []:
+            if "source_concept" in r and r["source_concept"] in section_map:
+                r["source_section"] = section_map[r["source_concept"]]["section"]
+            if "target_concept" in r and r["target_concept"] in section_map:
+                r["target_section"] = section_map[r["target_concept"]]["section"]
+
+        if json_output:
+            typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        else:
+            if not results:
+                typer.echo("No transfers found.")
+            else:
+                for r in results:
+                    parts = [
+                        f"{r.get('source_concept', '?')}",
+                    ]
+                    if r.get("source_section"):
+                        parts.append(f"[{r['source_section']}]")
+                    parts.append("→")
+                    parts.append(f"{r.get('target_concept', '?')}")
+                    if r.get("target_section"):
+                        parts.append(f"[{r['target_section']}]")
+                    if r.get("confidence"):
+                        parts.append(f"({r['confidence']:.2f})")
+                    typer.echo(" ".join(parts))
+        db.close()
+        return
 
     if history:
         from drbrain.graph.genealogy import find_transfer_history

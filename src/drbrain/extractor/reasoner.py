@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
 
 
 class ReasonerAgent:
@@ -64,6 +69,55 @@ class ReasonerAgent:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_document_structure",
+                    "description": "Get the section tree skeleton for a paper (titles + node_ids only, no content)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paper_id": {"type": "string", "description": "Paper local_id"},
+                        },
+                        "required": ["paper_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_section_content",
+                    "description": "Get the full text content of a specific section within a paper",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "paper_id": {"type": "string", "description": "Paper local_id"},
+                            "node_id": {
+                                "type": "string",
+                                "description": "Tree node ID from document structure",
+                            },
+                        },
+                        "required": ["paper_id", "node_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_tree",
+                    "description": "Search across all paper sections by semantic similarity (collapsed tree retrieval)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Search query for finding relevant sections",
+                            },
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
         ]
 
     def _search_concepts(self, query: str, limit: int = 5) -> list[dict]:
@@ -100,6 +154,81 @@ class ReasonerAgent:
             return {"path": node_path, "length": len(node_path) - 1}
         except (nx.NetworkXNoPath, nx.NetworkXError):
             return None
+
+    # ── Layer 6: Tree tools ──────────────────────────────────────────────
+
+    def _get_document_structure(self, paper_id: str) -> list[dict]:
+        """Return the tree skeleton for a paper (titles + node_ids, no content)."""
+        import json
+
+        from drbrain.storage.paths import tree_json_path
+
+        papers_dir = self._papers_dir()
+        if not papers_dir:
+            return []
+
+        tree_path = tree_json_path(papers_dir / paper_id)
+        if not tree_path.exists():
+            return []
+
+        tree = json.loads(tree_path.read_text(encoding="utf-8"))
+        structure = tree.get("structure", [])
+
+        def _extract(nodes: list[dict]) -> list[dict]:
+            result = []
+            for n in nodes:
+                item = {
+                    "node_id": n.get("node_id", ""),
+                    "title": n.get("title", ""),
+                }
+                child_nodes = n.get("nodes", [])
+                if child_nodes:
+                    item["children"] = _extract(child_nodes)
+                result.append(item)
+            return result
+
+        return _extract(structure)
+
+    def _get_section_content(self, paper_id: str, node_id: str) -> str:
+        """Return the raw text content for a tree node."""
+        from drbrain.parser.pageindex_parser import get_node_content
+        from drbrain.storage.paths import raw_md_path, tree_json_path
+
+        papers_dir = self._papers_dir()
+        if not papers_dir:
+            return ""
+
+        paper_dir = papers_dir / paper_id
+        tree_path = tree_json_path(paper_dir)
+        md_path = raw_md_path(paper_dir)
+        if not tree_path.exists() or not md_path.exists():
+            return ""
+
+        import json
+
+        tree = json.loads(tree_path.read_text(encoding="utf-8"))
+        structure = tree.get("structure", [])
+        try:
+            return get_node_content(md_path, structure, node_id) or ""
+        except Exception:
+            return ""
+
+    def _search_tree(self, query: str) -> list[dict]:
+        """Cross-paper collapsed tree search (vector + BM25 hybrid)."""
+        if not self.db:
+            return []
+        from drbrain.query.tree_retrieval import query_cross_paper
+
+        results = query_cross_paper(query, self.db.path)
+        return results
+
+    def _papers_dir(self) -> Path | None:
+        """Resolve the papers data directory from DB config."""
+        if not self.db:
+            return None
+
+        db_path = self.db.path
+        return db_path.parent / "papers"
 
     async def reason(self, question: str, max_turns: int = 5) -> str:
         """Run LLM agent loop to reason about a question using graph tools."""
@@ -168,6 +297,12 @@ class ReasonerAgent:
                             result = self._get_neighbors(**args)
                         elif tc.function.name == "find_path":
                             result = self._find_path(**args)
+                        elif tc.function.name == "get_document_structure":
+                            result = self._get_document_structure(**args)
+                        elif tc.function.name == "get_section_content":
+                            result = self._get_section_content(**args)
+                        elif tc.function.name == "search_tree":
+                            result = self._search_tree(**args)
                         else:
                             result = []
                         messages.append(

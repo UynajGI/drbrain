@@ -16,7 +16,7 @@ Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, 
 
 ## Architecture
 
-DrBrain is a **vector-free, symbol-driven academic knowledge graph**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure.
+DrBrain is a **symbol-driven academic knowledge graph with lightweight vector retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Vectors used only for semantically-complete tree nodes, never arbitrary chunks.
 
 ### Pipeline
 
@@ -29,9 +29,10 @@ DrBrain is a **vector-free, symbol-driven academic knowledge graph**. Ingest PDF
 | Area         | Key files                                                                                                                                                | What                                                                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Graph engine | `graph/engine.py`, `graph/embedding.py`                                                                                                                  | TransE embeddings, rule closure (8+4 rules), hybrid scoring, t-norm grounding                     |
-| Extraction   | `extractor/concept.py`, `extractor/reasoner.py`                                                                                                          | 5-stage LLM extraction, bidirectional LLM↔KG reasoning                                            |
+| Extraction   | `extractor/concept.py`, `extractor/reasoner.py`, `extractor/raptor.py`                                                                                  | 5-stage LLM extraction, bidirectional LLM↔KG reasoning, RAPTOR recursive semantic tree            |
 | Reasoning    | `extractor/causal_chain.py`, `extractor/confidence_propagation.py`, `extractor/counterfactual.py`, `extractor/isomorphism.py`, `extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
 | Search       | `query/bm25.py`, `query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search                                               |
+| Embedding    | `services/embedding.py`                                                                                                                                  | Tree node text embeddings (sentence-transformers), FAISS-ready cosine search, provider=none grace  |
 | Quality      | `services/audit.py`, `services/repair.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex                                                  |
 | Import       | `services/zotero_import.py`, `services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
 | Storage      | `storage/database.py`, `storage/export.py`, `storage/workspace.py`                                                                                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD                                   |
@@ -57,8 +58,9 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 - **Logging/Metrics**: loguru + `get_session_id()` (UUID4), `ui()` for user output. SQLite metrics with WAL + thread-safety, `timer()` / `timed()`.
 - **API clients**: `requests.Session` + `urllib3.Retry` on 429/5xx. MinerU exponential backoff.
 - **LLM**: `acall_with_fallback()` iterates model list in config; any litellm provider.
-- **No vectors**: BM25 search, rule-based reasoning. Zero embedding dependency for core discovery.
-- **Section provenance**: `section` field flows from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.).
+- **Lightweight vectors**: Vectors for semantically-complete tree nodes only (PageIndex sections, RAPTOR summaries). Stored in `tree_vectors` table with FAISS. `provider=none` disables — pure BM25 + LLM navigation. Never chunk-level embedding. Reference: ScholarAIO embedding engine.
+- **Section provenance**: `section` and `node_id` fields flow from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.). `node_id` links back to PageIndex tree nodes.
+- **DB tables**: concepts, arguments, edges, aliases, embeddings, tree_vectors, tree_summaries, vector_metadata, papers, paper_ids, confidence_queue, citation_cache, research_seeds, schema_versions.
 - **Atomic writes**: tmp→rename pattern throughout. `storage/paths.py` for centralized paths.
 
 ### Testing

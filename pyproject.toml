@@ -40,10 +40,13 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "pymupdf4llm>=0.0.13",
     "pyyaml>=6.0",
+    "numpy>=1.26",
     "rank-bm25>=0.2",
     "requests>=2.31",
     "rich>=13.9",
+    "scikit-learn>=1.5",
     "typer>=0.15",
+    "umap-learn>=0.5",
     "deepxiv-sdk>=0.2.5",
 ]
 

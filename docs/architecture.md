@@ -2,9 +2,9 @@
 
 ## Philosophy
 
-DrBrain is **vector-free and symbol-driven**. It uses BM25 for text search and rule-based symbolic reasoning for discovery. There is no vector database dependency. TransE embeddings are an optional layer for link prediction and entity similarity -- they are not required for core functionality.
+DrBrain is **symbol-driven with lightweight vectors**. BM25 and rule-based symbolic reasoning form the core. Vectors are used only for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries) to enhance retrieval -- never for arbitrary text chunks. There is no vector database dependency. `provider=none` disables vectors entirely, falling back to BM25 + LLM navigation.
 
-Every design decision follows from a single principle: **the knowledge graph is the source of truth**. Concepts, relations, and inference rules are explicit, auditable, and human-readable.
+Every design decision follows from a single principle: **the knowledge graph is the source of truth**. Concepts, relations, and inference rules are explicit, auditable, and human-readable. Vectors serve retrieval, not knowledge representation.
 
 ---
 
@@ -171,6 +171,9 @@ Layer 3: LLM Agent Reasoning
 ### Structure-First Retrieval
 `query/tree_retrieval.py` -- Full PageIndex implementation. Iterative tree-search with adaptive depth navigation. Small skeletons get one-shot selection; large skeletons get top-level -> branch selection -> leaf selection.
 
+### RAPTOR Recursive Semantic Tree
+`extractor/raptor.py` -- Implements RAPTOR (2401.18059). Recursive embedding → UMAP → GMM+BIC clustering → LLM summarization on PageIndex leaf nodes. Builds multi-layer summary tree with `source_node_ids` provenance chains. Stored in `tree_summaries` and `tree_vectors` tables.
+
 ### Rule Mining
 `extractor/rule_miner.py` -- Mines path rules from TransE relation vectors. Activated via `drbrain closure --mine-rules`. Discovers patterns like "if X addresses Y and Y extends Z, then X is likely to address Z."
 
@@ -187,9 +190,16 @@ Standard BM25 over concept labels, arguments, and paper metadata. No vector embe
 
 ### PageIndex Tree Retrieval
 - `--paper <id>`: Bypasses BM25. Performs hierarchical tree search on a specific paper's section tree, using LLM-guided branch/leaf selection.
+- Collapsed tree mode (planned): flatten all tree nodes (PageIndex + RAPTOR summaries), embed query, cosine similarity retrieval. Replaces LLM navigation when vectors are available.
+
+### RAPTOR Semantic Tree
+`extractor/raptor.py` — Recursive embedding → UMAP → GMM+BIC clustering → LLM summarization on PageIndex leaf nodes. Multi-layer summary tree with provenance chains. Collapsed tree retrieval across papers (Layer 4, planned). Inspired by RAPTOR (2401.18059).
 
 ### Embedding Queries (`graph query`)
 Complex queries over TransE embeddings: projection, intersection, union, negation. Requires `drbrain embed`.
+
+### Lightweight Text Embeddings (planned)
+`drbrain embed` will also generate SBERT embeddings for tree nodes (PageIndex leaves + RAPTOR summaries). Stored in `tree_vectors` table. FAISS IndexFlatIP for cosine similarity search. Reference: ScholarAIO embedding engine (Qwen3-Embedding-0.6B, local inference).
 
 ---
 
@@ -225,11 +235,14 @@ config.local.yaml         # Local overrides + secrets (gitignored)
 Key tables:
 - `papers` -- title, year, journal, paper_type, status, abstract, citation_count
 - `paper_ids` -- doi, arxiv, s2_id, openalex_id (cross-reference)
-- `concepts` -- label, type, confidence, section, source_paper
+- `concepts` -- label, type, confidence, section, node_id, source_paper
 - `edges` -- src_id, dst_id, relation, source_paper, confidence
-- `arguments` -- claim, claim_type, target, source_paper
+- `arguments` -- claim, claim_type, target, section, node_id, source_paper
 - `aliases` -- canonical_id, variant (for dedup)
 - `embeddings` -- TransE entity/relation vectors
+- `tree_vectors` -- per-node embeddings (node_id, paper_id, embedding BLOB, content_hash, tree_layer)
+- `tree_summaries` -- RAPTOR recursive summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer)
+- `vector_metadata` -- embedding signature tracking (key, value)
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
 - `schema_versions` -- versioned migrations
@@ -246,8 +259,8 @@ All file writes use the **tmp -> rename** pattern for crash safety:
 
 ## Key Design Decisions
 
-### No Vector DB
-BM25 for text search and rule-based symbolic reasoning for discovery. This avoids the operational complexity of vector databases and keeps the system fully transparent. TransE embeddings are optional and stored in SQLite alongside everything else.
+### Lightweight Vectors for Retrieval
+Vectors are used only for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries) to accelerate retrieval. Never for arbitrary text chunks. `provider=none` disables all vectors, falling back to pure BM25 + LLM navigation. Embeddings are stored in SQLite alongside everything else -- no separate vector database.
 
 ### SQLite with WAL
 A single SQLite file with WAL mode is the only database. Simple, portable, no server needed. Concurrent reads work well under WAL mode. Appropriate for a personal research tool.

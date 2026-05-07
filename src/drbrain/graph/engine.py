@@ -768,3 +768,184 @@ class GraphEngine:
         inferred.extend(path_inferred)
 
         return inferred
+
+    # ── Layer 5: Tree-aware graph operations ────────────────────────────────
+
+    def get_concepts_by_node(self, conn, node_id: str) -> list[dict]:
+        """Get all concepts linked to a specific tree node.
+
+        Args:
+            conn: SQLite connection.
+            node_id: Tree node ID from tree.json.
+
+        Returns:
+            List of {concept_id, label, type, section, confidence}.
+        """
+        rows = conn.execute(
+            "SELECT concept_id, label, type, section, confidence FROM concepts WHERE node_id = ?",
+            (node_id,),
+        ).fetchall()
+        return [
+            {
+                "concept_id": r[0],
+                "label": r[1],
+                "type": r[2],
+                "section": r[3],
+                "confidence": r[4],
+            }
+            for r in rows
+        ]
+
+    def get_section_context(self, conn, concept_label: str) -> dict | None:
+        """Get the tree node context for a concept by label.
+
+        Returns {node_id, section, paper_id} or None.
+        """
+        row = conn.execute(
+            "SELECT c.node_id, c.section, c.local_id FROM concepts c WHERE c.label = ? LIMIT 1",
+            (concept_label,),
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        return {
+            "node_id": row[0],
+            "section": row[1] or "",
+            "paper_id": row[2] or "",
+        }
+
+    def get_section_contexts_batch(self, conn, labels: list[str]) -> dict[str, dict]:
+        """Get section contexts for multiple concept labels.
+
+        Returns mapping of label → {node_id, section, paper_id}.
+        Only includes concepts that have a node_id.
+        """
+        if not labels:
+            return {}
+        placeholders = ",".join("?" for _ in labels)
+        rows = conn.execute(
+            f"SELECT label, node_id, section, local_id FROM concepts "
+            f"WHERE label IN ({placeholders}) AND node_id != ''",
+            labels,
+        ).fetchall()
+        return {
+            r[0]: {"node_id": r[1], "section": r[2] or "", "paper_id": r[3] or ""} for r in rows
+        }
+
+    def _get_section_by_cid(self, conn, concept_id: str) -> dict | None:
+        """Get section context by concept_id (integer as string)."""
+        row = conn.execute(
+            "SELECT node_id, section, local_id, label FROM concepts WHERE concept_id = ? LIMIT 1",
+            (int(concept_id),),
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        return {
+            "node_id": row[0],
+            "section": row[1] or "",
+            "paper_id": row[2] or "",
+            "label": row[3] or "",
+        }
+
+    def traverse_with_sections(self, conn, start_label: str, max_hops: int = 2) -> list[dict]:
+        """Traverse graph from a concept label, enriching with section provenance.
+
+        Each step includes src_section and dst_section when available.
+        """
+        # Resolve label → concept_id
+        row = conn.execute(
+            "SELECT concept_id FROM concepts WHERE label = ? LIMIT 1",
+            (start_label,),
+        ).fetchone()
+        if not row:
+            return []
+        start_id = str(row[0])
+
+        if start_id not in self.graph:
+            return []
+
+        contexts: dict[str, dict | None] = {}
+        # Lookup label→section using concept_id in DB
+        visited: set[str] = {start_id}
+        current = {start_id}
+        steps: list[dict] = []
+
+        for hop in range(max_hops):
+            next_layer: set[str] = set()
+            for node in current:
+                for _, dst, data in self.graph.out_edges(node, data=True):
+                    if node not in contexts:
+                        contexts[node] = self._get_section_by_cid(conn, node)
+                    if dst not in contexts:
+                        contexts[dst] = self._get_section_by_cid(conn, dst)
+
+                    src_ctx = contexts.get(node)
+                    dst_ctx = contexts.get(dst)
+                    step = {
+                        "hop": hop + 1,
+                        "src": src_ctx["label"] if src_ctx else node,
+                        "dst": dst_ctx["label"] if dst_ctx else dst,
+                        "src_id": node,
+                        "dst_id": dst,
+                        "relation": data.get("relation", ""),
+                        "source_paper": data.get("source_paper", ""),
+                        "weight": data.get("weight", 1.0),
+                    }
+                    if src_ctx:
+                        step["src_section"] = src_ctx.get("section", "")
+                        step["src_node_id"] = src_ctx.get("node_id", "")
+                    if dst_ctx:
+                        step["dst_section"] = dst_ctx.get("section", "")
+                        step["dst_node_id"] = dst_ctx.get("node_id", "")
+
+                    steps.append(step)
+                    if dst not in visited:
+                        visited.add(dst)
+                        next_layer.add(dst)
+            current = next_layer
+            if not current:
+                break
+
+        return steps
+
+    def closure_with_sections(self, conn) -> tuple[list[dict], dict]:
+        """Run closure with section provenance enrichment.
+
+        Reuses existing closure() logic and enriches inferred edges
+        with section context from source/destination concepts.
+
+        Returns (enriched_inferred_edges, meta).
+        """
+
+        # Run standard closure
+        inferred = self.closure()
+
+        # Collect all concept labels involved
+        labels: set[str] = set()
+        for edge in inferred:
+            labels.add(edge.get("src_id", ""))
+            labels.add(edge.get("dst_id", ""))
+
+        # Batch-fetch section contexts
+        section_map = self.get_section_contexts_batch(conn, list(labels))
+
+        # Enrich edges
+        enriched = []
+        for edge in inferred:
+            enriched_edge = dict(edge)
+            src_ctx = section_map.get(edge.get("src_id", ""))
+            dst_ctx = section_map.get(edge.get("dst_id", ""))
+            if src_ctx:
+                enriched_edge["src_section"] = src_ctx.get("section", "")
+                enriched_edge["src_node_id"] = src_ctx.get("node_id", "")
+            if dst_ctx:
+                enriched_edge["dst_section"] = dst_ctx.get("section", "")
+                enriched_edge["dst_node_id"] = dst_ctx.get("node_id", "")
+            enriched.append(enriched_edge)
+
+        meta = {
+            "total_inferred": len(enriched),
+            "with_section_provenance": sum(
+                1 for e in enriched if "src_section" in e or "dst_section" in e
+            ),
+        }
+        return enriched, meta
