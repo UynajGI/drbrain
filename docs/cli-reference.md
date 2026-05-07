@@ -57,6 +57,85 @@ drbrain fetch --arxiv 1706.03762
 drbrain fetch "Attention Is All You Need"
 ```
 
+### `drbrain evolve`
+
+Show how a concept evolved — ancestors and descendants in the knowledge graph via BFS traversal. Follows `extends`, `refines`, `applies` edges.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--direction` | `-d` | `ancestors`, `descendants`, or `both` (default: `both`) |
+| `--max-depth` | `-n` | Max traversal depth (default: 3) |
+| `--mermaid` | | Output as Mermaid diagram |
+| `--json` | | Output as JSON |
+
+```bash
+drbrain evolve "Transformer"
+drbrain evolve "graph neural network" --direction descendants --max-depth 5
+drbrain evolve "Attention" --mermaid
+```
+
+### `drbrain descendants`
+
+Trace a paper's academic offspring — who cited, extended, refined, or challenged it recursively.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--generations` | `-g` | Number of generations to trace (default: 3) |
+| `--mermaid` | | Mermaid diagram output |
+| `--json` | | JSON output |
+
+```bash
+drbrain descendants p3f8a2
+drbrain descendants p3f8a2 --generations 5 --mermaid
+```
+
+### `drbrain landscape`
+
+Domain panorama — year-ordered timeline with key concepts, persistent gaps, and active debates. Workspace-scoped.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--top-n` | | Top papers per year (default: 5) |
+| `--json` | | JSON output |
+
+```bash
+drbrain landscape my-workspace
+drbrain landscape my-workspace --top-n 10
+```
+
+### `drbrain paradigm`
+
+Detect paradigm shifts — replacement (old declining, new growing), explosion (concept burst with descendants), or cross-domain invasion.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--workspace` | `-w` | Scan entire workspace |
+| `--json` | | JSON output |
+
+```bash
+drbrain paradigm "Transformer"
+drbrain paradigm --workspace nlp-ws
+```
+
+### `drbrain transfers`
+
+Discover cross-domain method migration opportunities. Two modes: explicit workspaces (`--from`/`--to`) or auto-clustering (`--auto`).
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--from` | | Source workspace (methods) |
+| `--to` | | Target workspace (problems) |
+| `--auto` | | Auto-detect domains via label clustering |
+| `--history` | | Show historical cross-domain transfers |
+| `--min-confidence` | | Minimum transfer confidence (default: 0.3) |
+| `--json` | | JSON output |
+
+```bash
+drbrain transfers --from nlp-ws --to cv-ws
+drbrain transfers --auto
+drbrain transfers --history
+```
+
 ### `drbrain clean`
 
 Clear data directories (database, cache, logs, papers, reports). Keeps inbox PDFs intact.
