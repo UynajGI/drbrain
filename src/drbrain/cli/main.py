@@ -40,6 +40,7 @@ from drbrain.cli.commands import (
     seed_cmd,
     show_cmd,
     stats_cmd,
+    transfers_cmd,
     translate_cmd,
     ws_add_cmd,
     ws_create_cmd,
@@ -107,6 +108,7 @@ app.command("evolve")(evolve_cmd)
 app.command("descendants")(descendants_cmd)
 app.command("landscape")(landscape_cmd)
 app.command("paradigm")(paradigm_cmd)
+app.command("transfers")(transfers_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands

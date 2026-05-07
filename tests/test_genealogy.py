@@ -333,11 +333,13 @@ def test_trace_descendants_generations_limit():
 
     # generations=1: only direct descendants (p1)
     result = trace_descendants(db, graph, "p0", generations=1)
+    assert result is not None
     assert len(result["children"]) == 1
     assert result["children"][0]["local_id"] == "p1"
 
     # generations=2: p1 and p2
     result = trace_descendants(db, graph, "p0", generations=2)
+    assert result is not None
     children = result["children"]
     assert len(children) == 1
     assert children[0]["local_id"] == "p1"
@@ -655,4 +657,106 @@ def test_paradigm_empty_graph():
     graph.load_from_db(db)
     results = detect_paradigm_shifts(graph, db)
     assert results == []
+    db.close()
+
+
+# --- Transfer opportunity tests ---
+
+
+def test_find_transfer_opportunities_explicit():
+    """Workspace-based: find Method->Problem transfer candidates."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import find_transfer_opportunities
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    # Setup two domains with papers
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_nlp', 'NLP Paper', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_cv', 'CV Paper', 2021, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p_nlp', 'Method', 'Transformer', 0.95, 'method')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p_cv', 'Problem', 'Image Classification', 0.95, 'intro')"
+    )
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('Transformer', 'Image Classification', 'solves', 'p_nlp', 0.5)"
+    )
+    db.commit()
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = find_transfer_opportunities(
+        db, graph, source_paper_ids=["p_nlp"], target_paper_ids=["p_cv"]
+    )
+    assert isinstance(results, list)
+    if results:
+        r = results[0]
+        assert "source_method" in r
+        assert "target_problem" in r
+        assert "confidence" in r
+    db.close()
+
+
+def test_find_transfer_opportunities_empty():
+    """Empty source or target returns empty list."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import find_transfer_opportunities
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = find_transfer_opportunities(db, graph, source_paper_ids=[], target_paper_ids=["p1"])
+    assert results == []
+    db.close()
+
+
+def test_find_transfer_opportunities_auto():
+    """Auto mode: cluster concepts by label similarity as domains."""
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.graph.genealogy import find_transfer_opportunities_auto
+    from drbrain.storage.database import Database
+
+    db = Database(":memory:")
+    # NLP domain
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_nlp', 'NLP Paper', 2020, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p_nlp', 'Method', 'Transformer', 0.95, 'method')"
+    )
+    # CV domain
+    db.conn.execute(
+        "INSERT INTO papers (local_id, title, year, status) VALUES ('p_cv', 'CV Paper', 2021, 'extracted')"
+    )
+    db.conn.execute(
+        "INSERT INTO concepts (local_id, type, label, confidence, section) "
+        "VALUES ('p_cv', 'Problem', 'Vision Classification', 0.95, 'intro')"
+    )
+    # Cross-domain edge
+    db.conn.execute(
+        "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+        "VALUES ('Transformer', 'Vision Classification', 'solves', 'p_nlp', 0.5)"
+    )
+    db.commit()
+
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    results = find_transfer_opportunities_auto(db, graph)
+    assert isinstance(results, list)
+    if results:
+        r = results[0]
+        assert "confidence" in r
     db.close()

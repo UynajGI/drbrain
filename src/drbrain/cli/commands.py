@@ -3939,3 +3939,54 @@ def paradigm_cmd(
                 typer.echo(f"\n[{type_labels.get(r['type'], r['type'])}] {r['description']}")
 
     db.close()
+
+
+def transfers_cmd(
+    ctx: typer.Context,
+    from_ws: str = typer.Option(None, "--from", help="Source workspace (methods)"),
+    to_ws: str = typer.Option(None, "--to", help="Target workspace (problems)"),
+    auto: bool = typer.Option(False, "--auto", help="Auto-detect domains"),
+    min_confidence: float = typer.Option(
+        0.3, "--min-confidence", help="Minimum transfer confidence"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Discover cross-domain method migration opportunities."""
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.graph.genealogy import (
+        find_transfer_opportunities,
+        find_transfer_opportunities_auto,
+    )
+
+    if auto:
+        results = find_transfer_opportunities_auto(db, graph, min_confidence=min_confidence)
+    elif from_ws and to_ws:
+        src_papers = _resolve_workspace_papers(from_ws)
+        tgt_papers = _resolve_workspace_papers(to_ws)
+        results = find_transfer_opportunities(
+            db,
+            graph,
+            source_paper_ids=list(src_papers) if src_papers else [],
+            target_paper_ids=list(tgt_papers) if tgt_papers else [],
+            min_confidence=min_confidence,
+        )
+    else:
+        typer.echo(
+            "Use --from/--to for explicit workspaces, or --auto for automatic detection.", err=True
+        )
+        db.close()
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+    elif not results:
+        typer.echo("No transfer opportunities found.")
+    else:
+        for r in results:
+            typer.echo(f"  {r['source_method']} -> {r['target_problem']} ({r['confidence']:.2f})")
+
+    db.close()

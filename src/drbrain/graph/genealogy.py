@@ -538,3 +538,159 @@ def _mermaid_nodes(lines: list[str], nodes: list[dict], parent_id: str | None):
         children = node.get("children", [])
         if children:
             _mermaid_nodes(lines, children, nid)
+
+
+# --- Transfer opportunity detection ---
+
+
+def find_transfer_opportunities(
+    db: Database,
+    graph: GraphEngine,
+    source_paper_ids: list[str] | None = None,
+    target_paper_ids: list[str] | None = None,
+    min_confidence: float = 0.3,
+) -> list[dict]:
+    """Find Method->Problem transfer opportunities between domains.
+
+    Explicit mode: user provides source (where Methods live) and target
+    (where Problems live) paper ID lists.
+    """
+    if not source_paper_ids or not target_paper_ids:
+        return []
+
+    # Get Method concepts from source papers
+    src_methods = _get_concepts_by_type(db, source_paper_ids, "Method")
+    # Get Problem concepts from target papers
+    tgt_problems = _get_concepts_by_type(db, target_paper_ids, "Problem")
+
+    if not src_methods or not tgt_problems:
+        return []
+
+    return _score_transfer_pairs(graph, src_methods, tgt_problems, min_confidence)
+
+
+def find_transfer_opportunities_auto(
+    db: Database,
+    graph: GraphEngine,
+    min_confidence: float = 0.3,
+    cluster_similarity: float = 0.4,
+) -> list[dict]:
+    """Auto-detect domains by clustering concepts, then find transfer opportunities.
+
+    Groups Method concepts by label similarity, same for Problems.
+    Cross-pairs clusters and finds transfer candidates.
+    """
+    # Get all Methods and Problems
+    all_methods = db.conn.execute(
+        "SELECT DISTINCT label FROM concepts WHERE type = 'Method'"
+    ).fetchall()
+    all_problems = db.conn.execute(
+        "SELECT DISTINCT label FROM concepts WHERE type = 'Problem'"
+    ).fetchall()
+
+    if not all_methods or not all_problems:
+        return []
+
+    # Cluster Methods by label similarity
+    method_labels = [r[0] for r in all_methods]
+    method_clusters = _cluster_by_similarity(method_labels, threshold=cluster_similarity)
+
+    # Cluster Problems by label similarity
+    problem_labels = [r[0] for r in all_problems]
+    problem_clusters = _cluster_by_similarity(problem_labels, threshold=cluster_similarity)
+
+    # Cross-pair clusters and find transfers
+    results: list[dict] = []
+    for m_cluster in method_clusters:
+        for p_cluster in problem_clusters:
+            # Skip if clusters overlap (same domain)
+            overlap = set(m_cluster) & set(p_cluster)
+            if overlap:
+                continue
+
+            transfers = _score_transfer_pairs(graph, m_cluster, p_cluster, min_confidence)
+            results.extend(transfers)
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return results[:20]
+
+
+def _get_concepts_by_type(db: Database, paper_ids: list[str], ctype: str) -> list[str]:
+    """Get distinct concept labels of a given type from paper IDs."""
+    if not paper_ids:
+        return []
+    placeholders = ",".join("?" for _ in paper_ids)
+    rows = db.conn.execute(
+        f"SELECT DISTINCT label FROM concepts WHERE local_id IN ({placeholders}) AND type = ?",
+        (*paper_ids, ctype),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _score_transfer_pairs(
+    graph: GraphEngine,
+    source_methods: list[str],
+    target_problems: list[str],
+    min_confidence: float,
+) -> list[dict]:
+    """Score Method->Problem pairs using isomorphism + label similarity."""
+    from drbrain.extractor.concept import _label_similarity
+    from drbrain.extractor.isomorphism import _relation_signature
+
+    results: list[dict] = []
+
+    for method in source_methods:
+        if method not in graph.graph:
+            continue
+        method_sig = _relation_signature(graph, method)
+        if not method_sig:
+            continue
+
+        for problem in target_problems:
+            if problem not in graph.graph:
+                continue
+            prob_sig = _relation_signature(graph, problem)
+            if not prob_sig:
+                continue
+
+            # Jaccard on signatures
+            m_set = set(method_sig.items())
+            p_set = set(prob_sig.items())
+            union = m_set | p_set
+            intersection = m_set & p_set
+            jaccard = len(intersection) / len(union) if union else 0.0
+
+            # Label similarity
+            label_sim = _label_similarity(method, problem)
+
+            # Combined: signature match + label match
+            confidence = jaccard * 0.5 + label_sim * 0.5
+
+            if confidence >= min_confidence:
+                results.append(
+                    {
+                        "source_method": method,
+                        "target_problem": problem,
+                        "confidence": round(confidence, 4),
+                    }
+                )
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return results
+
+
+def _cluster_by_similarity(labels: list[str], threshold: float = 0.4) -> list[list[str]]:
+    """Simple single-pass clustering: each label joins the first matching cluster or starts a new one."""
+    from drbrain.extractor.concept import _label_similarity
+
+    clusters: list[list[str]] = []
+    for label in labels:
+        matched = False
+        for cluster in clusters:
+            if any(_label_similarity(label, member) >= threshold for member in cluster):
+                cluster.append(label)
+                matched = True
+                break
+        if not matched:
+            clusters.append([label])
+    return clusters
