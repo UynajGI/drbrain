@@ -229,3 +229,42 @@ Password-protect clean --force with salted SHA-256 (auth.py, setup --change-pass
 ### Next Steps
 
 - None - task complete
+
+
+## Session 7: Layer 2 — Knowledge Genealogy (evolve, descendants, landscape, paradigm, transfers, isomorphism)
+
+**Date**: 2026-05-07
+**Task**: Layer 2 — Knowledge Genealogy (evolve, descendants, landscape, paradigm, transfers, isomorphism)
+**Branch**: `main`
+
+### Summary
+
+Layer 2 complete — knowledge genealogy: evolve (concept lineage tree), descendants (paper academic offspring), landscape (domain timeline with gaps/debates, TDD), paradigm (replacement/explosion/cross-domain shift detection, TDD), transfers (cross-domain method migration with --from/--to/--auto/--history, TDD), isomorphism fix (Jaccard + label similarity confidence scoring). Removed timeline (superseded by evolve). 27 tests in test_genealogy.py, all pass. Merged to main, tagged v0.1.0.dev2.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5870257` | (see git log) |
+| `d98b23d` | (see git log) |
+| `ec7cecf` | (see git log) |
+| `cfb5f8f` | (see git log) |
+| `48da39b` | (see git log) |
+| `5caaebe` | (see git log) |
+| `b08c18d` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
