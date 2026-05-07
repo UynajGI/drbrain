@@ -254,3 +254,88 @@ def test_isomorphism_low_label_similarity():
     # transformer vs random_forest should have very low label similarity
     # Jaccard=1.0 (same sig), label_sim ~ 0 → confidence ~ 0.7
     assert mappings[0].confidence < 0.8
+
+
+# -- CLI command --
+
+
+def test_isomorphism_cmd_empty_graph():
+    """CLI handles empty graph gracefully."""
+    import tempfile
+    from pathlib import Path
+
+    from drbrain.cli.commands import isomorphism_cmd
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(str(db_path))
+        db.close()
+
+        cfg = {
+            "db": {"path": str(db_path)},
+            "dirs": {"papers": td, "reports": td},
+            "llm": {"models": []},
+        }
+        ctx = type("Ctx", (), {"obj": {"config": cfg}})()
+        isomorphism_cmd(ctx, concept=None, min_confidence=0.5, json_output=True)
+
+        # Should not raise
+
+
+def test_isomorphism_cmd_with_data():
+    """CLI finds isomorphic patterns with real graph data."""
+    import tempfile
+    from pathlib import Path
+
+    from drbrain.cli.commands import isomorphism_cmd
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(str(db_path))
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'GNN_v1', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'GNN_v2', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Method', 'CNN_v1', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Problem', 'Scalability', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Problem', 'Accuracy', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+            "VALUES ('GNN_v1', 'Scalability', 'solves', 'p1')"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+            "VALUES ('GNN_v2', 'Scalability', 'solves', 'p1')"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+            "VALUES ('CNN_v1', 'Accuracy', 'solves', 'p1')"
+        )
+        db.commit()
+        db.close()
+
+        cfg = {
+            "db": {"path": str(db_path)},
+            "dirs": {"papers": td, "reports": td},
+            "llm": {"models": []},
+        }
+        ctx = type("Ctx", (), {"obj": {"config": cfg}})()
+        isomorphism_cmd(ctx, concept=None, min_confidence=0.0, json_output=True)

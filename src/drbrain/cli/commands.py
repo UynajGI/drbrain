@@ -4179,3 +4179,51 @@ def transfers_cmd(
             typer.echo(f"  {r['source_method']} -> {r['target_problem']} ({r['confidence']:.2f})")
 
     db.close()
+
+
+def isomorphism_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(None, help="Concept to find isomorphic patterns for"),
+    min_confidence: float = typer.Option(
+        0.5, "--min-confidence", help="Minimum confidence threshold"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Find structurally isomorphic subgraphs — concepts with similar relation patterns."""
+    from drbrain.extractor.isomorphism import find_isomorphic_patterns
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    mappings = find_isomorphic_patterns(graph)
+
+    if concept:
+        mappings = [m for m in mappings if m.source_domain == concept or m.target_domain == concept]
+    if min_confidence > 0:
+        mappings = [m for m in mappings if m.confidence >= min_confidence]
+
+    if json_output:
+        result = [
+            {
+                "source": m.source_domain,
+                "target": m.target_domain,
+                "shared_structure": m.shared_structure,
+                "confidence": m.confidence,
+            }
+            for m in mappings
+        ]
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    else:
+        if not mappings:
+            typer.echo("No isomorphic patterns found.")
+        else:
+            typer.echo(f"\nIsomorphic patterns ({len(mappings)}):")
+            for m in mappings:
+                typer.echo(
+                    f"  {m.source_domain} ↔ {m.target_domain} "
+                    f"({m.confidence:.2f}) [{m.shared_structure}]"
+                )
+
+    db.close()

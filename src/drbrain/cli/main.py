@@ -26,6 +26,7 @@ from drbrain.cli.commands import (
     import_cmd,
     index_cmd,
     ingest_cmd,
+    isomorphism_cmd,
     landscape_cmd,
     lineage_cmd,
     list_cmd,
@@ -109,6 +110,7 @@ app.command("descendants")(descendants_cmd)
 app.command("landscape")(landscape_cmd)
 app.command("paradigm")(paradigm_cmd)
 app.command("transfers")(transfers_cmd)
+app.command("isomorphism")(isomorphism_cmd)
 app.command("reason")(reason_cmd)
 
 # Graph subcommands
