@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     pass
+
+log = logging.getLogger(__name__)
 
 
 class ReasonerAgent:
@@ -369,6 +372,8 @@ class ReasonerAgent:
     def _call_llm(self, prompt: str, system: str | None = None) -> str | None:
         """Call LLM with a prompt and return text response (no tool-calling).
 
+        Iterates through all configured models with fallback.
+
         Args:
             prompt: User message to send.
             system: Optional system prompt override.
@@ -379,39 +384,38 @@ class ReasonerAgent:
         if not self.models:
             return None
 
-        try:
-            import litellm
+        import litellm
 
-            model = self.models[0]
+        system_content = system or (
+            "You are a knowledge graph reasoning assistant. Answer concisely based on evidence."
+        )
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt},
+        ]
+
+        for i, model in enumerate(self.models):
             name = f"{model['provider']}/{model['model']}"
-            messages = [
-                {
-                    "role": "system",
-                    "content": system
-                    or (
-                        "You are a knowledge graph reasoning assistant. "
-                        "Answer concisely based on evidence."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ]
-            kwargs = {
-                "model": name,
-                "messages": messages,
-                "temperature": 0.3,
-                "max_tokens": 1024,
-                "timeout": 60,
-                "extra_body": {"thinking": {"type": "disabled"}},
-            }
-            if model.get("api_key"):
-                kwargs["api_key"] = model["api_key"]
-            if model.get("base_url"):
-                kwargs["api_base"] = model["base_url"]
+            try:
+                kwargs = {
+                    "model": name,
+                    "messages": messages,
+                    "temperature": 0.3,
+                    "max_tokens": 1024,
+                    "timeout": 60,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+                if model.get("api_key"):
+                    kwargs["api_key"] = model["api_key"]
+                if model.get("base_url"):
+                    kwargs["api_base"] = model["base_url"]
+                resp = litellm.completion(**kwargs)
+                return resp.choices[0].message.content or ""
+            except Exception:
+                log.warning("Model %s failed (attempt %d/%d)", name, i + 1, len(self.models))
 
-            resp = litellm.completion(**kwargs)
-            return resp.choices[0].message.content or ""
-        except Exception:
-            return None
+        log.error("All %d models failed in _call_llm", len(self.models))
+        return None
 
     def _kg_validate(self, hypothesis: str) -> dict:
         """Check hypothesis against KG for consistency.

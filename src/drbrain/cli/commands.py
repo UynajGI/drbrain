@@ -4094,6 +4094,11 @@ def transfers_cmd(
                     min_confidence=min_confidence,
                 )
             else:
+                typer.echo(
+                    "Use --from/--to for explicit workspaces, --auto for automatic detection, "
+                    "or --history for historical transfers.",
+                    err=True,
+                )
                 db.close()
                 raise typer.Exit(1)
 

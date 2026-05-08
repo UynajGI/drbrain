@@ -559,7 +559,9 @@ async def query_by_structure_hybrid(
                 # Filter to this paper
                 vector_candidates = {r["node_id"] for r in vec_results if r["paper_id"] == paper_id}
         except Exception:
-            pass  # vector failure is non-blocking
+            log.warning(
+                "Vector augmentation failed, continuing with LLM-only results", exc_info=True
+            )
 
     # ── Step 3: Merge — LLM-selected nodes take priority ──
     # LLM picks are primary; vectors add candidates LLM might have missed

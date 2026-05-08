@@ -92,7 +92,7 @@ async def acall_with_fallback(
     models: list[dict],
     system_prompt: str = "",
     max_tokens: int = 16384,
-) -> dict | None:
+) -> dict | list | None:
     """Async version of call_with_fallback."""
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"

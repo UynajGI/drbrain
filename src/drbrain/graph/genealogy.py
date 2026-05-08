@@ -343,20 +343,28 @@ def detect_paradigm_shifts(
         "SELECT src_id, dst_id, weight FROM edges WHERE relation = 'challenges'"
     ).fetchall()
 
-    for src_id, dst_id, conf in challenge_edges:
-        # Count papers per year for old concept (dst_id = being challenged)
-        old_years = db.conn.execute(
-            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
-            (dst_id,),
-        ).fetchall()
+    # Batch query: year counts for all challenge-edge concepts at once
+    challenge_concepts: set[str] = set()
+    for src_id, dst_id, _ in challenge_edges:
+        challenge_concepts.add(src_id)
+        challenge_concepts.add(dst_id)
 
-        # Count papers per year for new concept
-        new_years = db.conn.execute(
-            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
-            (src_id,),
+    year_map: dict[str, list[tuple[int, int]]] = {}
+    if challenge_concepts:
+        placeholders = ",".join("?" for _ in challenge_concepts)
+        year_rows = db.conn.execute(
+            f"SELECT c.label, p.year, COUNT(*) FROM concepts c "
+            f"JOIN papers p ON c.local_id = p.local_id "
+            f"WHERE c.label IN ({placeholders}) AND p.year IS NOT NULL "
+            f"GROUP BY c.label, p.year ORDER BY c.label, p.year",
+            tuple(challenge_concepts),
         ).fetchall()
+        for label, year, cnt in year_rows:
+            year_map.setdefault(label, []).append((year, cnt))
+
+    for src_id, dst_id, conf in challenge_edges:
+        old_years = year_map.get(dst_id, [])
+        new_years = year_map.get(src_id, [])
 
         if len(old_years) >= 2 and len(new_years) >= 2:
             max_old_year = max(y for y, _ in old_years)
