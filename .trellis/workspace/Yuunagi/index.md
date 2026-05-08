@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 10
+- **Total Sessions**: 11
 - **Last Active**: 2026-05-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~381 | Active |
+| `journal-1.md` | ~457 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 11 | 2026-05-08 | CLI 模块拆分 + 死代码清理 + 文档修复 | `acd21fc` | `main` |
 | 10 | 2026-05-08 | Wire PageIndex-RAPTOR-tree full pipeline integration | `b94accb` | `main` |
 | 9 | 2026-05-07 | PageIndex provenance injection into Layer 2-4 + P2 completion | `46a3439`, `208f0d6`, `e380beb`, `342aac5`, `18c3697`, `d468bec`, `2db6eec`, `ce5bc6e`, `1f6ae18`, `2987f23`, `4b21d03`, `60b2dfd`, `4c2b164` | `main` |
 | 8 | 2026-05-07 | 7-layer PageIndex tree-graph integration | `4309535` | `main` |

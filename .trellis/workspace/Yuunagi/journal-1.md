@@ -422,3 +422,36 @@ Subagent code review (first pass: functional correctness) found 2 critical, 4 im
 ### Next Steps
 
 - Review remaining issues (I3-I10) from code review
+
+
+## Session 11: CLI 模块拆分 + 死代码清理 + 文档修复
+
+**Date**: 2026-05-08
+**Task**: CLI 模块拆分 + 死代码清理 + 文档修复
+**Branch**: `main`
+
+### Summary
+
+commands.py 拆分为 8 个模块 + _common.py，删除 3 个死代码符号，修正 CLAUDE.md 源码路径，补充缺失 CLI 命令文档，移除 3 个无效 timeline 测试
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `acd21fc` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
