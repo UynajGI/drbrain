@@ -139,6 +139,47 @@ drbrain transfers --auto
 drbrain transfers --history
 ```
 
+### `drbrain isomorphism`
+
+Find structurally isomorphic subgraphs -- concepts with similar relation patterns across domains.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--min-confidence` | | Minimum confidence threshold (default: 0.5) |
+| `--json` | | Output as JSON (includes RAPTOR context) |
+
+```bash
+drbrain isomorphism "Attention Mechanism"
+drbrain isomorphism --min-confidence 0.7
+drbrain isomorphism --json
+```
+
+### `drbrain difficulty`
+
+Classify knowledge gaps by section semantics. Maps each gap to its originating section type (introduction, methods, results, etc.) and computes a composite difficulty score.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--json` | | Output as JSON |
+
+```bash
+drbrain difficulty
+drbrain difficulty --json
+```
+
+### `drbrain frontier`
+
+Composite knowledge frontier report combining research seeds, debate zones, technology cliffs, difficulty scores, and confidence collapse patterns.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--json` | | Output as JSON |
+
+```bash
+drbrain frontier
+drbrain frontier --json
+```
+
 ### `drbrain clean`
 
 Clear data directories (database, cache, logs, papers, reports). Keeps inbox PDFs intact.

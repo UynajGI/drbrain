@@ -379,3 +379,46 @@ Connected 4 gaps: (1) build_paper_tree_vectors bridges PageIndex+RAPTOR in embed
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: Code review fixes — isomorphism CLI RAPTOR wiring + double-embed fix + tag v0.1.0.dev3
+
+**Date**: 2026-05-08
+**Task**: fix-critical-review-issues-c1-c2
+**Branch**: `main`
+
+### Summary
+
+Subagent code review (first pass: functional correctness) found 2 critical, 4 important, 4 minor issues. Fixed C1: `isomorphism_cmd` now wires `enrich_isomorphisms_with_raptor` (was implemented but never called from CLI). Fixed C2: `build_raptor_tree` reads existing PageIndex vectors from `tree_vectors` DB instead of re-embedding. Tagged v0.1.0.dev3. Knowledge sync: CHANGELOG, CLI reference, memory files updated.
+
+### Main Changes
+
+- `cli/commands.py`: `isomorphism_cmd` imports + calls `enrich_isomorphisms_with_raptor`, JSON output includes RAPTOR fields
+- `extractor/raptor.py`: `build_raptor_tree` reads PageIndex vectors from DB instead of re-embedding (recursive re-embed for RAPTOR summaries preserved)
+- `tests/test_layer3_raptor.py`: tests pre-populate `tree_vectors` via `build_tree_vectors` before calling `build_raptor_tree`
+- `docs/cli-reference.md`: added isomorphism, difficulty, frontier command entries
+- `CHANGELOG.md`: added PageIndex provenance L2, genealogy CLI, isomorphism, difficulty, frontier, adaptive plateau, RAPTOR integration + fixes
+- `memory/pageindex_study.md`, `memory/pageindex-raptor-integration.md`: updated with fix commits
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bd78893` | fix: wire RAPTOR enrichment into isomorphism CLI, eliminate double-embed in build_raptor_tree |
+| `0c3095a` | docs(spec): add D5 RAPTOR-tree integration to pipeline architecture |
+
+### Testing
+
+- tests/test_isomorphism.py: 31 passed
+- tests/test_layer3_raptor.py: 31 passed
+- tests/test_layer2_embedding.py: 32 passed
+- tests/test_layer4_tree_retrieval_v2.py, layer6, layer7: 32 passed
+- tests/test_genealogy.py + test_layer7_cli.py: 52 passed
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Review remaining issues (I3-I10) from code review
