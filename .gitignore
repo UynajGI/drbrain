@@ -17,6 +17,9 @@ wheels/
 *.swp
 *.swo
 
+# Reports
+reports/
+
 # Coverage
 .coverage
 htmlcov/

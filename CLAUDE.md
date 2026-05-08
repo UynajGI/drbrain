@@ -48,6 +48,8 @@ data/
 ├── drbrain.db          SQLite (WAL mode, schema_versions)
 ├── metrics.db          LLM token tracking
 ├── cache/              API cache (rebuildable)
+├── logs/               loguru rotating logs
+├── backups/            tar.gz exports
 └── reports/            Per-paper JSON
 workspace/<name>/       workspace.yaml + refs/papers.json
 ```
