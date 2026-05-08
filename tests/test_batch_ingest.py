@@ -65,7 +65,7 @@ def test_ingest_single_file():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli.commands.extract_pdf", return_value=_make_parsed_paper(0)):
+        with mock.patch("drbrain.cli._common.extract_pdf", return_value=_make_parsed_paper(0)):
             ingest_cmd(ctx, [str(pdf_path)])
 
         from drbrain.storage.database import Database
@@ -97,7 +97,7 @@ def test_ingest_directory():
             return _make_parsed_paper(idx)
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect):
+        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=extract_side_effect):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
         from drbrain.storage.database import Database
@@ -136,7 +136,7 @@ def test_ingest_skips_failed_papers():
             return _make_parsed_paper(idx)
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=side_effect_extract):
+        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=side_effect_extract):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
         # Should have attempted all 3 files
@@ -171,7 +171,7 @@ def test_ingest_multiple_files():
             return _make_parsed_paper(idx)
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli.commands.extract_pdf", side_effect=extract_side_effect):
+        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=extract_side_effect):
             ingest_cmd(ctx, [str(pdf1), str(pdf2)])
 
         from drbrain.storage.database import Database

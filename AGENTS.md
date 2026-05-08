@@ -54,7 +54,7 @@ new relationships through rule-based graph closure.
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/drbrain/cli/` | Typer CLI (main.py, commands.py, graph_commands.py, setup.py) |
+| `src/drbrain/cli/` | Typer CLI (main.py registration, 9 *_commands.py modules, _common.py helpers, setup.py) |
 | `src/drbrain/extractor/` | LLM extraction, reasoning, API clients (openalex, crossref) |
 | `src/drbrain/graph/` | Graph engine, TransE embeddings, query embeddings |
 | `src/drbrain/storage/` | SQLite database, export, workspace, paths |

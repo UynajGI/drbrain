@@ -5,9 +5,18 @@
 ```
 src/drbrain/
 ├── cli/                  # Typer CLI commands
-│   ├── main.py           # App definition, command registration
-│   ├── commands.py       # Core commands (ingest, build, query, export, etc.)
-│   ├── graph_commands.py # graph subcommands (neighbors, path, related, describe, query)
+│   ├── main.py           # App definition, thin command registration
+│   ├── commands.py       # Backward-compatible re-exports from split modules
+│   ├── _common.py        # Shared private helpers (workspace resolution, ingest, etc.)
+│   ├── ingest_commands.py    # ingest, fetch, citations, closure, report
+│   ├── query_commands.py     # query, index, list, show, stats, seed
+│   ├── export_commands.py    # export, backup, delete, queue, lineage
+│   ├── check_commands.py     # check, audit, analyze, clean
+│   ├── ws_commands.py        # workspace CRUD (typer sub-app)
+│   ├── repair_commands.py    # repair, import
+│   ├── build_commands.py     # build, embed, translate
+│   ├── analysis_commands.py  # ask, reason, evolve, descendants, landscape, paradigm, transfers, isomorphism, difficulty, frontier
+│   ├── graph_commands.py     # graph subcommands (neighbors, path, related, describe, query, traverse-from)
 │   ├── setup.py          # Setup wizard
 │   └── dependencies.py   # Import check helpers
 ├── extractor/            # LLM extraction and API clients

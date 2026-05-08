@@ -653,23 +653,6 @@ def _ris_entries_to_dict(entries: dict[str, str]) -> dict:
     }
 
 
-def _pick_main_pdf(pdf_paths: list[Path]) -> Path | None:
-    """From multiple PDF candidates, pick the main paper (skip SI/supplement).
-
-    1. Filter out SI/supplement patterns.
-    2. Return the largest remaining file.
-    3. If all are SI, return the largest overall.
-    """
-    if not pdf_paths:
-        return None
-    if len(pdf_paths) == 1:
-        return pdf_paths[0]
-
-    non_si = [p for p in pdf_paths if not _SI_PATTERN.search(p.name)]
-    pool = non_si if non_si else pdf_paths
-    return max(pool, key=lambda p: p.stat().st_size)
-
-
 # ============================================================================
 #  BibTeX import
 # ============================================================================

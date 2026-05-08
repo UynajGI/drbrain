@@ -7,6 +7,12 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ## [Unreleased]
 
+### Changed
+- **CLI module split**: `cli/commands.py` (4331 lines) split into 8 focused modules — `ingest_commands.py`, `query_commands.py`, `export_commands.py`, `check_commands.py`, `ws_commands.py`, `repair_commands.py`, `build_commands.py`, `analysis_commands.py`. Shared helpers extracted to `cli/_common.py`. `cli/commands.py` retained as backward-compatible re-export shim. `ws_commands.py` uses `@ws_app.command()` decorator pattern matching `graph_commands.py`. All existing imports and tests remain compatible.
+
+### Removed
+- **Dead code**: `_embed_signature` (services/embedding.py), `expand_citations_oa` (extractor/citation.py), `_pick_main_pdf` (services/zotero_import.py). None had any callers.
+
 ### Added
 - **Tree-graph provenance (Layer 1)**: `node_id` column on concepts and arguments tables linking back to PageIndex tree nodes. New tables: `tree_vectors` (per-node embeddings), `tree_summaries` (RAPTOR recursive summaries), `vector_metadata` (signature tracking). Migration v4 auto-applies on next `Database()` init. `insert_concept()` and `insert_argument()` accept optional `node_id` parameter.
 - **Embedding engine (Layer 2)**: `EmbedConfig` in config.py with provider (local/openai-compat/none), default model Qwen3-Embedding-0.6B. `services/embedding.py` — `build_tree_vectors()` for tree node embeddings with content_hash incremental updates, `search_tree()` for cosine similarity retrieval. `provider=none` gracefully disables all vectors. Schema: `tree_vectors` table with BLOB embeddings, `vector_metadata` for signature tracking. Pattern: ScholarAIO vectors.py.

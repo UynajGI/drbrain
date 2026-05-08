@@ -209,7 +209,7 @@ def test_query_cmd_tree_paper_missing_tree():
             assert e.exit_code == 1
 
 
-@mock.patch("drbrain.cli.commands.query_by_structure_hybrid")
+@mock.patch("drbrain.cli.query_commands.query_by_structure_hybrid")
 def test_query_cmd_tree_success(mock_qbs):
     """--paper with valid tree.json invokes tree retrieval and shows content."""
     from drbrain.cli.commands import query_cmd
@@ -247,7 +247,7 @@ def test_query_cmd_tree_success(mock_qbs):
         assert "Sample retrieved content" in output
 
 
-@mock.patch("drbrain.cli.commands.query_by_structure_hybrid")
+@mock.patch("drbrain.cli.query_commands.query_by_structure_hybrid")
 def test_query_cmd_tree_no_relevant(mock_qbs):
     """--paper with valid paper but no relevant sections shows message."""
     from drbrain.cli.commands import query_cmd
@@ -295,7 +295,7 @@ def test_query_cmd_tree_no_relevant(mock_qbs):
         assert "No relevant sections" in output
 
 
-@mock.patch("drbrain.cli.commands.query_by_structure_hybrid")
+@mock.patch("drbrain.cli.query_commands.query_by_structure_hybrid")
 def test_query_cmd_tree_json_output(mock_qbs):
     """--paper --json outputs structured JSON."""
     from drbrain.cli.commands import query_cmd

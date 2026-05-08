@@ -923,7 +923,7 @@ def test_clean_cmd_empty_dirs():
                 "reports": f"{td}/reports",
             },
         }
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.check_commands.load_config", return_value=cfg):
             clean_cmd(force=True, config_path="config.yaml")
 
 
@@ -1224,7 +1224,7 @@ def test_clean_cmd_force_no_password():
             },
             # No admin.password_hash — has_password() returns False
         }
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.check_commands.load_config", return_value=cfg):
             # Should not prompt for password and not raise Exit
             clean_cmd(force=True, config_path="config.yaml")
 
@@ -1252,7 +1252,7 @@ def test_clean_cmd_force_with_password_requires_prompt():
             },
             "admin": {"password_hash": pw_hash},
         }
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.check_commands.load_config", return_value=cfg):
             with mock.patch("typer.prompt") as mock_prompt:
                 mock_prompt.return_value = "test123"
                 clean_cmd(force=True, config_path="config.yaml")

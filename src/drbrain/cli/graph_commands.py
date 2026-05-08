@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from drbrain.cli.commands import _resolve_node_type, _resolve_workspace_papers
+from drbrain.cli._common import _resolve_node_type, _resolve_workspace_papers
 from drbrain.graph.engine import GraphEngine
 from drbrain.graph.query_embeddings import query_embed
 from drbrain.services.graph_to_text import describe_path, describe_subgraph

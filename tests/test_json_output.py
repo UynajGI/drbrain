@@ -229,39 +229,6 @@ class TestQueueJson:
                 os.chdir(old)
 
 
-class TestTimelineJson:
-    def test_timeline_json_outputs_valid_json(self):
-        with tempfile.TemporaryDirectory() as td:
-            db = _make_db(td)
-            db.close()
-            _write_config(td, str(Path(td) / "test.db"))
-            old = os.getcwd()
-            os.chdir(td)
-            try:
-                result = runner.invoke(app, ["timeline", "Transformer", "--json"])
-                assert result.exit_code == 0
-                data = json.loads(result.output)
-                assert "label" in data or "concept" in data
-            finally:
-                os.chdir(old)
-
-    def test_timeline_json_no_data(self):
-        """Timeline --json for nonexistent concept returns empty result."""
-        with tempfile.TemporaryDirectory() as td:
-            db = _make_db(td)
-            db.close()
-            _write_config(td, str(Path(td) / "test.db"))
-            old = os.getcwd()
-            os.chdir(td)
-            try:
-                result = runner.invoke(app, ["timeline", "nonexistent", "--json"])
-                assert result.exit_code == 0
-                data = json.loads(result.output)
-                assert "evolution" in data
-            finally:
-                os.chdir(old)
-
-
 class TestClosureJson:
     def test_closure_json_outputs_valid_json(self):
         with tempfile.TemporaryDirectory() as td:

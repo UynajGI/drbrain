@@ -133,7 +133,7 @@ def test_ingest_single_paper_succeeds():
             raw_md="# Test\n\nContent.",
         )
 
-        with mock.patch("drbrain.cli.commands.extract_pdf", return_value=parsed):
+        with mock.patch("drbrain.cli._common.extract_pdf", return_value=parsed):
             result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=True)
 
         # Verify paper was inserted

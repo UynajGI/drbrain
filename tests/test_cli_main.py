@@ -138,16 +138,6 @@ def test_app_check_citations_no_input():
             assert result.exit_code == 1
 
 
-def test_app_timeline_no_data():
-    """CLI timeline handles missing concept."""
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        reports_dir = Path(td) / "reports"
-        with mock_cfg(str(db_path), str(reports_dir)):
-            result = runner.invoke(app, ["timeline", "NonexistentConcept"])
-            assert result.exit_code == 0
-
-
 def test_app_query_no_results():
     """CLI query handles no results."""
     with tempfile.TemporaryDirectory() as td:

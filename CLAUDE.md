@@ -12,7 +12,9 @@ uv run ruff check . && uv run ruff format .
 uv run pytest --cov=drbrain --cov-report=term
 ```
 
-Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`, `fetch`, `embed`, `reason`, `evolve`, `descendants`, `landscape`, `paradigm`, `transfers`, `isomorphism`, `difficulty`, `frontier`.
+Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `check-citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`, `fetch`, `embed`, `reason`, `evolve`, `descendants`, `landscape`, `paradigm`, `transfers`, `isomorphism`, `difficulty`, `frontier`, `report`, `list`, `stats`, `queue`, `delete`, `lineage`.
+
+Sub-apps: `graph` (neighbors, path, related, describe, query, traverse-from), `ws` (create, add, remove, list, show, delete, rename). `queue` has subcommands `resolve` and `resolve-all`.
 
 ## Architecture
 
@@ -28,15 +30,15 @@ DrBrain is a **symbol-driven academic knowledge graph with lightweight vector re
 
 | Area         | Key files                                                                                                                                                | What                                                                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| Graph engine | `graph/engine.py`, `graph/embedding.py`, `graph/genealogy.py`                                                                                                                  | TransE embeddings, rule closure (8+4 rules), hybrid scoring, concept lineage/landscape/paradigm detection                     |
-| Extraction   | `extractor/concept.py`, `extractor/agent.py`, `extractor/reasoner.py`, `extractor/raptor.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, RAPTOR recursive semantic tree            |
-| Reasoning    | `extractor/causal_chain.py`, `extractor/confidence_propagation.py`, `extractor/counterfactual.py`, `extractor/isomorphism.py`, `extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
-| Search       | `query/bm25.py`, `query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search                                               |
-| Embedding    | `services/embedding.py`                                                                                                                                  | Tree node text embeddings (sentence-transformers), FAISS-ready cosine search, provider=none grace  |
-| Quality      | `services/audit.py`, `services/repair.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex                                                  |
-| Import       | `services/zotero_import.py`, `services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
-| Storage      | `storage/database.py`, `storage/export.py`, `storage/workspace.py`                                                                                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD                                   |
-| CLI          | `cli/commands.py`, `cli/graph_commands.py`, `cli/main.py`                                                                                                | Typer CLI, graph traversal, KGQA (`ask`)                                                          |
+| Graph engine | `src/drbrain/graph/engine.py`, `src/drbrain/graph/embedding.py`, `src/drbrain/graph/genealogy.py`                                                                                                                  | TransE embeddings, rule closure (8+4 rules), hybrid scoring, concept lineage/landscape/paradigm detection                     |
+| Extraction   | `src/drbrain/extractor/concept.py`, `src/drbrain/extractor/agent.py`, `src/drbrain/extractor/reasoner.py`, `src/drbrain/extractor/raptor.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, RAPTOR recursive semantic tree            |
+| Reasoning    | `src/drbrain/extractor/causal_chain.py`, `src/drbrain/extractor/confidence_propagation.py`, `src/drbrain/extractor/counterfactual.py`, `src/drbrain/extractor/isomorphism.py`, `src/drbrain/extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
+| Search       | `src/drbrain/query/bm25.py`, `src/drbrain/query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search                                               |
+| Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node text embeddings (sentence-transformers), FAISS-ready cosine search, provider=none grace  |
+| Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex                                                  |
+| Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
+| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/workspace.py`                                                                                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD                                   |
+| CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py` | Typer CLI, graph traversal, KGQA (`ask`), setup validation                                                          |
 
 ### Data Layout
 
@@ -46,7 +48,7 @@ data/
 ├── spool/pending/      Failed ingests
 ├── papers/<id>/        source.pdf, raw.md, tree.json, images/
 ├── drbrain.db          SQLite (WAL mode, schema_versions)
-├── metrics.db          LLM token tracking
+├── metrics.db          LLM token tracking (created on first use)
 ├── cache/              API cache (rebuildable)
 ├── logs/               loguru rotating logs
 ├── backups/            tar.gz exports
@@ -56,14 +58,14 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 
 ### Design Points
 
-- **Config**: `config.py` typed dataclass hierarchy. `config.yaml` + `config.local.yaml` (gitignored). Env var `${VAR_NAME}` resolution. Sub-configs support dict-style `[]` access.
+- **Config**: `src/drbrain/config.py` typed dataclass hierarchy. `config.yaml` + `config.local.yaml` (gitignored). Env var `${VAR_NAME}` resolution. Sub-configs support dict-style `[]` access.
 - **Logging/Metrics**: loguru + `get_session_id()` (UUID4), `ui()` for user output. SQLite metrics with WAL + thread-safety, `timer()` / `timed()`.
 - **API clients**: `requests.Session` + `urllib3.Retry` on 429/5xx. MinerU exponential backoff.
 - **LLM**: `acall_with_fallback()` iterates model list in config; any litellm provider.
 - **Lightweight vectors**: Vectors for semantically-complete tree nodes only (PageIndex sections, RAPTOR summaries). Stored in `tree_vectors` table with FAISS. `provider=none` disables — pure BM25 + LLM navigation. Never chunk-level embedding. Reference: ScholarAIO embedding engine.
 - **Section provenance**: `section` and `node_id` fields flow from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.). `node_id` links back to PageIndex tree nodes.
 - **DB tables**: concepts, arguments, edges, aliases, embeddings, tree_vectors, tree_summaries, vector_metadata, papers, paper_ids, confidence_queue, citation_cache, research_seeds, build_stages, schema_versions.
-- **Atomic writes**: tmp→rename pattern throughout. `storage/paths.py` for centralized paths.
+- **Atomic writes**: tmp→rename pattern throughout. `src/drbrain/storage/paths.py` for centralized paths.
 
 ### Testing
 

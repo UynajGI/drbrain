@@ -7,54 +7,60 @@ import sys
 import typer
 from loguru import logger
 
-from drbrain.cli.commands import (
-    analyze_cmd,
+from drbrain.cli.analysis_commands import (
     ask_cmd,
-    backup_cmd,
-    build_cmd,
-    check_citations_cmd,
-    check_cmd,
-    citations_cmd,
-    clean_cmd,
-    closure_cmd,
-    delete_cmd,
     descendants_cmd,
     difficulty_cmd,
-    embed_cmd,
     evolve_cmd,
-    export_cmd,
-    fetch_cmd,
     frontier_cmd,
-    import_cmd,
-    index_cmd,
-    ingest_cmd,
     isomorphism_cmd,
     landscape_cmd,
-    lineage_cmd,
-    list_cmd,
     paradigm_cmd,
-    query_cmd,
+    reason_cmd,
+    transfers_cmd,
+)
+from drbrain.cli.build_commands import (
+    build_cmd,
+    embed_cmd,
+    translate_cmd,
+)
+from drbrain.cli.check_commands import (
+    analyze_cmd,
+    check_cmd,
+    clean_cmd,
+)
+from drbrain.cli.export_commands import (
+    backup_cmd,
+    delete_cmd,
+    export_cmd,
+    lineage_cmd,
     queue_cmd,
     queue_resolve_all_cmd,
     queue_resolve_cmd,
-    reason_cmd,
-    repair_cmd,
+)
+from drbrain.cli.graph_commands import graph_app
+from drbrain.cli.ingest_commands import (
+    check_citations_cmd,
+    citations_cmd,
+    closure_cmd,
+    fetch_cmd,
+    ingest_cmd,
     report_cmd,
+)
+from drbrain.cli.query_commands import (
+    index_cmd,
+    list_cmd,
+    query_cmd,
     seed_cmd,
     show_cmd,
     stats_cmd,
-    transfers_cmd,
-    translate_cmd,
-    ws_add_cmd,
-    ws_create_cmd,
-    ws_delete_cmd,
-    ws_list_cmd,
-    ws_remove_cmd,
-    ws_rename_cmd,
-    ws_show_cmd,
 )
-from drbrain.cli.graph_commands import graph_app
+from drbrain.cli.repair_commands import (
+    import_cmd,
+    repair_cmd,
+)
 from drbrain.cli.setup import setup_cmd
+from drbrain.cli.ws_commands import ws_app
 from drbrain.log import setup_logging
 from drbrain.services.audit import audit_cmd
 
@@ -68,11 +74,9 @@ def _main_callback(ctx: typer.Context) -> None:
     from drbrain.config import load_config
     from drbrain.log import get_session_id
 
-    # Load config once, cache in context
     ctx.ensure_object(dict)
     ctx.obj["config"] = load_config()
 
-    # Log command invocation
     cmd = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(no args)"
     logger.info(f"CLI invoked [{get_session_id()}]: {cmd}")
 
@@ -117,18 +121,8 @@ app.command("difficulty")(difficulty_cmd)
 app.command("frontier")(frontier_cmd)
 app.command("reason")(reason_cmd)
 
-# Graph subcommands
+# Sub-apps
 app.add_typer(graph_app, name="graph")
-
-# Workspace subcommands
-ws_app = typer.Typer(help="Manage paper workspaces")
-ws_app.command("create")(ws_create_cmd)
-ws_app.command("add")(ws_add_cmd)
-ws_app.command("remove")(ws_remove_cmd)
-ws_app.command("list")(ws_list_cmd)
-ws_app.command("show")(ws_show_cmd)
-ws_app.command("delete")(ws_delete_cmd)
-ws_app.command("rename")(ws_rename_cmd)
 app.add_typer(ws_app, name="ws")
 
 if __name__ == "__main__":

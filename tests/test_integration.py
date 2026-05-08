@@ -70,7 +70,7 @@ def test_ingest_real_pdf(pdf_path: str):
 
         cfg = _minimal_cfg(str(db_path), str(reports_dir), str(papers_dir))
 
-        with mock.patch("drbrain.cli.commands.load_config", return_value=cfg):
+        with mock.patch("drbrain.cli.ingest_commands.load_config", return_value=cfg):
             result = runner.invoke(app, ["ingest", pdf_path])
 
         assert result.exit_code == 0, f"Ingest failed for {pdf_path}: {result.output}"

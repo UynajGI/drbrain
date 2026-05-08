@@ -39,13 +39,6 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _embed_signature(cfg: EmbedConfig | None = None) -> str:
-    """Build a stable signature for current embedding backend settings."""
-    if cfg is None:
-        return "local:Qwen/Qwen3-Embedding-0.6B:auto"
-    return f"{cfg.provider}:{cfg.model}:{cfg.device}"
-
-
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     import numpy as np
