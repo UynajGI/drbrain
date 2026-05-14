@@ -66,12 +66,14 @@ Show how a concept evolved — ancestors and descendants in the knowledge graph 
 | `--direction` | `-d` | `ancestors`, `descendants`, or `both` (default: `both`) |
 | `--max-depth` | `-n` | Max traversal depth (default: 3) |
 | `--mermaid` | | Output as Mermaid diagram |
+| `--stats` | | Show temporal evolution signal (emerging/established/declining/contested/resurging) and year-by-year counts |
 | `--json` | | Output as JSON |
 
 ```bash
 drbrain evolve "Transformer"
 drbrain evolve "graph neural network" --direction descendants --max-depth 5
 drbrain evolve "Attention" --mermaid
+drbrain evolve "Dropout" --stats
 ```
 
 ### `drbrain descendants`
@@ -535,15 +537,6 @@ Display a single-paper report with graph coverage and concept statistics.
 ```bash
 drbrain report p6a321e
 drbrain report p6a321e --json
-```
-
-### `drbrain timeline`
-
-Show concept evolution over time -- when it first appeared, adoption trend, and year-by-year confidence.
-
-```bash
-drbrain timeline "Attention"
-drbrain timeline "Reinforcement Learning" --json
 ```
 
 ### `drbrain lineage`

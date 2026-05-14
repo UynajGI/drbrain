@@ -155,37 +155,6 @@ def test_queue_reject(tmp_db):
     assert status == "rejected"
 
 
-def test_get_concept_evolution(tmp_db):
-    """get_concept_evolution returns year-by-year usage."""
-    tmp_db.insert_paper("p1", "A", 2020, "uploaded")
-    tmp_db.insert_paper("p2", "B", 2021, "uploaded")
-    tmp_db.insert_paper("p3", "C", 2022, "uploaded")
-    tmp_db.insert_concept("p1", "Method", "Transformer", 0.9, year=2020)
-    tmp_db.insert_concept("p2", "Method", "Transformer", 0.8, year=2021)
-    tmp_db.insert_concept("p3", "Method", "Transformer", 0.95, year=2022)
-    tmp_db.commit()
-
-    evolution = tmp_db.get_concept_evolution("Transformer")
-    assert len(evolution) == 3
-    years = [e["year"] for e in evolution]
-    assert years == [2020, 2021, 2022]
-
-
-def test_detect_evolution_signals(tmp_db):
-    """detect_evolution_signals classifies concepts by temporal patterns."""
-    current_year = datetime.now().year
-    tmp_db.insert_paper("p1", "A", current_year, "uploaded")
-    tmp_db.insert_paper("p2", "B", current_year, "uploaded")
-    tmp_db.insert_concept("p1", "Method", "NewThing", 0.9, year=current_year)
-    tmp_db.insert_concept("p2", "Method", "NewThing", 0.85, year=current_year)
-    tmp_db.commit()
-
-    signals = tmp_db.detect_evolution_signals()
-    new_thing = [s for s in signals if s["label"] == "NewThing"]
-    assert len(new_thing) == 1
-    assert "signal" in new_thing[0]
-
-
 def test_insert_edge_dedup(tmp_db):
     """Duplicate edges are ignored (INSERT OR IGNORE)."""
     tmp_db.insert_edge("p1", "p2", "cites", "p1")
@@ -280,3 +249,168 @@ def test_insert_paper_volume_pages_default_empty(tmp_db):
     p = db.get_paper("ptest3")
     assert p["volume"] == ""
     assert p["pages"] == ""
+
+
+# ── Temporal evolution signals ──────────────────────────────────
+
+
+def _seed_papers_and_concepts(db, label, ctype, year_confidence_pairs):
+    for i, (year, conf) in enumerate(year_confidence_pairs):
+        pid = f"p{i:03d}_{label.replace(' ', '_')}"
+        db.insert_paper(pid, f"Paper about {label} ({year})", year, "uploaded")
+        db.insert_concept(pid, ctype, label, conf, year=year)
+    db.commit()
+
+
+def test_signal_emerging(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "quantum transformer",
+        "Method",
+        [
+            (current - 2, 0.9),
+            (current - 1, 0.88),
+            (current - 1, 0.91),
+            (current, 0.85),
+            (current, 0.90),
+            (current, 0.87),
+            (current, 0.92),
+        ],
+    )
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "quantum transformer"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] == "emerging"
+
+
+def test_signal_established(tmp_db):
+    current = datetime.now().year
+    pairs = [(current - 5 + (i % 6), 0.85 + (i % 10) * 0.01) for i in range(12)]
+    _seed_papers_and_concepts(tmp_db, "attention mechanism", "Method", pairs)
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "attention mechanism"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] == "established"
+
+
+def test_signal_declining(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "rnn language model",
+        "Method",
+        [
+            (current - 8, 0.9),
+            (current - 7, 0.88),
+            (current - 5, 0.85),
+            (current - 4, 0.82),
+        ],
+    )
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "rnn language model"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] == "declining"
+
+
+def test_signal_contested(tmp_db):
+    _seed_papers_and_concepts(
+        tmp_db,
+        "consciousness in llm",
+        "Debate",
+        [
+            (2023, 0.5),
+            (2023, 0.6),
+            (2024, 0.55),
+            (2024, 0.65),
+            (2024, 0.45),
+            (2025, 0.6),
+            (2025, 0.5),
+            (2025, 0.7),
+        ],
+    )
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "consciousness in llm"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] == "contested"
+
+
+def test_signal_resurging(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "symbolic ai",
+        "Method",
+        [
+            (current - 10, 0.9),
+            (current - 9, 0.88),
+            (current - 8, 0.85),
+            (current - 1, 0.75),
+            (current, 0.80),
+        ],
+    )
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "symbolic ai"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] == "resurging"
+
+
+def test_signal_unknown(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "obscure method",
+        "Method",
+        [
+            (current - 2, 0.9),
+        ],
+    )
+    signals = tmp_db.detect_evolution_signals()
+    matching = [s for s in signals if s["label"] == "obscure method"]
+    assert len(matching) == 1
+    assert matching[0]["signal"] in ("unknown", "established")
+
+
+def test_get_concept_signal(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "transformer",
+        "Method",
+        [
+            (current - 5, 0.95),
+            (current - 4, 0.93),
+            (current - 4, 0.91),
+            (current - 3, 0.90),
+            (current - 3, 0.88),
+        ],
+    )
+    signal = tmp_db.get_concept_signal("transformer")
+    assert signal is not None
+    assert "label" in signal
+    assert "signal" in signal
+    assert tmp_db.get_concept_signal("nonexistent") is None
+
+
+def test_get_concept_evolution(tmp_db):
+    current = datetime.now().year
+    _seed_papers_and_concepts(
+        tmp_db,
+        "diffusion model",
+        "Method",
+        [
+            (current - 3, 0.9),
+            (current - 2, 0.88),
+            (current - 2, 0.91),
+            (current - 1, 0.85),
+            (current - 1, 0.90),
+            (current - 1, 0.87),
+        ],
+    )
+    evolution = tmp_db.get_concept_evolution("diffusion model")
+    assert len(evolution) == 3
+    assert evolution[0]["year"] == current - 3
+    assert "trend" in evolution[0]
+    last = evolution[-1]
+    assert last["year"] == current - 1
+    assert last["count"] == 3

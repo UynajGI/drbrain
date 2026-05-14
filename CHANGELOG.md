@@ -7,11 +7,15 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ## [Unreleased]
 
+### Added
+- **`evolve --stats` flag**: Temporal evolution signal classification (emerging/established/declining/contested/resurging) and year-by-year counts with trend indicators (growing/declining/stable). New `get_concept_signal()` and `get_concept_evolution()` methods in `Database` class.
+
 ### Changed
 - **CLI module split**: `cli/commands.py` (4331 lines) split into 8 focused modules — `ingest_commands.py`, `query_commands.py`, `export_commands.py`, `check_commands.py`, `ws_commands.py`, `repair_commands.py`, `build_commands.py`, `analysis_commands.py`. Shared helpers extracted to `cli/_common.py`. `cli/commands.py` retained as backward-compatible re-export shim. `ws_commands.py` uses `@ws_app.command()` decorator pattern matching `graph_commands.py`. All existing imports and tests remain compatible.
 
 ### Removed
 - **Dead code**: `_embed_signature` (services/embedding.py), `expand_citations_oa` (extractor/citation.py), `_pick_main_pdf` (services/zotero_import.py). None had any callers.
+- **`timeline` command**: Removed `drbrain timeline`. Functionality superseded by `drbrain evolve --stats`.
 
 ### Added
 - **Tree-graph provenance (Layer 1)**: `node_id` column on concepts and arguments tables linking back to PageIndex tree nodes. New tables: `tree_vectors` (per-node embeddings), `tree_summaries` (RAPTOR recursive summaries), `vector_metadata` (signature tracking). Migration v4 auto-applies on next `Database()` init. `insert_concept()` and `insert_argument()` accept optional `node_id` parameter.

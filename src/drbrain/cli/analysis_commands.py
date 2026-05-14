@@ -16,6 +16,40 @@ from drbrain.graph.engine import GraphEngine
 from drbrain.storage.database import Database
 
 
+def _print_evolution_stats(db: Database, concept: str) -> None:
+    """Print temporal evolution signal and year-by-year counts for a concept."""
+    signal = db.get_concept_signal(concept)
+    evolution = db.get_concept_evolution(concept)
+
+    if signal:
+        sig = signal["signal"]
+        emoji = {
+            "emerging": "🆕",
+            "established": "✅",
+            "declining": "📉",
+            "contested": "⚔️",
+            "resurging": "🔄",
+        }.get(sig, "")
+        typer.echo(
+            f"\n  {emoji} Signal: {sig}  "
+            f"({signal['paper_count']} papers, "
+            f"avg confidence {signal['avg_confidence']}, "
+            f"{signal['first_seen']}–{signal['last_seen']})"
+        )
+
+    if evolution:
+        typer.echo("  Year-by-year:")
+        for entry in evolution:
+            bar = "█" * entry["count"]
+            trend_tag = {"growing": "↑", "declining": "↓", "first_appeared": "·"}.get(
+                entry["trend"], " "
+            )
+            typer.echo(
+                f"    {entry['year']}  {bar} {entry['count']} "
+                f"(conf {entry['avg_conf']}) {trend_tag}"
+            )
+
+
 def reason_cmd(
     ctx: typer.Context,
     question: str = typer.Argument(..., help="Question to reason about using the knowledge graph"),
@@ -163,6 +197,9 @@ def evolve_cmd(
     max_depth: int = typer.Option(3, "--max-depth", "-n", help="Max traversal depth"),
     mermaid: bool = typer.Option(False, "--mermaid", help="Output as Mermaid diagram"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    stats: bool = typer.Option(
+        False, "--stats", help="Show temporal evolution signal and year-by-year counts"
+    ),
 ):
     """Show how a concept evolved — its ancestors and descendants in the knowledge graph."""
     if direction not in ("ancestors", "descendants", "both"):
@@ -184,13 +221,20 @@ def evolve_cmd(
         raise typer.Exit(0)
 
     if json_output:
-        typer.echo(json.dumps(trees, indent=2, ensure_ascii=False, default=str))
+        result = {"trees": trees}
+        if stats:
+            signal = db.get_concept_signal(concept)
+            evolution = db.get_concept_evolution(concept)
+            result["stats"] = {"signal": signal, "evolution": evolution}
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     elif mermaid:
         typer.echo(format_tree(trees, mermaid=True))
     else:
         typer.echo(f"\nEvolution of: {concept}\n")
         for root in trees:
             typer.echo(format_tree([root]))
+        if stats:
+            _print_evolution_stats(db, concept)
 
     db.close()
 
