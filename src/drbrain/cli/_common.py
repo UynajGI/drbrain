@@ -911,3 +911,52 @@ def _render_landscape(result: dict, top_n: int):
             typer.echo(f"  * {d['description'][:120]} ({d.get('concept', '')})")
             if provenance:
                 typer.echo(f"        {provenance}")
+
+
+def _build_closure_context(
+    graph,
+    seed_labels: list[str],
+    top_k: int = 5,
+) -> str:
+    """Build a context string from closure-inferred edges for seed concept labels.
+
+    Runs ``closure_incremental`` scoped to the given seed labels, sorts by
+    confidence (descending), and returns lines in the format::
+
+        --[inferred: <relation>]--> <dst> (confidence: X.XX, via: <via>)
+
+    Args:
+        graph: GraphEngine instance loaded from DB.
+        seed_labels: Concept labels that were matched by BM25/search.
+        top_k: Maximum number of inferred edges to include.
+
+    Returns:
+        Formatted multi-line string, or empty string if no edges inferred.
+    """
+    if not seed_labels or graph.graph.number_of_edges() == 0:
+        return ""
+
+    inferred = graph.closure_incremental(set(seed_labels))
+    if not inferred:
+        return ""
+
+    # Sort by confidence descending (default 1.0 if missing)
+    sorted_edges = sorted(
+        inferred,
+        key=lambda e: e.get("confidence", 1.0),
+        reverse=True,
+    )
+
+    lines: list[str] = []
+    for edge in sorted_edges[:top_k]:
+        relation = edge["relation"].replace("_", " ")
+        conf = edge.get("confidence", 1.0)
+        via = edge.get("via", "")
+        # Build annotation
+        annotation_parts = [f"confidence: {conf:.2f}"]
+        if via:
+            annotation_parts.append(f"via: {via}")
+        annotation = ", ".join(annotation_parts)
+        lines.append(f"  --[inferred: {relation}]--> {edge['dst']} ({annotation})")
+
+    return "\n".join(lines)

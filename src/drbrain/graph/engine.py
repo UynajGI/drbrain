@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import networkx as nx
+import numpy as np
 
 from drbrain.graph.path_reasoning import _apply_path_rules_subgraph, apply_path_rules
 from drbrain.validator.schema import detect_asymmetric_violations, enforce_transitive
@@ -34,6 +35,7 @@ class GraphEngine:
 
     def __init__(self):
         self.graph = nx.MultiDiGraph()
+        self._transE = None  # cached TransE instance from learn_embeddings()
 
     def add_edge(
         self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0
@@ -280,10 +282,14 @@ class GraphEngine:
 
         # Hybrid mode: re-weight confidence with TransE embedding scores
         if mode == "hybrid" and inferred:
-            from drbrain.graph.embedding import TransE
+            if self._transE is not None:
+                t = self._transE
+            else:
+                from drbrain.graph.embedding import TransE
 
-            t = TransE(dim=128, epochs=50)
-            t.train(self.graph)
+                t = TransE(dim=128, epochs=50)
+                t.train(self.graph)
+
             for edge in inferred:
                 score = t.score(edge["src"], edge["relation"], edge["dst"])
                 edge["embedding_score"] = round(float(1.0 / (1.0 + score)), 4)
@@ -598,6 +604,142 @@ class GraphEngine:
                 )
 
         return seeds
+
+    # ── Layer 1: TransE Embeddings ──────────────────────────────────────
+
+    def learn_embeddings(
+        self, dim: int = 128, epochs: int = 100, lr: float = 0.01, db=None
+    ) -> None:
+        """Train TransE embeddings on current graph edges.
+
+        Loads existing embeddings from *db* as warm-start initialization
+        (incremental training). If *db* is provided, persists trained
+        vectors to the ``embeddings`` table.  Relations are stored with
+        the ``__rel__`` prefix to distinguish them from entities.
+
+        Args:
+            dim: Embedding dimension.
+            epochs: Training epochs.
+            lr: Learning rate.
+            db: Optional Database instance for persistence and warm-start.
+        """
+        from drbrain.graph.embedding import TransE
+        from drbrain.graph.query_embeddings import RELATION_PREFIX
+
+        # Warm-start from existing DB embeddings
+        init_entities = None
+        init_relations = None
+        if db:
+            raw = db.load_embeddings()
+            if raw:
+                init_entities = {}
+                init_relations = {}
+                for key, vec in raw.items():
+                    if key.startswith(RELATION_PREFIX):
+                        init_relations[key[len(RELATION_PREFIX) :]] = vec
+                    else:
+                        init_entities[key] = vec
+
+        t = TransE(dim=dim, epochs=epochs, lr=lr)
+        t.train(self.graph, init_entities=init_entities, init_relations=init_relations)
+
+        # Persist to DB
+        if db:
+            for entity, vec in t.entities.items():
+                db.save_embedding(entity, vec, dim)
+            for rel_name, vec in t.relations.items():
+                db.save_embedding(RELATION_PREFIX + rel_name, vec, dim)
+            db.commit()
+
+        self._transE = t
+
+    def entity_embedding(self, label: str, db=None) -> np.ndarray | None:
+        """Return the TransE embedding vector for *label*.
+
+        Checks the in-memory cache first, then falls back to the
+        ``embeddings`` table when *db* is provided.
+
+        Args:
+            label: Entity label.
+            db: Optional Database instance.
+
+        Returns:
+            Float32 numpy array of shape ``(dim,)``, or ``None`` if the
+            entity is unknown.
+        """
+        if self._transE:
+            emb = self._transE.entity_embedding(label)
+            if emb is not None:
+                return emb
+        if db:
+            row = db.conn.execute(
+                "SELECT vec FROM embeddings WHERE entity = ?", (label,)
+            ).fetchone()
+            if row:
+                return np.frombuffer(row[0], dtype=np.float32)
+        return None
+
+    def predict_link(
+        self, head: str, relation: str, top_k: int = 10, db=None
+    ) -> list[tuple[str, float]]:
+        """Predict tail entities for *(head, relation)* via TransE scoring.
+
+        Returns the *top_k* entities ranked by ascending TransE distance
+        ``||h + r - t||``.  Requires embeddings to be loaded (via
+        ``learn_embeddings`` or from *db*).
+
+        Args:
+            head: Head entity label.
+            relation: Relation name.
+            top_k: Number of predictions to return.
+            db: Optional Database to load embeddings from.
+
+        Returns:
+            List of ``(label, score)`` tuples, or empty list if no
+            embeddings are available.
+        """
+        self._ensure_embeddings(db)
+        if self._transE:
+            return self._transE.predict_link(head, relation, top_k)
+        return []
+
+    def similar_entities(self, label: str, top_k: int = 10, db=None) -> list[tuple[str, float]]:
+        """Find entities with similar embedding vectors via cosine similarity.
+
+        Requires embeddings to be loaded (via ``learn_embeddings`` or
+        from *db*).
+
+        Args:
+            label: Entity label.
+            top_k: Number of results to return.
+            db: Optional Database to load embeddings from.
+
+        Returns:
+            List of ``(label, similarity)`` tuples (higher is more
+            similar), or empty list if no embeddings are available.
+        """
+        self._ensure_embeddings(db)
+        if self._transE:
+            return self._transE.similar_entities(label, top_k)
+        return []
+
+    def _ensure_embeddings(self, db=None) -> None:
+        """Load embeddings from *db* into the cache when it is empty."""
+        if self._transE is not None:
+            return
+        if db:
+            from drbrain.graph.embedding import TransE
+            from drbrain.graph.query_embeddings import RELATION_PREFIX
+
+            raw = db.load_embeddings()
+            if raw:
+                t = TransE()
+                for key, vec in raw.items():
+                    if key.startswith(RELATION_PREFIX):
+                        t.relations[key[len(RELATION_PREFIX) :]] = vec
+                    else:
+                        t.entities[key] = vec
+                self._transE = t
 
     def load_from_db(self, db, paper_ids: set[str] | None = None) -> None:
         """Load all edges from database into NetworkX graph.

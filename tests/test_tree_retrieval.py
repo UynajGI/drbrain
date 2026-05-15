@@ -1,6 +1,8 @@
 """Tests for structure-first retrieval using PageIndex tree."""
 
 import json
+import sqlite3
+import struct
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -15,6 +17,7 @@ from drbrain.query.tree_retrieval import (
     _expand_branch,
     _get_node_title,
     query_by_structure,
+    tree_traversal_search,
 )
 
 
@@ -620,3 +623,274 @@ def test_expand_branch_no_match():
     structure = [{"title": "A", "node_id": "n1", "nodes": []}]
     result = _expand_branch(structure, {"nonexistent"})
     assert result == []
+
+
+# ── RAPTOR Figure 2: tree traversal search ────────────────────────────────
+
+
+def _pack_vec(vec: list[float]) -> bytes:
+    """Pack float list into float32 blob for tree_vectors.embedding."""
+    return struct.pack(f"{len(vec)}f", *vec)
+
+
+def _setup_traversal_db(db_path: str) -> None:
+    """Create a test DB with multi-layer RAPTOR tree + PageIndex nodes.
+
+    Tree structure:
+        raptor_L2: r2_0 (summarizes r1_0, r1_1)
+        raptor_L1: r1_0 (summarizes n0, n1), r1_1 (summarizes n2, n3)
+        pageindex: n0, n1, n2, n3
+
+    Vectors (2D, normalized-ish):
+        n0: [1.0, 0.0]   — most relevant to query [1.0, 0.1]
+        n1: [0.8, 0.2]
+        n2: [0.0, 1.0]
+        n3: [-1.0, 0.0]
+        r1_0: [0.9, 0.1] — summary of n0+n1
+        r1_1: [-0.5, 0.5] — summary of n2+n3
+        r2_0: [0.3, 0.3] — summary of r1_0+r1_1
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS tree_vectors (
+            node_id TEXT PRIMARY KEY,
+            paper_id TEXT NOT NULL,
+            embedding BLOB NOT NULL,
+            content_hash TEXT NOT NULL DEFAULT '',
+            tree_layer TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS tree_summaries (
+            node_id TEXT PRIMARY KEY,
+            paper_id TEXT NOT NULL,
+            summary_text TEXT NOT NULL DEFAULT '',
+            source_node_ids TEXT NOT NULL DEFAULT '',
+            tree_layer INTEGER NOT NULL DEFAULT 0
+        );
+    """)
+
+    paper = "test_paper"
+
+    # PageIndex leaf nodes
+    pageindex_vecs = {
+        "n0": [1.0, 0.0],
+        "n1": [0.8, 0.2],
+        "n2": [0.0, 1.0],
+        "n3": [-1.0, 0.0],
+    }
+    for nid, vec in pageindex_vecs.items():
+        conn.execute(
+            "INSERT INTO tree_vectors (node_id, paper_id, embedding, tree_layer) "
+            "VALUES (?, ?, ?, 'pageindex')",
+            (nid, paper, _pack_vec(vec)),
+        )
+
+    # RAPTOR L1: r1_0 summarizes n0,n1; r1_1 summarizes n2,n3
+    l1_vecs = {
+        "r1_0": [0.9, 0.1],
+        "r1_1": [-0.5, 0.5],
+    }
+    for nid, vec in l1_vecs.items():
+        conn.execute(
+            "INSERT INTO tree_vectors (node_id, paper_id, embedding, tree_layer) "
+            "VALUES (?, ?, ?, 'raptor_L1')",
+            (nid, paper, _pack_vec(vec)),
+        )
+    conn.execute(
+        "INSERT INTO tree_summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+        "VALUES ('r1_0', ?, 'summary of n0 n1', ?, 1)",
+        (paper, json.dumps(["n0", "n1"])),
+    )
+    conn.execute(
+        "INSERT INTO tree_summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+        "VALUES ('r1_1', ?, 'summary of n2 n3', ?, 1)",
+        (paper, json.dumps(["n2", "n3"])),
+    )
+
+    # RAPTOR L2: r2_0 summarizes r1_0, r1_1
+    conn.execute(
+        "INSERT INTO tree_vectors (node_id, paper_id, embedding, tree_layer) "
+        "VALUES ('r2_0', ?, ?, 'raptor_L2')",
+        (paper, _pack_vec([0.3, 0.3])),
+    )
+    conn.execute(
+        "INSERT INTO tree_summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+        "VALUES ('r2_0', ?, 'summary of r1_0 r1_1', ?, 2)",
+        (paper, json.dumps(["r1_0", "r1_1"])),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def test_tree_traversal_basic_finds_most_relevant_leaf():
+    """Stage 1 traversal narrows from root to leaf, returning top-k pageindex nodes.
+
+    Query [1.0, 0.1] is closest to n0 [1.0, 0.0].
+    Traversal path: raptor_L2(r2_0) → raptor_L1(r1_0, r1_1) → pageindex(n0, n1, n2, n3).
+    r1_1 is filtered out at L1 (low score), so only n0 and n1 are searched at pageindex.
+    """
+    query_vec = [1.0, 0.1]
+
+    with mock.patch("drbrain.services.embedding._embed_batch") as mock_embed:
+        mock_embed.return_value = [query_vec]
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.db"
+            _setup_traversal_db(str(db_path))
+
+            results = tree_traversal_search("test query", db_path, top_k=2, min_results=1)
+
+    # Should return top-2 pageindex results after traversal pruning
+    assert len(results) >= 1
+    assert all(r["tree_layer"] == "pageindex" for r in results)
+    # n0 should be top result (cosine ~1.0 with query)
+    assert results[0]["node_id"] == "n0"
+    assert results[0]["score"] > 0.9
+    # n1 should be second (cosine ~0.82)
+    node_ids = {r["node_id"] for r in results}
+    assert "n0" in node_ids
+
+
+def test_tree_traversal_narrows_search_space():
+    """Tree traversal performs fewer comparisons than collapsed tree search.
+
+    With 4 pageindex + 2 L1 + 1 L2 = 7 total vectors:
+    - Collapsed search scans all 7
+    - Traversal scans: L2(1) + L1(2) + pageindex(2 after r1_1 filtered) = max 5
+    The pruning at L1 (r1_1 is low-scoring so its children n2,n3 are skipped)
+    is what makes Stage 1 token-efficient.
+    """
+    query_vec = [1.0, 0.1]
+
+    with mock.patch("drbrain.services.embedding._embed_batch") as mock_embed:
+        mock_embed.return_value = [query_vec]
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.db"
+            _setup_traversal_db(str(db_path))
+
+            results = tree_traversal_search("test query", db_path, top_k=1, min_results=3)
+
+    # With top_k=1 at each layer, only the best path is followed
+    # Should still find n0 at the leaf
+    assert len(results) >= 1
+    assert any(r["node_id"] == "n0" for r in results)
+
+
+def test_tree_traversal_provider_none_returns_empty():
+    """When embed provider is 'none', traversal returns empty list."""
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        _setup_traversal_db(str(db_path))
+
+        # Pass config with provider=none
+        from drbrain.config import EmbedConfig
+
+        cfg = EmbedConfig(provider="none")
+        results = tree_traversal_search("query", db_path, top_k=3, min_results=2, cfg=cfg)
+
+    assert results == []
+
+
+def test_tree_traversal_empty_db_returns_empty():
+    """Empty tree_vectors table returns empty list."""
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "nonexistent.db"
+        results = tree_traversal_search("query", db_path, top_k=3, min_results=2)
+    assert results == []
+
+
+@mock.patch("drbrain.services.embedding.search_tree")
+def test_tree_traversal_fallback_on_few_results(mock_search_tree):
+    """Stage 2: when traversal returns < min_results, collapsed tree fallback kicks in."""
+    query_vec = [0.5, 0.5]
+
+    with mock.patch("drbrain.services.embedding._embed_batch") as mock_embed:
+        mock_embed.return_value = [query_vec]
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.db"
+            _setup_traversal_db(str(db_path))
+
+            # min_results=10 but we have only 4 pageindex nodes
+            # so fallback should trigger
+            mock_search_tree.return_value = [
+                {"node_id": "extra1", "paper_id": "p1", "score": 0.9, "tree_layer": "pageindex"},
+                {"node_id": "extra2", "paper_id": "p1", "score": 0.8, "tree_layer": "pageindex"},
+            ]
+
+            results = tree_traversal_search("test query", db_path, top_k=5, min_results=10)
+
+    # Should contain both traversal results and fallback results
+    assert mock_search_tree.called
+    assert len(results) > 0
+    node_ids = {r["node_id"] for r in results}
+    assert "n0" in node_ids  # from traversal
+    assert "extra1" in node_ids  # from fallback
+
+
+def test_tree_traversal_only_pageindex_no_raptor():
+    """When only pageindex layer exists (no RAPTOR), returns pageindex results directly."""
+    query_vec = [1.0, 0.0]
+
+    with mock.patch("drbrain.services.embedding._embed_batch") as mock_embed:
+        mock_embed.return_value = [query_vec]
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS tree_vectors (
+                    node_id TEXT PRIMARY KEY,
+                    paper_id TEXT NOT NULL,
+                    embedding BLOB NOT NULL,
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    tree_layer TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS tree_summaries (
+                    node_id TEXT PRIMARY KEY,
+                    paper_id TEXT NOT NULL,
+                    summary_text TEXT NOT NULL DEFAULT '',
+                    source_node_ids TEXT NOT NULL DEFAULT '',
+                    tree_layer INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+            paper = "p1"
+            for nid, vec in [("a", [1.0, 0.0]), ("b", [0.7, 0.3]), ("c", [-0.5, 0.5])]:
+                conn.execute(
+                    "INSERT INTO tree_vectors (node_id, paper_id, embedding, tree_layer) "
+                    "VALUES (?, ?, ?, 'pageindex')",
+                    (nid, paper, _pack_vec(vec)),
+                )
+            conn.commit()
+            conn.close()
+
+            results = tree_traversal_search("query", db_path, top_k=2, min_results=1)
+
+    assert len(results) == 2
+    assert results[0]["node_id"] == "a"
+
+
+def test_tree_traversal_result_structure():
+    """Each result has node_id, paper_id, score, tree_layer fields."""
+    query_vec = [1.0, 0.1]
+
+    with mock.patch("drbrain.services.embedding._embed_batch") as mock_embed:
+        mock_embed.return_value = [query_vec]
+
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "test.db"
+            _setup_traversal_db(str(db_path))
+
+            results = tree_traversal_search("query", db_path, top_k=3, min_results=1)
+
+    for r in results:
+        assert "node_id" in r
+        assert "paper_id" in r
+        assert "score" in r
+        assert "tree_layer" in r
+        assert isinstance(r["paper_id"], str)
+        assert isinstance(r["score"], float)
+        assert isinstance(r["tree_layer"], str)

@@ -8,6 +8,7 @@ import json
 import typer
 
 from drbrain.cli._common import (
+    _build_closure_context,
     _enrich_tree_with_sections,
     _render_landscape,
     _resolve_workspace_papers,
@@ -74,13 +75,24 @@ def reason_cmd(
     graph = GraphEngine()
     graph.load_from_db(db)
 
+    # Compute closure-inferred edges for initial seed concepts
+    closure_ctx = ""
+    if graph.graph.number_of_edges() > 0:
+        from drbrain.query.bm25 import build_bm25_index
+
+        idx = build_bm25_index(db)
+        initial_results = idx.search(question, limit=5)
+        seed_labels = [r.get("label", "") for r in initial_results if r.get("label")]
+        if seed_labels:
+            closure_ctx = _build_closure_context(graph, seed_labels, top_k=5)
+
     models = cfg.get("llm", {}).get("models", [])
     if not models:
         typer.echo("No LLM models configured. Run: drbrain setup", err=True)
         db.close()
         raise typer.Exit(1)
 
-    agent = ReasonerAgent(db=db, graph_engine=graph, models=models)
+    agent = ReasonerAgent(db=db, graph_engine=graph, models=models, closure_context=closure_ctx)
 
     if bidirectional:
         typer.echo(f"Bidirectional reasoning: {question}\n")
@@ -117,6 +129,12 @@ def ask_cmd(
     """
     import asyncio
 
+    # Normalize typer OptionInfo objects when called directly (not via CLI)
+    if isinstance(top_k, typer.models.OptionInfo):
+        top_k = top_k.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+
     question_text = " ".join(question)
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
@@ -146,6 +164,14 @@ def ask_cmd(
             for n in neighbors:
                 rel = n.path[0].relation.replace("_", " ") if n.path else "related to"
                 context_parts.append(f"  --{rel}--> {n.target}")
+
+    # Inject closure-inferred edges for BM25-matched concept labels
+    seed_labels = [r.get("label", "") for r in results[:top_k] if r.get("label")]
+    if seed_labels:
+        closure_ctx = _build_closure_context(graph, seed_labels, top_k=top_k)
+        if closure_ctx:
+            context_parts.append("\nInferred relations (logical closure):")
+            context_parts.append(closure_ctx)
 
     context = "\n".join(context_parts[:50])
 

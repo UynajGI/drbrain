@@ -22,6 +22,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
 
+import sqlite3
+import struct
+
+import numpy as np
+
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
 from drbrain.storage.paths import raw_md_path, tree_json_path
@@ -462,6 +467,267 @@ def query_cross_paper(
     if paper_ids:
         results = [r for r in results if r["paper_id"] in paper_ids]
     return results
+
+
+# ── RAPTOR Figure 2: Two-stage tree traversal (layer-by-layer + collapsed fallback) ───
+
+
+def tree_traversal_search(
+    query: str,
+    db_path: Path,
+    top_k: int = 5,
+    min_results: int = 3,
+    cfg: EmbedConfig | None = None,
+) -> list[dict]:
+    """RAPTOR Figure 2: layer-by-layer tree traversal with collapsed fallback.
+
+    Stage 1 (tree traversal):
+      Start at root layer (highest RAPTOR layer). For each layer, compute
+      cosine similarity for nodes in that layer only. Keep top-k nodes.
+      Descend to their children (via tree_summaries.source_node_ids) in the
+      next layer. Repeat until pageindex leaf layer or no children remain.
+
+    Stage 2 (collapsed tree fallback):
+      If Stage 1 returns fewer than ``min_results``, fall back to the
+      existing collapsed tree search (flat cosine across all layers) via
+      ``search_tree()``.
+
+    Compared to ``collapsed_tree_retrieval`` (which scans ALL tree_vectors),
+    this is more token-efficient because:
+      - Root layer: only root-layer nodes are compared
+      - Deeper layers: only children of selected nodes are compared
+      - Low-scoring branches are pruned early
+
+    Args:
+        query: Natural language query text.
+        db_path: SQLite database path.
+        top_k: Number of nodes to keep per layer during traversal.
+        min_results: Minimum results before triggering Stage 2 fallback.
+        cfg: Optional EmbedConfig. ``provider=none`` disables all vectors.
+
+    Returns:
+        List of {node_id, paper_id, score, tree_layer}, sorted by score descending.
+    """
+    from drbrain.services.embedding import _embed_batch, _embed_provider, search_tree
+
+    provider = _embed_provider(cfg)
+    if provider == "none":
+        return []
+
+    if not db_path.exists():
+        return []
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Discover available layers
+        layer_rows = conn.execute(
+            "SELECT DISTINCT tree_layer FROM tree_vectors ORDER BY tree_layer"
+        ).fetchall()
+        all_layers = [r[0] for r in layer_rows]
+
+        if not all_layers:
+            return []
+
+        # Sort RAPTOR layers by layer number (raptor_L1, raptor_L2, ...)
+        raptor_layers = sorted(
+            [lyr for lyr in all_layers if lyr.startswith("raptor_L")],
+            key=lambda x: int(x.split("L")[1]),
+        )
+        has_pageindex = "pageindex" in all_layers
+
+        # If no RAPTOR layers, short-circuit: search pageindex directly
+        if not raptor_layers:
+            if has_pageindex:
+                page_rows = conn.execute(
+                    "SELECT node_id, paper_id, embedding, tree_layer "
+                    "FROM tree_vectors WHERE tree_layer = 'pageindex'"
+                ).fetchall()
+            else:
+                return []
+
+            # Embed query
+            query_vec = _embed_batch([query], cfg)
+            if not query_vec:
+                return []
+            qv = np.asarray(query_vec[0], dtype="float32")
+            query_dim = len(query_vec[0])
+
+            scored = _score_nodes(page_rows, qv, query_dim)
+            return scored[:top_k]
+
+        # ── Stage 1: Layer-by-layer traversal ──
+        query_vec = _embed_batch([query], cfg)
+        if not query_vec:
+            return []
+        qv = np.asarray(query_vec[0], dtype="float32")
+        query_dim = len(query_vec[0])
+
+        # Start at root (highest RAPTOR layer) and descend
+        # Traverse RAPTOR layers from highest → lowest
+        current_candidates: list[str] | None = None  # None = search all in layer
+        leaf_candidates: list[str] | None = None  # Final pageindex candidates
+
+        for layer_idx in range(len(raptor_layers) - 1, -1, -1):
+            layer_name = raptor_layers[layer_idx]
+
+            # Query this layer's vectors
+            layer_rows = _query_layer_vectors(conn, layer_name, current_candidates)
+
+            if not layer_rows:
+                break
+
+            scored = _score_nodes(layer_rows, qv, query_dim)
+            top = scored[:top_k]
+
+            if not top:
+                break
+
+            # Collect children for the next layer down
+            children = _collect_children(conn, [r["node_id"] for r in top])
+
+            if layer_idx == 0:
+                # At lowest RAPTOR layer: children point to pageindex nodes
+                leaf_candidates = children
+            else:
+                # At intermediate RAPTOR layer: children point to next RAPTOR layer
+                current_candidates = children if children else None
+
+        # ── Search pageindex using filtered candidates ──
+        final_results: list[dict] = []
+
+        if has_pageindex:
+            if leaf_candidates:
+                # Search only children of selected RAPTOR nodes
+                placeholders = ",".join("?" for _ in leaf_candidates)
+                page_rows = conn.execute(
+                    f"SELECT node_id, paper_id, embedding, tree_layer "
+                    f"FROM tree_vectors "
+                    f"WHERE node_id IN ({placeholders}) AND tree_layer = 'pageindex'",
+                    leaf_candidates,
+                ).fetchall()
+            else:
+                # No traversal candidates: fall back to all pageindex nodes
+                page_rows = conn.execute(
+                    "SELECT node_id, paper_id, embedding, tree_layer "
+                    "FROM tree_vectors WHERE tree_layer = 'pageindex'"
+                ).fetchall()
+
+            if page_rows:
+                scored = _score_nodes(page_rows, qv, query_dim)
+                final_results = scored[:top_k]
+        else:
+            # No pageindex: return best from last RAPTOR layer
+            if raptor_layers:
+                last_rows = _query_layer_vectors(conn, raptor_layers[0], current_candidates)
+                if last_rows:
+                    scored = _score_nodes(last_rows, qv, query_dim)
+                    final_results = scored[:top_k]
+
+        # ── Stage 2: Collapsed tree fallback ──
+        if len(final_results) < min_results:
+            fallback = search_tree(query, db_path, top_k=top_k, cfg=cfg)
+            if fallback:
+                existing_ids = {r["node_id"] for r in final_results}
+                for r in fallback:
+                    if r["node_id"] not in existing_ids:
+                        final_results.append(r)
+                        existing_ids.add(r["node_id"])
+                final_results.sort(key=lambda x: x["score"], reverse=True)
+                final_results = final_results[:top_k]
+
+        return final_results
+
+    finally:
+        conn.close()
+
+
+def _query_layer_vectors(
+    conn: sqlite3.Connection,
+    layer_name: str,
+    candidate_ids: list[str] | None,
+) -> list[tuple]:
+    """Fetch tree_vectors rows for a layer, optionally filtered by candidate IDs."""
+    if candidate_ids:
+        placeholders = ",".join("?" for _ in candidate_ids)
+        return conn.execute(
+            f"SELECT node_id, paper_id, embedding, tree_layer "
+            f"FROM tree_vectors "
+            f"WHERE node_id IN ({placeholders}) AND tree_layer = ?",
+            [*candidate_ids, layer_name],
+        ).fetchall()
+    else:
+        return conn.execute(
+            "SELECT node_id, paper_id, embedding, tree_layer "
+            "FROM tree_vectors WHERE tree_layer = ?",
+            (layer_name,),
+        ).fetchall()
+
+
+def _score_nodes(
+    rows: list[tuple],
+    query_vec: np.ndarray,
+    query_dim: int,
+) -> list[dict]:
+    """Compute cosine similarity for a list of tree_vectors rows.
+
+    Assumes stored embeddings are normalized float32 blobs.
+    Skips rows with dimension mismatch.
+    """
+    results: list[dict] = []
+    for row in rows:
+        blob = row[2]
+        stored_dim = len(blob) // 4  # float32 = 4 bytes
+        if stored_dim != query_dim:
+            log.warning(
+                "Dimension mismatch in tree_vectors node_id=%s: stored=%s query=%s",
+                row[0],
+                stored_dim,
+                query_dim,
+            )
+            continue
+        stored_vec = np.asarray(struct.unpack(f"{stored_dim}f", blob), dtype="float32")
+        sim = float(np.dot(query_vec, stored_vec))
+        results.append(
+            {
+                "node_id": row[0],
+                "paper_id": row[1],
+                "score": sim,
+                "tree_layer": row[3],
+            }
+        )
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
+
+
+def _collect_children(
+    conn: sqlite3.Connection,
+    parent_ids: list[str],
+) -> list[str]:
+    """Collect child node IDs from tree_summaries.source_node_ids.
+
+    Returns deduplicated list of all child node IDs across parents.
+    """
+    if not parent_ids:
+        return []
+    placeholders = ",".join("?" for _ in parent_ids)
+    rows = conn.execute(
+        f"SELECT source_node_ids FROM tree_summaries WHERE node_id IN ({placeholders})",
+        parent_ids,
+    ).fetchall()
+
+    children: list[str] = []
+    seen: set[str] = set()
+    for (src_json,) in rows:
+        try:
+            ids = json.loads(src_json)
+            for cid in ids:
+                cid = str(cid)
+                if cid not in seen:
+                    seen.add(cid)
+                    children.append(cid)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return children
 
 
 async def query_by_structure_hybrid(

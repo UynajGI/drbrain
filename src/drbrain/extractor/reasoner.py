@@ -16,10 +16,11 @@ log = logging.getLogger(__name__)
 class ReasonerAgent:
     """Agent that explores a knowledge graph using LLM tool-calling."""
 
-    def __init__(self, db=None, graph_engine=None, models=None):
+    def __init__(self, db=None, graph_engine=None, models=None, closure_context: str = ""):
         self.db = db
         self.graph = graph_engine
         self.models = models or []
+        self.closure_context = closure_context
 
     def tool_definitions(self) -> list[dict]:
         return [
@@ -284,15 +285,18 @@ class ReasonerAgent:
             return "No LLM models configured."
 
         tools = self.tool_definitions()
+        system_content = (
+            "You are a knowledge graph reasoning assistant. "
+            "Use the provided tools to explore the graph and answer questions. "
+            "Explain your reasoning step by step."
+        )
+        if self.closure_context:
+            system_content += (
+                "\n\nInferred relations from logical closure (distinguished by --[inferred: ...]-->):\n"
+                + self.closure_context
+            )
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a knowledge graph reasoning assistant. "
-                    "Use the provided tools to explore the graph and answer questions. "
-                    "Explain your reasoning step by step."
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": question},
         ]
 
@@ -594,6 +598,11 @@ class ReasonerAgent:
                     "this question. Include specific entities and relationships "
                     "(e.g., 'Method X addresses Problem Y', 'Finding A supports Conclusion B')."
                 )
+                if self.closure_context:
+                    prompt += (
+                        "\n\nInferred relations from logical closure "
+                        "(distinguished by --[inferred: ...]-->):\n" + self.closure_context
+                    )
             else:
                 violation_text = (
                     "\n".join(f"- {v}" for v in previous_violations)

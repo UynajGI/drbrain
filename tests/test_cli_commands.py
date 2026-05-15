@@ -1319,3 +1319,145 @@ def test_audit_cmd_all_severity_levels():
         issues = audit_papers(db, Path("data/papers"), severity=sev)
         assert isinstance(issues, list)
     db.close()
+
+
+# -- ask_cmd closure edges --
+
+
+def test_ask_cmd_includes_closure_edges():
+    """ask_cmd prompt includes ``--[inferred: ...]-->`` closure edges for a seeded graph."""
+    from drbrain.cli.analysis_commands import ask_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.insert_concept("p1", "Problem", "overfitting", 0.9, year=2024)
+        db.insert_concept("p1", "Conclusion", "deep learning", 0.9, year=2024)
+        db.insert_concept("p1", "Method", "regularization", 0.85, year=2024)
+        # edges that trigger creates_debate closure rule
+        db.insert_edge("overfitting", "deep learning", "challenges", "p1", 1.0)
+        db.insert_edge("regularization", "deep learning", "supports", "p1", 1.0)
+        db.commit()
+        db.close()
+
+        ctx = _make_ctx(cfg)
+
+        captured_prompt: list[str] = []
+
+        async def _fake_llm(prompt, models, max_tokens=1024):
+            captured_prompt.append(prompt)
+            return "Test answer"
+
+        with mock.patch("drbrain.extractor.llm_client.acall_text_with_fallback", _fake_llm):
+            ask_cmd(ctx, ["deep", "learning"])
+
+        assert len(captured_prompt) == 1, "Expected one LLM call"
+        prompt = captured_prompt[0]
+        assert "--[inferred:" in prompt, f"Prompt should contain closure edges, got:\n{prompt}"
+        assert "creates debate" in prompt, f"Prompt should contain creates_debate, got:\n{prompt}"
+        assert "regularization" in prompt
+
+
+def test_ask_cmd_closure_edges_top_k_limit():
+    """ask_cmd limits closure edges in context to top_k (--top/-k)."""
+    from drbrain.cli.analysis_commands import ask_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.insert_concept("p1", "Conclusion", "deep learning", 0.9, year=2024)
+
+        # 3 challengers x 3 supporters = 9 creates_debate inferred edges
+        for i in range(3):
+            db.insert_concept("p1", "Problem", f"problem_{i}", 0.9, year=2024)
+            db.insert_edge(f"problem_{i}", "deep learning", "challenges", "p1", 1.0)
+        for i in range(3):
+            db.insert_concept("p1", "Method", f"method_{i}", 0.9, year=2024)
+            db.insert_edge(f"method_{i}", "deep learning", "supports", "p1", 1.0)
+
+        db.commit()
+        db.close()
+
+        ctx = _make_ctx(cfg)
+
+        captured_prompt: list[str] = []
+
+        async def _fake_llm(prompt, models, max_tokens=1024):
+            captured_prompt.append(prompt)
+            return "Test answer"
+
+        with mock.patch("drbrain.extractor.llm_client.acall_text_with_fallback", _fake_llm):
+            ask_cmd(ctx, ["deep", "learning"], top_k=2)
+
+        assert len(captured_prompt) == 1
+        prompt = captured_prompt[0]
+        inferred_count = prompt.count("--[inferred:")
+        assert inferred_count == 2, (
+            f"Expected exactly 2 inferred edges (top_k=2), got {inferred_count}"
+        )
+
+
+def test_reason_cmd_includes_closure_in_graph():
+    """reason_cmd passes closure_context with inferred edges to ReasonerAgent."""
+    from drbrain.cli.analysis_commands import reason_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        db = Database(str(db_path))
+        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
+        db.insert_concept("p1", "Problem", "overfitting", 0.9, year=2024)
+        db.insert_concept("p1", "Conclusion", "deep learning", 0.9, year=2024)
+        db.insert_concept("p1", "Method", "regularization", 0.85, year=2024)
+        db.insert_edge("overfitting", "deep learning", "challenges", "p1", 1.0)
+        db.insert_edge("regularization", "deep learning", "supports", "p1", 1.0)
+        db.commit()
+        db.close()
+
+        ctx = _make_ctx(cfg)
+
+        with mock.patch("drbrain.extractor.reasoner.ReasonerAgent") as mock_agent:
+            mock_instance = mock.MagicMock()
+            mock_instance.reason = mock.MagicMock()
+            mock_agent.return_value = mock_instance
+
+            with mock.patch(
+                "drbrain.cli.analysis_commands.asyncio.run",
+                return_value="Test reasoning result",
+            ):
+                reason_cmd(ctx, "deep learning", bidirectional=False, max_rounds=3)
+
+            assert mock_agent.called, "ReasonerAgent should have been instantiated"
+            _, kwargs = mock_agent.call_args
+            closure_ctx = kwargs.get("closure_context", "")
+            assert "--[inferred:" in closure_ctx, (
+                f"closure_context should contain inferred edges, got: {closure_ctx!r}"
+            )
+            assert "creates debate" in closure_ctx
+            assert "regularization" in closure_ctx
+
+
+def test_ask_cmd_closure_edges_empty_graph_no_crash():
+    """ask_cmd on empty graph does not crash when computing closure context."""
+    from drbrain.cli.analysis_commands import ask_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        cfg = _make_minimal_config(str(db_path), str(reports_dir))
+
+        ctx = _make_ctx(cfg)
+        # Should not raise — exits gracefully with "No relevant concepts" message
+        with mock.patch("typer.echo") as mock_echo:
+            ask_cmd(ctx, ["nonexistent", "concept"])
+            mock_echo.assert_called_with("No relevant concepts found in the knowledge graph.")
