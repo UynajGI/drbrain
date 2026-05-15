@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
+- **Total Sessions**: 13
 - **Last Active**: 2026-05-15
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~490 | Active |
+| `journal-1.md` | ~524 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-05-15 | 吸收剩余学习 — knowgraph 4论文 + ScholarAIO 全量 P1+P2 | `4d5f03d`, `8382922` | `main` |
 | 12 | 2026-05-15 | 循环监控 13 轮 + 文档修复 + 代码提交 | `1dbfb83` | `main` |
 | 11 | 2026-05-08 | CLI 模块拆分 + 死代码清理 + 文档修复 | `acd21fc` | `main` |
 | 10 | 2026-05-08 | Wire PageIndex-RAPTOR-tree full pipeline integration | `b94accb` | `main` |
