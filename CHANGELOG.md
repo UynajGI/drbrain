@@ -8,6 +8,12 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [Unreleased]
 
 ### Added
+- **GraphEngine embedding persistence**: `learn_embeddings(dim, epochs, lr)`, `entity_embedding(label)`, `predict_link(head, relation, top_k)`, `similar_entities(label, top_k)` on GraphEngine. TransE vectors persisted to `embeddings` table; hybrid closure reuses persistent embeddings instead of inline training. (2202.07412-inspired)
+- **KG closure edges in LLM context**: `ask`/`reason` commands now inject closure-inferred edges (`--[inferred: rel]-->` format) into LLM context, with top-k confidence limiting. `_build_closure_context()` helper in `cli/_common.py`. (2306.08302 F1-inspired)
+- **RAPTOR two-stage tree traversal**: `tree_traversal_search()` — layer-by-layer top-k descent with collapsed tree fallback, per RAPTOR Figure 2. More token-efficient than flat cosine across all layers for deep trees.
+- **Embedding GPU batch auto-tuning**: `_compute_batch_size()`, `_estimate_mem_per_sample()`, GPU memory profiling with cached results. Automatic optimal batch size selection on CUDA devices.
+- **Embedding post_filter**: `_post_filter()` — score threshold and empty-text filtering on `search_tree()` results.
+- **Multi-source model download**: `_resolve_model_path()` — ModelScope primary + HuggingFace fallback for embedding models. (ScholarAIO vectors.py-inspired)
 - **`evolve --stats` flag**: Temporal evolution signal classification (emerging/established/declining/contested/resurging) and year-by-year counts with trend indicators (growing/declining/stable). New `get_concept_signal()` and `get_concept_evolution()` methods in `Database` class.
 
 ### Changed
