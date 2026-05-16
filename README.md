@@ -61,7 +61,11 @@ agent entries so your coding agent can use DrBrain skills directly.
 
 - [Getting Started](docs/getting-started.md) -- from install to first query
 - [CLI Reference](docs/cli-reference.md) -- all commands with examples
+- [Configuration](docs/configuration.md) -- every setting, default, and provider template
 - [Architecture](docs/architecture.md) -- system design and reasoning modules
+- [Embedding](docs/embedding.md) -- local, openai-compat, and none providers
+- [Troubleshooting](docs/troubleshooting.md) -- common problems and recovery
+- [Glossary](docs/glossary.md) -- terminology reference
 - [Contributing](docs/contributing.md) -- how to add commands, modules, and skills
 
 ## Works With Your Agent

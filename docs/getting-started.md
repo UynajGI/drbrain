@@ -196,6 +196,10 @@ workspace/<name>/       # Paper subsets: workspace.yaml + refs/papers.json
 
 ## Next Steps
 
+- [Configuration](configuration.md) -- every setting, default, and provider template
 - [CLI Reference](cli-reference.md) -- every command with examples
+- [Embedding](embedding.md) -- setup guide for local and openai-compat providers
 - [Architecture](architecture.md) -- how the system works under the hood
+- [Troubleshooting](troubleshooting.md) -- common problems and recovery
+- [Glossary](glossary.md) -- terminology reference
 - [Contributing](contributing.md) -- add commands, modules, and skills
