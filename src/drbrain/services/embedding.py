@@ -427,21 +427,84 @@ def _post_filter(
     return filtered
 
 
+# ── OpenAI-compatible embedding ───────────────────────────────────────────────
+
+
+def _embed_batch_openai_compat(texts: list[str], cfg: EmbedConfig) -> list[list[float]]:
+    """Embed texts via OpenAI-compatible /v1/embeddings API.
+
+    Splits large batches into chunks of cfg.batch_size. Uses exponential
+    backoff retry on transient errors.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    if not cfg.api_base:
+        raise ValueError("embed.api_base is required for openai-compat provider")
+    if not cfg.api_key:
+        raise ValueError("embed.api_key is required for openai-compat provider")
+
+    endpoint = cfg.api_base.rstrip("/") + "/embeddings"
+    model = cfg.model or "text-embedding-3-small"
+    chunk_size = max(1, cfg.batch_size or 64)
+
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST"],
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retry))
+    session.mount("http://", HTTPAdapter(max_retries=retry))
+
+    all_vectors: list[list[float]] = []
+
+    for i in range(0, len(texts), chunk_size):
+        chunk = texts[i : i + chunk_size]
+        body = {"model": model, "input": chunk}
+
+        try:
+            resp = session.post(
+                endpoint,
+                json=body,
+                headers={"Authorization": f"Bearer {cfg.api_key}"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[embed] openai-compat request failed: %s", e)
+            if i == 0:
+                raise
+            break
+
+        data = resp.json().get("data", [])
+        # Sort by index to preserve input order
+        data.sort(key=lambda d: d.get("index", 0))
+        for item in data:
+            emb = item.get("embedding", [])
+            if emb:
+                all_vectors.append(emb)
+
+    return all_vectors
+
+
 # ── Embedding dispatch ──────────────────────────────────────────────────────
 
 
 def _embed_batch(texts: list[str], cfg: EmbedConfig | None = None) -> list[list[float]]:
-    """Embed a batch of texts. Returns list of float vectors.
+    """Embed a batch of texts via the configured provider.
 
-    Stub: real implementation loads sentence-transformers on demand.
-    For now, returns zero vectors of dim=8 as placeholder.
+    Returns list of float vectors. Returns empty list when provider is ``"none"``.
     """
     provider = _embed_provider(cfg)
     if provider == "none":
         return []
     if provider == "openai-compat":
-        raise NotImplementedError("openai-compat embedding not yet implemented")
-    # Local: load model on demand
+        if cfg is None:
+            return []
+        return _embed_batch_openai_compat(texts, cfg)
     return _embed_batch_local(texts, cfg)
 
 

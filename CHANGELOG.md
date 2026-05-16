@@ -8,6 +8,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [Unreleased]
 
 ### Added
+- **openai-compat embedding provider**: `_embed_batch_openai_compat()` calls any OpenAI-compatible `/v1/embeddings` API. Config via `embed.api_base` + `embed.api_key`. Retry with exponential backoff on 429/5xx. Chunked batching by `embed.batch_size`. `provider` setting now fully supports `"openai-compat"` alongside `"local"` and `"none"`.
 - **GraphEngine embedding persistence**: `learn_embeddings(dim, epochs, lr)`, `entity_embedding(label)`, `predict_link(head, relation, top_k)`, `similar_entities(label, top_k)` on GraphEngine. TransE vectors persisted to `embeddings` table; hybrid closure reuses persistent embeddings instead of inline training. (2202.07412-inspired)
 - **KG closure edges in LLM context**: `ask`/`reason` commands now inject closure-inferred edges (`--[inferred: rel]-->` format) into LLM context, with top-k confidence limiting. `_build_closure_context()` helper in `cli/_common.py`. (2306.08302 F1-inspired)
 - **RAPTOR two-stage tree traversal**: `tree_traversal_search()` — layer-by-layer top-k descent with collapsed tree fallback, per RAPTOR Figure 2. More token-efficient than flat cosine across all layers for deep trees.

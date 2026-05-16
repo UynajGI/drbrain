@@ -205,7 +205,7 @@ Standard BM25 over concept labels, arguments, and paper metadata. No vector embe
 Complex queries over TransE embeddings: projection, intersection, union, negation. Requires `drbrain embed`.
 
 ### Lightweight Text Embeddings
-`drbrain embed --tree` generates SBERT embeddings for tree nodes (PageIndex leaves + RAPTOR summaries) via `build_paper_tree_vectors`. Stored in `tree_vectors` table with `tree_layer` tags (`pageindex`, `raptor_L1`, etc.). `search_tree()` performs brute-force cosine similarity over all tree vectors. Provider: sentence-transformers (default: Qwen3-Embedding-0.6B). Reference: ScholarAIO embedding engine.
+`drbrain embed --tree` generates SBERT embeddings for tree nodes (PageIndex leaves + RAPTOR summaries) via `build_paper_tree_vectors`. Stored in `tree_vectors` table with `tree_layer` tags (`pageindex`, `raptor_L1`, etc.). `search_tree()` performs brute-force cosine similarity over all tree vectors. Provider options: `local` (sentence-transformers, default: Qwen3-Embedding-0.6B), `openai-compat` (any OpenAI-compatible `/v1/embeddings` API), `none` (disable vectors). Reference: ScholarAIO embedding engine.
 
 ---
 

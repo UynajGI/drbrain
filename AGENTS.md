@@ -58,7 +58,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/extractor/` | LLM extraction, reasoning, API clients (openalex, crossref) |
 | `src/drbrain/graph/` | Graph engine, TransE embeddings (learn/predict/similar), rule closure, query embeddings |
 | `src/drbrain/storage/` | SQLite database, export, workspace, paths |
-| `src/drbrain/services/` | Embedding engine (GPU auto-tuning, multi-source), audit, repair, translate, zotero import |
+| `src/drbrain/services/` | Embedding engine (local + openai-compat, GPU auto-tuning, multi-source), audit, repair, translate, zotero import |
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |

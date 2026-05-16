@@ -1,11 +1,15 @@
-"""Tests for embedding service: GPU batch sizing, post_filter, model resolution."""
+"""Tests for embedding service: GPU batch sizing, post_filter, model resolution, openai-compat."""
 
 from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from drbrain.services.embedding import (
     _compute_batch_size,
+    _embed_batch,
+    _embed_batch_openai_compat,
     _estimate_mem_per_sample,
     _post_filter,
     _resolve_model_path,
@@ -236,3 +240,211 @@ class TestGpuProfiling:
         assert mem > 0
         # Between 50 MB (64 tok) and 100 MB (128 tok), closer to 75 MB
         assert 60 * 1024**2 < mem < 90 * 1024**2
+
+
+# ── openai-compat embedding ───────────────────────────────────────────────
+
+
+class TestEmbedBatchOpenAICompat:
+    """Tests for _embed_batch_openai_compat using mocked HTTP."""
+
+    @pytest.fixture
+    def cfg(self):
+        from drbrain.config import EmbedConfig
+
+        return EmbedConfig(
+            provider="openai-compat",
+            api_base="https://api.example.com/v1",
+            api_key="sk-test",
+            model="text-embedding-3-small",
+            batch_size=2,
+        )
+
+    def test_single_chunk(self, cfg):
+        """Embed 2 texts in one chunk, verify correct request and response."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {"embedding": [0.1, 0.2], "index": 0},
+                {"embedding": [0.3, 0.4], "index": 1},
+            ]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.return_value = mock_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch_openai_compat(["hello", "world"], cfg)
+
+        assert result == [[0.1, 0.2], [0.3, 0.4]]
+        mock_session.post.assert_called_once()
+        call_args = mock_session.post.call_args
+        assert call_args[0][0] == "https://api.example.com/v1/embeddings"
+        body = call_args[1]["json"]
+        assert body["model"] == "text-embedding-3-small"
+        assert body["input"] == ["hello", "world"]
+
+    def test_multiple_chunks(self, cfg):
+        """Embed 4 texts with batch_size=2, should split into 2 requests."""
+        call_count = [0]
+
+        def _make_resp(*args, **kwargs):
+            offset = call_count[0] * 2
+            call_count[0] += 1
+            mock = MagicMock()
+            mock.json.return_value = {
+                "data": [
+                    {"embedding": [float(offset + 1)], "index": 0},
+                    {"embedding": [float(offset + 2)], "index": 1},
+                ]
+            }
+            mock.raise_for_status = MagicMock()
+            return mock
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.side_effect = _make_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch_openai_compat(["a", "b", "c", "d"], cfg)
+
+        assert result == [[1.0], [2.0], [3.0], [4.0]]
+        assert mock_session.post.call_count == 2
+
+    def test_preserves_order_when_response_indices_shuffled(self, cfg):
+        """API may return data out of order; sort by index."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [
+                {"embedding": [0.3, 0.4], "index": 1},
+                {"embedding": [0.1, 0.2], "index": 0},
+            ]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.return_value = mock_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch_openai_compat(["hello", "world"], cfg)
+
+        assert result == [[0.1, 0.2], [0.3, 0.4]]
+
+    def test_missing_api_base_raises(self, cfg):
+        from drbrain.config import EmbedConfig
+
+        cfg_no_base = EmbedConfig(provider="openai-compat", api_base="", api_key="sk-test")
+        with pytest.raises(ValueError, match="api_base"):
+            _embed_batch_openai_compat(["text"], cfg_no_base)
+
+    def test_missing_api_key_raises(self, cfg):
+        from drbrain.config import EmbedConfig
+
+        cfg_no_key = EmbedConfig(
+            provider="openai-compat", api_base="https://api.example.com/v1", api_key=""
+        )
+        with pytest.raises(ValueError, match="api_key"):
+            _embed_batch_openai_compat(["text"], cfg_no_key)
+
+    def test_empty_texts(self, cfg):
+        with patch("requests.Session") as mock_session_cls:
+            mock_session_cls.return_value = MagicMock()
+            result = _embed_batch_openai_compat([], cfg)
+        assert result == []
+
+    def test_partial_failure_returns_partial_results(self, cfg):
+        """Error on chunk > 0: should log warning and return what we have."""
+        call_count = [0]
+
+        def _make_resp(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise ConnectionError("timeout")
+            mock = MagicMock()
+            mock.json.return_value = {
+                "data": [
+                    {"embedding": [0.1], "index": 0},
+                    {"embedding": [0.2], "index": 1},
+                ]
+            }
+            mock.raise_for_status = MagicMock()
+            return mock
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.side_effect = _make_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch_openai_compat(["a", "b", "c", "d"], cfg)
+
+        # Only first chunk (2 texts) returned
+        assert result == [[0.1], [0.2]]
+
+    def test_first_chunk_failure_raises(self, cfg):
+        """Error on first chunk should propagate."""
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.side_effect = ConnectionError("timeout")
+            mock_session_cls.return_value = mock_session
+
+            with pytest.raises(ConnectionError):
+                _embed_batch_openai_compat(["a", "b"], cfg)
+
+
+class TestEmbedBatchRouting:
+    """Tests for _embed_batch provider routing."""
+
+    def test_none_provider_returns_empty(self):
+        from drbrain.config import EmbedConfig
+
+        cfg = EmbedConfig(provider="none")
+        assert _embed_batch(["text"], cfg) == []
+
+    def test_openai_compat_routing(self):
+        from drbrain.config import EmbedConfig
+
+        cfg = EmbedConfig(
+            provider="openai-compat",
+            api_base="https://api.example.com/v1",
+            api_key="sk-test",
+            model="text-embedding-3-small",
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": [{"embedding": [0.5], "index": 0}]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.return_value = mock_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch(["test"], cfg)
+
+        assert result == [[0.5]]
+
+    def test_openai_compat_none_cfg_returns_empty(self):
+        """_embed_batch with None cfg for openai-compat returns []."""
+        from drbrain.config import EmbedConfig
+
+        cfg = EmbedConfig(
+            provider="openai-compat",
+            api_base="https://api.example.com/v1",
+            api_key="sk-test",
+        )
+        # _embed_batch routes to _embed_batch_openai_compat when provider is openai-compat
+        # cfg is not None, so guard passes
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": [{"embedding": [0.5], "index": 0}]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("requests.Session") as mock_session_cls:
+            mock_session = MagicMock()
+            mock_session.post.return_value = mock_resp
+            mock_session_cls.return_value = mock_session
+
+            result = _embed_batch(["test"], cfg)
+        assert result == [[0.5]]

@@ -516,6 +516,9 @@ drbrain reason "Is dropout effective for transformer regularization?" --bidirect
 Train TransE graph embeddings for link prediction and entity similarity.
 Use `--tree` to generate text embeddings for PageIndex and RAPTOR tree nodes.
 
+Provider is configured via `embed.provider` in config: `local` (default, sentence-transformers),
+`openai-compat` (OpenAI-compatible `/v1/embeddings` API), or `none` (disable).
+
 | Flag | Description |
 |------|-------------|
 | `--dim` | Embedding dimension (default: 128) |
