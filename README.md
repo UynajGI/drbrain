@@ -23,14 +23,21 @@ find research gaps, and infer new relationships through rule-based reasoning.
 
 ## Quick Start
 
-> **Alpha:** source install only. `pipx install` / `uv tool install` coming in beta.
-
 ```bash
+# Source install (alpha)
 git clone https://github.com/UynajGI/DrBrain.git
 cd DrBrain
 uv sync && uv pip install -e .
 drbrain setup
+
+# Coming in beta:
+# pipx install drbrain
+# uv tool install drbrain
 ```
+
+This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on macOS/Linux,
+`%USERPROFILE%/DrBrain` on Windows). `drbrain setup` detects your AI platforms and injects
+agent entries so your coding agent can use DrBrain skills directly.
 
 ## What It Does
 

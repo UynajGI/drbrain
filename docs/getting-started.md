@@ -8,8 +8,29 @@
 
 ## Installation
 
-DrBrain is a CLI tool. For the alpha release, install from source.
-Package distribution (`pipx install drbrain`) will be available in beta.
+DrBrain is a CLI tool. **pipx** or **uv tool install** are the recommended ways to install
+it — both create an isolated environment so DrBrain doesn't interfere with your other projects.
+
+### pipx
+
+```bash
+# Coming in beta — not yet on PyPI
+pipx install drbrain
+```
+
+### uv
+
+```bash
+# Coming in beta — not yet on PyPI
+uv tool install drbrain
+```
+
+### pip
+
+```bash
+# Coming in beta — not yet on PyPI
+pip install drbrain
+```
 
 ### From source
 
