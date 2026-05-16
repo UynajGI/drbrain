@@ -141,6 +141,15 @@ class GraphEngine:
         - leaves_open(P, G) & addresses(Q, G) => gap_addressed(G, Q)
         - extends(M1, M2) & replaces(M2, M3) => indirect_evolution(M1, M3)
         """
+        import time as _time
+
+        from loguru import logger as _cl_log
+
+        _t0 = _time.monotonic()
+        node_count = self.graph.number_of_nodes()
+        edge_count = self.graph.number_of_edges()
+        _cl_log.info(f"[closure] starting mode={mode} nodes={node_count} edges={edge_count}")
+
         inferred: list[dict] = []
 
         # Build relation indices
@@ -296,6 +305,13 @@ class GraphEngine:
                 existing = edge.get("confidence", 1.0)
                 edge["confidence"] = round(0.5 * existing + 0.5 * edge["embedding_score"], 3)
 
+        _t_done = _time.monotonic() - _t0
+        _by_rule: dict[str, int] = {}
+        for e in inferred:
+            _by_rule[e["relation"]] = _by_rule.get(e["relation"], 0) + 1
+        _cl_log.info(
+            f"[closure] done in {_t_done:.1f}s — {len(inferred)} edges inferred: {dict(_by_rule)}"
+        )
         return inferred
 
     def ground_rules(self, min_confidence: float = 0.5) -> list[dict]:

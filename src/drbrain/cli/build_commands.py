@@ -108,6 +108,10 @@ def build_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Build knowledge graph from ingested papers using 5-stage LLM extraction."""
+    import time as _time
+
+    from loguru import logger as _build_log
+
     from drbrain.extractor.concept import build_graph_from_tree
 
     cfg = ctx.obj["config"]
@@ -128,6 +132,8 @@ def build_cmd(
         all_papers = db.get_all_papers()
         papers = [p for p in all_papers if p.get("status") == "uploaded"]
 
+    _build_log.info(f"[build] starting: {len(papers)} papers, skip_refine={skip_refine}")
+
     if not papers:
         typer.echo("No papers to build. Run: drbrain ingest first")
         db.close()
@@ -144,6 +150,8 @@ def build_cmd(
 
     for paper in papers:
         pid = paper["local_id"]
+        _t_paper = _time.monotonic()
+        _build_log.info(f"[build] paper={pid} title={paper['title'][:60]}")
         typer.echo(f"\n{pid}: {paper['title'][:80]}")
 
         tree_path = tree_json_path(papers_dir / pid)
@@ -199,6 +207,10 @@ def build_cmd(
         typer.echo(f"  Stage 4: Coreference... {len(merges)} merges")
         if not skip_refine:
             typer.echo(f"  Stage 5: Refine...     {len(corrections)} corrections")
+        _build_log.info(
+            f"[build] extracted paper={pid} concepts={len(concepts)} relations={len(relations)} "
+            f"merges={len(merges)} corrections={len(corrections)}"
+        )
 
         # Validate and insert concepts
         valid_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
@@ -232,13 +244,18 @@ def build_cmd(
                         section=r.get("section", ""),
                     )
                 except Exception:
+                    _build_log.debug(f"duplicate or invalid edge: {head} --[{rel}]--> {tail}")
                     pass  # duplicate edge or invalid reference
 
         # Mark as extracted
         db.conn.execute("UPDATE papers SET status = 'extracted' WHERE local_id = ?", (pid,))
         db.commit()
 
-        typer.echo(f"  Valid: {valid_count} | Rejected: {rejected}")
+        _t_done = _time.monotonic() - _t_paper
+        _build_log.info(
+            f"[build] paper={pid} done in {_t_done:.1f}s — inserted={valid_count} rejected={rejected}"
+        )
+        typer.echo(f"  Valid: {valid_count} | Rejected: {rejected} ({_t_done:.1f}s)")
         all_results.append({"paper_id": pid, "concepts": valid_count, "relations": len(relations)})
 
     if json_output:

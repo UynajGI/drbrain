@@ -36,11 +36,15 @@ def _ingest_single_paper(
         if not json_mode:
             typer.echo(msg)
 
+    import time as _time
+
     from loguru import logger as _ingest_log
+
+    _t0 = _time.monotonic()
 
     # Stage 1: Parse
     echo(f"Parsing: {pdf_path}")
-    _ingest_log.info(f"Stage 1: Parse {pdf_path}")
+    _ingest_log.info(f"[ingest] Stage 1/4 parse: {pdf_path.name}")
     try:
         parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
@@ -52,8 +56,13 @@ def _ingest_single_paper(
     echo(f"  Year: {parsed.year}")
     echo(f"  arXiv: {parsed.arxiv}")
     echo(f"  Sections: {len(parsed.text_blocks)} high-signal blocks")
+    _t1 = _time.monotonic()
+    _ingest_log.info(
+        f"[ingest] parse done in {_t1 - _t0:.1f}s — {len(parsed.text_blocks)} blocks, title={parsed.title[:80]}"
+    )
 
     # Stage 2: Identify
+    _ingest_log.info(f"[ingest] Stage 2/4 identify: doi={parsed.doi} arxiv={parsed.arxiv}")
     ids = PaperIDs(doi=parsed.doi, arxiv=parsed.arxiv)
     local_id = dedup.resolve(ids, title=parsed.title, year=parsed.year)
     is_new = local_id is None
@@ -120,6 +129,11 @@ def _ingest_single_paper(
             db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
         db.commit()
 
+    _t2 = _time.monotonic()
+    _ingest_log.info(
+        f"[ingest] identify done in {_t2 - _t1:.1f}s — local_id={local_id} status={'new' if is_new else 'upgraded'}"
+    )
+
     # Save parsed markdown and source PDF into per-paper directory
     papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     paper_dir = papers_base / local_id
@@ -153,7 +167,9 @@ def _ingest_single_paper(
     )
     db.commit()
 
-    # Stage 2.5: Structure markdown into tree (PageIndex)
+    # Stage 3: Structure markdown into tree (PageIndex)
+    _t_pp = _time.monotonic()
+    _ingest_log.info(f"[ingest] Stage 3/4 tree: type={paper_type}")
     md_path = raw_md_path(paper_dir)
     tree_path = tree_json_path(paper_dir)
     echo("  Structuring document tree...")
@@ -171,6 +187,10 @@ def _ingest_single_paper(
         )
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
+        _t3 = _time.monotonic()
+        _ingest_log.info(
+            f"[ingest] tree done in {_t3 - _t_pp:.1f}s — {len(doc_tree.structure)} sections"
+        )
         echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_path.name}")
         # Extract abstract from tree structure
         for node in doc_tree.structure:
@@ -280,7 +300,12 @@ def _ingest_single_paper(
             f"Quality Gate 3 for {local_id}: concepts={concept_count}, edges={edge_count}"
         )
 
-    echo(f"  Ingested: {local_id}")
+    _t_total = _time.monotonic() - _t0
+    _ingest_log.info(
+        f"[ingest] Stage 4/4 done — total {_t_total:.1f}s local_id={local_id} "
+        f"title={parsed.title[:60]} year={parsed.year}"
+    )
+    echo(f"  Ingested: {local_id} ({_t_total:.1f}s)")
     return {"ok": True, "local_id": local_id, "report": {"local_id": local_id}}
 
 

@@ -193,10 +193,18 @@ def _load_model(cfg: EmbedConfig | None = None):
     # Try to find or download the model
     local_path = _resolve_model_path(model_name, cache_dir, source)
     if local_path:
+        logger.info("[embed] loading model from %s", local_path)
         model = SentenceTransformer(local_path, device=device)
     else:
+        logger.info("[embed] loading model %s (downloading if needed)", model_name)
         model = SentenceTransformer(model_name, device=device)
 
+    logger.info(
+        "[embed] model loaded: %s device=%s dim=%d",
+        model_name,
+        str(model.device),
+        model.get_sentence_embedding_dimension(),
+    )
     _model_cache[cache_key] = model
     return model
 

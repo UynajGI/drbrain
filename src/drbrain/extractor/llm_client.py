@@ -70,6 +70,7 @@ def call_with_fallback(
     max_tokens: int = 16384,
 ) -> dict | None:
     """Try models in order, return first successful parsed JSON response."""
+    logger.info("[llm] call starting — %d models in chain", len(models))
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -78,12 +79,13 @@ def call_with_fallback(
             response = litellm.completion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
-            logger.debug(f"LLM call success: {name} in {int((time.monotonic() - start) * 1000)}ms")
+            elapsed = int((time.monotonic() - start) * 1000)
+            logger.info(f"[llm] success: {name} in {elapsed}ms")
             return json.loads(content)
         except Exception as e:
-            logger.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            logger.warning(f"[llm] {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
-    logger.error(f"All {len(models)} models failed")
+    logger.error(f"[llm] all {len(models)} models exhausted")
     return None
 
 
@@ -102,12 +104,13 @@ async def acall_with_fallback(
             response = await litellm.acompletion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
-            logger.debug(f"LLM call success: {name} in {int((time.monotonic() - start) * 1000)}ms")
+            elapsed = int((time.monotonic() - start) * 1000)
+            logger.info(f"[llm] async success: {name} in {elapsed}ms")
             return json.loads(content)
         except Exception as e:
-            logger.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            logger.warning(f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
-    logger.error(f"All {len(models)} models failed")
+    logger.error(f"[llm] async all {len(models)} models exhausted")
     return None
 
 

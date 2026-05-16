@@ -200,6 +200,7 @@ async def build_raptor_tree(
         Total number of summary nodes created.
     """
     import sqlite3
+    import time as _time
 
     from drbrain.services.embedding import (
         _collect_tree_nodes,
@@ -207,7 +208,9 @@ async def build_raptor_tree(
         _embed_batch,
     )
 
+    _t0 = _time.monotonic()
     paper_id = paper_dir.name
+    log.info("[raptor] building tree for %s (max_layers=%d)", paper_id, max_layers)
     total_summaries = 0
 
     conn = sqlite3.connect(str(db_path))
@@ -337,6 +340,8 @@ async def build_raptor_tree(
                 )
 
         conn.commit()
+        _t_done = _time.monotonic() - _t0
+        log.info("[raptor] %s: %d summaries in %.1fs", paper_id, total_summaries, _t_done)
         return total_summaries
 
     finally:
