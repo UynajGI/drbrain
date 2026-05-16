@@ -6,6 +6,8 @@ import tarfile
 from datetime import datetime
 from pathlib import Path
 
+from loguru import logger
+
 BACKUP_DIR = "data/backups"
 
 
@@ -49,6 +51,8 @@ def create_backup(
         if reports_dir and reports_dir.exists():
             tar.add(str(reports_dir), arcname="reports")
 
+    size_mb = out_path.stat().st_size / (1024 * 1024)
+    logger.info("[backup] created %s (%.1f MB)", out_path.name, size_mb)
     return out_path
 
 

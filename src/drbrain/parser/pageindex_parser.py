@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import litellm
+from loguru import logger
 
 from drbrain.extractor.llm_client import acall_text_with_fallback
 
@@ -906,19 +907,24 @@ async def md_to_tree_with_fallback(
     Level 3: LLM-based segmentation (if models provided)
     """
     # Level 1: header-based
+    logger.info("[tree] Level 1: header-based extraction for %s", Path(md_path).name)
     tree = await md_to_tree(md_path, config, models)
     if tree.structure:
+        logger.info("[tree] Level 1 succeeded — %d sections", len(tree.structure))
         if models:
             tree = await _verify_and_correct_tree(tree, md_path, models)
         return tree
 
     # Level 2: PDF outline
+    logger.info("[tree] Level 1 failed (no structure), trying Level 2: PDF outline")
     if pdf_path:
         outline = _extract_pdf_outline(pdf_path)
         if outline:
+            logger.info("[tree] Level 2 succeeded via PDF outline")
             return _build_tree_from_outline(outline, md_path)
 
     # Level 3: LLM segmentation
+    logger.info("[tree] Level 2 failed, trying Level 3: LLM segmentation")
     return await _llm_segment_document(md_path, config, models)
 
 

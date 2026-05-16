@@ -264,8 +264,10 @@ def _repair_via_title_year(db, paper: dict) -> list[dict]:
 
 def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
     """Run all repair sources on a single paper."""
+    logger.info("[repair] %s — checking metadata", local_id)
     paper = db.get_paper(local_id)
     if not paper:
+        logger.warning("[repair] %s not found", local_id)
         return [{"field": "error", "reason": f"Paper not found: {local_id}"}]
 
     repairs = []
@@ -330,4 +332,5 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
                 )
         db.commit()
 
+    logger.info("[repair] %s — %d fields repaired (dry_run=%s)", local_id, len(repairs), dry_run)
     return repairs

@@ -44,9 +44,15 @@ def audit_papers(
     Returns:
         List of issue dicts with keys: paper_id, title, rule, severity, message.
     """
+    import time as _time
+
+    from loguru import logger as _audit_log
+
+    _t0 = _time.monotonic()
     min_severity = SEVERITY_ORDER.get(severity, 1)
     issues: list[dict] = []
     papers = db.get_all_papers()
+    _audit_log.info("[audit] scanning %d papers (severity>=%s)", len(papers), severity)
 
     # Build title index for duplicate detection
     title_index: dict[str, list[str]] = {}
@@ -295,6 +301,11 @@ def audit_papers(
                         }
                     )
 
+    _t_done = _time.monotonic() - _t0
+    _by_sev: dict[str, int] = {}
+    for i in issues:
+        _by_sev[i["severity"]] = _by_sev.get(i["severity"], 0) + 1
+    _audit_log.info("[audit] done in %.1fs — %d issues: %s", _t_done, len(issues), dict(_by_sev))
     return issues
 
 

@@ -540,7 +540,12 @@ def expand_citations_multi(
 
     Deduplicates by title prefix. Returns (references_added, citing_added).
     """
+    from loguru import logger as _cit_log
     from pyalex import Works as _Works
+
+    _cit_log.info(
+        "[citations] expanding for %s (limit=%d sources=OpenAlex+S2+CrossRef)", local_id, limit
+    )
 
     row = db.conn.execute(
         "SELECT openalex_id, doi, s2_id, arxiv FROM paper_ids WHERE local_id = ?", (local_id,)
@@ -695,4 +700,10 @@ def expand_citations_multi(
                 pass
 
     db.commit()
+    _cit_log.info(
+        "[citations] done for %s — references=%d citing=%d",
+        local_id,
+        refs_added,
+        citing_added,
+    )
     return refs_added, citing_added

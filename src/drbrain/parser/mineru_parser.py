@@ -121,11 +121,18 @@ class MinerUParser:
         """Extract structured content from PDF. Splits into chunks if > max_pages."""
         pdf_path = Path(pdf_path)
         page_count = self._count_pages(pdf_path)
+        _parse_log.info("[parse] %s — %d pages (split at %d)", pdf_path.name, page_count, max_pages)
 
         if page_count <= max_pages:
             return self._extract_single(pdf_path)
 
         # Split and process chunks under a single temp directory
+        _parse_log.info(
+            "[parse] %s split into %d chunks (max %d pages each)",
+            pdf_path.name,
+            (page_count + max_pages - 1) // max_pages,
+            max_pages,
+        )
         tmp = TemporaryDirectory(prefix="mineru_split_")
         tmp_path = Path(tmp.name)
         managed_tmps: list[TemporaryDirectory] = []
@@ -239,7 +246,11 @@ class MinerUParser:
         try:
             if out_dir is not None:
                 raw_md = self._read_output_md(out_dir)
+                _parse_log.info("[parse] MinerU succeeded for %s", pdf_path.name)
             else:
+                _parse_log.warning(
+                    "[parse] MinerU unavailable, falling back to PyMuPDF for %s", pdf_path.name
+                )
                 raw_md = self._fallback_pymupdf(pdf_path)
                 out_dir = None
 
@@ -274,6 +285,15 @@ class MinerUParser:
             authors = search_authors_by_work(doi=doi, title=title)
 
             blocks = filter_sections(raw_md)
+            _parse_log.info(
+                "[parse] %s — title=%s year=%s doi=%s blocks=%d md_size=%d",
+                pdf_path.name,
+                title[:60] if title else "N/A",
+                year,
+                doi,
+                len(blocks),
+                len(raw_md),
+            )
 
             images_dir = out_dir / "images" if out_dir and (out_dir / "images").exists() else None
 
