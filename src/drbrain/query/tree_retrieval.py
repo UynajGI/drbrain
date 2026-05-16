@@ -240,6 +240,13 @@ async def query_by_structure(
     all_leaf_ids = _collect_all_leaf_ids(structure)
     full_skeleton = get_document_structure_json(structure)
     use_navigation = len(full_skeleton) > _MAX_SKELETON_CHARS
+    log.info(
+        "[tree-retrieval] %s — %d leaves, skeleton=%d chars (navigation=%s)",
+        paper_dir.name,
+        len(all_leaf_ids),
+        len(full_skeleton),
+        use_navigation,
+    )
 
     # ── Adaptive tree navigation ──
     selected_ids: list[str] = []
@@ -366,7 +373,9 @@ async def query_by_structure(
                     }
 
     if not collected:
+        log.info("[tree-retrieval] no sections matched for question: %.60s", question)
         return None
+    log.info("[tree-retrieval] retrieved %d sections", len(collected))
     return list(collected.values())
 
 

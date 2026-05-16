@@ -6,6 +6,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from loguru import logger
+
 _BIBTEX_ENTRY = re.compile(
     r"""@(\w+)\s*\{\s*([^,}]+)\s*,\s*((?:[^@]|(?:(?!^@\w+\{).))*)\}""",
     re.DOTALL | re.MULTILINE,
@@ -138,6 +140,7 @@ def import_zotero_db(
     # Detect schema variant:
     # Normalized: items.itemTypeID INTEGER -> itemTypes table
     # Simplified: items.itemType TEXT (no foreign key)
+    logger.info("[import] zotero — auto-detecting schema")
     has_item_type_id = _has_column(conn, "items", "itemTypeID")
     has_deleted = _has_table(conn, "deletedItems")
     has_creator_types = _has_table(conn, "creatorTypes")
@@ -274,6 +277,7 @@ def import_zotero_db(
                 "pdf_path": pdf_path,
             }
         )
+    logger.info("[import] zotero — %d papers extracted", len(papers))
     return papers
 
 

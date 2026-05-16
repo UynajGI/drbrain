@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import time as _time
 from collections import deque
+
+from loguru import logger
 
 from drbrain.graph.engine import GraphEngine
 from drbrain.storage.database import Database
@@ -336,6 +339,12 @@ def detect_paradigm_shifts(
         descendant_threshold: Min descendant concepts for explosion (PRD: 3+).
         cascade_threshold: Min cascaded concepts for cross-domain detection.
     """
+    _t0_genealogy = _time.monotonic()
+    logger.info(
+        "[genealogy] paradigm shift detection — concept=%s papers=%d",
+        concept,
+        len(paper_ids) if paper_ids else 0,
+    )
     results: list[dict] = []
 
     # Type 1: Replacement -- find challenges edges where old is declining
@@ -915,6 +924,8 @@ def _score_transfer_pairs(
                 )
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
+    _t_done = _time.monotonic() - _t0_genealogy  # noqa: F821
+    logger.info("[genealogy] paradigm shifts done in %.1fs — %d shifts", _t_done, len(results))
     return results
 
 

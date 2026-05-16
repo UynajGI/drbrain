@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 import yaml
+from loguru import logger
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "agents"
 
@@ -328,6 +329,7 @@ def setup_cmd(
     ),
 ):
     """Initialize DrBrain — generate config, create directories, validate environment."""
+    logger.info("[setup] starting (quick=%s)", quick)
     # ── --change-password: verify old, set new, write config, exit ──
     if change_password:
         from drbrain.auth import has_password, hash_password, verify_password
@@ -578,7 +580,9 @@ def setup_cmd(
     _inject_agent_entries()
 
     if not warn:
+        logger.info("[setup] complete — no warnings")
         typer.echo("Ready. Next step: drbrain ingest")
     else:
+        logger.info("[setup] complete — %d warning(s)", len(warn))
         typer.echo(f"Setup complete with {len(warn)} warning(s).")
         typer.echo("Run `drbrain check` for detailed diagnostics.")
