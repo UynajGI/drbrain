@@ -8,6 +8,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [0.1.0a1] — 2026-05-16
 
 ### Added
+- **Documentation suite**: `docs/configuration.md` (full config reference with provider templates), `docs/embedding.md` (provider setup guide: local, openai-compat, none), `docs/troubleshooting.md` (common problems and recovery), `docs/glossary.md` (50+ domain terms).
+- **Operational logging**: per-stage timing in ingest (parse/identify/tree)/build (paper-level with insert counts), closure entry/exit with relation summary, model loading path and device info, LLM chain-level trace with per-model timing. No logic changes.
 - **openai-compat embedding provider**: `_embed_batch_openai_compat()` calls any OpenAI-compatible `/v1/embeddings` API. Config via `embed.api_base` + `embed.api_key`. Retry with exponential backoff on 429/5xx. Chunked batching by `embed.batch_size`. `provider` setting now fully supports `"openai-compat"` alongside `"local"` and `"none"`.
 - **GraphEngine embedding persistence**: `learn_embeddings(dim, epochs, lr)`, `entity_embedding(label)`, `predict_link(head, relation, top_k)`, `similar_entities(label, top_k)` on GraphEngine. TransE vectors persisted to `embeddings` table; hybrid closure reuses persistent embeddings instead of inline training. (2202.07412-inspired)
 - **KG closure edges in LLM context**: `ask`/`reason` commands now inject closure-inferred edges (`--[inferred: rel]-->` format) into LLM context, with top-k confidence limiting. `_build_closure_context()` helper in `cli/_common.py`. (2306.08302 F1-inspired)
