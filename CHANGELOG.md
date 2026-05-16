@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [Unreleased]
+## [0.1.0a1] — 2026-05-16
 
 ### Added
 - **openai-compat embedding provider**: `_embed_batch_openai_compat()` calls any OpenAI-compatible `/v1/embeddings` API. Config via `embed.api_base` + `embed.api_key`. Retry with exponential backoff on 429/5xx. Chunked batching by `embed.batch_size`. `provider` setting now fully supports `"openai-compat"` alongside `"local"` and `"none"`.

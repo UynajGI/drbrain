@@ -1,7 +1,7 @@
 [project]
 name = "drbrain"
 version = "0.1.0a1"
-description = "Academic knowledge graph system — vector-free, symbol-driven research discovery"
+description = "Academic knowledge graph system — symbol-driven research discovery with lightweight vector retrieval"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"

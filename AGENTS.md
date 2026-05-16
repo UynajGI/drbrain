@@ -30,7 +30,7 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 ## DrBrain — Project Context
 
-DrBrain is a **vector-free, symbol-driven academic knowledge graph**. It ingests PDFs,
+DrBrain is a **symbol-driven academic knowledge graph with lightweight vector retrieval**. It ingests PDFs,
 extracts structured concepts/arguments via LLM, deduplicates identities, and infers
 new relationships through rule-based graph closure.
 

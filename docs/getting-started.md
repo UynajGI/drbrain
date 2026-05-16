@@ -8,29 +8,10 @@
 
 ## Installation
 
-DrBrain is a CLI tool. **pipx** or **uv tool install** are the recommended ways to install
-it — both create an isolated environment so DrBrain doesn't interfere with your other projects.
+DrBrain is a CLI tool. For the alpha release, install from source.
+Package distribution (`pipx install drbrain`) will be available in beta.
 
-### pipx
-
-```bash
-pipx install drbrain
-```
-
-### uv
-
-```bash
-uv tool install drbrain
-```
-
-### pip
-
-```bash
-pip install drbrain
-drbrain setup
-```
-
-### From source (development)
+### From source
 
 ```bash
 git clone https://github.com/UynajGI/DrBrain.git
