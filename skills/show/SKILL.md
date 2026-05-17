@@ -16,6 +16,10 @@ description: >
 Display a single paper's full contents: bibliographic metadata, extracted concepts (grouped by TBox
 type), arguments (claims with mechanisms and targets), and outgoing/incoming knowledge graph edges.
 
+## Prerequisites
+
+Paper must be ingested (`paper-ingest` skill). Concept and edge details require KG build (`kg-build` skill).
+
 ## Quick Start
 
 ```bash

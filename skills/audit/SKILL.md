@@ -17,6 +17,10 @@ Run a 15-rule scan across all papers, organized into three severity levels: erro
 warning (should-fix), and info (nice-to-know). Produces a structured report showing which papers
 have which issues, with fix guidance for each rule.
 
+## Prerequisites
+
+Papers must be in the library (`paper-ingest` skill). For rules checking concept/edge counts, the KG should be built (`kg-build` skill).
+
 ## Quick Start
 
 ```bash

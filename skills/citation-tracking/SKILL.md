@@ -16,6 +16,10 @@ description: >
 Analyze citation relationships to map the knowledge frontier. The citation graph reveals hidden
 connections, missing links between research communities, and shared intellectual heritage.
 
+## Prerequisites
+
+Papers must be ingested (`paper-ingest` skill). For `check-citations`, the local library should have papers with known DOIs for matching.
+
 ## Workflow
 
 ### Step 1: Basic citation queries

@@ -17,6 +17,10 @@ description: >
 Workspaces are paper subsets that scope DrBrain's reasoning to a specific topic. Each workspace
 stores a `papers.json` reference list — papers are not copied, only referenced.
 
+## Prerequisites
+
+Papers must be ingested and built (`paper-ingest` + `kg-build` skills). Workspace-scoped analysis commands (`analyze -w`, `seed -w`, `closure -w`) need the KG built.
+
 ## Workflow
 
 ### Step 1: Create and populate a workspace

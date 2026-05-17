@@ -62,6 +62,16 @@ Common failures:
 - **LLM extraction failed**: all configured models exhausted. Check API keys with `drbrain check`.
 - **No DOI found**: paper couldn't be identified externally. Concepts are still extracted.
 
+## Next Steps
+
+Ingested papers have status `uploaded`. Run the KG build pipeline to extract concepts and edges:
+
+```bash
+drbrain build && drbrain embed --tree && drbrain closure --mode hybrid
+```
+
+See `kg-build` skill for details.
+
 ## Examples
 
 **Ingest a single paper directly:**

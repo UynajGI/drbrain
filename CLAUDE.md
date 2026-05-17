@@ -12,9 +12,122 @@ uv run ruff check . && uv run ruff format .
 uv run pytest --cov=drbrain --cov-report=term
 ```
 
-Commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `check-citations`, `ws`, `export`, `backup`, `check`, `audit`, `seed`, `closure`, `repair`, `import`, `translate`, `clean`, `ask`, `index`, `show`, `fetch`, `embed`, `reason`, `evolve`, `descendants`, `landscape`, `paradigm`, `transfers`, `isomorphism`, `difficulty`, `frontier`, `report`, `list`, `stats`, `queue`, `delete`, `lineage`.
+### Command Reference
 
-Sub-apps: `graph` (neighbors, path, related, describe, query, traverse-from), `ws` (create, add, remove, list, show, delete, rename). `queue` has subcommands `resolve` and `resolve-all`.
+**Data In**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `fetch` | `--arxiv` | DOI/title/arXiv → download PDF → ingest |
+| `ingest` | `--json`; defaults to `data/spool/inbox/` | PDF→markdown→tree→paper record |
+| `import` | — | Zotero/BibTeX/Endnote import |
+| `translate` | — | LLM translation with resume |
+
+**KG Build**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `build` | `--all`, `--skip-refine`, `--json`, `[PAPER_ID...]` | 5-stage LLM extraction; omit args = unprocessed only |
+| `embed` | `--dim 128`, `--epochs 100`, `--retrain`, `--tree` | TransE graph embeddings; `--tree` = PageIndex+RAPTOR text embeddings |
+| `closure` | `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference (8 symbolic + 4 embedding rules) |
+
+**Query & Explore**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `query` | `--type-filter`, `--arg-type`, `--year-start/end`, `--min-confidence`, `--limit 20` | BM25 + filters over concepts/arguments |
+| | `-n N -R rel1,rel2 -D forward/backward/both` | Graph expansion from results |
+| | `--hybrid` | PageRank-boosted ranking |
+| | `--paper ID` | PageIndex tree retrieval (bypasses BM25) |
+| | `--json/--jsonl`, `-w WS` | |
+| `ask` | — | Natural-language KGQA |
+| `reason` | `-b`/`--bidirectional`, `-r N`/`--max-rounds 3` | LLM agent tool-calling over KG; `-b` = iterative LLM↔KG validation loop |
+| `graph neighbors` | | Traverse from node with path info |
+| `graph path` | | Shortest path between two nodes |
+| `graph related` | | Shared concepts across papers |
+| `graph describe` | | LLM subgraph-to-text description |
+| `graph query` | | TransE complex query (∧∨¬ operators) |
+| `graph traverse-from` | | Hybrid tree+graph: section → concepts → graph |
+
+**Analysis & Genealogy**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `analyze` | `<id>` single | Seeds, causal chains, hypotheses, counterfactuals |
+| | `--papers p1,p2` | Multi-paper |
+| | `--query "text"` | BM25 search → analyze matches |
+| | `--discover "q"` | LLM graph exploration → analyze |
+| | `-w WS` | All papers in workspace |
+| | `-f`/`--full`, `--json` | Full analysis (slower), JSON output |
+| `evolve` | `-d ancestors/descendants/both`, `-n 3`, `--mermaid`, `--json`, `--stats` | Concept lineage tree; `--stats` = temporal signal classification (emerging/established/declining/contested/resurging) |
+| `descendants` | | Academic offspring tracking |
+| `landscape` | | Domain timeline: gaps, debates, technology cliffs |
+| `paradigm` | | Paradigm shift detection (replacement/explosion/invasion) |
+| `transfers` | | Cross-domain method migration via workspace clustering |
+| `isomorphism` | | Structurally similar subgraphs via relation signature + Jaccard |
+| `difficulty` | | Gap difficulty by source section type |
+| `frontier` | | Composite: seeds + debates + cliffs + difficulty + confidence collapse |
+| `seed` | | Research seed detection from graph patterns |
+
+**Library Management**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `list` | | All papers in DB |
+| `show` | | Single paper detail |
+| `stats` | | DB statistics |
+| `delete` | | Remove paper + all associated data |
+| `report` | | Single-paper report |
+| `export` | | BibTeX/RIS/Markdown |
+| `ws` | create, add, remove, list, show, delete, rename | Workspace CRUD |
+
+**Quality & Maintenance**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `check` | | Deps, config, env vars |
+| `audit` | | 15 quality rules, 3 severity levels |
+| `repair` | | Metadata enrichment via CrossRef/arXiv/OpenAlex |
+| `citations` | | Citation graph: refs, citing, shared-refs |
+| `check-citations` | | Verify in-text citations against local library |
+| `lineage` | | Author/research lineage via OpenAlex deduplicated IDs |
+| `queue` | resolve, resolve-all | Accept/reject confidence queue items |
+| `index` | | Rebuild BM25 search index |
+| `backup` | | Create/list tar.gz backups |
+| `clean` | | Clear data dirs (keeps inbox PDFs intact) |
+
+**Setup**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `setup` | | Init config, create dirs, validate env |
+
+### Typical Workflows
+
+```
+# First run
+setup → fetch "DOI" → build → embed → closure
+
+# Add papers from inbox
+ingest                      # processes data/spool/inbox/
+build                       # builds all unprocessed
+embed --retrain --tree      # retrain graph + text embeddings
+closure --mode hybrid       # re-run inference
+
+# Explore
+query "transformer attention" --hybrid -n 1 -R addresses
+query --paper <id> "methods"            # PageIndex tree retrieval
+ask "what are the main approaches to X?"
+reason -b "how does method A compare to B?"
+
+# Analysis
+analyze --discover "open problems in X" -f
+evolve "concept label" --stats --mermaid
+landscape
+frontier
+
+# Maintenance
+audit → repair → check-citations → queue resolve-all
+```
+
+**Data dependencies:**
+- `build` needs `ingest` (status: uploaded)
+- `embed` / `closure` need `build` (concepts + edges exist)
+- `query` / `ask` / `reason` / `analyze` / `evolve` etc. need `build`; best results with `embed` + `closure`
+- `evolve --stats`, `paradigm`, `transfers`, `isomorphism` need `closure`
 
 ## Architecture
 

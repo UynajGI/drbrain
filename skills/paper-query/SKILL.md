@@ -15,6 +15,10 @@ description: >
 Search and explore the DrBrain library. Two search modes: BM25 keyword search over concepts and
 arguments (topic-based), and PageIndex tree-based retrieval (deep-reading specific paper sections).
 
+## Prerequisites
+
+Knowledge graph must be built (`kg-build` skill). BM25 index must be current (run `drbrain index` if search returns stale results). Tree-based retrieval requires `drbrain embed --tree` (PageIndex+RAPTOR embeddings).
+
 ## Search modes
 
 ### BM25 keyword search
@@ -45,17 +49,19 @@ Deep-read a specific paper's sections using the PageIndex tree structure:
 drbrain query "how does the proposed method handle overfitting" --paper p3f8a2
 ```
 
-### Timeline view
+### Hybrid ranking
 
-Track concept evolution across papers:
+Boost BM25 results with graph centrality (PageRank):
 
 ```bash
-drbrain timeline "Self-Attention"
+drbrain query "graph attention" --hybrid
 ```
 
 ## After finding papers
 
 - `drbrain show p3f8a2` — inspect a paper's full contents
+- `drbrain ask "what is the main contribution of this paper?"` — natural language Q&A over the KG
+- `drbrain reason "compare approach A and B"` — deep LLM agent reasoning (see kg-reason skill)
 - `drbrain analyze p3f8a2` — run knowledge frontier analysis
 - `drbrain citations p3f8a2 --type shared-refs` — find related work
 - `drbrain ws add attention-methods p3f8a2` — save to a workspace
@@ -85,4 +91,5 @@ drbrain query "regularization strategy" --paper p3f8a2
 | `drbrain query <terms> --type-filter Method` | Filter by concept type |
 | `drbrain query <terms> --neighbors N` | Graph-expanded results |
 | `drbrain query <terms> --paper <id>` | Tree-based section retrieval |
-| `drbrain timeline <concept>` | Year-by-year concept evolution |
+| `drbrain query <terms> --hybrid` | PageRank-boosted ranking |
+| `drbrain ask "<question>"` | Natural language KGQA |

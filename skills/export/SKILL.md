@@ -16,6 +16,10 @@ description: >
 Export paper metadata from the DrBrain library to standard reference formats: BibTeX (`.bib`), RIS
 (`.ris`), or Markdown (`list`). Supports single paper, all papers, or workspace-scoped export.
 
+## Prerequisites
+
+Papers must be in the library (`paper-ingest` skill). Metadata completeness determines export quality — run `drbrain audit` and `drbrain repair` first for best results.
+
 ## Quick Start
 
 ```bash

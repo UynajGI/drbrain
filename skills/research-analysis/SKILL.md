@@ -98,6 +98,12 @@ drbrain analyze --workspace attention-methods --full --json
 | `drbrain analyze <id>` | Paper-level analysis with seeds, chains, edges |
 | `drbrain analyze <id> --full` | Adds counterfactual, hypotheses, isomorphism |
 | `drbrain analyze -w <ws>` | Workspace-scoped analysis |
-| `drbrain timeline <concept>` | Year-by-year evolution of a concept |
 | `drbrain citations <id> --type shared-refs` | Shared-reference frontier signals |
 | `drbrain closure` | Run graph inference rules, see new edges |
+
+## Related Skills
+
+- **knowledge-cartography** — `evolve`, `descendants`, `landscape`, `paradigm`, `transfers`, `isomorphism`, `difficulty`, `frontier`, `seed` for deeper analysis of each dimension
+- **kg-reason** — `reason` for LLM agent reasoning over analysis results
+- **kg-build** — `build`, `embed`, `closure` to regenerate the graph before analysis
+- **graph** — `graph neighbors/path/related` for direct graph exploration
