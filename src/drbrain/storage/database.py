@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from loguru import logger
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS papers (
     local_id TEXT PRIMARY KEY,
@@ -186,12 +188,16 @@ class Database:
 
         for version, name, fn in migrations:
             if current < version:
+                logger.info("[db] applying migration v%d: %s", version, name)
                 fn()
                 self.conn.execute(
                     "INSERT OR IGNORE INTO schema_versions (version) VALUES (?)",
                     (version,),
                 )
                 self.conn.commit()
+                logger.info("[db] migration v%d (%s) applied", version, name)
+        if current >= len(migrations):
+            logger.debug("[db] schema up to date (v%d)", current)
 
     def _migrate_add_paper_type(self) -> None:
         """Add paper_type column if missing (pre-v2 DBs)."""

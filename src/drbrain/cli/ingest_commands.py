@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import typer
+from loguru import logger
 from rich.console import Console
 
 from drbrain.cli._common import (
@@ -68,6 +69,7 @@ def ingest_cmd(
     db = Database(cfg["db"]["path"])
     dedup = DedupEngine(db)
 
+    logger.info("[ingest] batch start — %d PDF(s)", len(pdf_files))
     results = []
     for i, pdf_path in enumerate(pdf_files, 1):
         if not json_output and len(pdf_files) > 1:
@@ -102,6 +104,8 @@ def ingest_cmd(
             success = sum(1 for r in results if r.get("ok"))
             typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
 
+    success = sum(1 for r in results if r.get("ok"))
+    logger.info("[ingest] batch done — %d/%d papers ingested", success, len(results))
     db.close()
 
 
