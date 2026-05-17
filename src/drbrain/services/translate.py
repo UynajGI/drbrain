@@ -581,10 +581,14 @@ def translate_paper(
     Returns:
         TranslateResult with outcome details.
     """
+    import time as _ttime
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
+    _tt0 = _ttime.monotonic()
     md_path = raw_md_path(paper_dir)
+    logger.info("[translate] starting %s → %s (force=%s)", paper_dir.name, target_lang, force)
     if not md_path.exists():
+        logger.warning("[translate] %s: raw.md not found", paper_dir.name)
         return TranslateResult(skip_reason=SKIP_NO_MD)
 
     text = md_path.read_text(encoding="utf-8")
@@ -691,12 +695,26 @@ def translate_paper(
 
     if len(final_prefix) == total:
         shutil.rmtree(workdir)
+        logger.info(
+            "[translate] %s done in %.1fs — %d/%d chunks",
+            paper_dir.name,
+            _ttime.monotonic() - _tt0,
+            total,
+            total,
+        )
         return TranslateResult(
             path=out_path,
             completed_chunks=total,
             total_chunks=total,
         )
     elif len(final_prefix) > 0:
+        logger.warning(
+            "[translate] %s partial in %.1fs — %d/%d chunks",
+            paper_dir.name,
+            _ttime.monotonic() - _tt0,
+            len(final_prefix),
+            total,
+        )
         return TranslateResult(
             path=out_path,
             partial=True,

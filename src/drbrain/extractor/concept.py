@@ -432,8 +432,15 @@ async def build_graph_from_tree(
     if not leaves:
         return {"concepts": [], "relations": [], "merges": [], "corrections": []}
 
+    import time as _ctime
+
+    _ct0 = _ctime.monotonic()
+    log.info("[build] Stage 1/5 ontology — %d leaf nodes", len(leaves))
+
     # Stage 1: Ontology Extension
     ontology = await _build_ontology(structure, models)
+    _ct1 = _ctime.monotonic()
+    log.info("[build] ontology done in %.1fs — %d types", _ct1 - _ct0, len(ontology))
 
     # Stage 2: Entity Extraction (tree-guided with section hints)
     concepts = await _extract_entities(md_path, structure, leaves, ontology, models)
@@ -441,11 +448,17 @@ async def build_graph_from_tree(
     if not concepts:
         return {"concepts": [], "relations": [], "merges": [], "corrections": []}
 
+    _ct2 = _ctime.monotonic()
+    log.info("[build] Stage 2/5 entities done in %.1fs — %d concepts", _ct2 - _ct1, len(concepts))
+
     # Stage 2.5: Apply tree position → confidence weight
     _apply_tree_weights(concepts, leaves, structure)
 
     # Stage 3: Relation Extraction
     relations = await _extract_relations(concepts, models)
+
+    _ct3 = _ctime.monotonic()
+    log.info("[build] Stage 3/5 relations done in %.1fs — %d edges", _ct3 - _ct2, len(relations))
 
     # Stage 3.5: Add tree hierarchy edges (section contains subsection)
     tree_edges = _build_tree_edges(structure)
@@ -454,10 +467,25 @@ async def build_graph_from_tree(
     # Stage 4: Coreference Resolution
     concepts, merges = await _resolve_coreferences(concepts, models)
 
+    _ct4 = _ctime.monotonic()
+    log.info("[build] Stage 4/5 coref done in %.1fs — %d merges", _ct4 - _ct3, len(merges))
+
     # Stage 5: Iterative Refinement (optional)
     corrections = []
     if not skip_refine:
         corrections = await _refine_extraction(concepts, relations, models)
+        _ct5 = _ctime.monotonic()
+        log.info(
+            "[build] Stage 5/5 refine done in %.1fs — %d corrections", _ct5 - _ct4, len(corrections)
+        )
+
+    log.info(
+        "[build] total %.1fs — %d concepts, %d relations, %d merges",
+        _ctime.monotonic() - _ct0,
+        len(concepts),
+        len(relations),
+        len(merges),
+    )
 
     return {
         "concepts": concepts,

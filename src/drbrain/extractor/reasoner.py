@@ -281,6 +281,11 @@ class ReasonerAgent:
 
     async def reason(self, question: str, max_turns: int = 5) -> str:
         """Run LLM agent loop to reason about a question using graph tools."""
+        import time as _rtime
+
+        _rt0 = _rtime.monotonic()
+        log.info("[reasoner] starting — question=%.80s max_turns=%d", question, max_turns)
+
         if not self.models:
             return "No LLM models configured."
 
@@ -324,6 +329,8 @@ class ReasonerAgent:
                 msg = resp.choices[0].message
 
                 if msg.tool_calls:
+                    _called = [tc.function.name for tc in msg.tool_calls]
+                    log.info("[reasoner] tool calls: %s", _called)
                     messages.append(
                         {
                             "role": "assistant",
@@ -367,10 +374,18 @@ class ReasonerAgent:
                             }
                         )
                 else:
-                    return msg.content or "No answer generated."
+                    _content = msg.content or "No answer generated."
+                    log.info(
+                        "[reasoner] done in %.1fs — answer=%d chars",
+                        _rtime.monotonic() - _rt0,
+                        len(_content),
+                    )
+                    return _content
             except Exception as e:
+                log.warning("[reasoner] error: %s", e)
                 return f"Reasoning error: {e}"
 
+        log.warning("[reasoner] max turns (%d) exhausted", max_turns)
         return "Unable to answer after maximum reasoning turns."
 
     def _call_llm(self, prompt: str, system: str | None = None) -> str | None:
