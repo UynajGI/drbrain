@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.1.0a2] — 2026-05-18
+
+### Added
+- **Office document inspection**: `services/document.py` — inspect DOCX/PPTX/XLSX without a GUI, returning structured text summaries. Optional dependency group `[office]` (python-docx, python-pptx, openpyxl).
+- **Citation styles**: `services/citation_styles.py` — 4 built-in styles (APA, Vancouver, Chicago Author-Date, MLA) with dynamic custom style loading from `data/citation_styles/`. Integrated with `export --style` flag.
+- **Rsync remote backup**: `storage/backup.py` expanded with rsync support — `BackupTargetConfig` in `config.py`, SSH key/password auth, dry-run mode. Existing tar.gz backup preserved.
+- **Bilingual setup wizard**: `cli/_setup_i18n.py` — 78 translation keys, language selection (EN/ZH) at start of interactive `drbrain setup`.
+- **Web link ingestion**: `providers/webtools.py` + `ingest-link` command — renders web pages via external qt-web-extractor and saves as paper records.
+- **USPTO patent search**: `providers/uspto_odp.py` (API key) + `providers/uspto_ppubs.py` (free, session-based) — patent search and application-number lookup.
+- **Batch pipeline**: `services/pipeline.py` — presets (full/quick/embed) and custom steps, chaining ingest→build→embed→closure.
+- **Federated search**: `services/fsearch.py` — local DB + arXiv with ingested annotation via DOI/arXiv ID cross-reference.
+- **Conference proceedings**: `storage/proceedings.py` — JSON-backed proceedings registry, create/list/add papers.
+- **Explore silos**: `storage/explore.py` — lightweight JSONL-based discovery collections with keyword search.
+- **Metadata enrichment**: `services/enrich.py` — CrossRef backfill for missing fields, scrub-suspect detection.
+- **User behavior metrics**: `services/metrics_panel.py` — SQLite-backed search keyword tracking and read event analytics.
+- **Parser benchmark**: `services/parser_benchmark.py` — compare MinerU/PyMuPDF/pymupdf4llm output with timing and size stats.
+- **11 new skills**: citation-styles, backup, document, patent-search, pipeline, fsearch, proceedings, explore, enrich, metrics, ingest-link.
+
+### Changed
+- Removed unused `pdf` optional dependency (MinerU is used via CLI, not Python import).
+
 ## [0.1.0a1] — 2026-05-16
 
 ### Added

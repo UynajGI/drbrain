@@ -19,6 +19,7 @@ uv run pytest --cov=drbrain --cov-report=term
 |---------|-----------|------|
 | `fetch` | `--arxiv` | DOI/title/arXiv → download PDF → ingest |
 | `ingest` | `--json`; defaults to `data/spool/inbox/` | PDF→markdown→tree→paper record |
+| `ingest-link` | `--pdf`, `--dry-run`, `--json`, `URL...` | Web URL → external extractor → paper record |
 | `import` | — | Zotero/BibTeX/Endnote import |
 | `translate` | — | LLM translation with resume |
 
@@ -45,6 +46,8 @@ uv run pytest --cov=drbrain --cov-report=term
 | `graph describe` | | LLM subgraph-to-text description |
 | `graph query` | | TransE complex query (∧∨¬ operators) |
 | `graph traverse-from` | | Hybrid tree+graph: section → concepts → graph |
+| `fsearch` | `--arxiv`, `--arxiv-only`, `--limit 20`, `--json` | Federated search: local DB + arXiv with ingested annotation |
+| `patent-search` | `--source odp/ppubs`, `--application ID`, `--limit 10` | USPTO patent search (PPUBS free or ODP with API key) |
 
 **Analysis & Genealogy**
 | Command | Key Flags | What |
@@ -73,7 +76,10 @@ uv run pytest --cov=drbrain --cov-report=term
 | `stats` | | DB statistics |
 | `delete` | | Remove paper + all associated data |
 | `report` | | Single-paper report |
-| `export` | | BibTeX/RIS/Markdown |
+| `export` | `--style apa/vancouver/chicago-author-date/mla` | BibTeX/RIS/Markdown with 4 built-in citation styles + custom |
+| `style` | `--list`, `--show NAME` | Manage citation styles |
+| `proceedings` | `--create`, `--list`, `--show`, `--add` | Conference proceedings management |
+| `explore` | `--create`, `--list`, `--delete`, `--name N`, `--search Q` | Literature discovery collections (JSONL silos) |
 | `ws` | create, add, remove, list, show, delete, rename | Workspace CRUD |
 
 **Quality & Maintenance**
@@ -87,8 +93,16 @@ uv run pytest --cov=drbrain --cov-report=term
 | `lineage` | | Author/research lineage via OpenAlex deduplicated IDs |
 | `queue` | resolve, resolve-all | Accept/reject confidence queue items |
 | `index` | | Rebuild BM25 search index |
-| `backup` | | Create/list tar.gz backups |
+| `backup` | `--list`, `--target NAME`, `--dry-run` | Local tar.gz + rsync remote backup |
+| `enrich` | `--all`, `--dry-run`, `--json` | CrossRef metadata backfill + scrub detection |
+| `document` | `FILE` | Inspect Office docs (DOCX/PPTX/XLSX) — structured text summary |
+| `metrics` | `--json` | User behavior analytics: top keywords, most-read, weekly trends |
 | `clean` | | Clear data dirs (keeps inbox PDFs intact) |
+
+**Pipeline**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `pipeline` | `--preset full/quick/embed`, `--steps S1,S2`, `--list`, `--dry-run` | Chain steps (ingest→build→embed→closure) in sequence |
 
 **Setup**
 | Command | Key Flags | What |
@@ -148,10 +162,11 @@ DrBrain is a **symbol-driven academic knowledge graph with lightweight vector re
 | Reasoning    | `src/drbrain/extractor/causal_chain.py`, `src/drbrain/extractor/confidence_propagation.py`, `src/drbrain/extractor/counterfactual.py`, `src/drbrain/extractor/isomorphism.py`, `src/drbrain/extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
 | Search       | `src/drbrain/query/bm25.py`, `src/drbrain/query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search + RAPTOR two-stage traversal (layer descent + collapsed fallback)                                               |
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
-| Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex                                                  |
+| Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`, `src/drbrain/services/enrich.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex, CrossRef backfill + scrub detection                                                  |
 | Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
-| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/workspace.py`                                                                                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD                                   |
-| CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py` | Typer CLI, graph traversal, KGQA (`ask`), setup validation                                                          |
+| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/workspace.py`, `src/drbrain/storage/proceedings.py`, `src/drbrain/storage/explore.py`                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD, proceedings, explore silos                                   |
+| Providers    | `src/drbrain/providers/webtools.py`, `src/drbrain/providers/uspto_odp.py`, `src/drbrain/providers/uspto_ppubs.py`                                                                    | Web extraction (qt-web-extractor), USPTO ODP (API key) + PPUBS (free) patent search                       |
+| CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py`, `src/drbrain/cli/_setup_i18n.py` | Typer CLI, graph traversal, KGQA (`ask`), setup validation, bilingual wizard (EN/ZH)                                                          |
 
 ### Data Layout
 
@@ -161,11 +176,14 @@ data/
 ├── spool/pending/      Failed ingests
 ├── papers/<id>/        source.pdf, raw.md, tree.json, images/
 ├── drbrain.db          SQLite (WAL mode, schema_versions)
-├── metrics.db          LLM token tracking (created on first use)
+├── metrics.db          LLM token tracking + user behavior analytics
 ├── cache/              API cache (rebuildable)
 ├── logs/               loguru rotating logs
 ├── backups/            tar.gz exports
-└── reports/            Per-paper JSON
+├── reports/            Per-paper JSON
+├── citation_styles/    Custom citation style Python files
+├── explore/<name>/     Explore silos (silo.json + papers.jsonl)
+└── proceedings.json    Conference proceedings registry
 workspace/<name>/       workspace.yaml + refs/papers.json
 ```
 

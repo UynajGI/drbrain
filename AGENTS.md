@@ -57,8 +57,9 @@ new relationships through rule-based graph closure.
 | `src/drbrain/cli/` | Typer CLI (main.py registration, 9 *_commands.py modules, _common.py helpers, setup.py) |
 | `src/drbrain/extractor/` | LLM extraction, reasoning, API clients (openalex, crossref) |
 | `src/drbrain/graph/` | Graph engine, TransE embeddings (learn/predict/similar), rule closure, query embeddings |
-| `src/drbrain/storage/` | SQLite database, export, workspace, paths |
-| `src/drbrain/services/` | Embedding engine (local + openai-compat, GPU auto-tuning, multi-source), audit, repair, translate, zotero import |
+| `src/drbrain/storage/` | SQLite database, export, workspace, paths, proceedings, explore silos |
+| `src/drbrain/services/` | Embedding, audit, repair, enrich, translate, zotero import, citation_styles, document, fsearch, pipeline, metrics_panel, parser_benchmark |
+| `src/drbrain/providers/` | Web extraction (qt-web-extractor), USPTO ODP + PPUBS patent search |
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
