@@ -169,6 +169,51 @@ batch sizing to avoid CUDA OOM.
 
 ---
 
+## Discovery & Management
+
+**Federated Search (`fsearch`)**
+Cross-source search: local library (BM25 over papers/concepts/arguments) + arXiv Atom API
+with automatic "already ingested" annotation via DOI and arXiv ID cross-reference.
+
+**Explore Silo**
+A lightweight literature discovery collection stored as a directory under `data/explore/`.
+Each silo contains `silo.json` metadata and `papers.jsonl` papers. Separate from the main
+library and workspaces — designed for exploratory topic searches.
+
+**Proceedings**
+A conference proceedings collection tracked in `data/proceedings.json`. Associates papers
+by conference (name, year, venue). Supports create, list, show, and add-paper operations.
+
+**Pipeline**
+A command that chains multiple processing steps (ingest → build → embed → closure) via
+presets (`full`, `quick`, `embed`) or custom comma-separated step lists.
+
+**Patent Search**
+USPTO patent lookup via two providers: PPUBS (free, session-based web client) and ODP
+(API key required for richer metadata). Supports keyword search and application-number lookup.
+
+**Metadata Enrichment**
+CrossRef API backfill for missing paper metadata (title, year, authors, journal).
+Includes scrub-suspect detection for low-quality records (empty titles, suspicious filenames).
+
+**Citation Style**
+A formatting function for Markdown reference export. 4 built-in styles (APA, Vancouver,
+Chicago Author-Date, MLA) plus dynamically loaded custom `.py` styles from `data/citation_styles/`.
+
+**Backup (rsync)**
+Remote backup via rsync over SSH with configurable targets in `config.local.yaml`. Supports
+key-based and password auth, dry-run mode. Local tar.gz backup is always available.
+
+**Document Inspection**
+Structured text summaries of Office files (DOCX, PPTX, XLSX) without a GUI. Reports
+structure, content, font info, and potential overflow issues.
+
+**Metrics Dashboard**
+User behavior analytics tracking search keywords, paper reads, and weekly trends in a
+separate `data/metrics.db` SQLite database.
+
+---
+
 ## Storage
 
 **WAL Mode**

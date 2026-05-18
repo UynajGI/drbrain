@@ -264,6 +264,45 @@ Confidence between `weak_threshold` and `auto_accept` enters the queue for optio
 
 ---
 
+## Rsync Backup
+
+```yaml
+backup:
+  ssh_bin: ssh
+  rsync_bin: rsync
+  targets:
+    myserver:
+      host: backup.example.com
+      user: drbrain
+      path: /backups/drbrain/
+      port: 22
+      identity_file: "~/.ssh/id_ed25519"
+      mode: default          # default | append | append-verify
+      compress: true
+      enabled: true
+      exclude: []
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `ssh_bin` | `ssh` | SSH binary path |
+| `rsync_bin` | `rsync` | Rsync binary path |
+| `targets.<name>.host` | — | Remote SSH host |
+| `targets.<name>.user` | `""` | SSH username |
+| `targets.<name>.path` | — | Remote destination path |
+| `targets.<name>.port` | `22` | SSH port |
+| `targets.<name>.identity_file` | `""` | SSH private key path |
+| `targets.<name>.password` | `""` | SSH password (stored in `config.local.yaml`) |
+| `targets.<name>.mode` | `default` | Transfer mode: `default`, `append`, `append-verify` |
+| `targets.<name>.compress` | `true` | Enable rsync compression |
+| `targets.<name>.enabled` | `true` | Whether the target is active |
+| `targets.<name>.exclude` | `[]` | Rsync exclude patterns |
+
+Configure targets in `config.local.yaml` (contains secrets). Local tar.gz backups
+are always available without configuration.
+
+---
+
 ## Fetch
 
 ```yaml
@@ -297,5 +336,6 @@ fetch:
 | Secrets | `config.local.yaml` |
 | Template | `config.example.yaml` |
 | Config class | `src/drbrain/config.py` |
-| Setup wizard | `drbrain setup` |
+| Setup wizard | `drbrain setup` (bilingual EN/ZH) |
 | Validate | `drbrain check` |
+| Citation styles | `data/citation_styles/` |

@@ -295,3 +295,19 @@ Stage 2 (entity extraction) runs with 10-way concurrency on leaf nodes. Translat
 
 ### Data Quality
 `drbrain audit` applies 15 severity-graded rules covering paper metadata, concept integrity, edge consistency, and graph structure. PDF pre-validation detects encryption and corruption before ingest. Three non-blocking quality gates run during ingest.
+
+### New Modules (v0.1.0a2)
+
+| Area | Key files | What |
+|------|-----------|------|
+| Providers | `providers/webtools.py`, `providers/uspto_odp.py`, `providers/uspto_ppubs.py` | Web extraction via qt-web-extractor, USPTO patent search (ODP + PPUBS) |
+| Citation styles | `services/citation_styles.py` | 4 built-in styles (APA, Vancouver, Chicago, MLA) + dynamic custom style loading |
+| Document inspection | `services/document.py` | Structured Office document summaries (DOCX, PPTX, XLSX) without GUI |
+| Federated search | `services/fsearch.py` | Cross-source search: local DB + arXiv with ingested annotation |
+| Pipeline | `services/pipeline.py` | Step chaining with presets (full/quick/embed) and custom step lists |
+| Metadata enrichment | `services/enrich.py` | CrossRef backfill for missing fields, scrub-suspect detection |
+| Metrics panel | `services/metrics_panel.py` | User behavior analytics: top keywords, most-read papers, weekly trends |
+| Parser benchmark | `services/parser_benchmark.py` | Compare MinerU, PyMuPDF, pymupdf4llm output with timing stats |
+| Proceedings | `storage/proceedings.py` | JSON-backed conference proceedings registry |
+| Explore silos | `storage/explore.py` | Lightweight JSONL discovery collections with keyword search |
+| Bilingual setup | `cli/_setup_i18n.py` | 78 translation keys for EN/ZH interactive setup wizard |

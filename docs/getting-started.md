@@ -137,6 +137,16 @@ drbrain closure                # Symbolic inference (8 rules)
 drbrain closure --mode hybrid  # Symbolic + embedding-based (12 rules, best results)
 ```
 
+### One-Command Pipeline
+
+Run all steps in sequence with a single command:
+
+```bash
+drbrain pipeline --preset full       # ingest → build → embed → closure
+drbrain pipeline --preset quick      # build → embed → closure
+drbrain pipeline --preset full --dry-run  # preview only
+```
+
 ### Step 6: Query
 
 Search your knowledge graph with keyword-based BM25 retrieval:
@@ -205,10 +215,13 @@ data/
   spool/pending/      # Failed ingests
   papers/<id>/          # Per-paper: source.pdf, raw.md, tree.json, images/
   drbrain.db            # SQLite database (concepts, relations, edges)
-  metrics.db            # LLM token tracking
+  metrics.db            # LLM token tracking + user behavior analytics
   cache/                # API cache
   reports/              # Per-paper JSON analysis reports
   backups/              # tar.gz backups
+  citation_styles/      # Custom citation style .py files
+  explore/<name>/       # Discovery collections (silo.json + papers.jsonl)
+  proceedings.json      # Conference proceedings registry
 workspace/<name>/       # Paper subsets: workspace.yaml + refs/papers.json
 ```
 
