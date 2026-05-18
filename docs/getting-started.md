@@ -41,6 +41,22 @@ uv sync && uv pip install -e .
 drbrain setup
 ```
 
+### For AI Agents
+
+Copy-paste this into your coding agent to install DrBrain:
+
+> Install DrBrain from source and run setup:
+> ```
+> git clone https://github.com/UynajGI/DrBrain.git ~/DrBrain
+> cd ~/DrBrain
+> uv sync && uv pip install -e .
+> drbrain setup --quick
+> ```
+>
+> Optional externals for best results:
+> - `npm install -g mineru-open-api` — high-quality PDF extraction (PyMuPDF fallback built in)
+> - qt-web-extractor at `http://127.0.0.1:8766` — web page extraction for `ingest-link`
+
 ## Data Directory
 
 By default, DrBrain stores everything under `~/DrBrain/`:

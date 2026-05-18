@@ -38,7 +38,7 @@ new relationships through rule-based graph closure.
 
 - CLI: `drbrain --help`
 - Key commands: `setup`, `ingest`, `build`, `embed`, `closure`, `query`, `ask`, `reason`, `graph`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `ws`, `audit`
-- Skills: `skills/*/SKILL.md` — `paper-ingest`, `kg-build`, `kg-reason`, `paper-query`, `knowledge-cartography`, `graph`, `research-analysis`, `citation-tracking`, `workspace-analysis`, `library-maintenance`, `audit`, `export`, `import`, `index`, `show`, `translate`
+- Skills: `skills/*/SKILL.md` (27 total) — paper-ingest, kg-build, kg-reason, paper-query, knowledge-cartography, graph, research-analysis, citation-tracking, workspace-analysis, library-maintenance, audit, export, import, index, show, translate, citation-styles, backup, document, patent-search, pipeline, fsearch, proceedings, explore, enrich, metrics, ingest-link
 - Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"` (fast), `uv run pytest` (all)
 - Lint: `uv run ruff check . && uv run ruff format .`
