@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
-- **Last Active**: 2026-05-15
+- **Total Sessions**: 14
+- **Last Active**: 2026-05-18
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~524 | Active |
+| `journal-1.md` | ~561 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-05-18 | ScholarAIO feature port — 13 modules, 186 tests, 11 skills, full doc sync | `8275f8e`, `c76d82e`, `7bb4651`, `74a27c5`, `2f4b1c2` | `main` |
 | 13 | 2026-05-15 | 吸收剩余学习 — knowgraph 4论文 + ScholarAIO 全量 P1+P2 | `4d5f03d`, `8382922` | `main` |
 | 12 | 2026-05-15 | 循环监控 13 轮 + 文档修复 + 代码提交 | `1dbfb83` | `main` |
 | 11 | 2026-05-08 | CLI 模块拆分 + 死代码清理 + 文档修复 | `acd21fc` | `main` |
