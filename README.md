@@ -50,12 +50,21 @@ agent entries so your coding agent can use DrBrain skills directly.
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
 | **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification against library |
-| **Export** | BibTeX, RIS, Markdown | Full library or workspace export with complete venue metadata (journal, volume, pages) |
+| **Export** | BibTeX, RIS, Markdown with citation styles | 4 built-in styles (APA, Vancouver, Chicago, MLA) + custom styles, full library or workspace export with venue metadata |
 | **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
 | **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
 | **Knowledge Genealogy** | Concept lineage + paper descendants | Concept evolution trees (evolve), academic offspring (descendants), paradigm shift detection, cross-domain migration discovery |
 | **Fetch** | PDF acquisition from OA sources | 5-stage fallback (arXiv, OpenAlex, Unpaywall, direct DOI), institutional proxy support |
+| **Federated Search** | Local + arXiv with annotation | Cross-source search with automatic ingested status, DOI/arXiv cross-reference |
+| **Patent Search** | USPTO PPUBS + ODP | Free (PPUBS) or API-key (ODP) patent search, application number lookup |
+| **Pipeline** | Step chaining | Presets (full/quick/embed) and custom step lists for batch processing |
+| **Proceedings** | Conference management | Create/list/show proceedings, associate papers by conference |
+| **Explore** | Discovery collections | Lightweight JSONL-backed silos with keyword search for literature discovery |
+| **Enrich** | CrossRef metadata backfill | Fill missing fields, detect scrub-worthy records |
 | **Audit** | Data quality scan | 15 severity-graded rules, PDF pre-validation, ingest quality gates |
+| **Backup** | tar.gz + rsync | Local archive backups and remote SSH rsync sync with configurable targets |
+| **Document** | Office file inspection | Structured text summaries for DOCX/PPTX/XLSX without a GUI |
+| **Metrics** | Usage analytics | Top search keywords, most-read papers, weekly trends |
 
 ## Documentation
 
@@ -88,8 +97,9 @@ also get `.claude-plugin/` + `.mcp.json` injected for full plugin integration.
 
 ## Configuration
 
-`drbrain setup` walks you through the basics interactively:
+`drbrain setup` walks you through the basics interactively (bilingual EN/ZH):
 
+- Language selection at start (English / 中文)
 - LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, etc.)
 - MinerU token (optional; PyMuPDF fallback for PDF parsing)
 - Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate limits)

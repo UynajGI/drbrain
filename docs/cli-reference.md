@@ -44,6 +44,22 @@ drbrain audit --severity error
 drbrain audit --workspace nlp --json
 ```
 
+### `drbrain ingest-link`
+
+Ingest web URLs by extracting rendered content via an external qt-web-extractor service.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--pdf` | | Force PDF extraction mode |
+| `--dry-run` | | Preview only, no save |
+| `--json` | | Output JSON |
+
+```bash
+drbrain ingest-link https://example.com/page
+drbrain ingest-link https://example.com/report.pdf --pdf
+drbrain ingest-link https://a.com https://b.com --dry-run
+```
+
 ### `drbrain fetch`
 
 Fetch a paper from open access sources — find PDF → download → ingest. Uses a 5-stage fallback: arXiv, OpenAlex OA, Unpaywall, direct DOI resolution, title-based arXiv search.
@@ -56,6 +72,24 @@ Fetch a paper from open access sources — find PDF → download → ingest. Use
 drbrain fetch 10.1234/example.doi
 drbrain fetch --arxiv 1706.03762
 drbrain fetch "Attention Is All You Need"
+```
+
+### `drbrain patent-search`
+
+Search USPTO patents via PPUBS (free) or ODP (API key required).
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--source` | `-s` | Search source: `ppubs` (free) or `odp` (API key) |
+| `--application` | `-a` | Lookup by application number (ODP only) |
+| `--limit` | `-n` | Max results (default: 10) |
+| `--api-key` | | USPTO ODP API key |
+| `--json` | | Output JSON |
+
+```bash
+drbrain patent-search "machine learning"
+drbrain patent-search "quantum computing" --source odp --api-key $USPTO_ODP_API_KEY
+drbrain patent-search --application 17123456 --source odp
 ```
 
 ### `drbrain clean`
@@ -154,6 +188,23 @@ Ask a natural language question -- retrieves relevant concepts from the KG and g
 ```bash
 drbrain ask "Is attention better than CNN for NLP?"
 drbrain ask "What causes catastrophic forgetting?" --top 10 --json
+```
+
+### `drbrain fsearch`
+
+Federated search — local library + arXiv with automatic ingested annotation.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--arxiv` | | Also search arXiv |
+| `--arxiv-only` | | Search arXiv only |
+| `--limit` | `-n` | Max results per source (default: 20) |
+| `--json` | | Output JSON |
+
+```bash
+drbrain fsearch "attention mechanism"
+drbrain fsearch "transformer" --arxiv
+drbrain fsearch "graph neural network" --arxiv-only --json
 ```
 
 ### `drbrain index`
@@ -565,11 +616,12 @@ drbrain lineage A5023806754 --json
 
 ### `drbrain export`
 
-Export paper metadata to BibTeX, RIS, or Markdown.
+Export paper metadata to BibTeX, RIS, or Markdown with citation style support.
 
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--format` | `-f` | Export format: `bib`, `ris`, `md` (default: `bib`) |
+| `--style` | `-s` | Citation style for Markdown: `apa`, `vancouver`, `chicago-author-date`, `mla` (default: `apa`) |
 | `--all` | | Export all papers |
 | `--output` | `-o` | Output file path |
 | `--json` | | Output JSON |
@@ -577,7 +629,22 @@ Export paper metadata to BibTeX, RIS, or Markdown.
 ```bash
 drbrain export p6a321e --format bib
 drbrain export --all --format ris -o library.ris
+drbrain export --all --format md --style vancouver
 drbrain export p6a321e --format md --json
+```
+
+### `drbrain style`
+
+Manage citation styles for Markdown export.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--list` | `-l` | List available citation styles |
+| `--show` | | Show source of a specific style |
+
+```bash
+drbrain style --list
+drbrain style --show chicago-author-date
 ```
 
 ### `drbrain import`
@@ -691,18 +758,66 @@ drbrain translate p6a321e --lang ja --json
 
 ### `drbrain backup`
 
-Create or list tar.gz backups of papers, database, and workspace.
+Create tar.gz backups or sync to rsync remote targets.
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--output` | `-o` | Custom output path |
-| `--list` | | List existing backups |
+| `--output` | `-o` | Custom output path (tar.gz mode) |
+| `--list` | | List existing backups and rsync targets |
+| `--target` | `-t` | Rsync backup target name |
+| `--dry-run` | | Rsync dry-run (no transfer) |
 | `--json` | | Output JSON |
 
 ```bash
-drbrain backup
-drbrain backup -o ~/backups/drbrain-$(date +%Y%m%d).tar.gz
-drbrain backup --list
+drbrain backup                                    # tar.gz local backup
+drbrain backup -o ~/backups/drbrain.tar.gz
+drbrain backup --list                              # list local + remote targets
+drbrain backup --target myserver                   # rsync to remote
+drbrain backup --target myserver --dry-run         # preview rsync
+```
+
+### `drbrain enrich`
+
+Enrich paper metadata from CrossRef and detect scrub-worthy records.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--all` | | Check all papers |
+| `--dry-run` | | Check without backfilling |
+| `--json` | | Output JSON |
+
+```bash
+drbrain enrich p6a321e
+drbrain enrich p6a321e --dry-run
+drbrain enrich --all
+drbrain enrich --all --dry-run --json
+```
+
+### `drbrain document`
+
+Inspect an Office document (DOCX, PPTX, XLSX) — structured text summary.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--format` | `-f` | Override format detection (`docx`, `pptx`, `xlsx`) |
+
+```bash
+drbrain document report.docx
+drbrain document presentation.pptx
+drbrain document data.xlsx --format xlsx
+```
+
+### `drbrain metrics`
+
+Show user behavior analytics — top keywords, most-read papers, weekly trends.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--json` | | Output JSON |
+
+```bash
+drbrain metrics
+drbrain metrics --json
 ```
 
 ### `drbrain queue`
@@ -743,6 +858,76 @@ Batch resolve all pending queue items.
 ```bash
 drbrain queue resolve-all --accept --type concept --max-conf 0.3
 drbrain queue resolve-all --reject --type alias
+```
+
+---
+
+## Pipeline
+
+### `drbrain pipeline`
+
+Chain multiple processing steps in sequence via presets or custom step lists.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--preset` | `-p` | Preset: `full`, `quick`, `embed` |
+| `--steps` | `-s` | Comma-separated step names |
+| `--list` | | List available steps and presets |
+| `--dry-run` | | Preview steps without executing |
+
+```bash
+drbrain pipeline --preset full
+drbrain pipeline --preset quick
+drbrain pipeline --steps build,embed
+drbrain pipeline --preset full --dry-run
+drbrain pipeline --list
+```
+
+**Available steps:** `ingest`, `build`, `embed`, `closure`
+
+---
+
+## Meetings and Discovery
+
+### `drbrain proceedings`
+
+Manage conference proceedings — create, list, show, and associate papers.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--list` | `-l` | List all proceedings |
+| `--create` | | Create proceeding: `"Name Year"` |
+| `--show` | | Show proceeding by ID |
+| `--add` | | Add paper: `PROCEEDING_ID PAPER_ID` |
+| `--json` | | Output JSON |
+
+```bash
+drbrain proceedings --list
+drbrain proceedings --create "NeurIPS 2024"
+drbrain proceedings --show abc12345
+drbrain proceedings --add abc12345 p6a321e
+```
+
+### `drbrain explore`
+
+Manage explore silos — lightweight literature discovery collections.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--list` | `-l` | List all silos |
+| `--create` | | Create a new silo |
+| `--delete` | | Delete a silo |
+| `--name` | `-n` | Silo name for `--show` or `--search` |
+| `--show` | | Show silo papers |
+| `--search` | `-s` | Search papers within a silo |
+| `--json` | | Output JSON |
+
+```bash
+drbrain explore --list
+drbrain explore --create transformers
+drbrain explore --name transformers --show
+drbrain explore --name transformers --search "attention"
+drbrain explore --delete transformers
 ```
 
 ---
