@@ -8,14 +8,14 @@ This is the repository entry document for coding agents. It is intentionally sho
 
 ## What DrBrain Is
 
-DrBrain is a **vector-free, symbol-driven academic knowledge graph**. Ingest PDFs, extract concepts and arguments via LLM, deduplicate identities, and infer new relationships through rule-based graph closure.
+DrBrain is a **symbol-driven academic knowledge graph with lightweight vector retrieval**. Ingest PDFs, extract concepts and arguments via LLM, deduplicate identities, and infer new relationships through rule-based graph closure.
 
 The Python package is `drbrain`. All real work should happen through `drbrain` CLI commands and project skills.
 
 ## Quick Reference
 
 - CLI: `drbrain --help`
-- Key commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `ask`, `closure`, `repair`, `import`, `translate`, `export`
-- Skills: `research-analysis`, `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`
+- Skills: `skills/` — 16 skills covering the full pipeline (ingest → build → embed → closure → query → reason → analyze → cartography)
+- Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"`
 - Lint: `uv run ruff check . && uv run ruff format .`

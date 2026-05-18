@@ -6,10 +6,12 @@ from pathlib import Path
 
 from drbrain.config import (
     ApiConfig,
+    BackupConfig,
     BM25Config,
     Config,
     DBConfig,
     DirsConfig,
+    EmbedConfig,
     ExtractConfig,
     LLMConfig,
     MinerUConfig,
@@ -103,6 +105,10 @@ def test_config_defaults():
     assert isinstance(c.extract, ExtractConfig)
     assert isinstance(c.bm25, BM25Config)
     assert isinstance(c.queue, QueueConfig)
+    assert isinstance(c.embed, EmbedConfig)
+    assert isinstance(c.backup, BackupConfig)
+    assert c.embed.provider == "local"
+    assert c.embed.device == "auto"
 
 
 # ── Typed access tests ──
@@ -115,6 +121,11 @@ def test_typed_dot_access():
     assert c.bm25.k1 == 1.5
     assert c.bm25.b == 0.75
     assert c.extract.max_concurrent == 10
+    assert c.embed.provider == "local"
+    assert c.embed.top_k == 10
+    assert c.backup.ssh_bin == "ssh"
+    assert c.backup.rsync_bin == "rsync"
+    assert c.backup.targets == {}
 
 
 # ── Backward-compat dict access tests ──

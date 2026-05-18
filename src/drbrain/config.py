@@ -141,6 +141,44 @@ class EmbedConfig(_ConfigBase):
 
 
 @dataclass
+class BackupTargetConfig(_ConfigBase):
+    """Rsync backup target configuration.
+
+    Attributes:
+        host: Remote SSH host.
+        user: Optional SSH username.
+        path: Remote destination path.
+        port: SSH port.
+        identity_file: Optional SSH identity file path.
+        password: Optional SSH password for non-interactive backup.
+        mode: Transfer mode — ``"default"`` | ``"append"`` | ``"append-verify"``.
+        compress: Whether to enable rsync compression.
+        enabled: Whether the target is available for use.
+        exclude: Rsync exclude patterns.
+    """
+
+    host: str = ""
+    user: str = ""
+    path: str = ""
+    port: int = 22
+    identity_file: str = ""
+    password: str = ""
+    mode: str = "default"
+    compress: bool = True
+    enabled: bool = True
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BackupConfig(_ConfigBase):
+    """Backup configuration for rsync-based data sync."""
+
+    ssh_bin: str = "ssh"
+    rsync_bin: str = "rsync"
+    targets: dict = field(default_factory=dict)
+
+
+@dataclass
 class Config(_ConfigBase):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
@@ -152,6 +190,7 @@ class Config(_ConfigBase):
     queue: QueueConfig = field(default_factory=QueueConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
+    backup: BackupConfig = field(default_factory=BackupConfig)
 
     @classmethod
     def from_yaml(
@@ -183,6 +222,9 @@ class Config(_ConfigBase):
 
         cfg = _resolve_env_vars(cfg)
 
+        backup_raw = cfg.get("backup", {})
+        backup_targets_raw = backup_raw.get("targets", {})
+        backup_targets = {name: BackupTargetConfig(**t) for name, t in backup_targets_raw.items()}
         return cls(
             llm=LLMConfig(**cfg.get("llm", {})),
             mineru=MinerUConfig(**cfg.get("mineru", {})),
@@ -194,6 +236,11 @@ class Config(_ConfigBase):
             queue=QueueConfig(**cfg.get("queue", {})),
             fetch=FetchConfig(**cfg.get("fetch", {})),
             embed=EmbedConfig(**cfg.get("embed", {})),
+            backup=BackupConfig(
+                ssh_bin=backup_raw.get("ssh_bin", "ssh"),
+                rsync_bin=backup_raw.get("rsync_bin", "rsync"),
+                targets=backup_targets,
+            ),
         )
 
 

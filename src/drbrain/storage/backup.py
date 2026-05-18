@@ -1,12 +1,19 @@
-"""Backup creation via tar.gz archive."""
+"""Backup creation via tar.gz archive and rsync remote sync."""
 
 from __future__ import annotations
 
+import os as _os
+import shlex as _shlex
+import subprocess as _subprocess
 import tarfile
+import tempfile as _tempfile
+from dataclasses import dataclass as _dataclass
 from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
+
+from drbrain.config import BackupTargetConfig
 
 BACKUP_DIR = "data/backups"
 
@@ -67,3 +74,166 @@ def list_backups(backup_dir: Path | None = None) -> list[Path]:
         reverse=True,
     )
     return backups
+
+
+# ── Rsync remote backup ────────────────────────────────────────────
+
+
+class BackupConfigError(ValueError):
+    """Raised when backup configuration is missing or invalid."""
+
+
+@_dataclass
+class BackupRunResult:
+    """Structured result from a backup invocation."""
+
+    command: list[str]
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _resolve_target(targets: dict[str, BackupTargetConfig], target_name: str) -> BackupTargetConfig:
+    target = targets.get(target_name)
+    if target is None:
+        raise BackupConfigError(f"Unknown backup target: {target_name}")
+    if not target.enabled:
+        raise BackupConfigError(f"Backup target is disabled: {target_name}")
+    if not target.host:
+        raise BackupConfigError(f"Backup target '{target_name}' is missing host")
+    if not target.path:
+        raise BackupConfigError(f"Backup target '{target_name}' is missing path")
+    return target
+
+
+def _resolve_identity_file(identity_file: str) -> str:
+    if not identity_file:
+        return ""
+    return str(Path(identity_file).expanduser())
+
+
+def _build_remote_shell(ssh_bin: str, target: BackupTargetConfig) -> str:
+    parts = [ssh_bin]
+    if target.password:
+        parts.extend(
+            [
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                "-o",
+                "PubkeyAuthentication=no",
+            ]
+        )
+    else:
+        parts.extend(["-o", "BatchMode=yes"])
+    if target.port and target.port != 22:
+        parts.extend(["-p", str(target.port)])
+    identity_file = _resolve_identity_file(target.identity_file)
+    if identity_file:
+        parts.extend(["-i", identity_file])
+    return _shlex.join(parts)
+
+
+def _build_password_env(
+    target: BackupTargetConfig,
+) -> tuple[dict[str, str], str] | tuple[None, None]:
+    if not target.password:
+        return None, None
+
+    fd, askpass_path = _tempfile.mkstemp(prefix="drbrain-backup-askpass-", text=True)
+    try:
+        with _os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\nprintf '%s\\n' \"$DRBRAIN_BACKUP_SSH_PASSWORD\"\n")
+        _os.chmod(askpass_path, 0o700)
+    except Exception:
+        try:
+            _os.unlink(askpass_path)
+        except OSError:
+            pass
+        raise
+
+    env = _os.environ.copy()
+    env.update(
+        {
+            "DRBRAIN_BACKUP_SSH_PASSWORD": target.password,
+            "SSH_ASKPASS": askpass_path,
+            "SSH_ASKPASS_REQUIRE": "force",
+            "DISPLAY": "drbrain-backup",
+        }
+    )
+    return env, askpass_path
+
+
+def _destination_for(target: BackupTargetConfig) -> str:
+    remote = f"{target.user}@{target.host}" if target.user else target.host
+    return f"{remote}:{target.path.rstrip('/')}/"
+
+
+def build_rsync_command(
+    rsync_bin: str,
+    ssh_bin: str,
+    targets: dict[str, BackupTargetConfig],
+    source_dir: str,
+    target_name: str,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
+    """Build the rsync command line for a configured backup target."""
+    target = _resolve_target(targets, target_name)
+    cmd = [rsync_bin, "-a", "--stats", "--human-readable"]
+    if target.compress:
+        cmd.append("-z")
+    if target.mode == "append":
+        cmd.append("--append")
+    elif target.mode == "append-verify":
+        cmd.append("--append-verify")
+    if dry_run:
+        cmd.append("--dry-run")
+    for pattern in target.exclude:
+        cmd.extend(["--exclude", pattern])
+    cmd.extend(["-e", _build_remote_shell(ssh_bin, target)])
+    cmd.append(f"{source_dir.rstrip('/')}/")
+    cmd.append(_destination_for(target))
+    return cmd
+
+
+def run_backup(
+    rsync_bin: str,
+    ssh_bin: str,
+    targets: dict[str, BackupTargetConfig],
+    source_dir: str,
+    target_name: str,
+    *,
+    dry_run: bool = False,
+) -> BackupRunResult:
+    """Run an rsync backup for a configured target."""
+    target = _resolve_target(targets, target_name)
+    cmd = build_rsync_command(
+        rsync_bin,
+        ssh_bin,
+        targets,
+        source_dir,
+        target_name,
+        dry_run=dry_run,
+    )
+    env, askpass_path = _build_password_env(target)
+    run_kwargs: dict = {"check": False, "text": True, "capture_output": True}
+    if env is not None:
+        run_kwargs["env"] = env
+        run_kwargs["stdin"] = _subprocess.DEVNULL
+    try:
+        completed = _subprocess.run(cmd, **run_kwargs)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise BackupConfigError(f"Failed to execute rsync {cmd[0]!r}: {detail}") from exc
+    finally:
+        if askpass_path:
+            try:
+                _os.unlink(askpass_path)
+            except OSError:
+                pass
+    return BackupRunResult(
+        command=cmd,
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )

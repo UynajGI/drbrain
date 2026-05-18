@@ -338,3 +338,100 @@ def import_cmd(
     typer.echo(
         "Run 'drbrain ingest' to process them, or 'drbrain repair --all' to fix metadata first."
     )
+
+
+def enrich_cmd(
+    ctx: typer.Context,
+    local_id: str = typer.Argument(None, help="Paper local_id to enrich"),
+    all: bool = typer.Option(False, "--all", help="Enrich all papers with missing metadata"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Check without backfilling"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Enrich paper metadata from CrossRef and detect scrub-worthy records."""
+    from drbrain.services.enrich import (
+        check_metadata_completeness,
+        detect_scrub_suspects,
+        fetch_crossref_metadata,
+        merge_enrichment,
+    )
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+
+    if all:
+        papers = db.get_all_papers()
+    elif local_id:
+        paper = db.get_paper(local_id)
+        if not paper:
+            db.close()
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            raise typer.Exit(1)
+        papers = [paper]
+    else:
+        db.close()
+        typer.echo("Specify a paper local_id or use --all")
+        raise typer.Exit(1)
+
+    results: list[dict] = []
+    for paper in papers:
+        pid = paper["local_id"]
+        meta = {
+            "title": paper.get("title", ""),
+            "year": paper.get("year"),
+            "authors": paper.get("authors", ""),
+            "journal": paper.get("journal", ""),
+            "doi": paper.get("doi", ""),
+        }
+
+        missing = check_metadata_completeness(meta)
+        suspects = detect_scrub_suspects(meta)
+
+        result = {
+            "local_id": pid,
+            "title": paper.get("title", ""),
+            "missing_fields": missing,
+            "scrub_issues": suspects,
+            "enriched": False,
+        }
+
+        if missing and paper.get("doi") and not dry_run:
+            enriched = fetch_crossref_metadata(paper["doi"])
+            if enriched:
+                merged = merge_enrichment(meta, enriched)
+                # Update DB
+                if merged.get("year") and merged["year"] != paper.get("year"):
+                    try:
+                        db.conn.execute(
+                            "UPDATE papers SET year = ? WHERE local_id = ?",
+                            (merged["year"], pid),
+                        )
+                    except Exception:
+                        pass
+                result["enriched"] = True
+
+        results.append(result)
+
+    db.commit()
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        return
+
+    enriched_count = sum(1 for r in results if r["enriched"])
+    scrub_count = sum(1 for r in results if r["scrub_issues"])
+    missing_count = sum(1 for r in results if r["missing_fields"])
+
+    typer.echo(f"Checked {len(results)} paper(s):")
+    typer.echo(f"  Missing fields: {missing_count}")
+    typer.echo(f"  Scrub suspects: {scrub_count}")
+    if not dry_run:
+        typer.echo(f"  Enriched via CrossRef: {enriched_count}")
+
+    if scrub_count > 0:
+        typer.echo("\nScrub-suspect papers:")
+        for r in results:
+            if r["scrub_issues"]:
+                typer.echo(f"  [{r['local_id']}] {r['title'][:60]}")
+                for issue in r["scrub_issues"]:
+                    typer.echo(f"    - {issue}")

@@ -1,11 +1,17 @@
-"""Tests for backup creation."""
+"""Tests for backup creation and rsync remote sync."""
 
 import tarfile
 
+import pytest
+
+from drbrain.config import BackupConfig, BackupTargetConfig
 from drbrain.storage.backup import (
+    BackupConfigError,
     _backup_filename,
+    build_rsync_command,
     create_backup,
     list_backups,
+    run_backup,
 )
 
 
@@ -161,3 +167,223 @@ def test_create_backup_missing_papers_dir(tmp_path):
     with tarfile.open(path, "r:gz") as tar:
         names = tar.getnames()
         assert len(names) == 0
+
+
+# ── Rsync remote backup ────────────────────────────────────────────
+
+SAMPLE_TARGET = BackupTargetConfig(
+    host="backup.example.com",
+    user="drbrain",
+    path="/backups/drbrain/",
+    port=22,
+    identity_file="~/.ssh/id_ed25519",
+    compress=True,
+    enabled=True,
+)
+
+
+class TestResolveTarget:
+    def test_valid_target(self):
+        from drbrain.storage.backup import _resolve_target
+
+        targets = {"myserver": SAMPLE_TARGET}
+        t = _resolve_target(targets, "myserver")
+        assert t.host == "backup.example.com"
+
+    def test_unknown_target(self):
+        from drbrain.storage.backup import _resolve_target
+
+        with pytest.raises(BackupConfigError, match="Unknown backup target"):
+            _resolve_target({}, "missing")
+
+    def test_disabled_target(self):
+        from drbrain.storage.backup import _resolve_target
+
+        disabled = BackupTargetConfig(host="x.com", path="/x", enabled=False)
+        with pytest.raises(BackupConfigError, match="disabled"):
+            _resolve_target({"t": disabled}, "t")
+
+    def test_missing_host(self):
+        from drbrain.storage.backup import _resolve_target
+
+        no_host = BackupTargetConfig(path="/x")
+        with pytest.raises(BackupConfigError, match="missing host"):
+            _resolve_target({"t": no_host}, "t")
+
+    def test_missing_path(self):
+        from drbrain.storage.backup import _resolve_target
+
+        no_path = BackupTargetConfig(host="x.com")
+        with pytest.raises(BackupConfigError, match="missing path"):
+            _resolve_target({"t": no_path}, "t")
+
+
+class TestBuildRsyncCommand:
+    def test_basic_command_structure(self):
+        targets = {"myserver": SAMPLE_TARGET}
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets=targets,
+            source_dir="/data/drbrain",
+            target_name="myserver",
+        )
+        assert cmd[0] == "rsync"
+        assert "-a" in cmd
+        assert "--stats" in cmd
+        assert "-z" in cmd
+        assert "-e" in cmd
+        assert "/data/drbrain/" in cmd
+        assert "drbrain@backup.example.com:/backups/drbrain/" in cmd
+
+    def test_dry_run_flag(self):
+        targets = {"myserver": SAMPLE_TARGET}
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets=targets,
+            source_dir="/data",
+            target_name="myserver",
+            dry_run=True,
+        )
+        assert "--dry-run" in cmd
+
+    def test_append_mode(self):
+        t = BackupTargetConfig(host="x.com", path="/x", mode="append", compress=False)
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        assert "--append" in cmd
+        assert "-z" not in cmd
+
+    def test_append_verify_mode(self):
+        t = BackupTargetConfig(host="x.com", path="/x", mode="append-verify", compress=False)
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        assert "--append-verify" in cmd
+
+    def test_exclude_patterns(self):
+        t = BackupTargetConfig(
+            host="x.com",
+            path="/x",
+            exclude=[".git", "*.tmp"],
+            compress=False,
+        )
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        assert "--exclude" in cmd
+        assert ".git" in cmd
+        assert "*.tmp" in cmd
+
+    def test_ssh_batch_mode_default(self):
+        targets = {"myserver": SAMPLE_TARGET}
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets=targets,
+            source_dir="/d",
+            target_name="myserver",
+        )
+        ssh_str = cmd[cmd.index("-e") + 1]
+        assert "BatchMode=yes" in ssh_str
+
+    def test_ssh_password_mode(self):
+        t = BackupTargetConfig(
+            host="x.com",
+            path="/x",
+            password="secret",
+            compress=False,
+        )
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        ssh_str = cmd[cmd.index("-e") + 1]
+        assert "PubkeyAuthentication=no" in ssh_str
+
+    def test_custom_port(self):
+        t = BackupTargetConfig(host="x.com", path="/x", port=2222, compress=False)
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        ssh_str = cmd[cmd.index("-e") + 1]
+        assert "2222" in ssh_str
+
+    def test_identity_file(self):
+        t = BackupTargetConfig(
+            host="x.com",
+            path="/x",
+            identity_file="~/.ssh/key",
+            compress=False,
+        )
+        cmd = build_rsync_command(
+            rsync_bin="rsync",
+            ssh_bin="ssh",
+            targets={"t": t},
+            source_dir="/d",
+            target_name="t",
+        )
+        ssh_str = cmd[cmd.index("-e") + 1]
+        assert ".ssh/key" in ssh_str
+
+
+class TestRunBackup:
+    def test_missing_rsync_binary(self):
+        t = BackupTargetConfig(host="localhost", path="/tmp")
+        with pytest.raises(BackupConfigError, match="Failed to execute rsync"):
+            run_backup(
+                rsync_bin="/nonexistent/rsync",
+                ssh_bin="ssh",
+                targets={"t": t},
+                source_dir="/tmp",
+                target_name="t",
+            )
+
+    def test_dry_run_with_missing_binary(self):
+        t = BackupTargetConfig(host="localhost", path="/tmp")
+        with pytest.raises(BackupConfigError, match="Failed to execute rsync"):
+            run_backup(
+                rsync_bin="/nonexistent/rsync",
+                ssh_bin="ssh",
+                targets={"t": t},
+                source_dir="/tmp",
+                target_name="t",
+                dry_run=True,
+            )
+
+
+class TestBackupConfigDefaults:
+    def test_default_backup_config(self):
+        cfg = BackupConfig()
+        assert cfg.ssh_bin == "ssh"
+        assert cfg.rsync_bin == "rsync"
+        assert cfg.targets == {}
+
+    def test_default_target_config(self):
+        t = BackupTargetConfig()
+        assert t.port == 22
+        assert t.mode == "default"
+        assert t.compress is True
+        assert t.enabled is True
+        assert t.exclude == []

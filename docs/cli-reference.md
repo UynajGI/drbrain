@@ -12,7 +12,8 @@ Initialize DrBrain -- generate config, create directories, validate environment.
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--quick` | `-q` | Skip interactive prompts, use defaults |
+| `--quick` | `-q` | Skip interactive prompts, read from env vars |
+| `--change-password` | | Change the admin password |
 
 ```bash
 drbrain setup

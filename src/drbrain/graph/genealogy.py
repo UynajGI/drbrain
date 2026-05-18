@@ -885,6 +885,7 @@ def _score_transfer_pairs(
     from drbrain.extractor.concept import _label_similarity
     from drbrain.extractor.isomorphism import _relation_signature
 
+    _t0_genealogy = _time.monotonic()
     results: list[dict] = []
 
     for method in source_methods:

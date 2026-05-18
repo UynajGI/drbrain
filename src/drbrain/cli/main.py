@@ -32,22 +32,31 @@ from drbrain.cli.check_commands import (
 from drbrain.cli.export_commands import (
     backup_cmd,
     delete_cmd,
+    document_cmd,
     export_cmd,
     lineage_cmd,
+    metrics_cmd,
     queue_cmd,
     queue_resolve_all_cmd,
     queue_resolve_cmd,
+    style_cmd,
 )
 from drbrain.cli.graph_commands import graph_app
 from drbrain.cli.ingest_commands import (
     check_citations_cmd,
     citations_cmd,
     closure_cmd,
+    explore_cmd,
     fetch_cmd,
     ingest_cmd,
+    ingest_link_cmd,
+    patent_search_cmd,
+    pipeline_cmd,
+    proceedings_cmd,
     report_cmd,
 )
 from drbrain.cli.query_commands import (
+    fsearch_cmd,
     index_cmd,
     list_cmd,
     query_cmd,
@@ -56,6 +65,7 @@ from drbrain.cli.query_commands import (
     stats_cmd,
 )
 from drbrain.cli.repair_commands import (
+    enrich_cmd,
     import_cmd,
     repair_cmd,
 )
@@ -83,6 +93,11 @@ def _main_callback(ctx: typer.Context) -> None:
 
 app.command("setup")(setup_cmd)
 app.command("ingest")(ingest_cmd)
+app.command("ingest-link")(ingest_link_cmd)
+app.command("patent-search")(patent_search_cmd)
+app.command("pipeline")(pipeline_cmd)
+app.command("proceedings")(proceedings_cmd)
+app.command("explore")(explore_cmd)
 app.command("fetch")(fetch_cmd)
 app.command("citations")(citations_cmd)
 app.command("check-citations")(check_citations_cmd)
@@ -94,6 +109,7 @@ app.command("stats")(stats_cmd)
 app.command("show")(show_cmd)
 app.command("index")(index_cmd)
 app.command("query")(query_cmd)
+app.command("fsearch")(fsearch_cmd)
 app.command("export")(export_cmd)
 app.command("queue")(queue_cmd)
 app.command("queue resolve")(queue_resolve_cmd)
@@ -103,10 +119,14 @@ app.command("lineage")(lineage_cmd)
 app.command("ask")(ask_cmd)
 app.command("check")(check_cmd)
 app.command("audit")(audit_cmd)
+app.command("style")(style_cmd)
+app.command("document")(document_cmd)
+app.command("metrics")(metrics_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
 app.command("analyze")(analyze_cmd)
 app.command("repair")(repair_cmd)
+app.command("enrich")(enrich_cmd)
 app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
 app.command("build")(build_cmd)

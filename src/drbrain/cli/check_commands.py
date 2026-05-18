@@ -159,6 +159,46 @@ def check_cmd(ctx: typer.Context):
             )
             warnings.append("OpenAlex token not set — using anonymous access with lower rate limit")
 
+        # Embedding
+        embed_cfg = cfg.get("embed", {})
+        embed_provider = embed_cfg.get("provider", "local")
+        embed_model = embed_cfg.get("model", "")
+        table4.add_row("  --- Embedding ---", "")
+        if embed_provider == "none":
+            table4.add_row("  Embedding provider", "[dim]none[/dim]", "(tree embeddings disabled)")
+        elif embed_provider == "local":
+            table4.add_row("  Embedding provider", "[green]local[/green]")
+            if embed_model:
+                table4.add_row("    Model", embed_model)
+            try:
+                importlib.import_module("sentence_transformers")
+                table4.add_row("    sentence-transformers", "[green]Available[/green]")
+            except ImportError:
+                table4.add_row(
+                    "    sentence-transformers",
+                    "[yellow]Not installed[/yellow]",
+                    "(pip install sentence-transformers)",
+                )
+                warnings.append(
+                    "sentence-transformers not installed — local embeddings unavailable"
+                )
+        elif embed_provider == "openai-compat":
+            table4.add_row("  Embedding provider", "[green]openai-compat[/green]")
+            if embed_model:
+                table4.add_row("    Model", embed_model)
+            embed_api_base = embed_cfg.get("api_base", "")
+            embed_api_key = embed_cfg.get("api_key", "")
+            if embed_api_base:
+                table4.add_row("    API base", embed_api_base)
+            else:
+                table4.add_row("    API base", "[yellow]Not set[/yellow]")
+                warnings.append("Embedding API base not configured")
+            if embed_api_key and not embed_api_key.startswith("${"):
+                table4.add_row("    API key", "[green]Set[/green]")
+            else:
+                table4.add_row("    API key", "[yellow]Not set[/yellow]")
+                warnings.append("Embedding API key not configured")
+
         console.print(table4)
 
     except FileNotFoundError as e:

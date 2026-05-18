@@ -628,3 +628,110 @@ def query_cmd(
         typer.echo(
             f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}{boost_str}, paper: {r['local_id']}{year_str}{conf_str})"
         )
+
+
+def fsearch_cmd(
+    ctx: typer.Context,
+    query: list[str] = typer.Argument(..., help="Search query terms"),
+    arxiv: bool = typer.Option(False, "--arxiv", help="Also search arXiv"),
+    arxiv_only: bool = typer.Option(False, "--arxiv-only", help="Search arXiv only"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results per source"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Federated search — local library + arXiv with ingested annotation."""
+    from drbrain.services.fsearch import (
+        _merge_with_local_status,
+        search_arxiv,
+        search_local,
+    )
+
+    query_str = " ".join(query)
+    output: dict = {"query": query_str, "local": [], "arxiv": []}
+
+    # Local search
+    if not arxiv_only:
+        cfg = ctx.obj["config"]
+        db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
+        results = search_local(db_path, query_str, limit=limit)
+        output["local"] = results
+        if not json_output:
+            typer.echo(f'── Local library: "{query_str}" ──')
+            if not results:
+                typer.echo("  No results.")
+            for i, r in enumerate(results, 1):
+                authors = r.get("authors", "?")
+                year = f" ({r['year']})" if r.get("year") else ""
+                typer.echo(f"  [{i}] {r['title']}{year} — {authors}")
+            typer.echo()
+
+    # arXiv search
+    if arxiv or arxiv_only:
+        if not json_output:
+            typer.echo(f'── arXiv: "{query_str}" ──')
+        try:
+            arxiv_results = search_arxiv(query_str, max_results=limit)
+        except Exception:
+            typer.echo("  arXiv search failed (network or parse error).", err=True)
+            arxiv_results = []
+
+        if not arxiv_only:
+            # Cross-reference with local library
+            cfg = ctx.obj["config"]
+            db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
+            in_lib_dois: set[str] = set()
+            in_lib_arxiv_ids: set[str] = set()
+            try:
+                # Simple cross-ref: check paper_ids table
+                import sqlite3
+                from pathlib import Path
+
+                from drbrain.services.fsearch import _normalize_arxiv_ref
+
+                if Path(db_path).exists():
+                    conn = sqlite3.connect(db_path)
+                    paper_ids_rows = conn.execute(
+                        "SELECT doi, arxiv FROM paper_ids WHERE doi != '' OR arxiv != ''"
+                    ).fetchall()
+                    for row in paper_ids_rows:
+                        if row[0]:
+                            in_lib_dois.add(row[0].lower())
+                        if row[1]:
+                            in_lib_arxiv_ids.add(_normalize_arxiv_ref(row[1]))
+                    conn.close()
+            except Exception:
+                pass
+
+            arxiv_results = _merge_with_local_status(arxiv_results, in_lib_dois, in_lib_arxiv_ids)
+
+        if not json_output and not arxiv_results:
+            typer.echo("  No results.")
+
+        output["arxiv"] = [
+            {
+                "title": r["title"],
+                "authors": r.get("authors", []),
+                "year": r.get("year"),
+                "doi": r.get("doi", ""),
+                "arxiv_id": r.get("arxiv_id", ""),
+                "ingested": r.get("ingested", False),
+            }
+            for r in arxiv_results
+        ]
+
+        if not json_output:
+            for i, r in enumerate(arxiv_results, 1):
+                authors = r.get("authors", [])
+                first = (authors[0] if authors else "?") + (" et al." if len(authors) > 1 else "")
+                doi = r.get("doi", "")
+                arxiv_id = r.get("arxiv_id", "")
+                ingested = "[ingested]" if r.get("ingested") else ""
+                typer.echo(f"  [{i}] [{r.get('year', '?')}] {r['title']} {ingested}")
+                detail = f"       {first}"
+                if arxiv_id:
+                    detail += f" | arxiv:{arxiv_id}"
+                if doi:
+                    detail += f" | doi:{doi}"
+                typer.echo(detail)
+
+    if json_output:
+        typer.echo(json.dumps(output, ensure_ascii=False, indent=2, default=str))

@@ -459,3 +459,476 @@ def closure_cmd(
         typer.echo(
             f"  {edge['src']} --[{edge['relation']}]--> {edge['dst']} (via {edge.get('via', 'unknown')})"
         )
+
+
+def ingest_link_cmd(
+    ctx: typer.Context,
+    urls: list[str] = typer.Argument(..., help="Web URL(s) to ingest"),
+    pdf: bool = typer.Option(None, "--pdf/--no-pdf", help="Force PDF extraction mode"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview only — extract, don't save"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Ingest web URLs by extracting rendered content via external web extractor.
+
+    Depends on an external qt-web-extractor service (default: http://127.0.0.1:8766).
+    Set WEBEXTRACT_URL env var to configure.
+    """
+    from drbrain.providers.webtools import (
+        _slugify_title,
+        check_webextract_service,
+        extract_web,
+    )
+
+    if dry_run:
+        typer.echo(f"[dry-run] Will extract and ingest {len(urls)} link(s):")
+        for u in urls:
+            typer.echo(f"  - {u}")
+        return
+
+    # Check service availability
+    if not check_webextract_service(timeout=3.0):
+        typer.echo(
+            "Web extraction service not reachable.\n"
+            "  Install qt-web-extractor and ensure it's running on http://127.0.0.1:8766\n"
+            "  Or set WEBEXTRACT_URL to point to your extractor instance.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    cfg = ctx.obj["config"]
+    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    db = Database(cfg["db"]["path"])
+
+    results: list[dict] = []
+    for i, url in enumerate(u for u in urls if u.strip()):
+        if not json_output:
+            typer.echo(f"[{i + 1}/{len(urls)}] Extracting {url} ...")
+
+        extracted = extract_web(url.strip(), pdf=pdf)
+        title = extracted.get("title", "")
+        text = extracted.get("text", "")
+        error = extracted.get("error", "")
+
+        if error and not text:
+            typer.echo(f"  Extraction failed: {error}", err=True)
+            results.append({"url": url, "status": "error", "error": error})
+            continue
+
+        # Generate a local_id from title
+        slug = _slugify_title(title, url)
+        local_id = slug
+        paper_dir = papers_dir / local_id
+
+        # Handle duplicates
+        if paper_dir.exists():
+            base = slug
+            for n in range(2, 100):
+                local_id = f"{base}-{n}"
+                paper_dir = papers_dir / local_id
+                if not paper_dir.exists():
+                    break
+
+        paper_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write markdown
+        md_content = _render_extracted_markdown(title, url, text)
+        (paper_dir / "raw.md").write_text(md_content, encoding="utf-8")
+
+        # Register in DB
+        db.insert_paper(
+            local_id=local_id,
+            title=title or url,
+            year=None,
+            status="uploaded",
+        )
+
+        results.append(
+            {
+                "url": url,
+                "local_id": local_id,
+                "title": title,
+                "status": "ok",
+            }
+        )
+
+        if not json_output:
+            typer.echo(f"  -> {local_id}  ({len(text)} chars)")
+
+    db.commit()
+    db.close()
+
+    if json_output:
+        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        return
+
+    ok_count = sum(1 for r in results if r["status"] == "ok")
+    err_count = sum(1 for r in results if r["status"] == "error")
+    typer.echo(f"\nIngested {ok_count} link(s)" + (f", {err_count} error(s)" if err_count else ""))
+
+
+def patent_search_cmd(
+    ctx: typer.Context,
+    query: list[str] = typer.Argument(..., help="Search query terms"),
+    application: str = typer.Option(
+        None, "--application", "-a", help="Lookup by application number"
+    ),
+    limit: int = typer.Option(10, "--limit", "-n", help="Max results"),
+    source: str = typer.Option(
+        "ppubs", "--source", "-s", help="Search source: ppubs (free) or odp (API key)"
+    ),
+    api_key: str = typer.Option(None, "--api-key", help="USPTO ODP API key (for --source odp)"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Search USPTO patents."""
+    import os as _os
+
+    # Application number lookup (ODP only)
+    if application:
+        if source == "ppubs":
+            typer.echo(
+                "Use --source odp for application-number lookup; ODP API key required.", err=True
+            )
+            raise typer.Exit(1)
+
+        key = api_key or _os.environ.get("USPTO_ODP_API_KEY", "")
+        if not key:
+            typer.echo(
+                "USPTO ODP API key required. Set --api-key or USPTO_ODP_API_KEY env var.", err=True
+            )
+            typer.echo("Register: https://data.uspto.gov/apis/getting-started", err=True)
+            raise typer.Exit(1)
+
+        from drbrain.providers.uspto_odp import USPTOAPIError, get_patent_by_application_number
+
+        try:
+            result = get_patent_by_application_number(application, api_key=key)
+        except USPTOAPIError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+
+        if not result:
+            typer.echo(f"No patent found for application number: {application}")
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+            return
+        _print_patent_odp(result)
+        return
+
+    # Search mode
+    query_str = " ".join(query) if query else ""
+    if not query_str:
+        typer.echo("Provide search terms or use --application.", err=True)
+        raise typer.Exit(1)
+
+    if source == "odp":
+        key = api_key or _os.environ.get("USPTO_ODP_API_KEY", "")
+        if not key:
+            typer.echo(
+                "USPTO ODP API key required. Set --api-key or USPTO_ODP_API_KEY env var.", err=True
+            )
+            typer.echo("Register: https://data.uspto.gov/apis/getting-started", err=True)
+            raise typer.Exit(1)
+
+        from drbrain.providers.uspto_odp import USPTOAPIError
+        from drbrain.providers.uspto_odp import search_patents as odp_search
+
+        try:
+            results = odp_search(query_str, api_key=key, limit=limit)
+        except USPTOAPIError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+
+        if json_output:
+            typer.echo(json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2))
+            return
+        if not results:
+            typer.echo(f"No patent results for '{query_str}'.")
+            return
+        typer.echo(f"\nFound {len(results)} USPTO patent record(s):")
+        for i, p in enumerate(results, 1):
+            _print_patent_odp(p, idx=i)
+        return
+
+    # Default: PPUBS (no auth)
+    from drbrain.providers.uspto_ppubs import PpubsError
+    from drbrain.providers.uspto_ppubs import search_patents as ppubs_search
+
+    try:
+        results = ppubs_search(query_str, limit=limit)
+    except PpubsError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2))
+        return
+    if not results:
+        typer.echo(f"No patent results for '{query_str}'.")
+        return
+    typer.echo(f"\nFound {len(results)} USPTO patent record(s):")
+    for i, ppub in enumerate(results, 1):
+        _print_patent_ppubs(ppub, idx=i)
+
+
+def _print_patent_odp(p, idx: int | None = None):
+    prefix = f"[{idx}] " if idx else ""
+    typer.echo(f"\n{prefix}{p.title}")
+    typer.echo(f"    Application: {p.application_number}")
+    if p.publication_number:
+        typer.echo(f"    Publication: {p.publication_number}")
+    if p.inventors:
+        typer.echo(f"    Inventors: {', '.join(p.inventors[:3])}")
+    if p.filing_date:
+        typer.echo(f"    Filing: {p.filing_date}")
+    if p.application_status:
+        typer.echo(f"    Status: {p.application_status}")
+
+
+def _print_patent_ppubs(ppub, idx: int | None = None):
+    prefix = f"[{idx}] " if idx else ""
+    typer.echo(f"\n{prefix}{ppub.title}")
+    if ppub.publication_number:
+        typer.echo(f"    Publication: {ppub.publication_number}")
+    if ppub.inventors:
+        typer.echo(f"    Inventors: {', '.join(ppub.inventors[:3])}")
+    if ppub.assignees:
+        typer.echo(f"    Assignees: {', '.join(ppub.assignees[:2])}")
+    if ppub.filing_date:
+        typer.echo(f"    Filing: {ppub.filing_date}")
+    if ppub.publication_date:
+        typer.echo(f"    Published: {ppub.publication_date}")
+
+
+def pipeline_cmd(
+    ctx: typer.Context,
+    preset: str = typer.Option(None, "--preset", "-p", help="Preset: full, quick, embed"),
+    steps: str = typer.Option(None, "--steps", "-s", help="Comma-separated step names"),
+    list_steps_flag: bool = typer.Option(False, "--list", help="List available steps and presets"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview steps without executing"),
+):
+    """Chain multiple processing steps in sequence (ingest → build → embed → closure)."""
+    from drbrain.services.pipeline import list_steps_info, resolve_steps
+
+    if list_steps_flag:
+        steps_info, presets_info = list_steps_info()
+        typer.echo("Available steps:")
+        for s in steps_info:
+            typer.echo(f"  {s['name']:<10} [{s['scope']:<7}]  {s['description']}")
+        typer.echo("\nAvailable presets:")
+        for p in presets_info:
+            typer.echo(f"  {p['name']:<10} = {', '.join(p['steps'])}")
+        return
+
+    try:
+        step_names = resolve_steps(preset=preset, steps_str=steps)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+
+    if dry_run:
+        typer.echo(f"[dry-run] Would execute {len(step_names)} step(s): {', '.join(step_names)}")
+        return
+
+    typer.echo(f"Pipeline: {' -> '.join(step_names)}")
+    typer.echo()
+
+    import subprocess as _sp
+    import sys as _sys
+
+    for i, name in enumerate(step_names, 1):
+        typer.echo(f"[{i}/{len(step_names)}] {name} ...")
+        if name == "ingest":
+            _sp.run([_sys.executable, "-m", "drbrain.cli.main", "ingest"], check=False)
+        elif name == "build":
+            _sp.run([_sys.executable, "-m", "drbrain.cli.main", "build", "--all"], check=False)
+        elif name == "embed":
+            _sp.run(
+                [_sys.executable, "-m", "drbrain.cli.main", "embed", "--tree"],
+                check=False,
+            )
+        elif name == "closure":
+            _sp.run(
+                [_sys.executable, "-m", "drbrain.cli.main", "closure"],
+                check=False,
+            )
+
+    typer.echo(f"\nPipeline complete: {', '.join(step_names)}")
+
+
+def proceedings_cmd(
+    ctx: typer.Context,
+    list_flag: bool = typer.Option(False, "--list", "-l", help="List all proceedings"),
+    create: str = typer.Option(None, "--create", help="Create proceeding: 'Name Year [Venue]'"),
+    show: str = typer.Option(None, "--show", help="Show proceeding by ID"),
+    add: tuple[str, str] = typer.Option(
+        (None, None), "--add", help="Add paper to proceeding: PROCEEDING_ID PAPER_ID"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Manage conference proceedings."""
+    from drbrain.storage.proceedings import (
+        DEFAULT_PATH,
+        add_paper,
+        create_proceeding,
+        get_proceeding,
+        list_proceedings,
+    )
+
+    store_path = DEFAULT_PATH
+
+    if create:
+        parts = create.rsplit(maxsplit=1)
+        if len(parts) == 2 and parts[1].isdigit():
+            name, year_str = parts[0], parts[1]
+            year = int(year_str)
+            venue = ""
+        else:
+            all_parts = create.split()
+            name = " ".join(all_parts[:-1]) if len(all_parts) > 1 else all_parts[0]
+            year = int(all_parts[-1]) if all_parts[-1].isdigit() else 2024
+            venue = ""
+        p = create_proceeding(store_path, name, year, venue=venue)
+        typer.echo(f"Created: [{p['id']}] {name} ({year})")
+        return
+
+    if add and add[0] and add[1]:
+        try:
+            add_paper(store_path, add[0], add[1])
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Added {add[1]} to proceeding {add[0]}")
+        return
+
+    if show:
+        p = get_proceeding(store_path, show)
+        if not p:
+            typer.echo(f"Proceeding not found: {show}", err=True)
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json.dumps(p, ensure_ascii=False, indent=2))
+            return
+        typer.echo(f"[{p['id']}] {p['name']} ({p['year']})")
+        if p.get("venue"):
+            typer.echo(f"  Venue: {p['venue']}")
+        typer.echo(f"  Papers: {len(p.get('papers', []))}")
+        for paper_id in p.get("papers", []):
+            typer.echo(f"    - {paper_id}")
+        return
+
+    # Default: list
+    proceedings = list_proceedings(store_path)
+    if json_output:
+        typer.echo(json.dumps(proceedings, ensure_ascii=False, indent=2))
+        return
+    if not proceedings:
+        typer.echo("No proceedings. Create one with: drbrain proceedings --create 'NeurIPS 2024'")
+        return
+    typer.echo(f"Proceedings ({len(proceedings)}):")
+    for p in proceedings:
+        pc = len(p.get("papers", []))
+        venue_str = f" — {p.get('venue', '')}" if p.get("venue") else ""
+        typer.echo(f"  [{p['id']}] {p['name']} ({p['year']}){venue_str} — {pc} paper(s)")
+
+
+def explore_cmd(
+    ctx: typer.Context,
+    list_flag: bool = typer.Option(False, "--list", "-l", help="List all explore silos"),
+    create: str = typer.Option(None, "--create", help="Create a new explore silo"),
+    delete: str = typer.Option(None, "--delete", help="Delete an explore silo"),
+    name: str = typer.Option(None, "--name", "-n", help="Silo name for --search or --show"),
+    search: str = typer.Option(None, "--search", "-s", help="Search papers in a silo"),
+    show: bool = typer.Option(False, "--show", help="Show silo papers"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Manage explore silos — lightweight literature discovery collections."""
+    from pathlib import Path as _Path
+
+    from drbrain.storage.explore import (
+        create_explore_silo,
+        delete_explore_silo,
+        get_silo_papers,
+        list_explore_silos,
+        search_silo,
+    )
+
+    root = _Path("data/explore")
+
+    if create:
+        try:
+            silo = create_explore_silo(root, create)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Created explore silo: {silo['name']}")
+        return
+
+    if delete:
+        try:
+            delete_explore_silo(root, delete)
+        except Exception as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Deleted: {delete}")
+        return
+
+    if search and name:
+        try:
+            results = search_silo(root, name, search)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+            return
+        if not results:
+            typer.echo(f"No results for '{search}' in silo '{name}'.")
+        typer.echo(f"Results ({len(results)}):")
+        for i, r in enumerate(results, 1):
+            authors = ", ".join(r.get("authors", [])[:2])
+            year = f" ({r.get('year', '?')})"
+            typer.echo(f"  [{i}] {r.get('title', '?')}{year} — {authors}")
+        return
+
+    if show and name:
+        try:
+            papers = get_silo_papers(root, name)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json.dumps(papers, ensure_ascii=False, indent=2))
+            return
+        typer.echo(f"Silo '{name}' — {len(papers)} paper(s):")
+        for i, r in enumerate(papers, 1):
+            authors = ", ".join(r.get("authors", [])[:2])
+            year = f" ({r.get('year', '?')})"
+            typer.echo(f"  [{i}] {r.get('title', '?')}{year} — {authors}")
+        return
+
+    # Default: list
+    silos = list_explore_silos(root)
+    if json_output:
+        typer.echo(json.dumps(silos, ensure_ascii=False, indent=2))
+        return
+    if not silos:
+        typer.echo("No explore silos. Create one with: drbrain explore --create <name>")
+        return
+    typer.echo(f"Explore silos ({len(silos)}):")
+    for s in silos:
+        desc = f" — {s.get('description', '')}" if s.get("description") else ""
+        typer.echo(f"  {s['name']}: {s.get('paper_count', 0)} papers{desc}")
+
+
+def _render_extracted_markdown(title: str, source_url: str, body: str) -> str:
+    parts = [
+        f"# {title}",
+        "",
+        f"Source URL: {source_url}",
+        "",
+    ]
+    body_text = (body or "").strip()
+    if body_text:
+        parts.append(body_text)
+    return "\n".join(parts).rstrip() + "\n"

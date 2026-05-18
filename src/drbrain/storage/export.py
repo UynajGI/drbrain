@@ -149,7 +149,7 @@ def meta_to_ris(meta: dict) -> str:
     return "\n".join(lines)
 
 
-def meta_to_markdown(meta: dict) -> str:
+def meta_to_markdown(meta: dict, style: str = "apa", styles_dir: str | None = None) -> str:
     title = meta.get("title", "Untitled")
     year = meta.get("year", "")
     year_str = f" ({year})" if year else ""
@@ -167,11 +167,13 @@ def meta_to_markdown(meta: dict) -> str:
     return "\n".join(parts)
 
 
-def batch_export(metas: list[dict], fmt: str) -> str:
+def batch_export(metas: list[dict], fmt: str, style: str = "apa") -> str:
     if fmt == "bib":
         return "\n\n".join(meta_to_bibtex(m) for m in metas)
     elif fmt == "ris":
         return "\n\n".join(meta_to_ris(m) for m in metas)
     elif fmt == "md":
-        return "\n\n".join(meta_to_markdown(m) for m in metas)
+        from drbrain.services.citation_styles import format_refs
+
+        return format_refs(metas, style=style)
     return ""

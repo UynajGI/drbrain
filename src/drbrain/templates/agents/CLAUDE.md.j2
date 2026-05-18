@@ -3,15 +3,13 @@
 This file is the Claude Code project entrypoint for DrBrain. It intentionally stays light:
 
 - durable project facts and navigation live here
-- reusable procedures belong in skills (Claude Code auto-discovers via clawhub.yaml)
+- reusable procedures belong in skills (AgentSkills.io standard, auto-discovered from `skills/`)
 - deep reference lives in `drbrain --help`
 
 ## Quick Reference
 
 - CLI: `drbrain --help`
-- Key commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `ask`
-- Skills: `research-analysis`, `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`
+- Skills: `skills/` — 16 skills covering ingest, build, embed, closure, query, reason, analysis, cartography, maintenance
+- Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"`
 - Lint: `uv run ruff check . && uv run ruff format .`
-
-@AGENTS.md

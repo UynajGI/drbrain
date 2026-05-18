@@ -116,10 +116,29 @@ embed:
   cache_dir: "~/.cache/modelscope/hub/models"
   hf_endpoint: "" # HuggingFace mirror (optional)
   api_base: "" # OpenAI-compat API base URL
-  api_key: "" # API key (prefer env var SCHOLARAIO_EMBED_API_KEY)
+  api_key: "" # API key (set via drbrain setup, or env var DRBRAIN_EMBED_API_KEY)
   batch_size: 64
 
 # ── Quality Control ──────────────────────────────────────────────
 queue:
   weak_threshold: 0.7 # confidence below this → review queue
   auto_accept: 0.9 # confidence above this → auto-accept
+
+# ── Rsync Backup ──────────────────────────────────────────────────
+# Remote targets for `drbrain backup --target <name>`.
+# Local tar.gz backups (`drbrain backup`) are always available.
+backup:
+  ssh_bin: ssh
+  rsync_bin: rsync
+  targets:
+    # Example target — uncomment and configure:
+    # myserver:
+    #   host: backup.example.com
+    #   user: drbrain
+    #   path: /backups/drbrain/
+    #   port: 22
+    #   identity_file: "~/.ssh/id_ed25519"
+    #   mode: default          # default | append | append-verify
+    #   compress: true
+    #   enabled: true
+    #   exclude: []

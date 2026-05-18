@@ -1,2 +1,4 @@
 graft src/drbrain/templates
+graft skills
 include clawhub.yaml
+include skills-lock.json

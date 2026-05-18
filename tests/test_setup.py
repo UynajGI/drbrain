@@ -195,3 +195,5 @@ def test_generate_local_config_writes_and_contains_keys(tmp_path):
     assert "mineru" in data
     assert "bm25" in data
     assert "api" in data
+    assert "embed" in data
+    assert data["embed"]["provider"] == "local"
