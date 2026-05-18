@@ -119,7 +119,25 @@ drbrain build --skip-refine
 
 After build, paper status becomes `extracted`. Your knowledge graph now has typed concepts linked by semantic relations.
 
-### Step 4: Query
+### Step 4: Embed (recommended)
+
+Train graph embeddings for link prediction and complex queries, plus text embeddings for tree-based retrieval:
+
+```bash
+drbrain embed          # Train TransE graph embeddings (dim=128, epochs=100)
+drbrain embed --tree   # Train PageIndex + RAPTOR text embeddings
+```
+
+### Step 5: Closure (recommended)
+
+Infer new edges via rule-based reasoning:
+
+```bash
+drbrain closure                # Symbolic inference (8 rules)
+drbrain closure --mode hybrid  # Symbolic + embedding-based (12 rules, best results)
+```
+
+### Step 6: Query
 
 Search your knowledge graph with keyword-based BM25 retrieval:
 
@@ -146,7 +164,7 @@ Search the content tree of a specific paper (PageIndex retrieval):
 drbrain query "residual connections" --paper p6a321e
 ```
 
-### Step 5: Analyze
+### Step 7: Analyze
 
 Run a knowledge frontier analysis to discover research seeds, causal chains, hypotheses, and cross-domain patterns:
 
@@ -156,7 +174,7 @@ drbrain analyze --workspace nlp --full
 drbrain analyze --query "large language models" --full
 ```
 
-### Step 6: Reason (LLM Agent)
+### Step 8: Reason (LLM Agent)
 
 Ask natural language questions that the LLM agent answers by exploring the knowledge graph:
 

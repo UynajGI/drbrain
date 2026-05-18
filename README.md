@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
-[![Claude Code Skills](https://img.shields.io/badge/Claude_Code_Skills-DrBrain-purple.svg)](.claude/skills/)
+[![Agent Skills](https://img.shields.io/badge/Agent_Skills-DrBrain-purple.svg)](skills/)
 
 </div>
 

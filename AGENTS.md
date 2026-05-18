@@ -37,15 +37,15 @@ new relationships through rule-based graph closure.
 ### Quick Reference
 
 - CLI: `drbrain --help`
-- Key commands: `setup`, `ingest`, `build`, `query`, `graph`, `analyze`, `citations`, `ws`, `ask`
-- Skills: `.claude/skills/*/SKILL.md` — `research-analysis`, `paper-ingest`, `paper-query`, `citation-tracking`, `workspace-analysis`
+- Key commands: `setup`, `ingest`, `build`, `embed`, `closure`, `query`, `ask`, `reason`, `graph`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `ws`, `audit`
+- Skills: `skills/*/SKILL.md` — `paper-ingest`, `kg-build`, `kg-reason`, `paper-query`, `knowledge-cartography`, `graph`, `research-analysis`, `citation-tracking`, `workspace-analysis`, `library-maintenance`, `audit`, `export`, `import`, `index`, `show`, `translate`
 - Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"` (fast), `uv run pytest` (all)
 - Lint: `uv run ruff check . && uv run ruff format .`
 
 ### How To Work In This Repo
 
-- Prefer project skills in `.claude/skills/` when the user request matches one.
+- Prefer project skills in `skills/` when the user request matches one.
 - Use the `drbrain` CLI instead of describing what should be done.
 - Define verifiable success criteria before implementing. Write the test first, then make it pass.
 - Match existing code style; don't refactor adjacent code unless the task requires it.
@@ -63,6 +63,5 @@ new relationships through rule-based graph closure.
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
 | `tests/` | pytest test suite |
-| `skills/` | AgentSkills.io project skills |
-| `.claude/skills/` | Claude Code skills (canonical source) |
+| `skills/` | Project skills (AgentSkills.io standard, canonical source) |
 | `.github/` | CI workflow, issue/PR templates |
