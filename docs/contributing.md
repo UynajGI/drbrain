@@ -48,20 +48,33 @@ src/drbrain/
 ├── query/                # Search and retrieval
 │   ├── bm25.py           # BM25 index over concepts + arguments
 │   └── tree_retrieval.py # PageIndex tree search (adaptive depth)
+├── providers/            # External service clients
+│   ├── webtools.py       # Web extraction (qt-web-extractor)
+│   ├── uspto_odp.py      # USPTO ODP patent API (key required)
+│   └── uspto_ppubs.py    # USPTO PPUBS client (free, session-based)
 ├── storage/              # Database and I/O
 │   ├── database.py       # SQLite DB with WAL, schema_versions, CRUD
 │   ├── paths.py          # Centralized path accessors
 │   ├── export.py         # BibTeX, RIS, Markdown export
 │   ├── workspace.py      # Workspace CRUD
-│   ├── backup.py         # tar.gz backup
+│   ├── backup.py         # tar.gz + rsync backup
 │   ├── inbox.py          # Inbox scanning and pending queue
-│   └── citation_graph.py # Citation graph queries
+│   ├── citation_graph.py # Citation graph queries
+│   ├── proceedings.py    # Conference proceedings registry
+│   └── explore.py        # Literature discovery silos (JSONL)
 ├── services/             # Higher-level services
 │   ├── audit.py          # 15-rule data quality scan
 │   ├── repair.py         # Metadata repair via APIs
+│   ├── enrich.py         # CrossRef backfill + scrub detection
 │   ├── translate.py      # LLM paper translation
 │   ├── zotero_import.py  # Zotero/BibTeX/Endnote import
-│   └── graph_to_text.py  # Subgraph-to-text LLM description
+│   ├── graph_to_text.py  # Subgraph-to-text LLM description
+│   ├── citation_styles.py # APA/Vancouver/Chicago/MLA + custom
+│   ├── document.py       # Office doc inspection (DOCX/PPTX/XLSX)
+│   ├── fsearch.py        # Federated search (local + arXiv)
+│   ├── pipeline.py       # Step chaining with presets
+│   ├── metrics_panel.py  # User behavior analytics
+│   └── parser_benchmark.py # PDF parser comparison harness
 ├── report/               # Analysis reports
 │   └── analyzer.py       # Knowledge frontier analyzer
 ├── dedup/                # Paper identity resolution
@@ -90,13 +103,24 @@ tests/                    # pytest suite (real SQLite, no DB mocking)
 ├── test_repair.py
 └── ...
 
-skills/                   # AgentSkills.io skills
+skills/                   # AgentSkills.io skills (27 total)
 ├── paper-ingest/
 ├── paper-query/
 ├── citation-tracking/
 ├── research-analysis/
 ├── workspace-analysis/
 ├── show/
+├── fsearch/
+├── patent-search/
+├── explore/
+├── proceedings/
+├── pipeline/
+├── enrich/
+├── metrics/
+├── document/
+├── citation-styles/
+├── backup/
+├── ingest-link/
 ├── audit/
 ├── export/
 ├── translate/
