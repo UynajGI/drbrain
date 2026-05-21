@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -10,41 +11,6 @@ import yaml
 from loguru import logger
 
 from drbrain.cli._setup_i18n import t as _t
-
-_TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "agents"
-_SKILLS_SRC = Path(__file__).parent.parent / "skills"
-_PROJECT_SKILLS = Path("skills")
-
-# Agent-specific skill directories (symlinked to skills/ when possible)
-SKILL_DIR_MAP: dict[str, str] = {
-    "claude_code": ".claude/skills",
-    "codex": ".codex/skills",
-    "qwen": ".qwen/skills",
-    "cursor": ".cursor/skills",
-    "cline": ".claude/skills",  # Cline reuses Claude Code conventions
-    "windsurf": ".windsurf/skills",
-    "copilot": ".github/skills",
-}
-
-INJECTION_MAP: dict[str, list[tuple[str, str]]] = {
-    "claude_code": [
-        ("CLAUDE.md.j2", "CLAUDE.md"),
-    ],
-    "claude_plugin": [
-        ("plugin.json.j2", ".claude-plugin/plugin.json"),
-        ("marketplace.json.j2", ".claude-plugin/marketplace.json"),
-        ("mcp.json.j2", ".mcp.json"),
-    ],
-    "codex": [("AGENTS.md.j2", "AGENTS.md")],
-    "qwen": [("QWEN.md.j2", ".qwen/QWEN.md")],
-    "cursor": [
-        ("drbrain.mdc.j2", ".cursor/rules/drbrain.mdc"),
-        (".cursorrules.j2", ".cursorrules"),
-    ],
-    "cline": [(".clinerules.j2", ".clinerules")],
-    "windsurf": [(".windsurfrules.j2", ".windsurfrules")],
-    "copilot": [("copilot-instructions.md.j2", ".github/copilot-instructions.md")],
-}
 
 
 def _check_python_package(module: str) -> bool:
@@ -222,196 +188,20 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
     return ok, warn
 
 
-def _detect_platforms() -> dict[str, bool]:
-    """Detect installed AI platforms. Returns {platform_name: detected}."""
-    home = Path.home()
-    detected: dict[str, bool] = {}
-
-    # Claude Code
-    detected["claude_code"] = shutil.which("claude") is not None or (home / ".claude").exists()
-
-    # Codex / OpenClaw
-    detected["codex"] = shutil.which("codex") is not None or (home / ".codex").exists()
-
-    # Qwen
-    detected["qwen"] = (
-        (home / ".qwen").exists()
-        or (home / ".config" / "Qwen").exists()
-        or (Path(".") / ".qwen").exists()
-        or shutil.which("qwen") is not None
-    )
-
-    # Cursor
-    detected["cursor"] = (
-        (Path(".") / ".cursor").exists()
-        or (home / ".cursor").exists()
-        or shutil.which("cursor") is not None
-    )
-
-    # Cline
-    detected["cline"] = (
-        (home / ".cline").exists()
-        or (Path(".") / ".clinerules").exists()
-        or shutil.which("cline") is not None
-    )
-
-    # Windsurf
-    detected["windsurf"] = (
-        (home / ".windsurf").exists()
-        or (Path(".") / ".windsurfrules").exists()
-        or shutil.which("windsurf") is not None
-    )
-
-    # GitHub Copilot
-    detected["copilot"] = (Path(".") / ".github").exists()
-
-    return detected
-
-
-def _inject_agent_entries(lang: str = "en") -> None:
-    """Interactive agent entry injection. User must select at least one platform."""
-    detected = _detect_platforms()
-    available = {k for k, v in detected.items() if v}
-
-    if not available:
-        typer.echo(f"\n{_t('agent_none_detected', lang)}")
-        return
-
-    # Build display: Claude Code entry includes claude_plugin group
-    _labels: dict[str, str] = {
-        "claude_code": "Claude Code (includes .claude-plugin + .mcp.json)",
-        "codex": "Codex / OpenClaw",
-        "qwen": "Qwen",
-        "cursor": "Cursor",
-        "cline": "Cline",
-        "windsurf": "Windsurf",
-        "copilot": "GitHub Copilot",
-    }
-
-    platforms = sorted(available, key=lambda p: list(_labels).index(p) if p in _labels else 99)
-
-    typer.echo(f"\n{_t('agent_detected_title', lang)}")
-    for i, p in enumerate(platforms, 1):
-        typer.echo(f"  [{i}] {_labels.get(p, p)}")
-    typer.echo(f"  [a] {_t('agent_all', lang)}")
-    typer.echo(f"  [n] {_t('agent_none', lang)}")
-
-    choice_str = typer.prompt(_t("agent_select", lang), default="a").strip()
-
-    if choice_str.lower() == "n":
-        typer.echo(_t("agent_skipped", lang))
-        return
-
-    selected: set[str] = set()
-    if choice_str.lower() == "a":
-        selected = set(platforms)
-    else:
-        for part in choice_str.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                idx = int(part) - 1
-                if 0 <= idx < len(platforms):
-                    selected.add(platforms[idx])
-            except ValueError:
-                continue
-
-    if not selected:
-        typer.echo(_t("agent_no_selection", lang))
-        return
-
-    # Inject templates for selected platforms
-    for platform in sorted(selected):
-        entries = INJECTION_MAP.get(platform, [])
-        # Claude Code also includes claude_plugin entries
-        if platform == "claude_code" and "claude_code" in selected:
-            entries = list(entries) + INJECTION_MAP.get("claude_plugin", [])
-
-        for template_name, target_name in entries:
-            template_path = _TEMPLATES_DIR / template_name
-            target_path = Path(".") / target_name
-
-            if not template_path.exists():
-                typer.echo(f"  [!]  {_t('agent_template_missing', lang)}: {template_name}")
-                continue
-
-            if target_path.exists():
-                typer.echo(f"  [!]  {target_name} {_t('agent_file_exists', lang)}")
-                continue
-
-            content = template_path.read_text(encoding="utf-8")
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(content, encoding="utf-8")
-            typer.echo(f"  [+]  {target_name}")
-
-    typer.echo()
-
-    # Inject skills for selected platforms
-    _install_skills(selected, lang=lang)
-
-
-def _install_skills(selected_platforms: set[str], quiet: bool = False, lang: str = "en") -> None:
-    """Copy skills to project skills/ and create agent-specific symlinks."""
-    if _SKILLS_SRC.exists() and _SKILLS_SRC.is_dir():
-        src = _SKILLS_SRC
-    elif _PROJECT_SKILLS.exists() and _PROJECT_SKILLS.is_dir():
-        src = _PROJECT_SKILLS
-    else:
-        if not quiet:
-            typer.echo("  [!]  No skills directory found — skipping skill injection")
-        return
-
-    if not quiet:
-        typer.echo("\n── Skills Injection ──")
-        typer.echo(f"  Source: {src}")
-
-    if not _PROJECT_SKILLS.exists():
-        _copy_skills_dir(src, _PROJECT_SKILLS)
-        if not quiet:
-            typer.echo(f"  [+]  skills/ ({len(list(_PROJECT_SKILLS.iterdir()))} skills)")
-    elif src.resolve() != _PROJECT_SKILLS.resolve():
-        if quiet or typer.confirm("  skills/ already exists. Update from source?", default=False):
-            _copy_skills_dir(src, _PROJECT_SKILLS)
-            if not quiet:
-                typer.echo(
-                    f"  [+]  skills/ updated ({len(list(_PROJECT_SKILLS.iterdir()))} skills)"
-                )
-    else:
-        if not quiet:
-            typer.echo("  skills/ already up to date (source install)")
-
-    for platform in sorted(selected_platforms):
-        agent_dir = SKILL_DIR_MAP.get(platform)
-        if not agent_dir:
-            continue
-        target = Path(".") / agent_dir
-        if target.exists() or target.is_symlink():
-            continue
+def _offer_skills_install(lang: str = "en") -> None:
+    """Offer to install DrBrain skills via npx skills add."""
+    typer.echo(f"\n{_t('skills_heading', lang)}")
+    typer.echo(f"  {_t('skills_desc', lang)}")
+    if typer.confirm(f"  {_t('skills_prompt', lang)}", default=True):
+        typer.echo("  $ npx skills add https://github.com/UynajGI/DrBrain/skills")
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.symlink_to(Path("..") / "skills", target_is_directory=True)
-            if not quiet:
-                typer.echo(f"  [+]  {agent_dir} -> skills/")
-        except OSError:
-            _copy_skills_dir(_PROJECT_SKILLS, target)
-            if not quiet:
-                typer.echo(f"  [+]  {agent_dir} (copied, symlink unsupported)")
-
-    if not quiet:
-        typer.echo()
-
-
-def _copy_skills_dir(src: Path, dst: Path) -> None:
-    """Copy skill directories from src to dst."""
-    import shutil as _shutil
-
-    if dst.exists():
-        _shutil.rmtree(dst)
-    dst.mkdir(parents=True, exist_ok=True)
-    for item in src.iterdir():
-        if item.is_dir():
-            _shutil.copytree(item, dst / item.name)
+            subprocess.run(
+                ["npx", "skills", "add", "https://github.com/UynajGI/DrBrain/skills"],
+                check=False,
+            )
+        except (FileNotFoundError, OSError):
+            typer.echo(f"  [!]  {_t('skills_npx_failed', lang)}")
+    typer.echo()
 
 
 def setup_cmd(
@@ -572,7 +362,7 @@ def setup_cmd(
             typer.echo(f"  [!]  {line}")
         typer.echo()
 
-        _inject_agent_entries()
+        _offer_skills_install(lang="en")
 
         typer.echo(_t("ready", "en"))
         typer.echo(f"  {_t('next_steps', 'en')}")
@@ -785,7 +575,7 @@ def setup_cmd(
 
     typer.echo()
 
-    _inject_agent_entries(lang=lang)
+    _offer_skills_install(lang=lang)
 
     if not warn:
         logger.info("[setup] complete — no warnings")

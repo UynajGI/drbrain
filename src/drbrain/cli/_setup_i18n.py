@@ -262,42 +262,22 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "zh": "已创建 {count} 个目录",
     },
 
-    # Agent section
-    "agent_none_detected": {
-        "en": "No AI platforms detected. Install Claude Code or another AI coding tool, then re-run `drbrain setup`.",
-        "zh": "未检测到 AI 平台。请先安装 Claude Code 或其他 AI 编程工具，然后重新运行 `drbrain setup`。",
+    # Skills
+    "skills_heading": {
+        "en": "── Agent Skills ──",
+        "zh": "── Agent 技能 ──",
     },
-    "agent_detected_title": {
-        "en": "Detected AI platforms:",
-        "zh": "检测到的 AI 平台：",
+    "skills_desc": {
+        "en": "Install DrBrain skills so your AI coding agent can use them.",
+        "zh": "安装 DrBrain 技能，让你的 AI 编程助手可以直接使用。",
     },
-    "agent_all": {
-        "en": "All detected",
-        "zh": "全部",
+    "skills_prompt": {
+        "en": "Install DrBrain skills via npx?",
+        "zh": "通过 npx 安装 DrBrain 技能？",
     },
-    "agent_none": {
-        "en": "None (skip)",
-        "zh": "跳过",
-    },
-    "agent_select": {
-        "en": "Select platforms (comma-separated numbers)",
-        "zh": "选择平台（用逗号分隔数字）",
-    },
-    "agent_skipped": {
-        "en": "Skipped agent entry injection.",
-        "zh": "已跳过 Agent 入口注入。",
-    },
-    "agent_no_selection": {
-        "en": "No platforms selected. Skipping agent entry injection.",
-        "zh": "未选择平台，跳过 Agent 入口注入。",
-    },
-    "agent_template_missing": {
-        "en": "Template not found",
-        "zh": "模板未找到",
-    },
-    "agent_file_exists": {
-        "en": "already exists, skipping",
-        "zh": "已存在，跳过",
+    "skills_npx_failed": {
+        "en": "npx not found. Install Node.js then run: npx skills add https://github.com/UynajGI/DrBrain/skills",
+        "zh": "未找到 npx。请安装 Node.js 后运行：npx skills add https://github.com/UynajGI/DrBrain/skills",
     },
 
     # Already-exists flow

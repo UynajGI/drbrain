@@ -36,8 +36,7 @@ drbrain setup
 ```
 
 This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on macOS/Linux,
-`%USERPROFILE%/DrBrain` on Windows). `drbrain setup` detects your AI platforms and injects
-agent entries so your coding agent can use DrBrain skills directly.
+`%USERPROFILE%/DrBrain` on Windows).
 
 ## What It Does
 
@@ -79,21 +78,15 @@ agent entries so your coding agent can use DrBrain skills directly.
 
 ## Works With Your Agent
 
-DrBrain is designed to work through AI coding agents. `drbrain setup` injects the right
-entry files into your project so your agent can discover and use skills directly.
+Install DrBrain skills so your coding agent can use them:
 
-| Agent / IDE | Entry injected |
-|-------------|---------------|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `CLAUDE.md` + `.claude-plugin/` + `.mcp.json` |
-| [Codex](https://openai.com/codex) / OpenClaw | `AGENTS.md` |
-| [Cline](https://github.com/cline/cline) | `.clinerules` |
-| [Qwen Code](https://github.com/QwenLM/qwen-code) | `.qwen/QWEN.md` |
-| [Cursor](https://cursor.sh) | `.cursor/rules/drbrain.mdc` |
-| [Windsurf](https://codeium.com/windsurf) | `.windsurfrules` |
-| [GitHub Copilot](https://github.com/features/copilot) | `.github/copilot-instructions.md` |
+```bash
+npx skills add https://github.com/UynajGI/DrBrain/skills
+```
 
-Skills follow the open [AgentSkills.io](https://agentskills.io) standard. Claude Code users
-also get `.claude-plugin/` + `.mcp.json` injected for full plugin integration.
+Skills follow the open [AgentSkills.io](https://agentskills.io) standard and work with
+Claude Code, Codex, Cline, Cursor, Windsurf, Qwen Code, GitHub Copilot, and other
+AI coding tools.
 
 ## Configuration
 

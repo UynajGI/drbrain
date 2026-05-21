@@ -77,7 +77,7 @@ Inside: `inbox/` (drop PDFs here), `papers/` (processed papers), `drbrain.db` (k
 2. **Configures MinerU PDF parser** -- optional; PyMuPDF fallback works without it
 3. **Sets up API keys** -- Semantic Scholar, CrossRef, OpenAlex (optional; higher rate limits)
 4. **Creates data directories** -- `data/spool/inbox/`, `data/papers/`, `data/cache/`, etc.
-5. **Detects AI platforms** and injects agent entry files so your coding agent can use DrBrain skills
+5. **Offers to install agent skills** -- runs `npx skills add https://github.com/UynajGI/DrBrain/skills`
 
 Use `--quick` to skip interactive prompts and accept defaults:
 

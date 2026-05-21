@@ -128,47 +128,6 @@ def test_brief_validation_all_ok():
         assert any("Data directories" in o for o in ok)
 
 
-# -- New tests for coverage boost --
-
-
-def test_detect_platforms_returns_dict():
-    """_detect_platforms returns a dict with all platform keys (booleans)."""
-    from drbrain.cli.setup import _detect_platforms
-
-    platforms = _detect_platforms()
-    assert isinstance(platforms, dict)
-    for key in ("claude_code", "codex", "qwen", "cursor", "cline", "windsurf", "copilot"):
-        assert key in platforms, f"Missing platform key: {key}"
-        assert isinstance(platforms[key], bool), f"Value for {key} should be bool"
-
-
-def test_injection_map_has_all_platforms():
-    """INJECTION_MAP covers all 7 platforms plus claude_plugin."""
-    from drbrain.cli.setup import INJECTION_MAP
-
-    # 7 platforms + claude_plugin = 8 entries
-    assert len(INJECTION_MAP) >= 8
-    for key in ("claude_code", "codex", "qwen", "cursor", "cline", "windsurf", "copilot"):
-        assert key in INJECTION_MAP, f"Missing INJECTION_MAP key: {key}"
-    assert "claude_plugin" in INJECTION_MAP
-    # Each entry is a list of (template, target) tuples
-    for platform, entries in INJECTION_MAP.items():
-        assert isinstance(entries, list), f"{platform} entries should be a list"
-        for entry in entries:
-            assert len(entry) == 2, f"{platform} entry should be (template, target)"
-            assert isinstance(entry[0], str) and isinstance(entry[1], str)
-
-
-def test_injection_map_templates_exist():
-    """All templates referenced in INJECTION_MAP exist on disk."""
-    from drbrain.cli.setup import _TEMPLATES_DIR, INJECTION_MAP
-
-    for platform, entries in INJECTION_MAP.items():
-        for template, target in entries:
-            template_path = _TEMPLATES_DIR / template
-            assert template_path.exists(), f"Missing template for platform '{platform}': {template}"
-
-
 def test_generate_local_config_writes_and_contains_keys(tmp_path):
     """generate_local_config writes a valid YAML with expected top-level keys."""
     from drbrain.cli.setup import generate_local_config
