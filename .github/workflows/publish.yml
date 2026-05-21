@@ -8,7 +8,14 @@ on:
 
 jobs:
   testpypi:
-    if: github.event_name == 'push'
+    if: |
+      github.event_name == 'push' &&
+      !(
+        contains(github.ref_name, 'a') ||
+        contains(github.ref_name, 'b') ||
+        contains(github.ref_name, 'dev') ||
+        contains(github.ref_name, 'rc')
+      )
     runs-on: ubuntu-latest
     permissions:
       id-token: write
