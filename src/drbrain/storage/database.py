@@ -153,6 +153,31 @@ CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id TEXT PRIMARY KEY,
+    title TEXT DEFAULT '',
+    system_prompt TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','archived','deleted')),
+    model_config TEXT DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    tool_calls_json TEXT DEFAULT '',
+    tool_call_id TEXT DEFAULT '',
+    tool_name TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_session
+    ON agent_messages(session_id, seq);
 """
 
 
@@ -184,6 +209,7 @@ class Database:
             (3, "authors", self._migrate_add_authors),
             (4, "node_id", self._migrate_add_node_id),
             (5, "edge_provenance", self._migrate_add_edge_provenance),
+            (6, "agent_sessions", self._migrate_add_agent_sessions),
         ]
 
         for version, name, fn in migrations:
@@ -243,6 +269,10 @@ class Database:
             self.conn.execute("ALTER TABLE edges ADD COLUMN node_id TEXT DEFAULT ''")
         if "section" not in edge_cols:
             self.conn.execute("ALTER TABLE edges ADD COLUMN section TEXT DEFAULT ''")
+
+    def _migrate_add_agent_sessions(self) -> None:
+        """Add agent_sessions and agent_messages tables (created via SCHEMA_SQL IF NOT EXISTS)."""
+        pass  # Tables created by SCHEMA_SQL on init; this migration marks v6 as applied.
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)

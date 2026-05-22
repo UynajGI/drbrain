@@ -6,10 +6,14 @@ STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' ||
 STAGED_YAML=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.ya?ml$' || true)
 STAGED_ALL=$(git diff --cached --name-only --diff-filter=ACM | wc -l | tr -d ' ')
 
+VENV_DIR="$(git rev-parse --show-toplevel)/.venv"
+RUFF="$VENV_DIR/bin/ruff"
+PYTHON="$VENV_DIR/bin/python3"
+
 # ── Python: ruff check + format ──
 if [ -n "$STAGED_PY" ]; then
     echo "Ruff check..."
-    echo "$STAGED_PY" | xargs uv run ruff check --force-exclude
+    echo "$STAGED_PY" | xargs "$RUFF" check --force-exclude
     if [ $? -ne 0 ]; then
         echo ""
         echo "Commit blocked. Fix the issues above, then re-stage."
@@ -17,7 +21,7 @@ if [ -n "$STAGED_PY" ]; then
     fi
 
     echo "Ruff format..."
-    echo "$STAGED_PY" | xargs uv run ruff format --force-exclude --quiet
+    echo "$STAGED_PY" | xargs "$RUFF" format --force-exclude --quiet
     echo "$STAGED_PY" | xargs git add
     echo "  Python: OK ($(echo "$STAGED_PY" | wc -l | tr -d ' ') file(s))"
 fi
@@ -26,7 +30,7 @@ fi
 if [ -n "$STAGED_YAML" ]; then
     BROKEN_YAML=""
     for f in $STAGED_YAML; do
-        uv run python3 -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || BROKEN_YAML="$BROKEN_YAML $f"
+        "$PYTHON" -c "import yaml; yaml.safe_load(open('$f'))" 2>/dev/null || BROKEN_YAML="$BROKEN_YAML $f"
     done
     if [ -n "$BROKEN_YAML" ]; then
         echo "YAML parse error in:$BROKEN_YAML"

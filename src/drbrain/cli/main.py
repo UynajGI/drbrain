@@ -69,6 +69,7 @@ from drbrain.cli.repair_commands import (
     import_cmd,
     repair_cmd,
 )
+from drbrain.cli.session_commands import session_app
 from drbrain.cli.setup import setup_cmd
 from drbrain.cli.ws_commands import ws_app
 from drbrain.log import setup_logging
@@ -142,6 +143,7 @@ app.command("frontier")(frontier_cmd)
 app.command("reason")(reason_cmd)
 
 # Sub-apps
+app.add_typer(session_app, name="session")
 app.add_typer(graph_app, name="graph")
 app.add_typer(ws_app, name="ws")
 

@@ -10,6 +10,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from drbrain.extractor.agent_tools import (
+    TOOL_DEFINITIONS,
+    find_path,
+    get_document_structure,
+    get_neighbors,
+    get_raptor_summaries,
+    get_section_content,
+    search_concepts,
+    search_tree,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -22,262 +33,38 @@ class ReasonerAgent:
         self.models = models or []
         self.closure_context = closure_context
 
-    def tool_definitions(self) -> list[dict]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_concepts",
-                    "description": "Search concepts in the knowledge graph by keyword",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search keyword"},
-                            "limit": {"type": "integer", "default": 5},
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_neighbors",
-                    "description": "Get neighbors of a concept node in the graph",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "node": {"type": "string"},
-                            "hops": {"type": "integer", "default": 1},
-                            "direction": {
-                                "type": "string",
-                                "enum": ["forward", "backward", "both"],
-                            },
-                        },
-                        "required": ["node"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "find_path",
-                    "description": "Find shortest path between two concepts in the graph",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "src": {"type": "string"},
-                            "dst": {"type": "string"},
-                        },
-                        "required": ["src", "dst"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_document_structure",
-                    "description": "Get the section tree skeleton for a paper (titles + node_ids only, no content)",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string", "description": "Paper local_id"},
-                        },
-                        "required": ["paper_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_section_content",
-                    "description": "Get the full text content of a specific section within a paper",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {"type": "string", "description": "Paper local_id"},
-                            "node_id": {
-                                "type": "string",
-                                "description": "Tree node ID from document structure",
-                            },
-                        },
-                        "required": ["paper_id", "node_id"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "search_tree",
-                    "description": "Search across all paper sections by semantic similarity (collapsed tree retrieval)",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Search query for finding relevant sections",
-                            },
-                        },
-                        "required": ["query"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_raptor_summaries",
-                    "description": "Get RAPTOR cross-section summaries for a paper. Returns hierarchical summaries that capture themes across multiple sections.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "paper_id": {
-                                "type": "string",
-                                "description": "Paper local_id",
-                            },
-                        },
-                        "required": ["paper_id"],
-                    },
-                },
-            },
-        ]
-
-    def _search_concepts(self, query: str, limit: int = 5) -> list[dict]:
-        if not self.db:
-            return []
-        from drbrain.query.bm25 import build_bm25_index
-
-        bm25 = build_bm25_index(self.db)
-        results = bm25.search(query, limit=limit)
-        return [{"label": r["label"], "type": r["type"], "score": r["score"]} for r in results]
-
-    def _get_neighbors(self, node: str, hops: int = 1, direction: str = "both") -> list[dict]:
-        if not self.graph:
-            return []
-        results = self.graph.traverse(start_nodes={node}, hops=hops, direction=direction)
-        return [
-            {
-                "target": r.target,
-                "source": r.source,
-                "distance": r.distance,
-                "path": [{"src": s.src, "relation": s.relation, "dst": s.dst} for s in r.path],
-            }
-            for r in results
-        ]
-
-    def _find_path(self, src: str, dst: str) -> dict | None:
-        if not self.graph or src not in self.graph.graph or dst not in self.graph.graph:
-            return None
-        import networkx as nx
-
-        ug = self.graph.graph.to_undirected()
-        try:
-            node_path = nx.shortest_path(ug, source=src, target=dst)
-            return {"path": node_path, "length": len(node_path) - 1}
-        except (nx.NetworkXNoPath, nx.NetworkXError):
-            return None
-
-    # ── Layer 6: Tree tools ──────────────────────────────────────────────
-
-    def _get_document_structure(self, paper_id: str) -> list[dict]:
-        """Return the tree skeleton for a paper (titles + node_ids, no content)."""
-        import json
-
-        from drbrain.storage.paths import tree_json_path
-
-        papers_dir = self._papers_dir()
-        if not papers_dir:
-            return []
-
-        tree_path = tree_json_path(papers_dir / paper_id)
-        if not tree_path.exists():
-            return []
-
-        tree = json.loads(tree_path.read_text(encoding="utf-8"))
-        structure = tree.get("structure", [])
-
-        def _extract(nodes: list[dict]) -> list[dict]:
-            result = []
-            for n in nodes:
-                item = {
-                    "node_id": n.get("node_id", ""),
-                    "title": n.get("title", ""),
-                }
-                child_nodes = n.get("nodes", [])
-                if child_nodes:
-                    item["children"] = _extract(child_nodes)
-                result.append(item)
-            return result
-
-        return _extract(structure)
-
-    def _get_section_content(self, paper_id: str, node_id: str) -> str:
-        """Return the raw text content for a tree node."""
-        from drbrain.parser.pageindex_parser import get_node_content
-        from drbrain.storage.paths import raw_md_path, tree_json_path
-
-        papers_dir = self._papers_dir()
-        if not papers_dir:
-            return ""
-
-        paper_dir = papers_dir / paper_id
-        tree_path = tree_json_path(paper_dir)
-        md_path = raw_md_path(paper_dir)
-        if not tree_path.exists() or not md_path.exists():
-            return ""
-
-        import json
-
-        tree = json.loads(tree_path.read_text(encoding="utf-8"))
-        structure = tree.get("structure", [])
-        try:
-            return get_node_content(md_path, structure, node_id) or ""
-        except Exception:
-            return ""
-
-    def _search_tree(self, query: str) -> list[dict]:
-        """Cross-paper collapsed tree search (vector + BM25 hybrid)."""
-        if not self.db:
-            return []
-        from drbrain.query.tree_retrieval import query_cross_paper
-
-        results = query_cross_paper(query, self.db.path)
-        return results
-
-    def _get_raptor_summaries(self, paper_id: str) -> list[dict]:
-        """Return RAPTOR cross-section summaries for a paper.
-
-        Queries tree_summaries table for hierarchical summaries
-        produced by the RAPTOR recursive semantic tree builder.
-        """
-        if not self.db:
-            return []
-
-        rows = self.db.conn.execute(
-            "SELECT node_id, paper_id, summary_text, source_node_ids, tree_layer "
-            "FROM tree_summaries WHERE paper_id = ? ORDER BY tree_layer",
-            (paper_id,),
-        ).fetchall()
-
-        import json
-
-        return [
-            {
-                "node_id": r[0],
-                "paper_id": r[1],
-                "summary_text": r[2],
-                "source_node_ids": json.loads(r[3]) if r[3] else [],
-                "tree_layer": r[4],
-            }
-            for r in rows
-        ]
-
+    @property
     def _papers_dir(self) -> Path | None:
         """Resolve the papers data directory from DB config."""
         if not self.db:
             return None
+        return self.db.path.parent / "papers"
 
-        db_path = self.db.path
-        return db_path.parent / "papers"
+    def tool_definitions(self) -> list[dict]:
+        return list(TOOL_DEFINITIONS)
+
+    # -- Tool wrappers (delegate to shared agent_tools handlers) --
+
+    def _search_concepts(self, query: str, limit: int = 5) -> list[dict]:
+        return search_concepts(self.db, query, limit)
+
+    def _get_neighbors(self, node: str, hops: int = 1, direction: str = "both") -> list[dict]:
+        return get_neighbors(self.graph, node, hops, direction)
+
+    def _find_path(self, src: str, dst: str) -> dict | None:
+        return find_path(self.graph, src, dst)
+
+    def _get_document_structure(self, paper_id: str) -> list[dict]:
+        return get_document_structure(self._papers_dir, paper_id)
+
+    def _get_section_content(self, paper_id: str, node_id: str) -> str:
+        return get_section_content(self._papers_dir, paper_id, node_id)
+
+    def _search_tree(self, query: str) -> list[dict]:
+        return search_tree(self.db, query)
+
+    def _get_raptor_summaries(self, paper_id: str) -> list[dict]:
+        return get_raptor_summaries(self.db, paper_id)
 
     async def reason(self, question: str, max_turns: int = 5) -> str:
         """Run LLM agent loop to reason about a question using graph tools."""
