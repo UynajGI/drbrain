@@ -127,13 +127,14 @@ drbrain ingest --json                    # JSON output for pipelines
 
 ### `drbrain build`
 
-Extract concepts and relations via 5-stage LLM pipeline. Processes all `uploaded` papers by default.
+Extract concepts and relations via 5-stage LLM pipeline. Processes all `uploaded` papers by default. When `--session` is provided, injects a structured extraction summary into the session so subsequent `reason --session` calls have full build context.
 
-| Flag | Description |
-|------|-------------|
-| `--all` | Build graph for all papers in database |
-| `--skip-refine` | Skip iterative refinement stage (saves LLM cost) |
-| `--json` | Output JSON |
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--all` | | Build graph for all papers in database |
+| `--skip-refine` | | Skip iterative refinement stage (saves LLM cost) |
+| `--session` | `-s` | Session ID ("new" to create, or existing ID). Injects extraction summary after build. |
+| `--json` | | Output JSON |
 
 ```bash
 drbrain build                      # all unprocessed papers
@@ -141,6 +142,8 @@ drbrain build p6a321e              # single paper
 drbrain build p6a321e p3b452c      # multiple papers
 drbrain build --all                # re-extract everything
 drbrain build --skip-refine        # faster, less polished
+drbrain build --session new        # create session, inject summary
+drbrain build p6a321e -s sess-xxx  # inject into existing session
 drbrain build p6a321e --json
 ```
 
@@ -553,14 +556,19 @@ drbrain closure --mine-rules --min-confidence 0.7 --ground
 
 LLM agent that reasons over the knowledge graph using tool-calling. The agent has access to `search_concepts`, `get_neighbors`, and `find_path` tools.
 
+When `--session` is provided, uses persistent `SessionAgent` (DB-backed) instead of stateless `ReasonerAgent`. Session context accumulates across CLI invocations — build results, previous questions, and tool calls are all preserved.
+
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--bidirectional` | `-b` | Use bidirectional LLM-KG iterative reasoning (validates hypotheses against graph constraints) |
 | `--max-rounds` | `-r` | Maximum hypothesis-revision rounds (default: 3) |
+| `--session` | `-s` | Use persistent session. "new" to create, or existing session ID. |
 
 ```bash
 drbrain reason "What are the main approaches to reducing hallucination?"
 drbrain reason "Is dropout effective for transformer regularization?" --bidirectional --max-rounds 5
+drbrain reason -s sess-xxx "Compare concepts from yesterday's build"
+drbrain reason -s new -b "Explain the debate around scaling laws"
 ```
 
 ### `drbrain embed`

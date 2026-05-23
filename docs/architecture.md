@@ -68,6 +68,8 @@ tree.json → [Stage 1: Ontology Extension]
 
 **Stage 5 -- Iterative Refinement:** The LLM self-reviews the extraction for contradictions and errors. Skippable via `--skip-refine` to save time and API cost.
 
+**Post-Build -- Session Injection (optional):** When `build --session` is used, a structured extraction summary is injected into a persistent `SessionAgent` session via `inject_context()`. The summary covers paper ID, concepts by type, relations, coreference merges, and refinement corrections. This context is then available to subsequent `reason --session` calls.
+
 Paper status transitions: `uploaded` -> `extracted` (after successful build). Papers with status `placeholder` are citation-only records that haven't been ingested.
 
 ---
@@ -144,8 +146,10 @@ Layer 2: Hybrid Closure
   - Embedding-driven path rule mining (--mine-rules)
 
 Layer 3: LLM Agent Reasoning
-  - Tool-calling agent: search_concepts, get_neighbors, find_path
-  - Bidirectional mode: hypothesis formation -> KG validation -> revision loop
+  - Stateless ReasonerAgent: tool-calling with search_concepts, get_neighbors, find_path
+  - Persistent SessionAgent: DB-backed session history, cross-CLI-invocation context continuity
+  - Bidirectional mode: hypothesis formation -> KG validation (TBox/RBox) -> revision loop
+  - Context injection: build pipeline feeds extraction summaries into session
   - Hypothesis generation from gap/debate/technology-cliff patterns
 ```
 

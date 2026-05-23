@@ -26,7 +26,7 @@ uv run pytest --cov=drbrain --cov-report=term
 **KG Build**
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `build` | `--all`, `--skip-refine`, `--json`, `[PAPER_ID...]` | 5-stage LLM extraction; omit args = unprocessed only |
+| `build` | `--all`, `--skip-refine`, `--json`, `-s`/`--session`, `[PAPER_ID...]` | 5-stage LLM extraction; `--session new|ID` injects summary into persistent session |
 | `embed` | `--dim 128`, `--epochs 100`, `--retrain`, `--tree` | TransE graph embeddings; `--tree` = PageIndex+RAPTOR text embeddings |
 | `closure` | `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference (8 symbolic + 4 embedding rules) |
 
@@ -39,7 +39,7 @@ uv run pytest --cov=drbrain --cov-report=term
 | | `--paper ID` | PageIndex tree retrieval (bypasses BM25) |
 | | `--json/--jsonl`, `-w WS` | |
 | `ask` | — | Natural-language KGQA |
-| `reason` | `-b`/`--bidirectional`, `-r N`/`--max-rounds 3` | LLM agent tool-calling over KG; `-b` = iterative LLM↔KG validation loop |
+| `reason` | `-b`/`--bidirectional`, `-r N`/`--max-rounds 3`, `-s`/`--session` | LLM agent tool-calling over KG; `-b` = iterative LLM↔KG validation loop; `-s new|ID` = persistent session context |
 | `graph neighbors` | | Traverse from node with path info |
 | `graph path` | | Shortest path between two nodes |
 | `graph related` | | Shared concepts across papers |
@@ -121,6 +121,13 @@ build                       # builds all unprocessed
 embed --retrain --tree      # retrain graph + text embeddings
 closure --mode hybrid       # re-run inference
 
+# Build with persistent session (context carries across calls)
+build paper-id --session new          # create session, inject build results
+build paper-id2 --session sess-xxx     # inject into same session
+
+# Reason with session context
+reason -s sess-xxx "how does A compare to B?"
+
 # Explore
 query "transformer attention" --hybrid -n 1 -R addresses
 query --paper <id> "methods"            # PageIndex tree retrieval
@@ -158,7 +165,7 @@ DrBrain is a **symbol-driven academic knowledge graph with lightweight vector re
 | Area         | Key files                                                                                                                                                | What                                                                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Graph engine | `src/drbrain/graph/engine.py`, `src/drbrain/graph/embedding.py`, `src/drbrain/graph/genealogy.py`                                                                                                                  | TransE embeddings (learn_embeddings, entity_embedding, predict_link, similar_entities), rule closure (8+4 rules), hybrid scoring, concept lineage/landscape/paradigm detection                     |
-| Extraction   | `src/drbrain/extractor/concept.py`, `src/drbrain/extractor/agent.py`, `src/drbrain/extractor/reasoner.py`, `src/drbrain/extractor/raptor.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, RAPTOR recursive semantic tree            |
+| Extraction   | `src/drbrain/extractor/concept.py`, `src/drbrain/extractor/agent.py`, `src/drbrain/extractor/reasoner.py`, `src/drbrain/extractor/session_agent.py`, `src/drbrain/extractor/agent_tools.py`, `src/drbrain/extractor/raptor.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, persistent SessionAgent with DB-backed sessions, shared tool definitions (TOOL_DEFINITIONS, kg_validate), RAPTOR recursive semantic tree            |
 | Reasoning    | `src/drbrain/extractor/causal_chain.py`, `src/drbrain/extractor/confidence_propagation.py`, `src/drbrain/extractor/counterfactual.py`, `src/drbrain/extractor/isomorphism.py`, `src/drbrain/extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
 | Search       | `src/drbrain/query/bm25.py`, `src/drbrain/query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search + RAPTOR two-stage traversal (layer descent + collapsed fallback)                                               |
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
