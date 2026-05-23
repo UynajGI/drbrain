@@ -12,11 +12,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
+from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool, kg_validate
 from drbrain.extractor.llm_client import acall_with_messages
 
 if TYPE_CHECKING:
@@ -336,6 +336,122 @@ class SessionAgent:
             else:
                 print(f"\n{answer}\n")
 
+    # ── Context injection ──────────────────────────────────────────────────
+
+    def inject_context(self, context: str, label: str = "") -> None:
+        """Inject structured context into session without LLM call.
+
+        Used by build pipeline to feed extraction results into the session
+        so subsequent reason calls have full context.
+
+        Args:
+            context: The context text to inject.
+            label: Optional label tag for the context.
+        """
+        if not self.session_id:
+            return
+        tag = f"[{label}] " if label else ""
+        self._append_and_persist("system", f"{tag}{context}")
+        self._maybe_compress()
+
+    # ── Bidirectional reasoning ────────────────────────────────────────────
+
+    async def reason_bidirectional(
+        self,
+        question: str,
+        max_rounds: int = 3,
+    ) -> dict:
+        """Iterative LLM-KG reasoning loop within the session context.
+
+        Each round:
+        1. LLM proposes hypothesis via ask() (preserves session context)
+        2. KG validates hypothesis via TBox/RBox consistency check
+        3. If contradiction: feed contradiction back to LLM, repeat
+        4. KG detects graph patterns (gaps, contradictions, debates) -> feeds to LLM
+
+        Args:
+            question: The research question to reason about.
+            max_rounds: Maximum number of hypothesis-revision rounds.
+
+        Returns:
+            {"answer": str, "rounds": int, "hypotheses": [...], "kg_validations": [...]}
+        """
+        if not self.session_id:
+            return {"error": "No active session."}
+        if not self.models:
+            return {"error": "No LLM models configured."}
+
+        hypotheses: list[str] = []
+        validations: list[dict] = []
+        previous_violations: list[str] = []
+        previous_patterns: list[str] = []
+
+        for round_num in range(1, max_rounds + 1):
+            # Build prompt with previous feedback
+            if round_num == 1:
+                prompt = (
+                    f"Question: {question}\n\n"
+                    "Based on your knowledge, propose a clear hypothesis that answers "
+                    "this question. Include specific entities and relationships "
+                    "(e.g., 'Method X addresses Problem Y', 'Finding A supports Conclusion B')."
+                )
+            else:
+                violation_text = (
+                    "\n".join(f"- {v}" for v in previous_violations)
+                    if previous_violations
+                    else "None"
+                )
+                pattern_text = (
+                    "\n".join(f"- {p}" for p in previous_patterns) if previous_patterns else "None"
+                )
+                prompt = (
+                    f"Question: {question}\n\n"
+                    f"Your previous hypothesis was:\n"
+                    f'  "{hypotheses[-1]}"\n\n'
+                    f"The knowledge graph found these issues:\n"
+                    f"  Violations: {violation_text}\n"
+                    f"  Patterns: {pattern_text}\n\n"
+                    "Please revise your hypothesis to address these issues. "
+                    "Propose a new hypothesis that is consistent with the graph constraints. "
+                    "If you cannot resolve the contradictions, acknowledge the uncertainty."
+                )
+
+            hypothesis = await self.ask(prompt, max_turns=3)
+            if not hypothesis or hypothesis.startswith("No active session"):
+                return {
+                    "answer": "LLM call failed during bidirectional reasoning.",
+                    "rounds": round_num,
+                    "hypotheses": hypotheses,
+                    "kg_validations": validations,
+                }
+
+            hypotheses.append(hypothesis)
+
+            # Validate against KG
+            validation = kg_validate(hypothesis, db=self.db, graph=self.graph)
+            validations.append(validation)
+
+            # Collect violations and patterns for next round
+            previous_violations = [v["reason"] for v in validation["violations"]]
+            previous_patterns = [p["description"] for p in validation["patterns"]]
+
+            if validation["consistent"]:
+                return {
+                    "answer": hypothesis,
+                    "rounds": round_num,
+                    "hypotheses": hypotheses,
+                    "kg_validations": validations,
+                }
+
+        # Exhausted all rounds
+        best = hypotheses[-1] if hypotheses else "No hypothesis generated."
+        return {
+            "answer": best,
+            "rounds": max_rounds,
+            "hypotheses": hypotheses,
+            "kg_validations": validations,
+        }
+
     # ── Context management ────────────────────────────────────────────────
 
     def _maybe_compress(self) -> None:
@@ -446,7 +562,7 @@ def _new_session_id() -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(datetime.UTC).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _build_summary_text(messages: list[dict]) -> str:

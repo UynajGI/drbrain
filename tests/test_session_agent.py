@@ -258,6 +258,128 @@ def test_build_summary_text():
     assert "search_concepts" in summary
 
 
+# ── Inject context tests ────────────────────────────────────────────────
+
+
+def test_inject_context(sess_db, fake_models):
+    """inject_context() appends system message without LLM call."""
+    agent = SessionAgent()
+    agent.create_session(sess_db, title="Inject", models=fake_models)
+
+    # Inject a build summary
+    agent.inject_context("Paper X extracted 5 concepts, 3 relations.", label="build:X")
+
+    # system + injected = 2 messages
+    assert len(agent.messages) == 2
+    assert agent.messages[1]["role"] == "system"
+    assert "[build:X]" in agent.messages[1]["content"]
+    assert "5 concepts" in agent.messages[1]["content"]
+
+    # Verify persistence
+    msg_count = sess_db.conn.execute(
+        "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?",
+        (agent.session_id,),
+    ).fetchone()[0]
+    assert msg_count == 2
+
+
+def test_inject_context_no_session_is_noop(sess_db, fake_models):
+    """inject_context() without session is a silent no-op."""
+    agent = SessionAgent()
+    agent.inject_context("Should not persist", label="test")
+    assert len(agent.messages) == 0
+
+
+def test_inject_context_triggers_compression(sess_db, fake_models):
+    """Many large injections trigger _maybe_compress()."""
+    agent = SessionAgent()
+    agent.create_session(sess_db, title="Compress Inject", models=fake_models)
+    agent._token_budget = 2000  # lower budget so compression triggers
+
+    long_text = "B" * 2000  # ~500 tokens each
+    for i in range(14):
+        agent.inject_context(f"Injection {i}: {long_text}", label=f"build:{i}")
+
+    # After compression: system + summary + last 6
+    assert len(agent.messages) <= 10
+
+
+# ── Bidirectional reasoning tests ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reason_bidirectional_consistent(sess_db, fake_models):
+    """reason_bidirectional returns immediately when hypothesis is consistent."""
+    agent = SessionAgent()
+    agent.create_session(sess_db, title="Bidir", models=fake_models)
+
+    with (
+        mock.patch(
+            "drbrain.extractor.session_agent.acall_with_messages",
+            return_value=_make_mock_response("Method X addresses Problem Y."),
+        ),
+        mock.patch(
+            "drbrain.extractor.session_agent.kg_validate",
+            return_value={"consistent": True, "violations": [], "patterns": []},
+        ),
+    ):
+        result = await agent.reason_bidirectional("What addresses Problem Y?")
+
+    assert result["answer"] == "Method X addresses Problem Y."
+    assert result["rounds"] == 1
+    assert len(result["hypotheses"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_reason_bidirectional_with_violations(sess_db, fake_models):
+    """reason_bidirectional runs revision rounds when KG finds violations."""
+    agent = SessionAgent()
+    agent.create_session(sess_db, title="Bidir Violations", models=fake_models)
+
+    # Round 1: inconsistent -> Round 2: consistent
+    ask_responses = [
+        _make_mock_response("Hypothesis A: X causes Y."),
+        _make_mock_response("Hypothesis B: X correlates with Y."),
+    ]
+
+    validations = [
+        {
+            "consistent": False,
+            "violations": [{"type": "tbox", "edge": {}, "reason": "causes not valid for type"}],
+            "patterns": [],
+        },
+        {"consistent": True, "violations": [], "patterns": []},
+    ]
+
+    with (
+        mock.patch(
+            "drbrain.extractor.session_agent.acall_with_messages",
+            side_effect=ask_responses,
+        ),
+        mock.patch(
+            "drbrain.extractor.session_agent.kg_validate",
+            side_effect=validations,
+        ),
+    ):
+        result = await agent.reason_bidirectional("What is the relation between X and Y?")
+
+    assert result["rounds"] == 2
+    assert len(result["hypotheses"]) == 2
+    assert result["answer"] == "Hypothesis B: X correlates with Y."
+
+
+def test_reason_bidirectional_no_session(sess_db, fake_models):
+    """reason_bidirectional returns error without active session."""
+    agent = SessionAgent()
+    agent.models = fake_models
+
+    import asyncio
+
+    result = asyncio.run(agent.reason_bidirectional("test?"))
+    assert "error" in result
+    assert "No active session" in result["error"]
+
+
 # ── Tool-calling integration (no LLM) ───────────────────────────────────
 
 

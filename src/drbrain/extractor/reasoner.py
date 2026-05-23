@@ -17,6 +17,7 @@ from drbrain.extractor.agent_tools import (
     get_neighbors,
     get_raptor_summaries,
     get_section_content,
+    kg_validate,
     search_concepts,
     search_tree,
 )
@@ -226,146 +227,9 @@ class ReasonerAgent:
     def _kg_validate(self, hypothesis: str) -> dict:
         """Check hypothesis against KG for consistency.
 
-        Extracts entity mentions from hypothesis text by matching
-        concept labels in the DB, then checks the subgraph of those
-        entities for TBox violations, RBox violations, and graph
-        patterns (debates, gaps).
-
-        Args:
-            hypothesis: Free-text hypothesis from LLM.
-
-        Returns:
-            {"consistent": bool, "violations": [...], "patterns": [...]}
+        Delegates to the shared kg_validate function in agent_tools.
         """
-        result: dict = {"consistent": True, "violations": [], "patterns": []}
-
-        if not self.graph or self.graph.graph.number_of_nodes() == 0:
-            return result
-
-        # 1. Find entity mentions in hypothesis text by matching DB concept labels
-        mentioned_labels: list[str] = []
-        if self.db:
-            rows = self.db.conn.execute(
-                "SELECT DISTINCT label FROM concepts ORDER BY length(label) DESC"
-            ).fetchall()
-            hypothesis_lower = hypothesis.lower()
-            for (label,) in rows:
-                if label and label.lower() in hypothesis_lower:
-                    mentioned_labels.append(label)
-        else:
-            # No DB: extract potential labels from graph nodes
-            for node in self.graph.graph.nodes():
-                if node and node.lower() in hypothesis.lower():
-                    mentioned_labels.append(node)
-
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        unique_labels = []
-        for label in mentioned_labels:
-            if label not in seen:
-                seen.add(label)
-                unique_labels.append(label)
-        mentioned_labels = unique_labels[:20]  # cap at 20 entities
-
-        if len(mentioned_labels) < 2:
-            return result
-
-        # 2. Gather all edges between mentioned entities
-        subgraph_edges: list[dict] = []
-        for u, v, data in self.graph.graph.edges(data=True):
-            if u in seen and v in seen:
-                subgraph_edges.append(
-                    {
-                        "src": u,
-                        "dst": v,
-                        "relation": data.get("relation", ""),
-                        "source_paper": data.get("source", ""),
-                    }
-                )
-
-        # 3. TBox validation: check each edge's relation against concept types
-        from drbrain.validator.schema import detect_asymmetric_violations, validate_tbox
-
-        if self.db:
-            # Build type lookup from DB
-            type_rows = self.db.conn.execute(
-                "SELECT label, type FROM concepts WHERE label IN ({})".format(
-                    ",".join("?" for _ in mentioned_labels)
-                ),
-                mentioned_labels,
-            ).fetchall()
-            label_to_type: dict[str, str] = {row[0]: row[1] for row in type_rows}
-
-            for edge in subgraph_edges:
-                src_type = label_to_type.get(edge["src"])
-                if src_type:
-                    tbox_result = validate_tbox(src_type, edge["relation"])
-                    if not tbox_result.valid:
-                        result["consistent"] = False
-                        result["violations"].append(
-                            {
-                                "type": "tbox",
-                                "edge": edge,
-                                "reason": tbox_result.reason,
-                            }
-                        )
-        else:
-            # Without DB, we can't do TBox checks (don't know concept types)
-            pass
-
-        # 4. RBox validation: check for asymmetric violations
-        asym_violations = detect_asymmetric_violations(subgraph_edges)
-        if asym_violations:
-            result["consistent"] = False
-            for v in asym_violations:
-                result["violations"].append(
-                    {
-                        "type": "rbox_asymmetric",
-                        "edge": v,
-                        "reason": f"'{v['relation']}' is asymmetric but reverse edge exists.",
-                    }
-                )
-
-        # 5. Graph pattern detection
-        # Debate: two entities connected by "challenges" to the same target
-        debates_found: set[tuple] = set()
-        for i, e1 in enumerate(subgraph_edges):
-            for e2 in subgraph_edges[i + 1 :]:
-                if e1["relation"] == "challenges" and e2["relation"] == "challenges":
-                    if e1["dst"] == e2["dst"] and e1["src"] != e2["src"]:
-                        debates_found.add((e1["src"], e2["src"], e1["dst"]))
-
-        for a, b, target in debates_found:
-            result["patterns"].append(
-                {
-                    "type": "debate",
-                    "description": f"'{a}' and '{b}' both challenge '{target}'",
-                    "entities": [a, b, target],
-                }
-            )
-
-        # Gaps: pairs of entities of same/compatible types with no edge between them
-        if len(mentioned_labels) >= 2 and self.db:
-            connected_pairs: set[tuple[str, str]] = set()
-            for e in subgraph_edges:
-                connected_pairs.add((e["src"], e["dst"]))
-                connected_pairs.add((e["dst"], e["src"]))
-
-            for i, a in enumerate(mentioned_labels):
-                for b in mentioned_labels[i + 1 :]:
-                    if (a, b) not in connected_pairs:
-                        a_type = label_to_type.get(a)
-                        b_type = label_to_type.get(b)
-                        if a_type and b_type:
-                            result["patterns"].append(
-                                {
-                                    "type": "gap",
-                                    "description": f"No edge between '{a}' ({a_type}) and '{b}' ({b_type})",
-                                    "entities": [a, b],
-                                }
-                            )
-
-        return result
+        return kg_validate(hypothesis, db=self.db, graph=self.graph)
 
     def reason_bidirectional(self, question: str, max_rounds: int = 3) -> dict:
         """Iterative LLM-KG reasoning loop.

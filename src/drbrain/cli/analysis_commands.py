@@ -66,10 +66,14 @@ def reason_cmd(
         "-r",
         help="Maximum hypothesis-revision rounds for bidirectional mode",
     ),
+    session_id: str = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Use persistent session. 'new' to create, or existing session ID.",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
-    from drbrain.extractor.reasoner import ReasonerAgent
-
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
@@ -92,25 +96,69 @@ def reason_cmd(
         db.close()
         raise typer.Exit(1)
 
-    agent = ReasonerAgent(db=db, graph_engine=graph, models=models, closure_context=closure_ctx)
+    if session_id:
+        # ── SessionAgent path (persistent multi-turn reasoning) ──
+        from drbrain.extractor.session_agent import SessionAgent
 
-    if bidirectional:
-        typer.echo(f"Bidirectional reasoning: {question}\n")
-        result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
-        if "error" in result:
-            typer.echo(f"Error: {result['error']}", err=True)
+        agent = SessionAgent()
+        if session_id == "new":
+            sid = agent.create_session(db, title="reason", models=models)
+            if closure_ctx:
+                agent.inject_context(closure_ctx, label="closure")
         else:
-            typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
-            typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
-            for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
-                typer.echo(
-                    f"  Round {i}: consistent={v['consistent']}, "
-                    f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
-                )
+            ok = agent.load_session(
+                db, session_id, graph=graph, models=models, closure_context=closure_ctx
+            )
+            if not ok:
+                typer.echo(f"Session not found: {session_id}", err=True)
+                db.close()
+                raise typer.Exit(1)
+            sid = session_id
+
+        agent.graph = graph
+
+        if bidirectional:
+            typer.echo(f"Bidirectional reasoning (session): {question}\n")
+            result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
+            if "error" in result:
+                typer.echo(f"Error: {result['error']}", err=True)
+            else:
+                typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
+                typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
+                for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
+                    typer.echo(
+                        f"  Round {i}: consistent={v['consistent']}, "
+                        f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
+                    )
+        else:
+            typer.echo(f"Reasoning (session): {question}\n")
+            answer = asyncio.run(agent.ask(question))
+            typer.echo(answer)
+
+        typer.echo(f"\n[Session: {sid}]")
     else:
-        typer.echo(f"Reasoning: {question}\n")
-        answer = asyncio.run(agent.reason(question))
-        typer.echo(answer)
+        # ── ReasonerAgent path (stateless, original behavior) ──
+        from drbrain.extractor.reasoner import ReasonerAgent
+
+        agent = ReasonerAgent(db=db, graph_engine=graph, models=models, closure_context=closure_ctx)
+
+        if bidirectional:
+            typer.echo(f"Bidirectional reasoning: {question}\n")
+            result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
+            if "error" in result:
+                typer.echo(f"Error: {result['error']}", err=True)
+            else:
+                typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
+                typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
+                for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
+                    typer.echo(
+                        f"  Round {i}: consistent={v['consistent']}, "
+                        f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
+                    )
+        else:
+            typer.echo(f"Reasoning: {question}\n")
+            answer = asyncio.run(agent.reason(question))
+            typer.echo(answer)
 
     db.close()
 

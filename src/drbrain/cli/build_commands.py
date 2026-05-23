@@ -94,6 +94,51 @@ def translate_cmd(
         typer.echo(f"Translated: {result.path}")
 
 
+def _build_extraction_summary(
+    paper_id: str,
+    concepts: list[dict],
+    relations: list[dict],
+    merges: list[dict],
+    corrections: list[dict],
+) -> str:
+    """Format extraction results as a structured text summary for session context."""
+    lines = [f"Extraction results for paper {paper_id}:"]
+
+    # Concepts summary
+    if concepts:
+        by_type: dict[str, list[str]] = {}
+        for c in concepts:
+            t = c.get("type", "Unknown")
+            by_type.setdefault(t, []).append(c.get("label", ""))
+        lines.append(f"\nConcepts ({len(concepts)} total):")
+        for t, labels in sorted(by_type.items()):
+            top = labels[:10]
+            suffix = f" ... +{len(labels) - 10} more" if len(labels) > 10 else ""
+            lines.append(f"  {t}: {', '.join(top)}{suffix}")
+
+    # Relations summary
+    if relations:
+        lines.append(f"\nRelations ({len(relations)} total):")
+        for r in relations[:15]:
+            lines.append(f"  {r.get('head', '?')} --[{r.get('rel', '?')}]--> {r.get('tail', '?')}")
+        if len(relations) > 15:
+            lines.append(f"  ... +{len(relations) - 15} more")
+
+    # Merges summary
+    if merges:
+        lines.append(f"\nCoreference merges ({len(merges)} total):")
+        for m in merges[:10]:
+            lines.append(f"  {m.get('canonical', '?')} <- {m.get('variants', [])}")
+
+    # Corrections summary
+    if corrections:
+        lines.append(f"\nRefinement corrections ({len(corrections)} total):")
+        for c in corrections[:5]:
+            lines.append(f"  {c.get('description', str(c)[:120])}")
+
+    return "\n".join(lines)
+
+
 def build_cmd(
     ctx: typer.Context,
     paper_id: list[str] = typer.Argument(
@@ -104,6 +149,12 @@ def build_cmd(
     ),
     skip_refine: bool = typer.Option(
         False, "--skip-refine", help="Skip iterative refinement stage"
+    ),
+    session_id: str = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help="Save extraction context to session. 'new' to create, or existing session ID.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
@@ -257,6 +308,21 @@ def build_cmd(
         )
         typer.echo(f"  Valid: {valid_count} | Rejected: {rejected} ({_t_done:.1f}s)")
         all_results.append({"paper_id": pid, "concepts": valid_count, "relations": len(relations)})
+
+        # Inject extraction results into session if requested
+        if session_id:
+            from drbrain.extractor.session_agent import SessionAgent
+
+            sess_agent = SessionAgent()
+            if session_id == "new":
+                sid = sess_agent.create_session(db, title=f"build:{pid}", models=llm_models)
+                session_id = sid  # reuse for subsequent papers
+            else:
+                sess_agent.load_session(db, session_id, models=llm_models)
+
+            summary = _build_extraction_summary(pid, concepts, relations, merges, corrections)
+            sess_agent.inject_context(summary, label=f"build:{pid}")
+            typer.echo(f"  Session: {sess_agent.session_id}")
 
     if json_output:
         typer.echo(json.dumps({"results": all_results}, indent=2, ensure_ascii=False))
