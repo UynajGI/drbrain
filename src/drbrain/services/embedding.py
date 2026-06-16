@@ -610,7 +610,7 @@ def build_tree_vectors(
     Returns:
         Number of vectors written.
     """
-    import sqlite3
+    from drbrain.storage.connection import connect_wal
 
     provider = _embed_provider(cfg)
     if provider == "none":
@@ -622,7 +622,7 @@ def build_tree_vectors(
         return 0
 
     # Check existing hashes for incremental update
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     try:
         existing_hashes: dict[str, str] = {}
         for row in conn.execute("SELECT node_id, content_hash FROM tree_vectors").fetchall():
@@ -728,9 +728,9 @@ def search_tree(
     Returns:
         List of {node_id, paper_id, score, tree_layer}.
     """
-    import sqlite3
-
     import numpy as np
+
+    from drbrain.storage.connection import connect_wal
 
     provider = _embed_provider(cfg)
     if provider == "none":
@@ -739,7 +739,7 @@ def search_tree(
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     try:
         # Embed query
         query_vec = _embed_batch([query], cfg)[0]

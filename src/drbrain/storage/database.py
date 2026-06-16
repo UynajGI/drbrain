@@ -127,6 +127,7 @@ CREATE INDEX IF NOT EXISTS idx_tree_vectors_paper ON tree_vectors(paper_id);
 CREATE INDEX IF NOT EXISTS idx_tree_vectors_layer_paper ON tree_vectors(tree_layer, paper_id);
 CREATE INDEX IF NOT EXISTS idx_tree_summaries_paper ON tree_summaries(paper_id);
 CREATE INDEX IF NOT EXISTS idx_paper_ids_local ON paper_ids(local_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity);
 
 CREATE TABLE IF NOT EXISTS research_seeds (
     seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,6 +157,7 @@ CREATE TABLE IF NOT EXISTS build_stages (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (paper_id, stage)
 );
+CREATE INDEX IF NOT EXISTS idx_build_stages_paper_stage ON build_stages(paper_id, stage);
 
 CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
@@ -220,6 +222,7 @@ class Database:
             (4, "node_id", self._migrate_add_node_id),
             (5, "edge_provenance", self._migrate_add_edge_provenance),
             (6, "agent_sessions", self._migrate_add_agent_sessions),
+            (7, "indexes_v2", self._migrate_add_indexes_v2),
         ]
 
         for version, name, fn in migrations:
@@ -283,6 +286,15 @@ class Database:
     def _migrate_add_agent_sessions(self) -> None:
         """Add agent_sessions and agent_messages tables (created via SCHEMA_SQL IF NOT EXISTS)."""
         pass  # Tables created by SCHEMA_SQL on init; this migration marks v6 as applied.
+
+    def _migrate_add_indexes_v2(self) -> None:
+        """Create performance indexes that reference columns added in earlier migrations."""
+        try:
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_concepts_node_id ON concepts(node_id)"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column may not exist in very old schemas
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)

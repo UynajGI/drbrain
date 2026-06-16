@@ -682,13 +682,13 @@ def fsearch_cmd(
             in_lib_arxiv_ids: set[str] = set()
             try:
                 # Simple cross-ref: check paper_ids table
-                import sqlite3
                 from pathlib import Path
 
                 from drbrain.services.fsearch import _normalize_arxiv_ref
+                from drbrain.storage.connection import connect_wal
 
                 if Path(db_path).exists():
-                    conn = sqlite3.connect(db_path)
+                    conn = connect_wal(db_path)
                     paper_ids_rows = conn.execute(
                         "SELECT doi, arxiv FROM paper_ids WHERE doi != '' OR arxiv != ''"
                     ).fetchall()

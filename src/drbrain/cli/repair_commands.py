@@ -173,11 +173,10 @@ def import_cmd(
                 typer.echo(f"File not found: {path}", err=True)
                 raise typer.Exit(1)
 
-            import sqlite3
-
             from drbrain.services.zotero_import import import_zotero_db
+            from drbrain.storage.connection import connect_wal
 
-            conn = sqlite3.connect(str(p))
+            conn = connect_wal(p)
             try:
                 zotero_storage = None
                 if not no_pdf:

@@ -59,6 +59,8 @@ class MetricsStore:
         if self._conn is None:
             self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(SCHEMA)
             self._run_migrations()
             self._conn.commit()

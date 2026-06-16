@@ -28,6 +28,7 @@ import numpy as np
 
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
+from drbrain.storage.connection import connect_wal
 from drbrain.storage.paths import raw_md_path, tree_json_path
 
 log = logging.getLogger(__name__)
@@ -525,7 +526,7 @@ def tree_traversal_search(
     if not db_path.exists():
         return []
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     try:
         # Discover available layers
         layer_rows = conn.execute(

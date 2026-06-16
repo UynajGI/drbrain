@@ -224,3 +224,33 @@ def test_pragma_wal_mode_and_busy_timeout():
 
         busy = db.conn.execute("PRAGMA busy_timeout").fetchone()[0]
         assert busy >= 5000
+
+
+def test_embeddings_entity_index_exists():
+    """embeddings.entity has an index."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "idx_embeddings_entity" in indexes
+
+
+def test_build_stages_paper_stage_index_exists():
+    """build_stages has a (paper_id, stage) composite index."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "idx_build_stages_paper_stage" in indexes
+
+
+def test_concepts_node_id_index_exists():
+    """concepts.node_id has an index."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "idx_concepts_node_id" in indexes

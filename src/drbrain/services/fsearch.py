@@ -138,13 +138,13 @@ def search_local(
         List of paper dicts with ``title``, ``local_id``, ``year``,
         ``authors``, ``score``.
     """
-    import sqlite3
+    from drbrain.storage.connection import connect_wal
 
     if not __import__("pathlib").Path(db_path).exists():
         return []
 
     try:
-        conn = sqlite3.connect(db_path)
+        conn = connect_wal(db_path)
         # Simple BM25-like search over concepts and arguments
         search_term = f"%{query}%"
         rows = conn.execute(

@@ -199,7 +199,6 @@ async def build_raptor_tree(
     Returns:
         Total number of summary nodes created.
     """
-    import sqlite3
     import time as _time
 
     from drbrain.services.embedding import (
@@ -207,13 +206,14 @@ async def build_raptor_tree(
         _content_hash,
         _embed_batch,
     )
+    from drbrain.storage.connection import connect_wal
 
     _t0 = _time.monotonic()
     paper_id = paper_dir.name
     log.info("[raptor] building tree for %s (max_layers=%d)", paper_id, max_layers)
     total_summaries = 0
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     try:
         # Step 1: Read existing PageIndex vectors from DB (already stored by build_tree_vectors)
         rows = conn.execute(
