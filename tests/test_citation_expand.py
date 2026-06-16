@@ -4,6 +4,8 @@ import tempfile
 import unittest.mock
 from pathlib import Path
 
+import requests
+
 from drbrain.extractor.cache import ApiCache
 from drbrain.extractor.citation import (
     _crossref_doi_enrich,
@@ -370,7 +372,7 @@ def test_fetch_s2_paper_success():
 
 def test_fetch_s2_paper_error():
     """fetch_s2_paper returns None on error."""
-    with unittest.mock.patch("requests.get", side_effect=Exception("fail")):
+    with unittest.mock.patch("requests.get", side_effect=requests.RequestException("fail")):
         result = fetch_s2_paper("abc")
         assert result is None
 
@@ -389,7 +391,7 @@ def test_search_s2_success():
 
 def test_search_s2_error():
     """search_s2 returns empty list on error."""
-    with unittest.mock.patch("requests.get", side_effect=Exception("fail")):
+    with unittest.mock.patch("requests.get", side_effect=requests.RequestException("fail")):
         results = search_s2("test")
         assert results == []
 

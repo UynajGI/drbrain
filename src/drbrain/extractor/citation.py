@@ -56,7 +56,7 @@ def fetch_s2_paper(
         if cache:
             cache.set(f"s2_paper:{paper_id}", data)
         return data
-    except Exception as e:
+    except requests.RequestException as e:
         _cit_log.warning(f"S2 API error for {paper_id}: {e}")
         return None
 
@@ -85,7 +85,7 @@ def search_s2(
         if cache:
             cache.set(cache_key, result)
         return result
-    except Exception as e:
+    except requests.RequestException as e:
         _cit_log.warning(f"S2 search error: {e}")
         return []
 
@@ -113,7 +113,7 @@ def _s2_retry(url: str, headers: dict, max_retries: int) -> dict | None:
             else:
                 _cit_log.warning(f"S2 API error (status={status}): {e}")
                 return None
-        except Exception as e:
+        except (requests.RequestException, ValueError) as e:
             _cit_log.warning(f"S2 API error: {e}")
             return None
     return None
@@ -583,11 +583,8 @@ def expand_citations_multi(
                                 "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None,
                             }
                         )
-                except Exception:
-                    try:
-                        _cit_log.exception("Citation expansion error")
-                    except Exception:
-                        pass
+                except Exception as e:
+                    _cit_log.warning("Citation expansion error: {}", e)
             # Citing via pyalex filter
             parts = sort.split(":")
             sfield, sdir = parts[0], parts[1] if len(parts) > 1 else "desc"
@@ -604,11 +601,8 @@ def expand_citations_multi(
                             "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None,
                         }
                     )
-        except Exception:
-            try:
-                _cit_log.exception("Citation expansion error")
-            except Exception:
-                pass
+        except Exception as e:
+            _cit_log.warning("Citation expansion error: {}", e)
 
     # ── S2 (supplement) ──
     s2_id = f"arXiv:{arxiv}" if arxiv else None
@@ -630,11 +624,8 @@ def expand_citations_multi(
                     all_citing.append(
                         {"title": t, "year": cite.get("year"), "doi": cite.get("doi")}
                     )
-        except Exception:
-            try:
-                _cit_log.exception("Citation expansion error")
-            except Exception:
-                pass
+        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            _cit_log.warning("S2 citation supplement error: {}", e)
 
     # ── CrossRef (DOI-based, if still sparse) ──
     if doi and (len(all_refs) < 10 or len(all_citing) < 10):
@@ -653,11 +644,8 @@ def expand_citations_multi(
                 if k and k not in seen:
                     seen.add(k)
                     all_refs.append({"title": t[:200], "year": None, "doi": ref.get("DOI")})
-        except Exception:
-            try:
-                _cit_log.exception("Citation expansion error")
-            except Exception:
-                pass
+        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            _cit_log.warning("CrossRef citation supplement error: {}", e)
 
     # ── Store in DB (citation_cache + placeholder papers) ──
     refs_added = citing_added = 0
@@ -677,11 +665,8 @@ def expand_citations_multi(
                 db.insert_paper_ids(pid, doi=dval)
                 db.commit()
             refs_added += 1
-        except Exception:
-            try:
-                _cit_log.exception("Citation expansion error")
-            except Exception:
-                pass
+        except Exception as e:
+            _cit_log.warning("Citation cache store error (references): {}", e)
     for c in all_citing:
         try:
             db.conn.execute(
@@ -697,11 +682,8 @@ def expand_citations_multi(
                 db.insert_paper_ids(pid, doi=dval)
                 db.commit()
             citing_added += 1
-        except Exception:
-            try:
-                _cit_log.exception("Citation expansion error")
-            except Exception:
-                pass
+        except Exception as e:
+            _cit_log.warning("Citation cache store error (citing): {}", e)
 
     db.commit()
     _cit_log.info(
