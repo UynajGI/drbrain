@@ -230,8 +230,10 @@ class ClosureMixin:
             rel = data.get("relation", "")
             if rel not in transitive_relations:
                 continue
-            # Check if v has outgoing edges of the same relation type
-            for w, v2, data2 in self.graph.edges(v, data=True):
+            # Check if v has outgoing edges of the same relation type.
+            # edges(v) yields (v, neighbor) pairs: v is the source, neighbor
+            # (named w here) is the actual destination of the second hop.
+            for _, w, data2 in self.graph.edges(v, data=True):
                 if data2.get("relation", "") == rel:
                     key = (u, w, rel)
                     if key not in seen:
