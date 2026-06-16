@@ -712,6 +712,7 @@ def search_tree(
     db_path: Path,
     top_k: int = 10,
     cfg: EmbedConfig | None = None,
+    paper_id: str | None = None,
 ) -> list[dict]:
     """Vector search over tree_vectors using cosine similarity.
 
@@ -720,6 +721,9 @@ def search_tree(
         db_path: SQLite database path.
         top_k: Number of results to return.
         cfg: Optional EmbedConfig.
+        paper_id: Optional scope — restrict search to a single paper. Avoids
+            loading the entire tree_vectors table when the caller knows the
+            target paper (e.g. cross-paper queries).
 
     Returns:
         List of {node_id, paper_id, score, tree_layer}.
@@ -737,20 +741,25 @@ def search_tree(
 
     conn = sqlite3.connect(str(db_path))
     try:
-        # Check if tree_vectors has data
-        count = conn.execute("SELECT COUNT(*) FROM tree_vectors").fetchone()[0]
-        if count == 0:
-            return []
-
         # Embed query
         query_vec = _embed_batch([query], cfg)[0]
         qv = np.asarray(query_vec, dtype="float32")
         query_dim = len(query_vec)
 
-        # Vectorized cosine similarity: concatenate all blobs into a matrix
-        rows = list(
-            conn.execute("SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors")
-        )
+        # Vectorized cosine similarity: concatenate all blobs into a matrix.
+        # Scope to paper_id when provided (avoids full-table scan).
+        if paper_id is not None:
+            rows = list(
+                conn.execute(
+                    "SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors "
+                    "WHERE paper_id = ?",
+                    (paper_id,),
+                )
+            )
+        else:
+            rows = list(
+                conn.execute("SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors")
+            )
         valid = []
         for row in rows:
             blob = row[2]
