@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import enum
 import json as _json
+import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,7 +157,8 @@ class BuildAgent(ABC):
                 (paper_id, self.name),
             ).fetchone()
             return row is not None and row[0] == StageStatus.COMPLETE.value
-        except Exception:
+        except sqlite3.Error as e:
+            logger.warning(f"[agent] _is_complete failed for {paper_id}: {e}")
             return False
 
     def _save_status(self, db, paper_id: str, status: StageStatus) -> None:
@@ -167,8 +169,8 @@ class BuildAgent(ABC):
                 (paper_id, self.name, status.value),
             )
             db.commit()
-        except Exception:
-            pass  # table may not exist yet
+        except sqlite3.Error as e:
+            logger.warning(f"[agent] _save_status failed for {paper_id}: {e}")
 
     def _save_result(self, db, paper_id: str, result: dict) -> None:
         """Persist validated output for idempotency replay."""
@@ -178,8 +180,8 @@ class BuildAgent(ABC):
                 (paper_id, self.name, StageStatus.COMPLETE.value, _json.dumps(result)),
             )
             db.commit()
-        except Exception:
-            pass
+        except sqlite3.Error as e:
+            logger.warning(f"[agent] _save_result failed for {paper_id}: {e}")
 
     def _load_cached(self, db, paper_id: str) -> dict | None:
         """Load cached result from a prior completed run."""
@@ -190,8 +192,8 @@ class BuildAgent(ABC):
             ).fetchone()
             if row and row[0]:
                 return _json.loads(row[0])
-        except Exception:
-            pass
+        except (sqlite3.Error, _json.JSONDecodeError) as e:
+            logger.warning(f"[agent] _load_cached failed for {paper_id}: {e}")
         return None
 
 
