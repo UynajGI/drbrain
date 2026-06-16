@@ -12,11 +12,11 @@ from rich.table import Table
 
 from drbrain.cli._common import (
     _resolve_workspace_papers,
+    open_db,
 )
 from drbrain.extractor.cache import ApiCache
 from drbrain.graph.engine import GraphEngine
 from drbrain.query.tree_retrieval import query_by_structure_hybrid
-from drbrain.storage.database import Database
 from drbrain.storage.paths import tree_json_path
 
 console = Console()
@@ -29,13 +29,12 @@ def seed_cmd(
 ):
     """Detect research seeds from graph patterns."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    graph = GraphEngine()
-    paper_ids = _resolve_workspace_papers(workspace)
-    graph.load_from_db(db, paper_ids=paper_ids)
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
 
-    seeds = graph.detect_research_seeds(db)
-    db.close()
+        seeds = graph.detect_research_seeds(db)
 
     if json_output:
         typer.echo(json.dumps(seeds, indent=2, ensure_ascii=False, default=str))
@@ -53,9 +52,8 @@ def list_cmd(
 ):
     """List all papers in database."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    papers = db.get_all_papers()
-    db.close()
+    with open_db(cfg) as db:
+        papers = db.get_all_papers()
 
     if json_output:
         typer.echo(json.dumps(papers, indent=2, ensure_ascii=False, default=str))
@@ -82,12 +80,11 @@ def stats_cmd(
 ):
     """Database statistics."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    paper_ids_filter = None
-    if workspace:
-        paper_ids_filter = _resolve_workspace_papers(workspace)
-    s = db.get_stats(paper_ids=paper_ids_filter)
-    db.close()
+    with open_db(cfg) as db:
+        paper_ids_filter = None
+        if workspace:
+            paper_ids_filter = _resolve_workspace_papers(workspace)
+        s = db.get_stats(paper_ids=paper_ids_filter)
 
     papers = s["papers"]
     uploaded = s["uploaded"]
@@ -137,23 +134,20 @@ def show_cmd(
 ):
     """Show detailed view of a single paper."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        paper = db.get_paper(local_id)
+        if not paper:
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            raise typer.Exit(1)
 
-    paper = db.get_paper(local_id)
-    if not paper:
-        db.close()
-        typer.echo(f"Paper not found: {local_id}", err=True)
-        raise typer.Exit(1)
-
-    concepts = db.get_concepts_by_paper(local_id)
-    arguments = db.get_arguments_by_paper(local_id)
-    edges_out = db.conn.execute(
-        "SELECT relation, dst_id FROM edges WHERE src_id = ?", (local_id,)
-    ).fetchall()
-    edges_in = db.conn.execute(
-        "SELECT src_id, relation FROM edges WHERE dst_id = ?", (local_id,)
-    ).fetchall()
-    db.close()
+        concepts = db.get_concepts_by_paper(local_id)
+        arguments = db.get_arguments_by_paper(local_id)
+        edges_out = db.conn.execute(
+            "SELECT relation, dst_id FROM edges WHERE src_id = ?", (local_id,)
+        ).fetchall()
+        edges_in = db.conn.execute(
+            "SELECT src_id, relation FROM edges WHERE dst_id = ?", (local_id,)
+        ).fetchall()
 
     if json_output:
         typer.echo(
@@ -220,12 +214,11 @@ def index_cmd(
 ):
     """Rebuild the BM25 search index."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    from drbrain.query.bm25 import build_bm25_index
+    with open_db(cfg) as db:
+        from drbrain.query.bm25 import build_bm25_index
 
-    typer.echo("Building BM25 index...")
-    index, doc_ids = build_bm25_index(db, force=rebuild)
-    db.close()
+        typer.echo("Building BM25 index...")
+        index, doc_ids = build_bm25_index(db, force=rebuild)
 
     if json_output:
         typer.echo(json.dumps({"documents": len(doc_ids), "indexed": True}))
@@ -356,181 +349,177 @@ def query_cmd(
                 typer.echo()
         return
 
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        # Parse and validate graph traversal flags (only when expansion is active)
+        _relations: set[str] | None = None
+        if neighbors > 0:
+            if _relation is not None:
+                _relations = {r.strip() for r in _relation.split(",") if r.strip()}
+                valid_relations = {
+                    "addresses",
+                    "leaves_open",
+                    "points_to",
+                    "proposes",
+                    "extends",
+                    "replaces",
+                    "solves",
+                    "supports",
+                    "challenges",
+                    "limits",
+                    "constrains",
+                    "affiliated_with",
+                }
+                invalid = _relations - valid_relations
+                if invalid:
+                    typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
+                    typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+                    raise typer.Exit(1)
 
-    # Parse and validate graph traversal flags (only when expansion is active)
-    _relations: set[str] | None = None
-    if neighbors > 0:
-        if _relation is not None:
-            _relations = {r.strip() for r in _relation.split(",") if r.strip()}
-            valid_relations = {
-                "addresses",
-                "leaves_open",
-                "points_to",
-                "proposes",
-                "extends",
-                "replaces",
-                "solves",
-                "supports",
-                "challenges",
-                "limits",
-                "constrains",
-                "affiliated_with",
-            }
-            invalid = _relations - valid_relations
-            if invalid:
-                typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
-                typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+            if _direction not in ("forward", "backward", "both"):
+                typer.echo(
+                    f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
+                    err=True,
+                )
                 raise typer.Exit(1)
 
-        if _direction not in ("forward", "backward", "both"):
-            typer.echo(
-                f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
-                err=True,
-            )
-            raise typer.Exit(1)
+        from drbrain.query.bm25 import build_bm25_index
 
-    from drbrain.query.bm25 import build_bm25_index
-
-    bm25 = build_bm25_index(db)
-    results = bm25.search(
-        text,
-        type_filter=type_filter,
-        arg_type_filter=arg_type,
-        limit=limit,
-        min_confidence=min_confidence,
-    )
-
-    # Post-filter by year range
-    if year_start is not None or year_end is not None:
-        y_start = year_start or 0
-        y_end = year_end or 9999
-        results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
-
-    # Post-filter by workspace
-    if workspace:
-        ws_paper_ids = _resolve_workspace_papers(workspace)
-        if ws_paper_ids is not None:
-            results = [r for r in results if r["local_id"] in ws_paper_ids]
-
-    # Hybrid ranking: boost by graph centrality (PageRank)
-    if _hybrid and results:
-        graph = GraphEngine()
-        graph.load_from_db(db)
-        if graph.graph.number_of_nodes() > 0:
-            # Minimal PageRank — avoids scipy dependency
-            g = graph.graph
-            n = g.number_of_nodes()
-            damping = 0.85
-            pr = {node: 1.0 / n for node in g.nodes()}
-            for _ in range(100):
-                new_pr: dict[str, float] = {}
-                for node in g.nodes():
-                    rank = (1 - damping) / n
-                    for pred in g.predecessors(node):
-                        out_deg = g.out_degree(pred)
-                        if out_deg > 0:
-                            rank += damping * pr[pred] / out_deg
-                    new_pr[node] = rank
-                # Check convergence
-                diff = sum(abs(new_pr[node] - pr[node]) for node in g.nodes())
-                pr = new_pr
-                if diff < 1e-6:
-                    break
-            # Compute percentile rank for each node
-            sorted_nodes = sorted(pr.items(), key=lambda x: x[1])
-            n = len(sorted_nodes)
-            percentiles: dict[str, float] = {}
-            for rank, (node, _) in enumerate(sorted_nodes):
-                percentiles[node] = rank / (n - 1) if n > 1 else 0.5
-            # Apply multiplicative boost [1.0, 2.0]
-            for r in results:
-                node_id = r["local_id"]
-                boost = 1.0 + percentiles.get(node_id, 0.0)
-                r["score"] = round(r["score"] * boost, 4)
-                r["_hybrid_boost"] = round(boost, 3)
-            # Re-sort by boosted score
-            results.sort(key=lambda r: r["score"], reverse=True)
-        graph.graph = None
-
-    # Map BM25 concept results to use labels as local_id for graph traversal
-    concept_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
-    for r in results:
-        if r["type"] in concept_types:
-            r["_paper_id"] = r["local_id"]
-            r["local_id"] = r["label"]
-
-    # Expand by graph traversal
-    if neighbors > 0 and results:
-        graph = GraphEngine()
-        graph.load_from_db(db)
-        # Seed from top-scoring BM25 result(s) only, so lower-scored hits
-        # become discoverable via traverse() rather than being pre-seeded
-        max_score = max(r["score"] for r in results)
-        seed_ids = {r["local_id"] for r in results if r["score"] >= max_score}
-
-        traverse_results = graph.traverse(
-            start_nodes=seed_ids,
-            hops=neighbors,
-            relations=_relations,
-            direction=_direction,
+        bm25 = build_bm25_index(db)
+        results = bm25.search(
+            text,
+            type_filter=type_filter,
+            arg_type_filter=arg_type,
+            limit=limit,
+            min_confidence=min_confidence,
         )
 
-        seen_ids = seed_ids.copy()
-        for tr in traverse_results:
-            if tr.target in seen_ids:
-                continue
-            seen_ids.add(tr.target)
+        # Post-filter by year range
+        if year_start is not None or year_end is not None:
+            y_start = year_start or 0
+            y_end = year_end or 9999
+            results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
 
-            # Resolve node type from DB
-            node_type = "Unknown"
-            row = db.conn.execute(
-                "SELECT type FROM concepts WHERE label = ? LIMIT 1", (tr.target,)
-            ).fetchone()
-            if row:
-                node_type = row[0]
-            else:
-                paper = db.get_paper(tr.target)
-                if paper:
-                    node_type = "Paper"
+        # Post-filter by workspace
+        if workspace:
+            ws_paper_ids = _resolve_workspace_papers(workspace)
+            if ws_paper_ids is not None:
+                results = [r for r in results if r["local_id"] in ws_paper_ids]
 
-            if node_type == "Paper":
-                paper = db.get_paper(tr.target)
-                label = paper["title"] if paper else tr.target
-                text = paper.get("abstract", "") if paper else ""
-                year = paper.get("year") if paper else None
-            else:
-                label = tr.target
-                text = ""
-                year = None
+        # Hybrid ranking: boost by graph centrality (PageRank)
+        if _hybrid and results:
+            graph = GraphEngine()
+            graph.load_from_db(db)
+            if graph.graph.number_of_nodes() > 0:
+                # Minimal PageRank — avoids scipy dependency
+                g = graph.graph
+                n = g.number_of_nodes()
+                damping = 0.85
+                pr = {node: 1.0 / n for node in g.nodes()}
+                for _ in range(100):
+                    new_pr: dict[str, float] = {}
+                    for node in g.nodes():
+                        rank = (1 - damping) / n
+                        for pred in g.predecessors(node):
+                            out_deg = g.out_degree(pred)
+                            if out_deg > 0:
+                                rank += damping * pr[pred] / out_deg
+                        new_pr[node] = rank
+                    # Check convergence
+                    diff = sum(abs(new_pr[node] - pr[node]) for node in g.nodes())
+                    pr = new_pr
+                    if diff < 1e-6:
+                        break
+                # Compute percentile rank for each node
+                sorted_nodes = sorted(pr.items(), key=lambda x: x[1])
+                n = len(sorted_nodes)
+                percentiles: dict[str, float] = {}
+                for rank, (node, _) in enumerate(sorted_nodes):
+                    percentiles[node] = rank / (n - 1) if n > 1 else 0.5
+                # Apply multiplicative boost [1.0, 2.0]
+                for r in results:
+                    node_id = r["local_id"]
+                    boost = 1.0 + percentiles.get(node_id, 0.0)
+                    r["score"] = round(r["score"] * boost, 4)
+                    r["_hybrid_boost"] = round(boost, 3)
+                # Re-sort by boosted score
+                results.sort(key=lambda r: r["score"], reverse=True)
+            graph.graph = None
 
-            results.append(
-                {
-                    "local_id": tr.target,
-                    "type": node_type,
-                    "label": label,
-                    "text": text,
-                    "year": year,
-                    "score": 0.0,
-                    "_via_graph": True,
-                    "_source_seed": tr.source,
-                    "_distance": tr.distance,
-                    "_path": [
-                        {
-                            "src": s.src,
-                            "relation": s.relation,
-                            "dst": s.dst,
-                            "hop": s.hop,
-                        }
-                        for s in tr.path
-                    ],
-                }
+        # Map BM25 concept results to use labels as local_id for graph traversal
+        concept_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
+        for r in results:
+            if r["type"] in concept_types:
+                r["_paper_id"] = r["local_id"]
+                r["local_id"] = r["label"]
+
+        # Expand by graph traversal
+        if neighbors > 0 and results:
+            graph = GraphEngine()
+            graph.load_from_db(db)
+            # Seed from top-scoring BM25 result(s) only, so lower-scored hits
+            # become discoverable via traverse() rather than being pre-seeded
+            max_score = max(r["score"] for r in results)
+            seed_ids = {r["local_id"] for r in results if r["score"] >= max_score}
+
+            traverse_results = graph.traverse(
+                start_nodes=seed_ids,
+                hops=neighbors,
+                relations=_relations,
+                direction=_direction,
             )
 
-        graph.graph = None  # Free memory
-        db.close()
-    else:
-        db.close()
+            seen_ids = seed_ids.copy()
+            for tr in traverse_results:
+                if tr.target in seen_ids:
+                    continue
+                seen_ids.add(tr.target)
+
+                # Resolve node type from DB
+                node_type = "Unknown"
+                row = db.conn.execute(
+                    "SELECT type FROM concepts WHERE label = ? LIMIT 1", (tr.target,)
+                ).fetchone()
+                if row:
+                    node_type = row[0]
+                else:
+                    paper = db.get_paper(tr.target)
+                    if paper:
+                        node_type = "Paper"
+
+                if node_type == "Paper":
+                    paper = db.get_paper(tr.target)
+                    label = paper["title"] if paper else tr.target
+                    text = paper.get("abstract", "") if paper else ""
+                    year = paper.get("year") if paper else None
+                else:
+                    label = tr.target
+                    text = ""
+                    year = None
+
+                results.append(
+                    {
+                        "local_id": tr.target,
+                        "type": node_type,
+                        "label": label,
+                        "text": text,
+                        "year": year,
+                        "score": 0.0,
+                        "_via_graph": True,
+                        "_source_seed": tr.source,
+                        "_distance": tr.distance,
+                        "_path": [
+                            {
+                                "src": s.src,
+                                "relation": s.relation,
+                                "dst": s.dst,
+                                "hop": s.hop,
+                            }
+                            for s in tr.path
+                        ],
+                    }
+                )
+
+            graph.graph = None  # Free memory
 
     # JSON output modes
     if json_output:
