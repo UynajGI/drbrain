@@ -26,6 +26,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,4 +35,4 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv pip install -e .
-      - run: uv run pytest -m "not integration" --cov=drbrain --cov-report=term-missing --cov-fail-under=65
+      - run: uv run pytest -m "not integration" --timeout=30 --cov=drbrain --cov-report=term-missing --cov-fail-under=65
