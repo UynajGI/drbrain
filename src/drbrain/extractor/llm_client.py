@@ -1,12 +1,33 @@
-"""LLM client with YAML-configured fallback chain + token tracking."""
+"""LLM client with YAML-configured fallback chain + token tracking.
+
+Response caching: when a caller passes an ``ApiCache`` instance, the first
+model's response is cached keyed by ``sha256(model + system_prompt + prompt)``
+and subsequent identical calls short-circuit without hitting the network.
+Caching is opt-in via keyword-only ``_cache``; existing callers are unaffected.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
+from typing import TYPE_CHECKING
 
 import litellm
 from loguru import logger
+
+if TYPE_CHECKING:
+    from drbrain.extractor.cache import ApiCache
+
+
+def _cache_key(model_name: str, system_prompt: str, prompt: str, max_tokens: int) -> str:
+    """Stable hash key for an LLM call (model + prompts + max_tokens).
+
+    Returns the first 16 hex chars of sha256 — collision probability is
+    negligible for practical prompt spaces, and keeps filenames short.
+    """
+    raw = f"{model_name}\x00{system_prompt}\x00{prompt}\x00{max_tokens}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class LLMClient:
@@ -68,9 +89,23 @@ def call_with_fallback(
     models: list[dict],
     system_prompt: str = "",
     max_tokens: int = 16384,
+    *,
+    _cache: ApiCache | None = None,
 ) -> dict | None:
-    """Try models in order, return first successful parsed JSON response."""
+    """Try models in order, return first successful parsed JSON response.
+
+    When ``_cache`` is provided, the first model's successful response is
+    cached and reused on identical subsequent calls.
+    """
     logger.info("[llm] call starting — %d models in chain", len(models))
+    if _cache is not None and models:
+        key = _cache_key(
+            f"{models[0]['provider']}/{models[0]['model']}", system_prompt, prompt, max_tokens
+        )
+        cached = _cache.get(key)
+        if cached is not None:
+            logger.info(f"[llm] cache hit (key={key})")
+            return cached
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -81,7 +116,10 @@ def call_with_fallback(
             content = response.choices[0].message.content
             elapsed = int((time.monotonic() - start) * 1000)
             logger.info(f"[llm] success: {name} in {elapsed}ms")
-            return json.loads(content)
+            parsed = json.loads(content)
+            if _cache is not None:
+                _cache.set(key, parsed)
+            return parsed
         except Exception as e:
             logger.warning(f"[llm] {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
@@ -94,8 +132,22 @@ async def acall_with_fallback(
     models: list[dict],
     system_prompt: str = "",
     max_tokens: int = 16384,
+    *,
+    _cache: ApiCache | None = None,
 ) -> dict | list | None:
-    """Async version of call_with_fallback."""
+    """Async version of call_with_fallback.
+
+    When ``_cache`` is provided, the first model's successful response is
+    cached and reused on identical subsequent calls.
+    """
+    if _cache is not None and models:
+        key = _cache_key(
+            f"{models[0]['provider']}/{models[0]['model']}", system_prompt, prompt, max_tokens
+        )
+        cached = _cache.get(key)
+        if cached is not None:
+            logger.info(f"[llm] async cache hit (key={key})")
+            return cached
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -106,7 +158,10 @@ async def acall_with_fallback(
             content = response.choices[0].message.content
             elapsed = int((time.monotonic() - start) * 1000)
             logger.info(f"[llm] async success: {name} in {elapsed}ms")
-            return json.loads(content)
+            parsed = json.loads(content)
+            if _cache is not None:
+                _cache.set(key, parsed)
+            return parsed
         except Exception as e:
             logger.warning(f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
@@ -119,8 +174,22 @@ async def acall_text_with_fallback(
     models: list[dict],
     system_prompt: str = "",
     max_tokens: int = 1024,
+    *,
+    _cache: ApiCache | None = None,
 ) -> str | None:
-    """Async text call with fallback. Returns raw text (not JSON)."""
+    """Async text call with fallback. Returns raw text (not JSON).
+
+    When ``_cache`` is provided, the response is cached (wrapped in a dict
+    to satisfy ApiCache's JSON-serializable contract) and reused on hit.
+    """
+    if _cache is not None and models:
+        key = _cache_key(
+            f"{models[0]['provider']}/{models[0]['model']}", system_prompt, prompt, max_tokens
+        )
+        cached = _cache.get(key)
+        if cached is not None and isinstance(cached, dict) and "__text__" in cached:
+            logger.info(f"[llm] text cache hit (key={key})")
+            return cached["__text__"]
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -145,7 +214,10 @@ async def acall_text_with_fallback(
             logger.debug(
                 f"LLM text call success: {name} in {int((time.monotonic() - start) * 1000)}ms"
             )
-            return response.choices[0].message.content.strip()
+            text = response.choices[0].message.content.strip()
+            if _cache is not None:
+                _cache.set(key, {"__text__": text})
+            return text
         except Exception as e:
             logger.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
             continue
