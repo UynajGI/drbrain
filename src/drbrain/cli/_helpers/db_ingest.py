@@ -264,11 +264,25 @@ def _ingest_single_paper(
                 lambda: _enrich_doi_from_openalex(parsed.title, parsed.arxiv, openalex_token),
             ),
         ]
-        for name, fn in sources:
-            if doi_info and doi_info.get("doi"):
-                break
-            echo(f"  Trying {name}...")
-            doi_info = fn()
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from loguru import logger as _doi_enrich_log
+
+        valid_sources = [(name, fn) for name, fn in sources if fn]
+        if valid_sources:
+            with ThreadPoolExecutor(max_workers=min(4, len(valid_sources))) as executor:
+                futures = {executor.submit(fn): name for name, fn in valid_sources}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result and result.get("doi"):
+                            doi_info = result
+                            echo(f"  Found DOI via {futures[future]}")
+                            break
+                    except Exception as e:
+                        _doi_enrich_log.debug(
+                            f"DOI enrichment source {futures[future]} failed: {e}"
+                        )
 
         if doi_info and doi_info.get("doi"):
             # Year consistency check: reject if parsed year is >5 years from DOI source
