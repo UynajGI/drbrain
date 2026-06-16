@@ -130,9 +130,8 @@ def _extend_chain_subgraph(
 
 def apply_path_rules(graph) -> list[dict]:
     """Apply all path rules to the graph, return inferred edges."""
-    from drbrain.graph.engine import GraphEngine
-
-    if not isinstance(graph, GraphEngine):
+    # Duck-typing check: we need a `graph` attribute (NetworkX MultiDiGraph)
+    if not hasattr(graph, "graph"):
         return []
 
     rules = get_builtin_rules()
