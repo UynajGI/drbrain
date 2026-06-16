@@ -169,7 +169,7 @@ def test_merge_concepts_categories():
 # -- Section extraction --
 
 
-@mock.patch("drbrain.extractor.concept.acall_with_fallback")
+@mock.patch("drbrain.extractor.concept.merge.acall_with_fallback")
 def test_extract_section_concepts_calls_llm(mock_acall):
     """extract_section_concepts sends section title + content to LLM."""
     mock_acall.return_value = {
@@ -204,7 +204,7 @@ def test_extract_section_concepts_calls_llm(mock_acall):
     assert "Document Structure" in user_prompt
 
 
-@mock.patch("drbrain.extractor.concept.acall_with_fallback")
+@mock.patch("drbrain.extractor.concept.merge.acall_with_fallback")
 def test_extract_section_concepts_returns_none_on_failure(mock_acall):
     """extract_section_concepts returns None when LLM fails."""
     mock_acall.return_value = None
@@ -218,8 +218,8 @@ def test_extract_section_concepts_returns_none_on_failure(mock_acall):
 # -- Tree-based extraction --
 
 
-@mock.patch("drbrain.extractor.concept.get_node_content")
-@mock.patch("drbrain.extractor.concept.acall_with_fallback")
+@mock.patch("drbrain.extractor.concept.merge.get_node_content")
+@mock.patch("drbrain.extractor.concept.merge.acall_with_fallback")
 def test_extract_concepts_from_tree_basic(mock_acall, mock_get_content, tmp_path):
     """extract_concepts_from_tree extracts from each leaf node."""
     md = tmp_path / "test.md"
@@ -269,7 +269,7 @@ def test_extract_concepts_from_tree_basic(mock_acall, mock_get_content, tmp_path
     assert mock_acall.call_count == 2
 
 
-@mock.patch("drbrain.extractor.concept.get_node_content")
+@mock.patch("drbrain.extractor.concept.merge.get_node_content")
 def test_extract_concepts_from_tree_no_content(mock_get_content, tmp_path):
     """Returns None when no leaf node has content."""
     md = tmp_path / "test.md"
@@ -285,8 +285,8 @@ def test_extract_concepts_from_tree_no_content(mock_get_content, tmp_path):
     assert result is None
 
 
-@mock.patch("drbrain.extractor.concept.get_node_content")
-@mock.patch("drbrain.extractor.concept.acall_with_fallback")
+@mock.patch("drbrain.extractor.concept.merge.get_node_content")
+@mock.patch("drbrain.extractor.concept.merge.acall_with_fallback")
 def test_extract_concepts_from_tree_merges_results(mock_acall, mock_get_content, tmp_path):
     """Results from multiple sections are merged with dedup."""
     md = tmp_path / "test.md"
@@ -353,7 +353,7 @@ def test_extract_concepts_from_tree_no_models(tmp_path):
 # -- Concurrency control --
 
 
-@mock.patch("drbrain.extractor.concept.extract_section_concepts")
+@mock.patch("drbrain.extractor.concept.merge.extract_section_concepts")
 def test_extract_concurrent_limits(mock_extract, tmp_path):
     """Concurrency is capped by max_concurrent parameter."""
     import asyncio
@@ -406,7 +406,7 @@ def test_extract_concurrent_limits(mock_extract, tmp_path):
     assert concurrent_count["max_seen"] <= 2
 
 
-@mock.patch("drbrain.extractor.concept.extract_section_concepts")
+@mock.patch("drbrain.extractor.concept.merge.extract_section_concepts")
 def test_extract_concurrent_merges(mock_extract, tmp_path):
     """Concurrent extraction results merge correctly."""
     import asyncio

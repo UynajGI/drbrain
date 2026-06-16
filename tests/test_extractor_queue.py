@@ -102,7 +102,7 @@ def test_extract_concepts_returns_none_on_llm_failure():
     from drbrain.extractor.concept import extract_concepts
 
     async def run():
-        with mock.patch("drbrain.extractor.concept.acall_with_fallback", return_value=None):
+        with mock.patch("drbrain.extractor.concept.types.acall_with_fallback", return_value=None):
             result = await extract_concepts("some text", [{"provider": "test"}])
             assert result is None
 
@@ -124,7 +124,9 @@ def test_extract_concepts_returns_data_on_success():
             "relations": [],
             "arguments": [],
         }
-        with mock.patch("drbrain.extractor.concept.acall_with_fallback", return_value=mock_data):
+        with mock.patch(
+            "drbrain.extractor.concept.types.acall_with_fallback", return_value=mock_data
+        ):
             result = await extract_concepts("some text", [{"provider": "test"}])
             assert result is not None
             assert len(result.problems) == 1
