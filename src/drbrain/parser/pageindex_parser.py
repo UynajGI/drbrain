@@ -3,7 +3,7 @@
 Implementation moved to the pageindex package.
 """
 
-from drbrain.parser.pageindex._core import (  # noqa: F401
+from drbrain.parser.pageindex import (  # noqa: F401
     DocumentTree,
     TreeConfig,
     _build_tree_from_nodes,
