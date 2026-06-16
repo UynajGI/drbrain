@@ -475,9 +475,6 @@ def _expand_with_openalex(
     if not oa_work:
         return [], []
 
-    if not oa_work:
-        return [], []
-
     # Backfill DOI from OpenAlex
     if not paper.get("doi") and oa_work.get("doi"):
         db.conn.execute(
@@ -581,7 +578,7 @@ def expand_citations_multi(
             if rids:
                 from concurrent.futures import ThreadPoolExecutor
 
-                with ThreadPoolExecutor(max_workers=5) as pool:
+                with ThreadPoolExecutor(max_workers=3) as pool:
                     results = list(pool.map(_fetch_one_work, rids))
                 for r in results:
                     if r is None:

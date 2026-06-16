@@ -236,8 +236,8 @@ class TestCallWithMessagesCache:
 
         with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
             mock_litellm.completion.side_effect = _fake_completion
-            r1 = call_with_messages(msgs, MODELS, _cache=cache)
-            r2 = call_with_messages(msgs, MODELS, _cache=cache)
+            r1 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
+            r2 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
 
         assert r1 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
         assert r2 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
@@ -297,8 +297,8 @@ class TestAcallWithMessagesCache:
 
         with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
             mock_litellm.acompletion.side_effect = _fake_acompletion
-            r1 = await acall_with_messages(msgs, MODELS, _cache=cache)
-            r2 = await acall_with_messages(msgs, MODELS, _cache=cache)
+            r1 = await acall_with_messages(msgs, MODELS, _cache=cache, temperature=0)
+            r2 = await acall_with_messages(msgs, MODELS, _cache=cache, temperature=0)
 
         assert r1["text"] == "async hi"
         assert r2["text"] == "async hi"

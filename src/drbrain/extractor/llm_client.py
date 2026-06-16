@@ -283,9 +283,9 @@ def call_with_messages(
     """
     logger.info("[llm] call_with_messages — %d models, %d messages", len(models), len(messages))
 
-    # Cache lookup
+    # Cache lookup — only for deterministic responses (temperature == 0)
     key: str | None = None
-    if _cache is not None and models:
+    if _cache is not None and models and temperature == 0:
         key = _messages_cache_key(models, messages, max_tokens, temperature)
         cached = _cache.get(key)
         if cached is not None:
@@ -354,7 +354,7 @@ async def acall_with_messages(
 
     # Cache lookup
     key: str | None = None
-    if _cache is not None and models:
+    if _cache is not None and models and temperature == 0:
         key = _messages_cache_key(models, messages, max_tokens, temperature)
         cached = _cache.get(key)
         if cached is not None:
