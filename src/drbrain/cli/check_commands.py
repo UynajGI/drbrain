@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 
 import typer
+from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
@@ -228,7 +229,8 @@ def check_cmd(ctx: typer.Context):
             else:
                 p.mkdir(parents=True, exist_ok=True)
                 table5.add_row(f"  {dir_path}", "[green]Created[/green]")
-    except Exception:
+    except (KeyError, TypeError, OSError) as e:
+        logger.debug("Directory config error: {}", e)
         for d in ["data/spool/inbox", "data/spool/pending", "data/papers"]:
             p = Path(d)
             if p.exists():
@@ -251,7 +253,8 @@ def check_cmd(ctx: typer.Context):
                 "[yellow]Not yet created[/yellow]",
                 "(run `drbrain ingest` to initialize)",
             )
-    except Exception:
+    except (KeyError, TypeError, OSError) as e:
+        logger.debug("Database path config error: {}", e)
         table6.add_row("  (config unavailable)", "[yellow]Unknown[/yellow]")
     console.print(table6)
 
@@ -265,7 +268,8 @@ def check_cmd(ctx: typer.Context):
         table_lib.add_row("  Papers", f"[green]{paper_count}[/green]")
         table_lib.add_row("  Concepts", f"[green]{concept_count}[/green]")
         db.close()
-    except Exception:
+    except Exception as e:
+        logger.debug("Database query error: {}", e)
         table_lib.add_row("  (db unavailable)", "[yellow]Unknown[/yellow]")
     console.print(table_lib)
 
@@ -313,7 +317,8 @@ def check_cmd(ctx: typer.Context):
                 )
                 _urllib.request.urlopen(req, timeout=5)
                 table_api.add_row("  MinerU API", "[green]Reachable[/green]")
-            except Exception:
+            except Exception as e:
+                logger.debug("MinerU API unreachable: {}", e)
                 table_api.add_row(
                     "  MinerU API", "[yellow]Unreachable[/yellow]", "(check token/network)"
                 )
@@ -322,7 +327,8 @@ def check_cmd(ctx: typer.Context):
             table_api.add_row(
                 "  MinerU API", "[yellow]Not configured[/yellow]", "(flash mode will be used)"
             )
-    except Exception:
+    except (KeyError, TypeError) as e:
+        logger.debug("MinerU API config error: {}", e)
         table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
 
     # -- MinerU CLI --
@@ -338,7 +344,8 @@ def check_cmd(ctx: typer.Context):
             table_api.add_row(
                 "  MinerU CLI", "[yellow]Not found[/yellow]", "(install: npm i -g mineru-open-api)"
             )
-    except Exception:
+    except (OSError, AttributeError) as e:
+        logger.debug("MinerU CLI check error: {}", e)
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
 
     # Only warn about PyMuPDF fallback if no MinerU path works
@@ -355,7 +362,8 @@ def check_cmd(ctx: typer.Context):
                 r = _dxReader(token=dx_token)
                 r.brief("1706.03762")
                 table_api.add_row("  DeepXiv", "[green]Reachable[/green]")
-            except Exception:
+            except Exception as e:
+                logger.debug("DeepXiv unreachable: {}", e)
                 table_api.add_row(
                     "  DeepXiv", "[yellow]Unreachable[/yellow]", "(check token at data.rag.ac.cn)"
                 )
@@ -365,7 +373,8 @@ def check_cmd(ctx: typer.Context):
                 "[yellow]Not configured[/yellow]",
                 "(register at https://data.rag.ac.cn/register)",
             )
-    except Exception:
+    except (KeyError, TypeError) as e:
+        logger.debug("DeepXiv config error: {}", e)
         table_api.add_row("  DeepXiv", "[yellow]Unknown[/yellow]")
 
     # -- LLM API connectivity --
@@ -395,9 +404,11 @@ def check_cmd(ctx: typer.Context):
                 table_api.add_row(label, "[green]Reachable[/green]")
             except Exception as e:
                 err_msg = str(e)[:60]
+                logger.debug("LLM {} unreachable: {}", label, err_msg)
                 table_api.add_row(label, "[yellow]Unreachable[/yellow]", f"({err_msg})")
                 warnings.append(f"LLM [{i}] {m.get('model', '?')} unreachable")
-    except Exception:
+    except (KeyError, TypeError) as e:
+        logger.debug("LLM config error: {}", e)
         table_api.add_row("  LLM", "[yellow]Not configured[/yellow]", "(run `drbrain setup`)")
 
     console.print(table_api)
