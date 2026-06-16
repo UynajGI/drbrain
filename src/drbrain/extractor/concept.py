@@ -149,49 +149,6 @@ def validate_extraction(concepts: ExtractedConcepts) -> list[str]:
     return errors
 
 
-def _link_cross_section_arguments(concepts: ExtractedConcepts) -> ExtractedConcepts:
-    """Log cross-section argument patterns for debugging.
-
-    Detects arguments referencing the same target from different sections
-    and logs the pattern. No graph edges are created — section provenance
-    is already captured in each argument's section field.
-    """
-    from collections import defaultdict
-
-    by_target: dict[str, list[ExtractedArgument]] = defaultdict(list)
-    for arg in concepts.arguments:
-        target = arg.target.strip()
-        if target:
-            by_target[target].append(arg)
-
-    for target, args in by_target.items():
-        sections_seen: dict[str, str] = {}
-        for arg in args:
-            section = arg.section.strip()
-            claim_type = arg.claim_type.strip().lower()
-            if section and section not in sections_seen:
-                sections_seen[section] = claim_type
-
-        if len(sections_seen) < 2:
-            continue
-
-        claim_types = set(sections_seen.values())
-        has_opposition = ("limitation" in claim_types and "advantage" in claim_types) or (
-            "challenges" in claim_types and "supports" in claim_types
-        )
-        rel_type = "cross_section_challenge" if has_opposition else "cross_section_support"
-
-        log.debug(
-            "Cross-section %s: target=%r from %d sections (%s)",
-            rel_type,
-            target,
-            len(sections_seen),
-            ", ".join(sections_seen.keys()),
-        )
-
-    return concepts
-
-
 def _merge_concepts(
     results: list[ExtractedConcepts],
     sections: list[str] | None = None,
@@ -341,7 +298,7 @@ async def extract_concepts_from_tree(
     valid = [r for r, _ in valid_with_sections]
     sections = [s for _, s in valid_with_sections]
     merged = _merge_concepts(valid, sections=sections)
-    return _link_cross_section_arguments(merged)
+    return merged
 
 
 def _section_type_hints(title: str) -> dict[str, float]:
