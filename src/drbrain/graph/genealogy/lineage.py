@@ -263,6 +263,29 @@ def trace_descendants(
     follow_relations = {"extends", "refines", "applies", "challenges", "cites"}
     visited_papers: set[str] = {local_id}
 
+    # ── Batch preloads to eliminate N+1 queries ──
+    # 1a. local_id -> set of concept labels (for parent paper lookups)
+    local_id_to_labels: dict[str, set[str]] = {}
+    # 1b. label -> set of local_ids (for child paper lookups)
+    label_to_local_ids: dict[str, set[str]] = {}
+    for label, lid in db.conn.execute("SELECT label, local_id FROM concepts").fetchall():
+        local_id_to_labels.setdefault(lid, set()).add(label)
+        label_to_local_ids.setdefault(label, set()).add(lid)
+
+    # 2. local_id -> paper dict
+    all_papers = db.get_all_papers()
+    paper_map: dict[str, dict] = {p["local_id"]: p for p in all_papers}
+
+    # 3. label -> (section, node_id, local_id) provenance
+    #    ORDER BY confidence DESC so first match wins (mirrors _get_concept_provenance).
+    provenance_map: dict[str, tuple[str, str, str]] = {}
+    for label, section, node_id, lid in db.conn.execute(
+        "SELECT label, section, node_id, local_id FROM concepts ORDER BY confidence DESC"
+    ).fetchall():
+        key = label.lower()
+        if key not in provenance_map and section:
+            provenance_map[key] = (section, node_id or "", lid or "")
+
     # BFS: (parent_node, depth) — depth 0 = root paper
     queue = deque([(root, 0)])
 
@@ -271,11 +294,9 @@ def trace_descendants(
         if depth >= generations:
             continue
 
-        concepts = db.conn.execute(
-            "SELECT label FROM concepts WHERE local_id = ?", (parent["local_id"],)
-        ).fetchall()
+        parent_concepts = local_id_to_labels.get(parent["local_id"], set())
 
-        for (concept_label,) in concepts:
+        for concept_label in parent_concepts:
             if concept_label not in graph.graph:
                 continue
 
@@ -285,21 +306,19 @@ def trace_descendants(
                     if rel not in follow_relations:
                         continue
 
-                    child_rows = db.conn.execute(
-                        "SELECT DISTINCT local_id FROM concepts WHERE label = ?",
-                        (dst_label,),
-                    ).fetchall()
+                    child_ids = label_to_local_ids.get(dst_label, set())
 
-                    for (child_local_id,) in child_rows:
+                    for child_local_id in child_ids:
                         if child_local_id in visited_papers:
                             continue
                         visited_papers.add(child_local_id)
 
-                        child_paper = db.get_paper(child_local_id)
+                        child_paper = paper_map.get(child_local_id)
                         if not child_paper:
                             continue
 
-                        section, node_id, paper_id = _get_concept_provenance(db, dst_label)
+                        prov = provenance_map.get(dst_label.lower(), ("", "", ""))
+                        section, node_id, paper_id = prov
                         provenance = _format_provenance(
                             section, node_id, paper_id or child_local_id
                         )
