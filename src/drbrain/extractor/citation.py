@@ -90,8 +90,12 @@ def search_s2(
         return []
 
 
-def _s2_retry(fn, url: str, headers: dict, max_retries: int) -> dict | None:
-    """Retry on 429 with exponential backoff. Non-429 errors fail immediately."""
+def _s2_retry(url: str, headers: dict, max_retries: int) -> dict | None:
+    """Fetch a URL with retry on 429 (rate limit) with exponential backoff.
+
+    Non-429 errors fail immediately.  Returns parsed JSON on success,
+    ``None`` on failure.
+    """
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, headers=headers, timeout=30)
@@ -126,7 +130,7 @@ def fetch_s2_with_retry(
         headers["x-api-key"] = api_key
 
     url = f"{S2_BASE}/{paper_id}?fields={S2_FIELDS}"
-    return _s2_retry(fetch_s2_with_retry, url, headers, max_retries)
+    return _s2_retry(url, headers, max_retries)
 
 
 def search_s2_with_retry(
@@ -141,7 +145,7 @@ def search_s2_with_retry(
         headers["x-api-key"] = api_key
 
     url = f"{S2_BASE}/search?query={requests.utils.quote(query)}&limit={limit}&fields={S2_FIELDS}"
-    data = _s2_retry(search_s2_with_retry, url, headers, max_retries)
+    data = _s2_retry(url, headers, max_retries)
     if data is None:
         return []
     return data.get("data", [])
