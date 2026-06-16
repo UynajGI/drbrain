@@ -419,12 +419,22 @@ def detect_paradigm_shifts(
             ).fetchall()
         ]
 
-    for clabel in concept_labels:
-        year_counts = db.conn.execute(
-            "SELECT year, COUNT(*) FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
-            (clabel,),
+    # Batch-load year counts for all candidate labels (avoids N+1 per-label queries)
+    explosion_year_map: dict[str, list[tuple[int, int]]] = {}
+    if concept_labels:
+        ph = ",".join("?" for _ in concept_labels)
+        explosion_rows = db.conn.execute(
+            f"SELECT c.label, p.year, COUNT(*) FROM concepts c "
+            f"JOIN papers p ON c.local_id = p.local_id "
+            f"WHERE c.label IN ({ph}) AND p.year IS NOT NULL "
+            f"GROUP BY c.label, p.year",
+            tuple(concept_labels),
         ).fetchall()
+        for label, year, cnt in explosion_rows:
+            explosion_year_map.setdefault(label, []).append((year, cnt))
+
+    for clabel in concept_labels:
+        year_counts = explosion_year_map.get(clabel, [])
 
         total = sum(c for _, c in year_counts)
         if total >= explosion_threshold and len(year_counts) <= 2:
