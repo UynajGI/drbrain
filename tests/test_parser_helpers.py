@@ -232,7 +232,7 @@ def test_fallback_pymupdf_empty_markdown_uses_text():
 def test_mineru_cli_not_found_uses_fallback():
     """When mineru CLI not found, returns None from _try_mineru_open_api."""
     parser = MinerUParser()
-    with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value=None):
+    with unittest.mock.patch("drbrain.parser.mineru.parser._find_cli", return_value=None):
         result = parser._try_mineru_open_api(Path("/tmp/test.pdf"))
         assert result == (None, None)
 
@@ -367,18 +367,18 @@ def test_parser_full_extract_flow_with_fallback():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run", side_effect=FileNotFoundError("not found")),
             unittest.mock.patch.object(
                 MinerUParser, "_fallback_pymupdf", side_effect=mock_fallback
             ),
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)
+                "drbrain.parser.mineru.metadata._fetch_arxiv_metadata", return_value=(None, None)
             ),
             unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._resolve_metadata",
+                "drbrain.parser.mineru.parser._resolve_metadata",
                 return_value={
                     "title": "Test Title",
                     "year": 2024,
@@ -426,7 +426,7 @@ def test_try_mineru_open_api_all_retries_exhausted():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch(
                 "subprocess.run", return_value=unittest.mock.Mock(returncode=1, stderr="fail")
@@ -448,7 +448,7 @@ def test_try_mineru_open_api_all_timeouts_exhausted():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch(
                 "subprocess.run",
@@ -481,7 +481,7 @@ def test_extract_single_with_arxiv_enrichment():
                 parser, "_try_mineru_open_api", return_value=(out_dir, None)
             ),
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._fetch_arxiv_metadata",
+                "drbrain.parser.mineru.metadata._fetch_arxiv_metadata",
                 return_value=("Better Title from arXiv", 2024),
             ),
             unittest.mock.patch(
@@ -641,7 +641,7 @@ def test_try_mineru_open_api_token_based_cmd():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run") as mock_run,
         ):
@@ -673,7 +673,7 @@ def test_try_mineru_open_api_no_token_uses_simple_cmd():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run") as mock_run,
         ):
@@ -696,7 +696,7 @@ def test_try_mineru_open_api_retry_on_nonzero_returncode():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run") as mock_run,
         ):
@@ -722,7 +722,7 @@ def test_try_mineru_open_api_retry_on_missing_images():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run") as mock_run,
         ):
@@ -757,7 +757,7 @@ def test_try_mineru_open_api_timeout_retry():
 
         with (
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._find_cli", return_value="/usr/bin/mineru-open-api"
+                "drbrain.parser.mineru.parser._find_cli", return_value="/usr/bin/mineru-open-api"
             ),
             unittest.mock.patch("subprocess.run") as mock_run,
         ):
@@ -776,7 +776,7 @@ def test_try_mineru_open_api_timeout_retry():
 def test_try_mineru_open_api_cli_not_found_returns_none():
     """Returns (None, None) when mineru CLI is not on PATH."""
     parser = MinerUParser()
-    with unittest.mock.patch("drbrain.parser.mineru_parser._find_cli", return_value=None):
+    with unittest.mock.patch("drbrain.parser.mineru.parser._find_cli", return_value=None):
         result = parser._try_mineru_open_api(Path("/fake/test.pdf"))
         assert result == (None, None)
 
@@ -820,13 +820,13 @@ def test_extract_single_with_mineru_success():
                 parser, "_try_mineru_open_api", return_value=(out_dir, None)
             ),
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=(None, None)
+                "drbrain.parser.mineru.metadata._fetch_arxiv_metadata", return_value=(None, None)
             ),
             unittest.mock.patch(
                 "drbrain.extractor.openalex.search_authors_by_work", return_value=[]
             ),
             unittest.mock.patch(
-                "drbrain.parser.mineru_parser._resolve_metadata",
+                "drbrain.parser.mineru.parser._resolve_metadata",
                 return_value={
                     "title": "Paper Title",
                     "year": 2024,

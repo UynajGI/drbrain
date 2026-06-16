@@ -50,7 +50,7 @@ def test_parser_retries_mineru_on_failure():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
     ):
@@ -75,7 +75,7 @@ def test_parser_skips_to_fallback_after_max_retries():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
         unittest.mock.patch.object(MinerUParser, "_fallback_pymupdf", side_effect=mock_fallback),
@@ -92,11 +92,11 @@ def test_parser_succeeds_on_first_try():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._resolve_metadata",
+            "drbrain.parser.mineru.parser._resolve_metadata",
             return_value={
                 "title": "Title",
                 "year": 2024,
@@ -122,7 +122,7 @@ def test_mineru_open_api_uses_extract_with_token():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
     ):
@@ -143,7 +143,7 @@ def test_mineru_open_api_uses_extract_without_token():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
     ):
@@ -161,7 +161,7 @@ def test_parser_strips_thinking_header():
     with (
         unittest.mock.patch("subprocess.run", side_effect=mock_run),
         unittest.mock.patch(
-            "drbrain.parser.mineru_parser._find_cli", return_value="mineru-open-api"
+            "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
     ):
