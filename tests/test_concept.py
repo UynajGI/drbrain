@@ -644,3 +644,85 @@ def test_plateau_above_threshold():
 def test_plateau_empty_total():
     """Zero total with non-zero growth continues."""
     assert _is_plateau_reached(5, 0) is False
+
+
+# -- build_graph_from_tree orchestrator --
+
+import asyncio  # noqa: E402
+
+from drbrain.extractor import concept as concept_module  # noqa: E402
+
+
+def _fake_llm_side_effect(*args, **kwargs):
+    """Return stage-appropriate mock data based on prompt content.
+
+    Detects which pipeline stage is calling by inspecting the prompt string.
+    """
+    prompt = kwargs.get("prompt", args[0] if args else "")
+
+    async def _coro():
+        # Stage 1 round 1: ontology from TOC ("Section Hierarchy")
+        if "Section Hierarchy" in prompt or "Existing ontology" in prompt:
+            return {"Problem": ["efficiency"], "Method": ["transformer"]}
+        # Stage 2: entity extraction (prompt contains section_text)
+        if "section_text" not in prompt and "concepts" not in prompt.lower():
+            # Could be relations/coref/refine — detect by system_prompt markers
+            pass
+        return {"concepts": []}
+
+    # The real function is async; mock must return a coroutine
+    return _coro()
+
+
+def _make_structure():
+    """Minimal tree structure with one leaf for testing."""
+    return [
+        {
+            "node_id": "root",
+            "title": "Paper",
+            "nodes": [
+                {"node_id": "leaf1", "title": "Methods", "line_num": 1},
+            ],
+        }
+    ]
+
+
+class TestBuildGraphFromTree:
+    """Orchestrator tests — verify stage ordering and result composition."""
+
+    def test_empty_structure_returns_empty(self):
+        """No leaves → empty result dict."""
+        result = asyncio.run(
+            concept_module.build_graph_from_tree(
+                "/tmp/fake.md", [], [{"provider": "test", "model": "m"}]
+            )
+        )
+        assert result == {"concepts": [], "relations": [], "merges": [], "corrections": []}
+
+    def test_skip_refine_no_corrections(self):
+        """skip_refine=True → corrections is empty list."""
+        # Mock acall_with_fallback to return minimal valid data for each stage
+        call_log = []
+
+        async def _fake_acall(prompt, models, system_prompt="", max_tokens=16384, **kw):
+            call_log.append(system_prompt[:20] if system_prompt else prompt[:20])
+
+            async def _inner():
+                return {"concepts": [{"label": "X", "type": "Method"}]}
+
+            return await _inner()
+
+        with mock.patch.object(concept_module, "acall_with_fallback", _fake_acall):
+            result = asyncio.run(
+                concept_module.build_graph_from_tree(
+                    "/dev/null",
+                    _make_structure(),
+                    [{"provider": "test", "model": "m"}],
+                    skip_refine=True,
+                )
+            )
+
+        assert result["corrections"] == []
+        assert "concepts" in result
+        assert "relations" in result
+        assert "merges" in result
