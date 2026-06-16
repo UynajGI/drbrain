@@ -195,6 +195,26 @@ def test_performance_indexes_exist():
         assert "idx_citation_cache_target" in indexes
 
 
+def test_paper_ids_local_index_exists():
+    """paper_ids.local_id has an index (accelerates JOIN with papers)."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "idx_paper_ids_local" in indexes
+
+
+def test_tree_vectors_composite_index_exists():
+    """tree_vectors has a (tree_layer, paper_id) composite index for layer filtering."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        assert "idx_tree_vectors_layer_paper" in indexes
+
+
 def test_pragma_wal_mode_and_busy_timeout():
     """Phase 2: DB opens with WAL mode and busy_timeout for concurrency."""
     with tempfile.TemporaryDirectory() as td:

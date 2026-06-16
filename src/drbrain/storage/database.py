@@ -124,7 +124,9 @@ CREATE INDEX IF NOT EXISTS idx_edges_source_paper ON edges(source_paper);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON confidence_queue(status);
 CREATE INDEX IF NOT EXISTS idx_concepts_local_id ON concepts(local_id);
 CREATE INDEX IF NOT EXISTS idx_tree_vectors_paper ON tree_vectors(paper_id);
+CREATE INDEX IF NOT EXISTS idx_tree_vectors_layer_paper ON tree_vectors(tree_layer, paper_id);
 CREATE INDEX IF NOT EXISTS idx_tree_summaries_paper ON tree_summaries(paper_id);
+CREATE INDEX IF NOT EXISTS idx_paper_ids_local ON paper_ids(local_id);
 
 CREATE TABLE IF NOT EXISTS research_seeds (
     seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
