@@ -863,3 +863,60 @@ class Database:
             prev_count = count
             result.append(entry)
         return result
+
+    # -- Stats queries --
+
+    def get_stats(self, paper_ids: list[str] | None = None) -> dict:
+        """Return aggregate counts for dashboard/stats display.
+
+        When *paper_ids* is provided, counts for papers, concepts, edges,
+        and arguments are filtered to those paper IDs.  Global tables
+        (aliases, research_seeds, confidence_queue) always return total counts.
+        """
+        stats: dict = {}
+
+        if paper_ids:
+            ph = ",".join("?" for _ in paper_ids)
+            params = tuple(paper_ids)
+
+            stats["papers"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE local_id IN ({ph})", params
+            ).fetchone()[0]
+            stats["uploaded"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE status='uploaded' AND local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            stats["placeholders"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM papers WHERE status='placeholder' AND local_id IN ({ph})",
+                params,
+            ).fetchone()[0]
+            stats["concepts"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM concepts WHERE local_id IN ({ph})", params
+            ).fetchone()[0]
+            stats["edges"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM edges WHERE source_paper IN ({ph})", params
+            ).fetchone()[0]
+            stats["arguments"] = self.conn.execute(
+                f"SELECT COUNT(*) FROM arguments WHERE source_paper IN ({ph})", params
+            ).fetchone()[0]
+        else:
+            stats["papers"] = self.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+            stats["uploaded"] = self.conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE status='uploaded'"
+            ).fetchone()[0]
+            stats["placeholders"] = self.conn.execute(
+                "SELECT COUNT(*) FROM papers WHERE status='placeholder'"
+            ).fetchone()[0]
+            stats["concepts"] = self.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
+            stats["edges"] = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            stats["arguments"] = self.conn.execute("SELECT COUNT(*) FROM arguments").fetchone()[0]
+
+        stats["aliases"] = self.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
+        stats["research_seeds"] = self.conn.execute(
+            "SELECT COUNT(*) FROM research_seeds"
+        ).fetchone()[0]
+        stats["queue_pending"] = self.conn.execute(
+            "SELECT COUNT(*) FROM confidence_queue WHERE status = 'pending'"
+        ).fetchone()[0]
+
+        return stats

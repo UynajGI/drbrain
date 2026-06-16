@@ -83,69 +83,21 @@ def stats_cmd(
     """Database statistics."""
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
-    ph_counts = 0
+    paper_ids_filter = None
     if workspace:
-        paper_ids = _resolve_workspace_papers(workspace)
-        if paper_ids:
-            ph = ",".join("?" for _ in paper_ids)
-            params = tuple(paper_ids)
-            papers = db.conn.execute(
-                f"SELECT COUNT(*) FROM papers WHERE local_id IN ({ph})",
-                params,
-            ).fetchone()[0]
-            uploaded = db.conn.execute(
-                f"SELECT COUNT(*) FROM papers WHERE status='uploaded' AND local_id IN ({ph})",
-                params,
-            ).fetchone()[0]
-            ph_counts = db.conn.execute(
-                f"SELECT COUNT(*) FROM papers WHERE status='placeholder' AND local_id IN ({ph})",
-                params,
-            ).fetchone()[0]
-            concepts = db.conn.execute(
-                f"SELECT COUNT(*) FROM concepts WHERE local_id IN ({ph})",
-                params,
-            ).fetchone()[0]
-            edges = db.conn.execute(
-                f"SELECT COUNT(*) FROM edges WHERE source_paper IN ({ph})",
-                params,
-            ).fetchone()[0]
-            arguments = db.conn.execute(
-                f"SELECT COUNT(*) FROM arguments WHERE source_paper IN ({ph})",
-                params,
-            ).fetchone()[0]
-            aliases = db.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
-            seeds = db.conn.execute("SELECT COUNT(*) FROM research_seeds").fetchone()[0]
-            queue_pending = db.conn.execute(
-                "SELECT COUNT(*) FROM confidence_queue WHERE status = 'pending'"
-            ).fetchone()[0]
-        else:
-            papers = 0
-            uploaded = 0
-            ph_counts = 0
-            concepts = 0
-            edges = 0
-            aliases = 0
-            seeds = 0
-            arguments = 0
-            queue_pending = 0
-        placeholders = ph_counts
-    else:
-        papers = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
-        uploaded = db.conn.execute(
-            "SELECT COUNT(*) FROM papers WHERE status='uploaded'"
-        ).fetchone()[0]
-        placeholders = db.conn.execute(
-            "SELECT COUNT(*) FROM papers WHERE status='placeholder'"
-        ).fetchone()[0]
-    concepts = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
-    edges = db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-    aliases = db.conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0]
-    seeds = db.conn.execute("SELECT COUNT(*) FROM research_seeds").fetchone()[0]
-    arguments = db.conn.execute("SELECT COUNT(*) FROM arguments").fetchone()[0]
-    queue_pending = db.conn.execute(
-        "SELECT COUNT(*) FROM confidence_queue WHERE status = 'pending'"
-    ).fetchone()[0]
+        paper_ids_filter = _resolve_workspace_papers(workspace)
+    s = db.get_stats(paper_ids=paper_ids_filter)
     db.close()
+
+    papers = s["papers"]
+    uploaded = s["uploaded"]
+    placeholders = s["placeholders"]
+    concepts = s["concepts"]
+    edges = s["edges"]
+    aliases = s["aliases"]
+    seeds = s["research_seeds"]
+    arguments = s["arguments"]
+    queue_pending = s["queue_pending"]
 
     data = {
         "papers": papers,

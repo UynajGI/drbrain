@@ -569,9 +569,23 @@ def expand_citations_multi(
     if oa_id:
         try:
             w = _Works()[oa_id]
-            for rid in w.get("referenced_works", [])[:limit]:
+
+            def _fetch_one_work(rid: str):
                 try:
-                    r = _Works()[rid]
+                    return _Works()[rid]
+                except Exception as exc:
+                    _cit_log.debug("referenced_works fetch error for %s: {}", rid, exc)
+                    return None
+
+            rids = w.get("referenced_works", [])[:limit]
+            if rids:
+                from concurrent.futures import ThreadPoolExecutor
+
+                with ThreadPoolExecutor(max_workers=5) as pool:
+                    results = list(pool.map(_fetch_one_work, rids))
+                for r in results:
+                    if r is None:
+                        continue
                     t, k = r.get("title") or "", _key(r.get("title") or "")
                     if k and k not in seen:
                         seen.add(k)
@@ -583,8 +597,6 @@ def expand_citations_multi(
                                 "doi": re.sub(r"^https?://doi\.org/", "", d) if d else None,
                             }
                         )
-                except Exception as e:
-                    _cit_log.warning("Citation expansion error: {}", e)
             # Citing via pyalex filter
             parts = sort.split(":")
             sfield, sdir = parts[0], parts[1] if len(parts) > 1 else "desc"

@@ -414,3 +414,66 @@ def test_get_concept_evolution(tmp_db):
     last = evolution[-1]
     assert last["year"] == current - 1
     assert last["count"] == 3
+
+
+# ── get_stats ─────────────────────────────────────────────────────
+
+
+def test_get_stats_returns_counts(tmp_db):
+    """get_stats returns zero counts for an empty database."""
+    stats = tmp_db.get_stats()
+    assert stats["papers"] == 0
+    assert stats["concepts"] == 0
+    assert stats["edges"] == 0
+    assert stats["arguments"] == 0
+    assert stats["aliases"] == 0
+    assert stats["research_seeds"] == 0
+    assert stats["queue_pending"] == 0
+    assert stats["uploaded"] == 0
+    assert stats["placeholders"] == 0
+
+
+def test_get_stats_with_data(tmp_db):
+    """get_stats returns correct counts after inserting data."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_paper("p2", "B", 2024, "uploaded")
+    tmp_db.insert_paper("p3", "C", 2024, "placeholder")
+    tmp_db.insert_concept("p1", "Method", "X", 0.9, year=2024)
+    tmp_db.insert_concept("p2", "Problem", "Y", 0.8, year=2024)
+    tmp_db.insert_edge("p1", "p2", "cites", "p1")
+    tmp_db.insert_argument("p1", "claim", "supports", "Y", "Method")
+    tmp_db.insert_queue_item("p1", "concept", '{"label": "Z"}', 0.6)
+    tmp_db.commit()
+
+    stats = tmp_db.get_stats()
+    assert stats["papers"] == 3
+    assert stats["uploaded"] == 1
+    assert stats["placeholders"] == 1
+    assert stats["concepts"] == 2
+    assert stats["edges"] == 1
+    assert stats["arguments"] == 1
+    assert stats["queue_pending"] == 1
+
+
+def test_get_stats_with_paper_ids_filter(tmp_db):
+    """get_stats filters counts when paper_ids is provided."""
+    tmp_db.insert_paper("p1", "A", 2024, "uploaded")
+    tmp_db.insert_paper("p2", "B", 2024, "placeholder")
+    tmp_db.insert_paper("p3", "C", 2024, "extracted")
+    tmp_db.insert_concept("p1", "Method", "X", 0.9, year=2024)
+    tmp_db.insert_concept("p2", "Problem", "Y", 0.8, year=2024)
+    tmp_db.insert_edge("p1", "p2", "cites", "p1")
+    tmp_db.insert_argument("p1", "claim", "supports", "Y", "Method")
+    tmp_db.commit()
+
+    stats = tmp_db.get_stats(paper_ids=["p1"])
+    assert stats["papers"] == 1
+    assert stats["uploaded"] == 1
+    assert stats["placeholders"] == 0
+    assert stats["concepts"] == 1
+    assert stats["edges"] == 1
+    assert stats["arguments"] == 1
+
+    stats_all = tmp_db.get_stats(paper_ids=["p1", "p2"])
+    assert stats_all["papers"] == 2
+    assert stats_all["concepts"] == 2
