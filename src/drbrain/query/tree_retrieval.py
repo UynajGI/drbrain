@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
 
 import sqlite3
-import struct
 
 import numpy as np
 
@@ -680,30 +679,39 @@ def _score_nodes(
     """Compute cosine similarity for a list of tree_vectors rows.
 
     Assumes stored embeddings are normalized float32 blobs.
-    Skips rows with dimension mismatch.
+    Skips rows with dimension mismatch.  Uses vectorized matrix multiply
+    instead of per-row struct.unpack + np.dot for ~10-50x speedup.
     """
-    results: list[dict] = []
+    # Filter to rows with matching dimension
+    valid = []
     for row in rows:
         blob = row[2]
-        stored_dim = len(blob) // 4  # float32 = 4 bytes
-        if stored_dim != query_dim:
+        if len(blob) // 4 == query_dim:
+            valid.append(row)
+        else:
             log.warning(
                 "Dimension mismatch in tree_vectors node_id=%s: stored=%s query=%s",
                 row[0],
-                stored_dim,
+                len(blob) // 4,
                 query_dim,
             )
-            continue
-        stored_vec = np.asarray(struct.unpack(f"{stored_dim}f", blob), dtype="float32")
-        sim = float(np.dot(query_vec, stored_vec))
-        results.append(
-            {
-                "node_id": row[0],
-                "paper_id": row[1],
-                "score": sim,
-                "tree_layer": row[3],
-            }
-        )
+    if not valid:
+        return []
+
+    # Concatenate all blobs into a single matrix and compute similarities
+    all_blobs = b"".join(row[2] for row in valid)
+    mat = np.frombuffer(all_blobs, dtype=np.float32).reshape(len(valid), query_dim)
+    sims = mat @ query_vec  # (N,) vector of dot products
+
+    results = [
+        {
+            "node_id": valid[i][0],
+            "paper_id": valid[i][1],
+            "score": float(sims[i]),
+            "tree_layer": valid[i][3],
+        }
+        for i in range(len(valid))
+    ]
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
 

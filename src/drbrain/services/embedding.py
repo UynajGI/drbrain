@@ -747,31 +747,37 @@ def search_tree(
         qv = np.asarray(query_vec, dtype="float32")
         query_dim = len(query_vec)
 
-        # Cosine similarity over all stored vectors
-        results = []
-        for row in conn.execute(
-            "SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors"
-        ):
+        # Vectorized cosine similarity: concatenate all blobs into a matrix
+        rows = list(
+            conn.execute("SELECT node_id, paper_id, embedding, tree_layer FROM tree_vectors")
+        )
+        valid = []
+        for row in rows:
             blob = row[2]
-            stored_dim = len(blob) // 4  # float32 = 4 bytes
-            if stored_dim != query_dim:
+            if len(blob) // 4 == query_dim:
+                valid.append(row)
+            else:
                 logger.warning(
                     "Dimension mismatch in tree_vectors node_id={}: stored={} query={}",
                     row[0],
-                    stored_dim,
+                    len(blob) // 4,
                     query_dim,
                 )
-                continue
-            stored_vec = np.asarray(struct.unpack(f"{stored_dim}f", blob), dtype="float32")
-            sim = float(np.dot(qv, stored_vec))
-            results.append(
+
+        results = []
+        if valid:
+            all_blobs = b"".join(row[2] for row in valid)
+            mat = np.frombuffer(all_blobs, dtype=np.float32).reshape(len(valid), query_dim)
+            sims = mat @ qv  # (N,) vector
+            results = [
                 {
-                    "node_id": row[0],
-                    "paper_id": row[1],
-                    "score": sim,
-                    "tree_layer": row[3],
+                    "node_id": valid[i][0],
+                    "paper_id": valid[i][1],
+                    "score": float(sims[i]),
+                    "tree_layer": valid[i][3],
                 }
-            )
+                for i in range(len(valid))
+            ]
 
         results.sort(key=lambda x: x["score"], reverse=True)
         results = results[:top_k]
