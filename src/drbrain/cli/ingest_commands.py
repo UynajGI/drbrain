@@ -14,11 +14,11 @@ from drbrain.cli._common import (
     _fetch_citations_interested,
     _ingest_single_paper,
     _resolve_workspace_papers,
+    open_db,
 )
 from drbrain.dedup.resolver import DedupEngine
 from drbrain.graph.engine import GraphEngine
 from drbrain.services.fetch import _resolve_identifier, fetch_paper
-from drbrain.storage.database import Database
 
 console = Console()
 
@@ -66,47 +66,48 @@ def ingest_cmd(
             typer.echo("No PDF files found.", err=True)
         raise typer.Exit(1)
 
-    db = Database(cfg["db"]["path"])
-    dedup = DedupEngine(db)
+    with open_db(cfg) as db:
+        dedup = DedupEngine(db)
 
-    logger.info("[ingest] batch start — %d PDF(s)", len(pdf_files))
-    results = []
-    for i, pdf_path in enumerate(pdf_files, 1):
-        if not json_output and len(pdf_files) > 1:
-            typer.echo(f"\n{'=' * 60}")
-            typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
-            typer.echo(f"{'=' * 60}")
+        logger.info("[ingest] batch start — %d PDF(s)", len(pdf_files))
+        results = []
+        for i, pdf_path in enumerate(pdf_files, 1):
+            if not json_output and len(pdf_files) > 1:
+                typer.echo(f"\n{'=' * 60}")
+                typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
+                typer.echo(f"{'=' * 60}")
 
-        result = _ingest_single_paper(
-            pdf_path,
-            cfg,
-            db,
-            dedup,
-            json_mode=json_output,
-        )
-        results.append(result)
+            result = _ingest_single_paper(
+                pdf_path,
+                cfg,
+                db,
+                dedup,
+                json_mode=json_output,
+            )
+            results.append(result)
 
-    if json_output:
-        output = {
-            "ingested": len(results),
-            "successful": sum(1 for r in results if r.get("ok")),
-            "failed": sum(1 for r in results if not r.get("ok")),
-            "papers": [r.get("report", {}) for r in results if r.get("ok")],
-            "errors": [
-                r.get("error", str(pdf_files[i])) for i, r in enumerate(results) if not r.get("ok")
-            ],
-        }
-        typer.echo(json.dumps(output, indent=2, ensure_ascii=False, default=str))
-    else:
-        if len(pdf_files) > 1:
-            typer.echo(f"\n{'=' * 60}")
-            typer.echo(f"Batch complete: {len(results)} papers ingested")
-            success = sum(1 for r in results if r.get("ok"))
-            typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
+        if json_output:
+            output = {
+                "ingested": len(results),
+                "successful": sum(1 for r in results if r.get("ok")),
+                "failed": sum(1 for r in results if not r.get("ok")),
+                "papers": [r.get("report", {}) for r in results if r.get("ok")],
+                "errors": [
+                    r.get("error", str(pdf_files[i]))
+                    for i, r in enumerate(results)
+                    if not r.get("ok")
+                ],
+            }
+            typer.echo(json.dumps(output, indent=2, ensure_ascii=False, default=str))
+        else:
+            if len(pdf_files) > 1:
+                typer.echo(f"\n{'=' * 60}")
+                typer.echo(f"Batch complete: {len(results)} papers ingested")
+                success = sum(1 for r in results if r.get("ok"))
+                typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
 
-    success = sum(1 for r in results if r.get("ok"))
-    logger.info("[ingest] batch done — %d/%d papers ingested", success, len(results))
-    db.close()
+        success = sum(1 for r in results if r.get("ok"))
+        logger.info("[ingest] batch done — %d/%d papers ingested", success, len(results))
 
 
 def fetch_cmd(
@@ -136,10 +137,9 @@ def fetch_cmd(
 
     # Ingest the downloaded paper
     pdf_path = Path(result["pdf_path"])
-    db = Database(cfg["db"]["path"])
-    dedup = DedupEngine(db)
-    ingest_result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=False)
-    db.close()
+    with open_db(cfg) as db:
+        dedup = DedupEngine(db)
+        ingest_result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=False)
 
     if ingest_result.get("ok"):
         typer.echo(f"  Ingested: {ingest_result.get('local_id')}")
@@ -184,35 +184,31 @@ def citations_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        paper = db.get_paper(local_id)
+        if not paper:
+            typer.echo(f"Paper not found: {local_id}", err=True)
+            raise typer.Exit(1)
 
-    paper = db.get_paper(local_id)
-    if not paper:
-        db.close()
-        typer.echo(f"Paper not found: {local_id}", err=True)
-        raise typer.Exit(1)
+        from drbrain.storage.citation_graph import query_citation_graph
 
-    from drbrain.storage.citation_graph import query_citation_graph
+        # Auto-expand citations if none stored yet
+        existing = db.conn.execute(
+            "SELECT COUNT(*) FROM citation_cache WHERE source_paper = ?", (local_id,)
+        ).fetchone()[0]
+        if existing == 0:
+            typer.echo("  Expanding citations (OpenAlex + S2 + CrossRef)...")
+            from drbrain.extractor.citation import expand_citations_multi
 
-    # Auto-expand citations if none stored yet
-    existing = db.conn.execute(
-        "SELECT COUNT(*) FROM citation_cache WHERE source_paper = ?", (local_id,)
-    ).fetchone()[0]
-    if existing == 0:
-        typer.echo("  Expanding citations (OpenAlex + S2 + CrossRef)...")
-        from drbrain.extractor.citation import expand_citations_multi
+            refs_added, citing_added = expand_citations_multi(db, local_id, limit=limit, sort=sort)
+            typer.echo(f"  Found {refs_added} references, {citing_added} citing")
 
-        refs_added, citing_added = expand_citations_multi(db, local_id, limit=limit, sort=sort)
-        typer.echo(f"  Found {refs_added} references, {citing_added} citing")
+        result = query_citation_graph(local_id, db.conn, ctype=ctype)
 
-    result = query_citation_graph(local_id, db.conn, ctype=ctype)
-
-    if workspace:
-        paper_ids = _resolve_workspace_papers(workspace)
-        if paper_ids and result.get("refs"):
-            result["refs"] = [r for r in result["refs"] if r.get("local_id", "") in paper_ids]
-
-    db.close()
+        if workspace:
+            paper_ids = _resolve_workspace_papers(workspace)
+            if paper_ids and result.get("refs"):
+                result["refs"] = [r for r in result["refs"] if r.get("local_id", "") in paper_ids]
 
     if json_output:
         typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
@@ -269,13 +265,11 @@ def check_citations_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        from drbrain.extractor.citation_check import extract_citations, match_citations
 
-    from drbrain.extractor.citation_check import extract_citations, match_citations
-
-    citations = extract_citations(text)
-    citations = match_citations(citations, db)
-    db.close()
+        citations = extract_citations(text)
+        citations = match_citations(citations, db)
 
     if json_output:
         result = [
@@ -406,42 +400,41 @@ def closure_cmd(
             raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    graph = GraphEngine()
-    paper_ids = _resolve_workspace_papers(workspace)
-    graph.load_from_db(db, paper_ids=paper_ids)
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
 
-    inferred = graph.closure(mode=mode)
+        inferred = graph.closure(mode=mode)
 
-    # ── Embedding-driven rule mining ───────────────────────────────────
-    if mine_rules:
-        from drbrain.extractor.rule_miner import mine_path_rules
+        # ── Embedding-driven rule mining ───────────────────────────────────
+        if mine_rules:
+            from drbrain.extractor.rule_miner import mine_path_rules
 
-        mined_rules = mine_path_rules(graph, db, min_confidence=min_confidence, top_k=20)
-        mined_edges = _apply_mined_rules(graph, mined_rules)
-        inferred.extend(mined_edges)
-        if not json_output:
-            typer.echo(
-                f"Mined {len(mined_rules)} path rules from embeddings -> {len(mined_edges)} inferred edges"
-            )
-
-    # ── Rule grounding (t-norm transitive closure) ──────────────────────
-    if ground:
-        grounded = graph.ground_rules(min_confidence=min_confidence)
-        if grounded:
-            inferred.extend(grounded)
+            mined_rules = mine_path_rules(graph, db, min_confidence=min_confidence, top_k=20)
+            mined_edges = _apply_mined_rules(graph, mined_rules)
+            inferred.extend(mined_edges)
             if not json_output:
-                typer.echo(f"Grounded {len(grounded)} transitive rule instances (t-norm)")
+                typer.echo(
+                    f"Mined {len(mined_rules)} path rules from embeddings -> {len(mined_edges)} inferred edges"
+                )
 
-    if rule is not None:
-        rule_set = set(rule)
-        inferred = [e for e in inferred if e["relation"] in rule_set]
+        # ── Rule grounding (t-norm transitive closure) ──────────────────────
+        if ground:
+            grounded = graph.ground_rules(min_confidence=min_confidence)
+            if grounded:
+                inferred.extend(grounded)
+                if not json_output:
+                    typer.echo(f"Grounded {len(grounded)} transitive rule instances (t-norm)")
 
-    if not dry_run:
-        for edge in inferred:
-            db.insert_edge(edge["src"], edge["dst"], edge["relation"], "closure")
-        db.commit()
-    db.close()
+        if rule is not None:
+            rule_set = set(rule)
+            inferred = [e for e in inferred if e["relation"] in rule_set]
+
+        if not dry_run:
+            for edge in inferred:
+                db.insert_edge(edge["src"], edge["dst"], edge["relation"], "closure")
+            db.commit()
 
     if json_output:
         typer.echo(
@@ -497,65 +490,63 @@ def ingest_link_cmd(
 
     cfg = ctx.obj["config"]
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        results: list[dict] = []
+        for i, url in enumerate(u for u in urls if u.strip()):
+            if not json_output:
+                typer.echo(f"[{i + 1}/{len(urls)}] Extracting {url} ...")
 
-    results: list[dict] = []
-    for i, url in enumerate(u for u in urls if u.strip()):
-        if not json_output:
-            typer.echo(f"[{i + 1}/{len(urls)}] Extracting {url} ...")
+            extracted = extract_web(url.strip(), pdf=pdf)
+            title = extracted.get("title", "")
+            text = extracted.get("text", "")
+            error = extracted.get("error", "")
 
-        extracted = extract_web(url.strip(), pdf=pdf)
-        title = extracted.get("title", "")
-        text = extracted.get("text", "")
-        error = extracted.get("error", "")
+            if error and not text:
+                typer.echo(f"  Extraction failed: {error}", err=True)
+                results.append({"url": url, "status": "error", "error": error})
+                continue
 
-        if error and not text:
-            typer.echo(f"  Extraction failed: {error}", err=True)
-            results.append({"url": url, "status": "error", "error": error})
-            continue
+            # Generate a local_id from title
+            slug = _slugify_title(title, url)
+            local_id = slug
+            paper_dir = papers_dir / local_id
 
-        # Generate a local_id from title
-        slug = _slugify_title(title, url)
-        local_id = slug
-        paper_dir = papers_dir / local_id
+            # Handle duplicates
+            if paper_dir.exists():
+                base = slug
+                for n in range(2, 100):
+                    local_id = f"{base}-{n}"
+                    paper_dir = papers_dir / local_id
+                    if not paper_dir.exists():
+                        break
 
-        # Handle duplicates
-        if paper_dir.exists():
-            base = slug
-            for n in range(2, 100):
-                local_id = f"{base}-{n}"
-                paper_dir = papers_dir / local_id
-                if not paper_dir.exists():
-                    break
+            paper_dir.mkdir(parents=True, exist_ok=True)
 
-        paper_dir.mkdir(parents=True, exist_ok=True)
+            # Write markdown
+            md_content = _render_extracted_markdown(title, url, text)
+            (paper_dir / "raw.md").write_text(md_content, encoding="utf-8")
 
-        # Write markdown
-        md_content = _render_extracted_markdown(title, url, text)
-        (paper_dir / "raw.md").write_text(md_content, encoding="utf-8")
+            # Register in DB
+            db.insert_paper(
+                local_id=local_id,
+                title=title or url,
+                year=None,
+                status="uploaded",
+            )
 
-        # Register in DB
-        db.insert_paper(
-            local_id=local_id,
-            title=title or url,
-            year=None,
-            status="uploaded",
-        )
+            results.append(
+                {
+                    "url": url,
+                    "local_id": local_id,
+                    "title": title,
+                    "status": "ok",
+                }
+            )
 
-        results.append(
-            {
-                "url": url,
-                "local_id": local_id,
-                "title": title,
-                "status": "ok",
-            }
-        )
+            if not json_output:
+                typer.echo(f"  -> {local_id}  ({len(text)} chars)")
 
-        if not json_output:
-            typer.echo(f"  -> {local_id}  ({len(text)} chars)")
-
-    db.commit()
-    db.close()
+        db.commit()
 
     if json_output:
         typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
