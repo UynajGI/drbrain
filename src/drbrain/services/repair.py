@@ -63,11 +63,8 @@ def _repair_via_crossref(db, paper: dict) -> list[dict]:
         from drbrain.extractor.crossref import fetch_work_by_doi
 
         data = fetch_work_by_doi(doi)
-    except Exception:
-        try:
-            logger.exception("Repair failed")
-        except Exception:
-            pass
+    except Exception as e:
+        logger.warning("CrossRef repair failed for DOI: {}", e)
         return []
 
     repairs = []
@@ -130,11 +127,8 @@ def _repair_via_arxiv(db, paper: dict) -> list[dict]:
         from drbrain.parser.mineru_parser import _fetch_arxiv_metadata
 
         title, year = _fetch_arxiv_metadata(arxiv)
-    except Exception:
-        try:
-            logger.exception("Repair failed")
-        except Exception:
-            pass
+    except Exception as e:
+        logger.warning("arXiv repair failed: {}", e)
         return []
 
     repairs = []
@@ -173,11 +167,8 @@ def _enrich_via_openalex(db, paper: dict) -> list[dict]:
                 authors_str = " and ".join(
                     a.get("display_name", "") for a in authors_list if a.get("display_name")
                 )
-    except Exception:
-        try:
-            logger.exception("OpenAlex enrichment failed")
-        except Exception:
-            pass
+    except Exception as e:
+        logger.warning("OpenAlex enrichment failed: {}", e)
         return []
 
     repairs = []
@@ -251,11 +242,8 @@ def _repair_via_title_year(db, paper: dict) -> list[dict]:
         from drbrain.extractor.crossref import fetch_doi_by_title
 
         doi_info = fetch_doi_by_title(title)
-    except Exception:
-        try:
-            logger.exception("Repair failed")
-        except Exception:
-            pass
+    except Exception as e:
+        logger.warning("Title-year repair failed: {}", e)
         return []
     if doi_info and doi_info.get("doi"):
         return [{"field": "doi", "old": None, "new": doi_info["doi"], "source": "CrossRef"}]
@@ -286,11 +274,10 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
     ):
         try:
             repairs.extend(repair_fn(db, paper))
-        except Exception:
-            try:
-                logger.exception("Repair failed")
-            except Exception:
-                pass
+        except Exception as e:
+            logger.warning(
+                "Repair function {} failed: {}", getattr(repair_fn, "__name__", str(repair_fn)), e
+            )
 
     if repairs and not dry_run:
         for r in repairs:
