@@ -437,14 +437,25 @@ class ClosureMixin:
         seeds = []
 
         # Find problems addressed by methods in distinct groups
+        # Batch-preload concept types for addresses targets (avoid N+1)
+        addresses_targets = {
+            v for _, v, d in self.graph.edges(data=True) if d.get("relation") == "addresses"
+        }
+        target_types: dict[str, str] = {}
+        if addresses_targets:
+            placeholders = ",".join("?" for _ in addresses_targets)
+            type_rows = db.conn.execute(
+                f"SELECT label, type FROM concepts WHERE label IN ({placeholders})",
+                tuple(addresses_targets),
+            ).fetchall()
+            target_types = {label: ctype for label, ctype in type_rows}
+
         problem_methods: dict[str, set[str]] = defaultdict(set)
         for u, v, data in self.graph.edges(data=True):
             if data["relation"] == "addresses":
                 # Check if dst is a Problem
-                row = db.conn.execute(
-                    "SELECT type FROM concepts WHERE label = ? LIMIT 1", (v,)
-                ).fetchone()
-                if row and row[0] == "Problem":
+                ctype = target_types.get(v)
+                if ctype == "Problem":
                     problem_methods[v].add(u)
 
         for problem, methods in problem_methods.items():
