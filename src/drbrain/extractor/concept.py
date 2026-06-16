@@ -424,6 +424,14 @@ async def build_graph_from_tree(
 ) -> dict:
     """5-stage graph extraction from a document tree.
 
+    .. deprecated::
+        This function duplicates the logic in
+        ``extractor.agent.OntologyAgent`` / ``EntityAgent`` /
+        ``RelationAgent`` / ``CorefAgent`` / ``RefineAgent``.
+        Prefer the Agent-based path (``agent.get_agent(name)``) for new
+        code.  This function is kept for backward compatibility with
+        ``cli/build_commands.py``.
+
     Stages: ontology -> entities -> relations -> coreference -> refine.
     Returns {"concepts": [...], "relations": [...], "merges": [...], "corrections": [...]}
     """
