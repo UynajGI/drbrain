@@ -71,8 +71,57 @@ def evolve_concept(
     return trees
 
 
+def _collect_reachable_labels(
+    g, start: str, relations: set[str], direction: str, max_depth: int
+) -> set[str]:
+    """Collect all node labels reachable from *start* within *max_depth* hops.
+
+    *direction* is ``"out"`` (successors) or ``"in"`` (predecessors).
+    Does NOT include *start* itself.
+    """
+    visited: set[str] = set()
+    queue: deque[tuple[str, int]] = deque([(start, 0)])
+    while queue:
+        node, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        if node not in g:
+            continue
+        neighbors = g.successors(node) if direction == "out" else g.predecessors(node)
+        for nb in neighbors:
+            for edge_data in g[node][nb].values():
+                if edge_data.get("relation", "") in relations:
+                    if nb not in visited:
+                        visited.add(nb)
+                        queue.append((nb, depth + 1))
+    return visited
+
+
+def _preload_concept_info(db, labels: set[str]) -> dict[str, tuple[str | None, str, int | None]]:
+    """Batch-load concept (local_id, type) and paper year for a set of labels.
+
+    Returns ``{label: (local_id, type, year)}``.
+    """
+    if not labels:
+        return {}
+    ph = ",".join("?" for _ in labels)
+    rows = db.conn.execute(
+        f"SELECT c.label, c.local_id, c.type, p.year "
+        f"FROM concepts c LEFT JOIN papers p ON c.local_id = p.local_id "
+        f"WHERE c.label IN ({ph})",
+        tuple(labels),
+    ).fetchall()
+    return {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+
 def _bfs_descendants(graph, db, parent, relations, max_depth):
     """BFS outward from parent, following outgoing edges."""
+    # Pre-load concept info for all nodes reachable from parent
+    reachable_labels = _collect_reachable_labels(
+        graph.graph, parent["label"], relations, "out", max_depth
+    )
+    info_map = _preload_concept_info(db, reachable_labels)
+
     visited = {(parent["label"], parent["local_id"])}
     queue = deque([(parent, 0)])
 
@@ -90,23 +139,15 @@ def _bfs_descendants(graph, db, parent, relations, max_depth):
                 if rel not in relations:
                     continue
 
-                # Get paper info for child concept
-                concept_row = db.conn.execute(
-                    "SELECT local_id, type FROM concepts WHERE label = ? LIMIT 1", (n,)
-                ).fetchone()
-                if not concept_row:
+                info = info_map.get(n)
+                if not info:
                     continue
 
-                child_local_id, child_type = concept_row
+                child_local_id, child_type, year = info
                 child_key = (n, child_local_id)
                 if child_key in visited:
                     continue
                 visited.add(child_key)
-
-                year_row = db.conn.execute(
-                    "SELECT year FROM papers WHERE local_id = ?", (child_local_id,)
-                ).fetchone()
-                year = year_row[0] if year_row else None
 
                 child = {
                     "label": n,
@@ -122,6 +163,12 @@ def _bfs_descendants(graph, db, parent, relations, max_depth):
 
 def _bfs_ancestors(graph, db, parent, relations, max_depth):
     """BFS inward toward parent from incoming edges."""
+    # Pre-load concept info for all nodes reachable from parent
+    reachable_labels = _collect_reachable_labels(
+        graph.graph, parent["label"], relations, "in", max_depth
+    )
+    info_map = _preload_concept_info(db, reachable_labels)
+
     visited = {(parent["label"], parent["local_id"])}
     queue = deque([(parent, 0)])
 
@@ -139,22 +186,15 @@ def _bfs_ancestors(graph, db, parent, relations, max_depth):
                 if rel not in relations:
                     continue
 
-                concept_row = db.conn.execute(
-                    "SELECT local_id, type FROM concepts WHERE label = ? LIMIT 1", (pred,)
-                ).fetchone()
-                if not concept_row:
+                info = info_map.get(pred)
+                if not info:
                     continue
 
-                pred_local_id, pred_type = concept_row
+                pred_local_id, pred_type, year = info
                 pred_key = (pred, pred_local_id)
                 if pred_key in visited:
                     continue
                 visited.add(pred_key)
-
-                year_row = db.conn.execute(
-                    "SELECT year FROM papers WHERE local_id = ?", (pred_local_id,)
-                ).fetchone()
-                year = year_row[0] if year_row else None
 
                 ancestor = {
                     "label": pred,
