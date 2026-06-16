@@ -21,7 +21,9 @@ src/drbrain/
 │   ├── citation.py          # Multi-source citation expansion
 │   └── ...
 ├── graph/           # Knowledge graph engine
-│   ├── engine.py            # NetworkX graph, closure rules, BFS traversal
+│   ├── engine.py            # GraphEngine skeleton: NetworkX graph mgmt, BFS traversal, tree-aware operations
+│   ├── engine_closure.py    # ClosureMixin: rule-based closure (8 symbolic + 4 embedding), seed detection
+│   ├── engine_embeddings.py # EmbeddingsMixin: TransE learn/predict/similar persistence
 │   ├── embedding.py         # TransE entity/relation embeddings
 │   ├── query_embeddings.py  # Embedding-based complex query operators
 │   └── ...

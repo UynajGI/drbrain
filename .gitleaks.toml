@@ -1,0 +1,22 @@
+title = "DrBrain gitleaks config"
+
+[extend]
+useDefault = true
+
+# Project-specific allowlist (paths that commonly trip false positives)
+[allowlist]
+description = "Project allowlist"
+paths = [
+    '''docs/learn/.*''',  # Third-party study materials
+    '''docs/superpowers/.*''',  # Vendored docs
+    '''\.trellis/scripts/.*''',  # Trellis framework code
+    '''tests/fixtures/.*''',  # Test fixtures may include sample tokens
+]
+
+# Allow example/placeholder values commonly used in docs
+regexes = [
+    '''example\.com''',
+    '''YOUR_API_KEY''',
+    '''sk-test-''',
+    '''placeholder-''',
+]
