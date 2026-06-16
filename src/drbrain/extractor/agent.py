@@ -71,7 +71,9 @@ class BuildAgent(ABC):
 
     # -- Public API --
 
-    async def run(self, input_data: AgentInput, models: list[dict], *, db=None) -> AgentOutput:
+    async def run(
+        self, input_data: AgentInput, models: list[dict], *, db=None, _cache=None
+    ) -> AgentOutput:
         """Execute agent with idempotency guard.
 
         1. Check DB for existing stage output → skip if complete
@@ -108,6 +110,7 @@ class BuildAgent(ABC):
             prompt=user_prompt,
             models=models,
             system_prompt=self.system_prompt,
+            _cache=_cache,
         )
 
         if not raw:

@@ -162,10 +162,14 @@ def build_cmd(
 
     from loguru import logger as _build_log
 
+    from drbrain.extractor.cache import ApiCache
     from drbrain.extractor.concept import build_graph_from_tree
 
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
+
+    # LLM response cache (deduplicate retries across stages)
+    cache = ApiCache("data/spool/llm_cache")
 
     # Select papers to process
     if all_papers:
@@ -244,7 +248,9 @@ def build_cmd(
         # Run 5-stage pipeline
         typer.echo("  Stage 1: Ontology...")
         result = asyncio.run(
-            build_graph_from_tree(md_path, structure, llm_models, skip_refine=skip_refine)
+            build_graph_from_tree(
+                md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+            )
         )
 
         concepts = result.get("concepts", [])
