@@ -60,6 +60,7 @@ Issues = "https://github.com/UynajGI/DrBrain/issues"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.13",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=7.1.0",
@@ -95,6 +96,21 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = [
     "E501",  # line too long (docstrings, SQL, typer args are naturally long)
 ]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+exclude = ["tests/", ".trellis/", "skills/"]
+
+[[tool.mypy.overrides]]
+module = "drbrain.*"
+disallow_untyped_defs = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
