@@ -7,7 +7,7 @@ from pathlib import Path
 
 import typer
 
-from drbrain.cli._common import _resolve_workspace_papers
+from drbrain.cli._common import _resolve_workspace_papers, open_db
 from drbrain.storage.database import Database
 
 
@@ -23,36 +23,36 @@ def repair_cmd(
     from drbrain.services.repair import repair_paper
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
 
-    if all or workspace:
-        papers = db.get_all_papers()
-        if workspace:
-            ws_ids = _resolve_workspace_papers(workspace)
-            papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
-    elif local_id:
-        paper = db.get_paper(local_id)
-        if not paper:
-            db.close()
-            typer.echo(f"Paper not found: {local_id}", err=True)
+    with open_db(cfg) as db:
+        if all or workspace:
+            papers = db.get_all_papers()
+            if workspace:
+                ws_ids = _resolve_workspace_papers(workspace)
+                papers = [p for p in papers if ws_ids and p["local_id"] in ws_ids]
+        elif local_id:
+            paper = db.get_paper(local_id)
+            if not paper:
+                typer.echo(f"Paper not found: {local_id}", err=True)
+                raise typer.Exit(1)
+            papers = [paper]
+        else:
+            typer.echo("Specify a paper, --all, or --workspace", err=True)
             raise typer.Exit(1)
-        papers = [paper]
-    else:
-        db.close()
-        typer.echo("Specify a paper, --all, or --workspace", err=True)
-        raise typer.Exit(1)
 
-    all_repairs = []
-    for paper in papers:
-        if not paper:
-            continue
-        repairs = repair_paper(db, paper["local_id"], dry_run=dry_run)
-        if repairs:
-            all_repairs.append(
-                {"paper": paper["local_id"], "title": paper.get("title", ""), "repairs": repairs}
-            )
-
-    db.close()
+        all_repairs = []
+        for paper in papers:
+            if not paper:
+                continue
+            repairs = repair_paper(db, paper["local_id"], dry_run=dry_run)
+            if repairs:
+                all_repairs.append(
+                    {
+                        "paper": paper["local_id"],
+                        "title": paper.get("title", ""),
+                        "repairs": repairs,
+                    }
+                )
 
     if json_output:
         typer.echo(json.dumps(all_repairs, indent=2, ensure_ascii=False, default=str))

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 
+from drbrain.cli._common import open_db
 from drbrain.graph.engine import GraphEngine
 from drbrain.storage.database import Database
 from drbrain.storage.paths import raw_md_path, tree_json_path
@@ -26,10 +27,8 @@ def translate_cmd(
 ):
     """Translate a paper's markdown via LLM."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-
-    paper = db.get_paper(local_id)
-    db.close()
+    with open_db(cfg) as db:
+        paper = db.get_paper(local_id)
 
     if not paper:
         typer.echo(f"Paper not found: {local_id}", err=True)

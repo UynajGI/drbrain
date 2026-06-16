@@ -6,6 +6,8 @@ import asyncio
 import re
 import shutil
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import typer
@@ -21,6 +23,25 @@ from drbrain.storage.paths import (
     source_pdf_path,
     tree_json_path,
 )
+
+
+@contextmanager
+def open_db(cfg: dict) -> Iterator[Database]:
+    """Context manager that opens the Database from config and ensures cleanup.
+
+    Usage::
+
+        with open_db(cfg) as db:
+            papers = db.get_all_papers()
+
+    Replaces the manual ``db = Database(cfg["db"]["path"])`` / ``db.close()``
+    pattern repeated ~50 times across CLI commands. Closes even on exceptions.
+    """
+    db = Database(cfg["db"]["path"])
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def _ingest_single_paper(
