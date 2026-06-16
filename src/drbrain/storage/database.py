@@ -119,7 +119,12 @@ CREATE INDEX IF NOT EXISTS idx_arguments_source ON arguments(source_paper);
 CREATE INDEX IF NOT EXISTS idx_arguments_target ON arguments(target_label);
 CREATE INDEX IF NOT EXISTS idx_edges_relation ON edges(relation);
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id);
+CREATE INDEX IF NOT EXISTS idx_edges_source_paper ON edges(source_paper);
 CREATE INDEX IF NOT EXISTS idx_queue_status ON confidence_queue(status);
+CREATE INDEX IF NOT EXISTS idx_concepts_local_id ON concepts(local_id);
+CREATE INDEX IF NOT EXISTS idx_tree_vectors_paper ON tree_vectors(paper_id);
+CREATE INDEX IF NOT EXISTS idx_tree_summaries_paper ON tree_summaries(paper_id);
 
 CREATE TABLE IF NOT EXISTS research_seeds (
     seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,6 +144,7 @@ CREATE TABLE IF NOT EXISTS citation_cache (
     cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (source_paper, target_title)
 );
+CREATE INDEX IF NOT EXISTS idx_citation_cache_target ON citation_cache(target_title);
 
 CREATE TABLE IF NOT EXISTS build_stages (
     paper_id TEXT NOT NULL,
@@ -190,6 +196,8 @@ class Database:
         self.conn = sqlite3.connect(str(self.path))
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
 
     def _init_schema(self) -> None:
