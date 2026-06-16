@@ -1327,3 +1327,699 @@ def test_analyze_frontier_with_data():
     assert "1 active gaps" in result["summary"]
     assert "1 stale gaps" in result["summary"]
     db.close()
+
+
+# --- Additional paradigm shift detection tests (TestParadigmShifts class) ---
+
+
+class TestParadigmShifts:
+    """Focused tests for each paradigm shift detection type."""
+
+    def test_replacement_detected(self):
+        """A new method that replaces an old one is detected as replacement."""
+        db = Database(":memory:")
+        # OldMethod: many papers early, few recently → declining
+        for i, y in enumerate((2016, 2017, 2017, 2018)):
+            pid = f"old_rep_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"Old paper {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'OldMethod', 0.9, '3 Methods')",
+                (pid,),
+            )
+        # OldMethod: 1 paper in 2023 (recent window)
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('old_recent', 'Old recent', 2023, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('old_recent', 'Method', 'OldMethod', 0.9, '3 Methods')"
+        )
+        # NewMethod: 3 papers in 2023-2024 → growing
+        for i, y in enumerate((2022, 2023, 2024)):
+            pid = f"new_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"New paper {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'NewMethod', 0.95, '2 Methods')",
+                (pid,),
+            )
+        # 'challenges' edge
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('NewMethod', 'OldMethod', 'challenges', 'new_0', 0.85)"
+        )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, decline_threshold=0.5, growth_threshold=3)
+        replacements = [r for r in results if r["type"] == "replacement"]
+        assert len(replacements) == 1
+        r = replacements[0]
+        assert r["old_concept"] == "OldMethod"
+        assert r["new_concept"] == "NewMethod"
+        assert r["confidence"] == 0.85
+        db.close()
+
+    def test_replacement_new_below_growth_threshold(self):
+        """New method with too few papers does NOT trigger replacement."""
+        db = Database(":memory:")
+        # OldMethod: declining
+        for i, y in enumerate((2016, 2016, 2016, 2017)):
+            pid = f"old_ng_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"Old {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'OldMethod', 0.9, '3 Methods')",
+                (pid,),
+            )
+        # 1 recent old paper
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('old_r', 'Old recent', 2023, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('old_r', 'Method', 'OldMethod', 0.9, '3 Methods')"
+        )
+        # NewMethod: only 2 papers (below default growth_threshold=3)
+        for i, y in enumerate((2023, 2024)):
+            pid = f"new_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"New {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'NewMethod', 0.95, '2 Methods')",
+                (pid,),
+            )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('NewMethod', 'OldMethod', 'challenges', 'new_0', 0.9)"
+        )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db)
+        replacements = [r for r in results if r["type"] == "replacement"]
+        assert len(replacements) == 0
+        db.close()
+
+    def test_explosion_detected(self):
+        """Sudden growth in papers about a concept is detected as explosion."""
+        db = Database(":memory:")
+        # 10 papers all in 2023 about ExplodingConcept
+        for i in range(10):
+            pid = f"exp_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                (pid, f"Explosion paper {i}"),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'ExplodingConcept', 0.95, 'method')",
+                (pid,),
+            )
+        # 4 descendant concepts (extends from ExplodingConcept)
+        for v in ("ExplV2", "ExplV3", "ExplV4", "ExplV5"):
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence) "
+                "VALUES ('exp_0', 'Method', ?, 0.85)",
+                (v,),
+            )
+            db.conn.execute(
+                "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+                "VALUES ('ExplodingConcept', ?, 'extends', 'exp_0')",
+                (v,),
+            )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, explosion_threshold=8, descendant_threshold=3)
+        explosions = [r for r in results if r["type"] == "explosion"]
+        assert len(explosions) == 1
+        e = explosions[0]
+        assert e["concept"] == "ExplodingConcept"
+        assert e["paper_count"] >= 8
+        assert len(e["descendants"]) >= 3
+        db.close()
+
+    def test_explosion_no_descendants_not_flagged(self):
+        """Concept with many papers but no descendants is NOT explosion."""
+        db = Database(":memory:")
+        for i in range(10):
+            pid = f"nodedesc_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                (pid, f"No desc paper {i}"),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'PopularNoDescendants', 0.95, 'method')",
+                (pid,),
+            )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, explosion_threshold=8, descendant_threshold=3)
+        explosions = [r for r in results if r["type"] == "explosion"]
+        assert len(explosions) == 0
+        db.close()
+
+    def test_explosion_steady_growth_not_flagged(self):
+        """Concept spread across many years (steady growth) is NOT explosion."""
+        db = Database(":memory:")
+        # Papers across 5 different years — len(year_counts) = 5 > 2 → not explosion
+        for y in (2018, 2019, 2020, 2021, 2022, 2023):
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (f"steady_{y}", f"Steady paper {y}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'SteadyGrowth', 0.95, 'method')",
+                (f"steady_{y}",),
+            )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, explosion_threshold=1, descendant_threshold=1)
+        explosions = [r for r in results if r["type"] == "explosion"]
+        assert len(explosions) == 0
+        db.close()
+
+    def test_explosion_concept_filter(self):
+        """Explosion detection can be scoped to a single concept."""
+        db = Database(":memory:")
+        # Two exploding concepts, only filter on one
+        for label in ("ConceptA", "ConceptB"):
+            for i in range(5):
+                pid = f"{label}_{i}"
+                db.conn.execute(
+                    "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                    (pid, f"{label} paper {i}"),
+                )
+                db.conn.execute(
+                    "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                    "VALUES (?, 'Method', ?, 0.95, 'method')",
+                    (pid, label),
+                )
+            # descendants for both
+            for v in (f"{label}_d1", f"{label}_d2", f"{label}_d3"):
+                db.conn.execute(
+                    "INSERT INTO concepts (local_id, type, label, confidence) "
+                    "VALUES (?, 'Method', ?, 0.8)",
+                    (f"{label}_0", v),
+                )
+                db.conn.execute(
+                    "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+                    "VALUES (?, ?, 'extends', ?)",
+                    (label, v, f"{label}_0"),
+                )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(
+            graph,
+            db,
+            concept="ConceptA",
+            explosion_threshold=3,
+            descendant_threshold=2,
+        )
+        explosions = [r for r in results if r["type"] == "explosion"]
+        assert len(explosions) == 1
+        assert explosions[0]["concept"] == "ConceptA"
+        db.close()
+
+    def test_explosion_paper_ids_scoping(self):
+        """Explosion detection scoped to paper_ids only considers matching concepts."""
+        db = Database(":memory:")
+        # ConceptA papers in workspace
+        for i in range(5):
+            pid = f"ws_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                (pid, f"Workspace paper {i}"),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'WorkspaceConcept', 0.95, 'method')",
+                (pid,),
+            )
+        # ConceptB papers NOT in workspace
+        for i in range(5):
+            pid = f"other_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                (pid, f"Other paper {i}"),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'OtherConcept', 0.95, 'method')",
+                (pid,),
+            )
+        # descendants for WorkspaceConcept
+        for v in ("ws_d1", "ws_d2", "ws_d3"):
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence) "
+                "VALUES ('ws_0', 'Method', ?, 0.8)",
+                (v,),
+            )
+            db.conn.execute(
+                "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+                "VALUES ('WorkspaceConcept', ?, 'extends', 'ws_0')",
+                (v,),
+            )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        workspace_ids = [f"ws_{i}" for i in range(5)]
+        results = detect_paradigm_shifts(
+            graph,
+            db,
+            paper_ids=workspace_ids,
+            explosion_threshold=3,
+            descendant_threshold=2,
+        )
+        explosions = [r for r in results if r["type"] == "explosion"]
+        assert len(explosions) == 1
+        assert explosions[0]["concept"] == "WorkspaceConcept"
+        db.close()
+
+    def test_no_shift_on_stable_concepts(self):
+        """Concepts with steady growth don't trigger any shifts."""
+        db = Database(":memory:")
+        # StableMethod: 2 papers per year over 4 years — no decline, no explosion
+        for y in (2019, 2020, 2021, 2022):
+            for j in range(2):
+                pid = f"stable_{y}_{j}"
+                db.conn.execute(
+                    "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                    (pid, f"Stable {pid}", y),
+                )
+                db.conn.execute(
+                    "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                    "VALUES (?, 'Method', 'StableMethod', 0.9, 'method')",
+                    (pid,),
+                )
+        # No challenges/applies edges, no descendants → nothing should fire
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, explosion_threshold=8, descendant_threshold=3)
+        assert results == []
+        db.close()
+
+    def test_cross_domain_cascade_chain(self):
+        """Cross-domain: method A applied to B, B extended to C, C to D → cascade."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pA', 'A Paper', 2020, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pB', 'B Paper', 2021, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pC', 'C Paper', 2022, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pD', 'D Paper', 2023, 'extracted')"
+        )
+        for pid, label in [
+            ("pA", "MethodA"),
+            ("pB", "MethodB"),
+            ("pC", "MethodC"),
+            ("pD", "MethodD"),
+        ]:
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', ?, 0.95, 'method')",
+                (pid, label),
+            )
+        # applies chain: A -> B -> C -> D
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('MethodA', 'MethodB', 'applies', 'pA', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('MethodB', 'MethodC', 'extends', 'pB', 0.8)"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('MethodC', 'MethodD', 'extends', 'pC', 0.8)"
+        )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(graph, db, cascade_threshold=1)
+        invasions = [r for r in results if r["type"] == "cross_domain"]
+        assert len(invasions) == 1
+        iv = invasions[0]
+        assert iv["source_concept"] == "MethodA"
+        assert iv["target_concept"] == "MethodB"
+        assert len(iv["cascade"]) >= 2  # MethodC and MethodD
+        db.close()
+
+    def test_cross_domain_no_cascade_not_flagged(self):
+        """Applies edge with no further descendants is NOT cross-domain shift."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pA', 'A', 2020, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('pB', 'B', 2021, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('pA', 'Method', 'MethodA', 0.95, 'method')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('pB', 'Problem', 'ProblemX', 0.95, 'intro')"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('MethodA', 'ProblemX', 'applies', 'pA', 0.9)"
+        )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        # ProblemX has no neighbors beyond MethodA, so cascade is empty
+        results = detect_paradigm_shifts(graph, db, cascade_threshold=1)
+        invasions = [r for r in results if r["type"] == "cross_domain"]
+        assert len(invasions) == 0
+        db.close()
+
+    def test_multiple_shift_types_simultaneously(self):
+        """All three shift types can be detected in one call."""
+        db = Database(":memory:")
+        # --- Replacement setup ---
+        # OldMethod: declining (many old, few recent)
+        for i, y in enumerate((2016, 2016, 2016, 2017)):
+            pid = f"old_multi_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"Old {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'OldMethod', 0.9, '3 Methods')",
+                (pid,),
+            )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('old_r', 'Old recent', 2023, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('old_r', 'Method', 'OldMethod', 0.9, '3 Methods')"
+        )
+        # NewMethod: growing
+        for i, y in enumerate((2023, 2024, 2025)):
+            pid = f"new_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, ?, 'extracted')",
+                (pid, f"New {pid}", y),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'NewMethod', 0.95, '2 Methods')",
+                (pid,),
+            )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('NewMethod', 'OldMethod', 'challenges', 'new_0', 0.9)"
+        )
+        # --- Explosion setup ---
+        for i in range(10):
+            pid = f"expl_{i}"
+            db.conn.execute(
+                "INSERT INTO papers (local_id, title, year, status) VALUES (?, ?, 2023, 'extracted')",
+                (pid, f"Expl {i}"),
+            )
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', 'ExplodingConcept', 0.95, 'method')",
+                (pid,),
+            )
+        for v in ("ExplD1", "ExplD2", "ExplD3"):
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence) "
+                "VALUES ('expl_0', 'Method', ?, 0.8)",
+                (v,),
+            )
+            db.conn.execute(
+                "INSERT INTO edges (src_id, dst_id, relation, source_paper) "
+                "VALUES ('ExplodingConcept', ?, 'extends', 'expl_0')",
+                (v,),
+            )
+        # --- Cross-domain setup ---
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('cdA', 'CDA', 2020, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('cdB', 'CDB', 2021, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('cdC', 'CDC', 2022, 'extracted')"
+        )
+        for pid, label in [("cdA", "CrossA"), ("cdB", "CrossB"), ("cdC", "CrossC")]:
+            db.conn.execute(
+                "INSERT INTO concepts (local_id, type, label, confidence, section) "
+                "VALUES (?, 'Method', ?, 0.95, 'method')",
+                (pid, label),
+            )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('CrossA', 'CrossB', 'applies', 'cdA', 0.9)"
+        )
+        db.conn.execute(
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight) "
+            "VALUES ('CrossB', 'CrossC', 'extends', 'cdB', 0.8)"
+        )
+        db.commit()
+        graph = GraphEngine()
+        graph.load_from_db(db)
+        results = detect_paradigm_shifts(
+            graph,
+            db,
+            decline_threshold=0.5,
+            growth_threshold=3,
+            explosion_threshold=8,
+            descendant_threshold=3,
+            cascade_threshold=1,
+        )
+        types_found = {r["type"] for r in results}
+        assert "replacement" in types_found
+        assert "explosion" in types_found
+        assert "cross_domain" in types_found
+        db.close()
+
+
+class TestAnalyzeDifficulty:
+    """Tests for analyze_difficulty keyword classification."""
+
+    def test_weakness_keyword_classified_as_limitation(self):
+        """Section with 'weakness' → limitation category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Robustness Gap', 0.9, '4.1 Weaknesses')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["limitation"]) == 1
+        assert result["limitation"][0]["label"] == "Robustness Gap"
+        db.close()
+
+    def test_shortcoming_keyword_classified_as_limitation(self):
+        """Section with 'shortcoming' → limitation category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Generalization Gap', 0.8, '5.3 Shortcomings')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["limitation"]) == 1
+        assert result["limitation"][0]["label"] == "Generalization Gap"
+        db.close()
+
+    def test_direction_keyword_classified_as_future_work(self):
+        """Section with 'direction' → future_work category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Next Steps', 0.85, '7 Future Research Directions')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["future_work"]) == 1
+        assert result["future_work"][0]["label"] == "Next Steps"
+        db.close()
+
+    def test_open_problem_keyword_classified_as_future_work(self):
+        """Section with 'open problem' → future_work category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Convergence', 0.7, 'Open Problems in GANs')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["future_work"]) == 1
+        assert result["future_work"][0]["label"] == "Convergence"
+        db.close()
+
+    def test_open_question_keyword_classified_as_future_work(self):
+        """Section with 'open question' → future_work category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Scalability', 0.75, 'Open Questions')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["future_work"]) == 1
+        assert result["future_work"][0]["label"] == "Scalability"
+        db.close()
+
+    def test_conclusion_keyword_classified_as_discussion(self):
+        """Section with 'conclusion' → discussion category."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Tradeoff', 0.8, '8 Conclusion')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["discussion"]) == 1
+        assert result["discussion"][0]["label"] == "Tradeoff"
+        db.close()
+
+    def test_non_gap_concepts_ignored(self):
+        """Only Gap-type concepts are classified; Method/Problem are ignored."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Method', 'GNN', 0.9, '3 Methods')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Problem', 'Classification', 0.8, '1 Intro')"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert result["limitation"] == []
+        assert result["future_work"] == []
+        assert result["discussion"] == []
+        assert result["uncategorized"] == []
+        db.close()
+
+    def test_null_section_classified_as_uncategorized(self):
+        """Gap with NULL section → uncategorized."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence) "
+            "VALUES ('p1', 'Gap', 'Mystery Gap', 0.7)"
+        )
+        db.commit()
+        result = analyze_difficulty(db)
+        assert len(result["uncategorized"]) == 1
+        assert result["uncategorized"][0]["label"] == "Mystery Gap"
+        db.close()
+
+
+class TestAnalyzeFrontier:
+    """Tests for analyze_frontier composite report."""
+
+    def test_frontier_includes_difficulty_subdict(self):
+        """Frontier report contains the difficulty sub-dict."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Test', 2026, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Scalability', 0.9, '5 Limitations')"
+        )
+        db.commit()
+        result = analyze_frontier(db)
+        assert "difficulty" in result
+        assert len(result["difficulty"]["limitation"]) == 1
+        db.close()
+
+    def test_frontier_stale_gaps_classified(self):
+        """Gaps from old papers (beyond 3-year window) go to stale_gaps."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'Old', 2010, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p2', 'Recent', 2025, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Old Gap', 0.8, '5 Limitations')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p2', 'Gap', 'Recent Gap', 0.9, '5 Limitations')"
+        )
+        db.commit()
+        result = analyze_frontier(db)
+        assert len(result["stale_gaps"]) == 1
+        assert result["stale_gaps"][0]["label"] == "Old Gap"
+        assert len(result["active_gaps"]) == 1
+        assert result["active_gaps"][0]["label"] == "Recent Gap"
+        db.close()
+
+    def test_frontier_gap_without_year_omitted(self):
+        """Gaps on papers with NULL year are excluded from active/stale lists."""
+        db = Database(":memory:")
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'No Year', NULL, 'extracted')"
+        )
+        db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Gap', 'Orphan Gap', 0.8, '5 Limitations')"
+        )
+        db.commit()
+        result = analyze_frontier(db)
+        # Paper has NULL year → gap not in active_gaps or stale_gaps
+        gap_labels = [g["label"] for g in result["active_gaps"] + result["stale_gaps"]]
+        assert "Orphan Gap" not in gap_labels
+        db.close()
