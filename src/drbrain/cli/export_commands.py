@@ -12,8 +12,8 @@ from rich.table import Table
 from drbrain.cli._common import (
     _export_paper_to_meta,
     _show_actor,
+    open_db,
 )
-from drbrain.storage.database import Database
 
 console = Console()
 
@@ -40,31 +40,26 @@ def export_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-
-    if all:
-        papers = db.get_all_papers()
-        metas = [_export_paper_to_meta(db, p["local_id"]) for p in papers]
-        result = batch_export(metas, format, style=style)
-    elif local_id:
-        paper = db.get_paper(local_id)
-        if not paper:
-            db.close()
-            typer.echo(f"Paper not found: {local_id}", err=True)
+    with open_db(cfg) as db:
+        if all:
+            papers = db.get_all_papers()
+            metas = [_export_paper_to_meta(db, p["local_id"]) for p in papers]
+            result = batch_export(metas, format, style=style)
+        elif local_id:
+            paper = db.get_paper(local_id)
+            if not paper:
+                typer.echo(f"Paper not found: {local_id}", err=True)
+                raise typer.Exit(1)
+            meta = _export_paper_to_meta(db, local_id)
+            formatters = {
+                "bib": meta_to_bibtex,
+                "ris": meta_to_ris,
+                "md": lambda m: meta_to_markdown(m, style=style),
+            }
+            result = formatters[format](meta)
+        else:
+            typer.echo("Specify a paper local_id or use --all", err=True)
             raise typer.Exit(1)
-        meta = _export_paper_to_meta(db, local_id)
-        formatters = {
-            "bib": meta_to_bibtex,
-            "ris": meta_to_ris,
-            "md": lambda m: meta_to_markdown(m, style=style),
-        }
-        result = formatters[format](meta)
-    else:
-        db.close()
-        typer.echo("Specify a paper local_id or use --all", err=True)
-        raise typer.Exit(1)
-
-    db.close()
 
     if json_output:
         typer.echo(json.dumps({"format": format, "result": result}, ensure_ascii=False))
@@ -83,9 +78,8 @@ def queue_cmd(
 ):
     """List all pending confidence queue items."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    pending = db.get_queue_pending()
-    db.close()
+    with open_db(cfg) as db:
+        pending = db.get_queue_pending()
 
     if json_output:
         items = []
@@ -143,18 +137,15 @@ def queue_resolve_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        from drbrain.extractor.queue import resolve_accept, resolve_reject
 
-    from drbrain.extractor.queue import resolve_accept, resolve_reject
-
-    if accept:
-        resolve_accept(db, queue_id)
-        action = "accepted"
-    else:
-        resolve_reject(db, queue_id)
-        action = "rejected"
-
-    db.close()
+        if accept:
+            resolve_accept(db, queue_id)
+            action = "accepted"
+        else:
+            resolve_reject(db, queue_id)
+            action = "rejected"
 
     if json_output:
         typer.echo(json.dumps({"queue_id": queue_id, "action": action}, indent=2))
@@ -192,14 +183,11 @@ def queue_resolve_all_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        from drbrain.extractor.queue import resolve_all
 
-    from drbrain.extractor.queue import resolve_all
-
-    action = "accept" if accept else "reject"
-    result = resolve_all(db, action, type_filter=type_filter, max_conf=max_conf)
-
-    db.close()
+        action = "accept" if accept else "reject"
+        result = resolve_all(db, action, type_filter=type_filter, max_conf=max_conf)
 
     if json_output:
         typer.echo(
@@ -235,19 +223,16 @@ def delete_cmd(
     import shutil as _shutil
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        paper = db.get_paper(local_id)
+        if paper is None:
+            if json_output:
+                typer.echo(json.dumps({"error": f"paper {local_id} not found"}))
+            else:
+                typer.echo(f"Paper {local_id} not found.", err=True)
+            raise typer.Exit(1)
 
-    paper = db.get_paper(local_id)
-    if paper is None:
-        db.close()
-        if json_output:
-            typer.echo(json.dumps({"error": f"paper {local_id} not found"}))
-        else:
-            typer.echo(f"Paper {local_id} not found.", err=True)
-        raise typer.Exit(1)
-
-    counts = db.delete_paper(local_id)
-    db.close()
+        counts = db.delete_paper(local_id)
 
     file_deleted = False
     if rm_files:
@@ -486,69 +471,68 @@ def lineage_cmd(
 ):
     """Explore author/research lineage via OpenAlex deduplicated IDs."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        if list_all:
+            rows = db.conn.execute(
+                "SELECT c.label, COUNT(DISTINCT c.local_id) as paper_count, "
+                "GROUP_CONCAT(DISTINCT a.variant) as aliases "
+                "FROM concepts c "
+                "LEFT JOIN aliases a ON a.canonical_id = c.label "
+                "WHERE c.type = 'Actor' "
+                "GROUP BY c.label "
+                "ORDER BY paper_count DESC, c.label"
+            ).fetchall()
 
-    if list_all:
-        rows = db.conn.execute(
-            "SELECT c.label, COUNT(DISTINCT c.local_id) as paper_count, "
-            "GROUP_CONCAT(DISTINCT a.variant) as aliases "
-            "FROM concepts c "
-            "LEFT JOIN aliases a ON a.canonical_id = c.label "
-            "WHERE c.type = 'Actor' "
-            "GROUP BY c.label "
-            "ORDER BY paper_count DESC, c.label"
-        ).fetchall()
-        db.close()
+            if not rows:
+                typer.echo("No actors found.")
+                return
 
-        if not rows:
-            typer.echo("No actors found.")
-            return
+            if json_output:
+                data = [
+                    {
+                        "author_id": r[0],
+                        "paper_count": r[1],
+                        "aliases": r[2].split(",") if r[2] else [],
+                    }
+                    for r in rows
+                ]
+                typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+                return
 
-        if json_output:
-            data = [
-                {"author_id": r[0], "paper_count": r[1], "aliases": r[2].split(",") if r[2] else []}
-                for r in rows
-            ]
-            typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
-            return
+            typer.echo(f"Authors ({len(rows)} total):")
+            table = Table(show_header=True, header_style="bold")
+            table.add_column("Author ID", style="cyan")
+            table.add_column("Display Name", style="green")
+            table.add_column("Papers", justify="right")
+            for r in rows:
+                display = r[2].split(",")[0] if r[2] else r[0]
+                table.add_row(r[0], display, str(r[1]))
+            console.print(table)
 
-        typer.echo(f"Authors ({len(rows)} total):")
-        table = Table(show_header=True, header_style="bold")
-        table.add_column("Author ID", style="cyan")
-        table.add_column("Display Name", style="green")
-        table.add_column("Papers", justify="right")
-        for r in rows:
-            display = r[2].split(",")[0] if r[2] else r[0]
-            table.add_row(r[0], display, str(r[1]))
-        console.print(table)
+        elif name:
+            # Search by display name → resolve to author_id(s)
+            rows = db.conn.execute(
+                "SELECT DISTINCT canonical_id FROM aliases WHERE variant LIKE ? COLLATE NOCASE",
+                (f"%{name}%",),
+            ).fetchall()
+            if not rows:
+                typer.echo(f"No actors matching '{name}'.")
+                return
+            # Show each matching actor
+            for (matched_id,) in rows:
+                _show_actor(cfg, matched_id)
 
-    elif name:
-        # Search by display name → resolve to author_id(s)
-        rows = db.conn.execute(
-            "SELECT DISTINCT canonical_id FROM aliases WHERE variant LIKE ? COLLATE NOCASE",
-            (f"%{name}%",),
-        ).fetchall()
-        if not rows:
-            db.close()
-            typer.echo(f"No actors matching '{name}'.")
-            return
-        db.close()
-        # Show each matching actor
-        for (matched_id,) in rows:
-            _show_actor(cfg, matched_id)
+        elif author_id:
+            _show_actor(cfg, author_id)
 
-    elif author_id:
-        _show_actor(cfg, author_id)
-        db.close()
-
-    else:
-        typer.echo(
-            "Usage: drbrain lineage <author_id>\n"
-            "       drbrain lineage --list\n"
-            "       drbrain lineage --name <display_name>",
-            err=True,
-        )
-        raise typer.Exit(1)
+        else:
+            typer.echo(
+                "Usage: drbrain lineage <author_id>\n"
+                "       drbrain lineage --list\n"
+                "       drbrain lineage --name <display_name>",
+                err=True,
+            )
+            raise typer.Exit(1)
 
 
 def document_cmd(
