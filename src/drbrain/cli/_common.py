@@ -35,3 +35,7 @@ from drbrain.cli._helpers import (  # noqa: F401
     _show_actor,
     open_db,
 )
+
+# Re-export imported names that tests mock via drbrain.cli._common.X
+from drbrain.parser.mineru_parser import extract_pdf  # noqa: F401
+from drbrain.services.fetch import fetch_paper  # noqa: F401

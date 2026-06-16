@@ -741,6 +741,11 @@ def search_tree(
 
     conn = connect_wal(db_path)
     try:
+        # Early return on empty table — avoids loading the embedding model
+        # unnecessarily (sentence_transformers may not be installed).
+        if conn.execute("SELECT COUNT(*) FROM tree_vectors").fetchone()[0] == 0:
+            return []
+
         # Embed query
         query_vec = _embed_batch([query], cfg)[0]
         qv = np.asarray(query_vec, dtype="float32")

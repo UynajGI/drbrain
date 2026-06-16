@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from drbrain.graph.engine import GraphEngine
 from drbrain.storage.database import Database
 
@@ -75,6 +77,7 @@ def test_closure_incremental_vs_full_closure():
     assert full_set == incr_set
 
 
+@pytest.mark.integration
 def test_ingest_single_paper_succeeds():
     """_ingest_single_paper completes successfully with mocked extract_pdf."""
     # Verify that _ingest_single_paper runs the parse-identify-store pipeline.
@@ -133,7 +136,7 @@ def test_ingest_single_paper_succeeds():
             raw_md="# Test\n\nContent.",
         )
 
-        with mock.patch("drbrain.cli._common.extract_pdf", return_value=parsed):
+        with mock.patch("drbrain.cli._helpers.db_ingest.extract_pdf", return_value=parsed):
             result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=True)
 
         # Verify paper was inserted
