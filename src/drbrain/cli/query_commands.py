@@ -13,6 +13,7 @@ from rich.table import Table
 from drbrain.cli._common import (
     _resolve_workspace_papers,
 )
+from drbrain.extractor.cache import ApiCache
 from drbrain.graph.engine import GraphEngine
 from drbrain.query.tree_retrieval import query_by_structure_hybrid
 from drbrain.storage.database import Database
@@ -354,8 +355,11 @@ def query_cmd(
         embed_cfg = (
             EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
         )
+        cache = ApiCache("data/spool/llm_cache")
         sections = asyncio.run(
-            query_by_structure_hybrid(text, paper_dir, Path(db_path_val), llm_models, embed_cfg)
+            query_by_structure_hybrid(
+                text, paper_dir, Path(db_path_val), llm_models, embed_cfg, _cache=cache
+            )
         )
 
         if sections is None:

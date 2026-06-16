@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
+    from drbrain.extractor.cache import ApiCache
 
 import sqlite3
 
@@ -79,6 +80,8 @@ async def _ask_llm_for_relevant_nodes(
     question: str,
     structure_json: str,
     models: list[dict],
+    *,
+    _cache: ApiCache | None = None,
 ) -> list[str]:
     """Legacy: one-shot section selection. Kept for backward compatibility."""
     prompt = _ROUND1_PROMPT.format(
@@ -91,6 +94,7 @@ async def _ask_llm_for_relevant_nodes(
         models=models,
         system_prompt=_SYSTEM_PROMPT,
         max_tokens=1024,
+        _cache=_cache,
     )
     if result is None:
         return []
@@ -218,6 +222,8 @@ async def query_by_structure(
     models: list[dict],
     max_rounds: int = _DEFAULT_MAX_ROUNDS,
     per_round: int = _DEFAULT_PER_ROUND,
+    *,
+    _cache: ApiCache | None = None,
 ) -> list[dict] | None:
     """PageIndex iterative tree-search retrieval with adaptive depth.
 
@@ -265,6 +271,7 @@ async def query_by_structure(
             models=models,
             system_prompt=_SYSTEM_PROMPT,
             max_tokens=512,
+            _cache=_cache,
         )
         if nav1 and isinstance(nav1, dict):
             branch_ids = set(nav1.get("node_ids", []))
@@ -290,6 +297,7 @@ async def query_by_structure(
                         models=models,
                         system_prompt=_SYSTEM_PROMPT,
                         max_tokens=512,
+                        _cache=_cache,
                     )
                     if nav2 and isinstance(nav2, dict):
                         selected_ids = [str(n) for n in nav2.get("node_ids", [])[:per_round]]
@@ -304,6 +312,7 @@ async def query_by_structure(
                         models=models,
                         system_prompt=_SYSTEM_PROMPT,
                         max_tokens=512,
+                        _cache=_cache,
                     )
                     if nav2 and isinstance(nav2, dict):
                         selected_ids = [str(n) for n in nav2.get("node_ids", [])[:per_round]]
@@ -318,6 +327,7 @@ async def query_by_structure(
             models=models,
             system_prompt=_SYSTEM_PROMPT,
             max_tokens=1024,
+            _cache=_cache,
         )
         if r1 and isinstance(r1, dict):
             selected_ids = [str(n) for n in r1.get("node_ids", [])[:per_round]]
@@ -357,6 +367,7 @@ async def query_by_structure(
             models=models,
             system_prompt=_SYSTEM_PROMPT,
             max_tokens=512,
+            _cache=_cache,
         )
         if r2 and isinstance(r2, dict) and not r2.get("done") and r2.get("node_ids"):
             for nid in r2["node_ids"]:
@@ -755,6 +766,8 @@ async def query_by_structure_hybrid(
     models: list[dict],
     cfg: EmbedConfig | None = None,
     top_k: int = 5,
+    *,
+    _cache: ApiCache | None = None,
 ) -> list[dict] | None:
     """LLM-primary tree retrieval with optional vector pre-filtering.
 
@@ -808,6 +821,7 @@ async def query_by_structure_hybrid(
         models=models,
         system_prompt=_SYSTEM_PROMPT,
         max_tokens=1024,
+        _cache=_cache,
     )
 
     if not llm_response:
