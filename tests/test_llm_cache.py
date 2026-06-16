@@ -15,6 +15,7 @@ import pytest
 
 from drbrain.extractor.cache import ApiCache
 from drbrain.extractor.llm_client import (
+    _build_litellm_kwargs,
     _cache_key,
     acall_text_with_fallback,
     acall_with_fallback,
@@ -55,6 +56,55 @@ class TestCacheKey:
         key = _cache_key("m", "s", "p", 1)
         assert len(key) == 16
         int(key, 16)  # must be valid hex
+
+
+# ── _build_litellm_kwargs prompt caching ─────────────────────────────────
+
+
+class TestBuildKwargsPromptCaching:
+    """Anthropic prompt caching: cache_control on long system prompts."""
+
+    def test_anthropic_long_system_prompt_gets_cache_control(self):
+        """System prompt >= 4000 chars on Anthropic gets cache_control block."""
+        cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        long_sys = "x" * 5000
+        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        sys_msg = kwargs["messages"][0]
+        assert sys_msg["role"] == "system"
+        assert isinstance(sys_msg["content"], list)
+        block = sys_msg["content"][0]
+        assert block["cache_control"] == {"type": "ephemeral"}
+        assert block["text"] == long_sys
+
+    def test_anthropic_short_system_prompt_no_cache_control(self):
+        """Short system prompt (<4000) stays plain string even on Anthropic."""
+        cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        kwargs = _build_litellm_kwargs(cfg, "hi", "short sys", 100)
+        sys_msg = kwargs["messages"][0]
+        assert isinstance(sys_msg["content"], str)
+
+    def test_non_anthropic_no_cache_control(self):
+        """OpenAI/others never get cache_control even with long prompts."""
+        cfg = {"provider": "openai", "model": "gpt-4o"}
+        long_sys = "x" * 5000
+        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        sys_msg = kwargs["messages"][0]
+        assert isinstance(sys_msg["content"], str)
+
+    def test_claude_in_model_name_also_triggers(self):
+        """Provider 'openai' but model name contains 'claude' (proxy) triggers."""
+        cfg = {"provider": "openai", "model": "claude-3-opus", "api_base": "https://proxy"}
+        long_sys = "x" * 4500
+        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        sys_msg = kwargs["messages"][0]
+        assert isinstance(sys_msg["content"], list)
+        assert sys_msg["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_no_system_prompt_skips_block(self):
+        """Empty system_prompt → no system message at all."""
+        cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
+        kwargs = _build_litellm_kwargs(cfg, "hi", "", 100)
+        assert kwargs["messages"][0]["role"] == "user"
 
 
 # ── call_with_fallback (sync) ────────────────────────────────────────────

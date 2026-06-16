@@ -45,7 +45,22 @@ def _build_litellm_kwargs(
 ) -> dict:
     name = f"{model_cfg['provider']}/{model_cfg['model']}"
     messages = []
-    if system_prompt:
+    # Anthropic prompt caching: mark long system prompts as ephemeral cache
+    # points. Anthropic bills cached input tokens at ~10% of normal rate,
+    # so reusing a shared system prompt across many calls is a big saving.
+    # Threshold ~4000 chars ≈ 1000 tokens (Anthropic's minimum cacheable block).
+    provider = model_cfg.get("provider", "")
+    is_anthropic = provider in ("anthropic", "claude") or "claude" in model_cfg.get("model", "")
+    if system_prompt and is_anthropic and len(system_prompt) >= 4000:
+        messages.append(
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+                ],
+            }
+        )
+    elif system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
