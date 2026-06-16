@@ -178,7 +178,7 @@ def test_backward_compat_list_dirs_values():
     assert "data/spool/inbox" in dir_paths
     assert "data/papers" in dir_paths
     assert "data/logs" in dir_paths
-    assert len(dir_paths) == 6
+    assert len(dir_paths) == 8
 
 
 def test_backward_compat_api_get_chained():
@@ -462,3 +462,60 @@ def test_config_isinstance_checks():
     assert isinstance(c, Config)
     assert isinstance(c.dirs, DirsConfig)
     assert isinstance(c.api, ApiConfig)
+
+
+# ── DirsConfig new fields tests ──
+
+
+def test_dirs_config_has_backups_field():
+    """DirsConfig has a backups directory field."""
+    cfg = DirsConfig()
+    assert hasattr(cfg, "backups")
+    assert cfg.backups == "data/backups"
+
+
+def test_dirs_config_has_citation_styles_field():
+    """DirsConfig has a citation_styles directory field."""
+    cfg = DirsConfig()
+    assert hasattr(cfg, "citation_styles")
+    assert cfg.citation_styles == "data/citation_styles"
+
+
+def test_dirs_config_backups_from_yaml():
+    """backups field is parsed from YAML."""
+    import yaml
+
+    config = {"dirs": {"backups": "/custom/backups"}}
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        yaml.dump(config, f)
+        f.flush()
+        fname = f.name
+    try:
+        cfg = Config.from_yaml(fname)
+    finally:
+        os.unlink(fname)
+    assert cfg.dirs.backups == "/custom/backups"
+
+
+def test_dirs_config_citation_styles_from_yaml():
+    """citation_styles field is parsed from YAML."""
+    import yaml
+
+    config = {"dirs": {"citation_styles": "/custom/styles"}}
+    with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
+        yaml.dump(config, f)
+        f.flush()
+        fname = f.name
+    try:
+        cfg = Config.from_yaml(fname)
+    finally:
+        os.unlink(fname)
+    assert cfg.dirs.citation_styles == "/custom/styles"
+
+
+def test_dirs_config_new_fields_in_values():
+    """backups and citation_styles appear in dirs.values()."""
+    c = DirsConfig()
+    vals = list(c.values())
+    assert "data/backups" in vals
+    assert "data/citation_styles" in vals

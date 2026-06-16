@@ -74,6 +74,8 @@ class DirsConfig(_ConfigBase):
     reports: str = "data/reports"
     cache: str = "data/cache"
     logs: str = "data/logs"
+    backups: str = "data/backups"
+    citation_styles: str = "data/citation_styles"
 
 
 @dataclass
