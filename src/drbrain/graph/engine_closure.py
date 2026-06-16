@@ -12,7 +12,7 @@ from datetime import datetime
 
 import networkx as nx
 
-from drbrain.graph.path_reasoning import _apply_path_rules_subgraph, apply_path_rules
+from drbrain.graph.path_reasoning import _apply_path_rules_subgraph
 from drbrain.validator.schema import detect_asymmetric_violations, enforce_transitive
 
 
@@ -23,37 +23,18 @@ class ClosureMixin:
     ``self._transE`` (cached TransE instance or None).
     """
 
-    def closure(
-        self,
-        section_map: dict[str, str] | None = None,
-        mode: str = "symbolic",
-    ) -> list[dict]:
-        """Run rule-based closure, return inferred edges.
+    # ------------------------------------------------------------------
+    # Shared rule-application kernel (called by both closure paths)
+    # ------------------------------------------------------------------
 
-        Args:
-            section_map: Optional mapping of node label → section title.
-                When provided, each inferred edge gets a ``confidence`` field
-                computed via section-aware decay.
-            mode: ``"symbolic"`` (default) for rule-based inference only,
-                or ``"hybrid"`` to additionally weight confidence via TransE
-                embedding scores.
+    def _apply_closure_rules(self, graph) -> list[dict]:
+        """Apply all closure rules to a graph, return inferred edges.
 
-        Rules:
-        - challenges(P, C) & supports(Q, C) => creates_debate(P, Q, C)
-        - leaves_open(P, G) & addresses(Q, G) => gap_addressed(G, Q)
-        - extends(M1, M2) & replaces(M2, M3) => indirect_evolution(M1, M3)
+        Shared by ``closure()`` and ``closure_incremental()`` so that the
+        rule book stays in one place.  *graph* is a ``nx.MultiDiGraph`` —
+        either ``self.graph`` (full graph) or a neighbourhood subgraph
+        built by ``closure_incremental()``.
         """
-        import time as _time
-
-        from loguru import logger as _cl_log
-
-        _t0 = _time.monotonic()
-        node_count = self.graph.number_of_nodes()
-        edge_count = self.graph.number_of_edges()
-        _cl_log.info(f"[closure] starting mode={mode} nodes={node_count} edges={edge_count}")
-
-        inferred: list[dict] = []
-
         # Build relation indices
         challenges: dict[str, list[str]] = defaultdict(list)
         supports: dict[str, list[str]] = defaultdict(list)
@@ -64,7 +45,7 @@ class ClosureMixin:
         points_to: dict[str, list[str]] = defaultdict(list)
         constrains: dict[str, list[str]] = defaultdict(list)
 
-        for u, v, data in self.graph.edges(data=True):
+        for u, v, data in graph.edges(data=True):
             rel = data["relation"]
             if rel == "challenges":
                 challenges[v].append(u)
@@ -82,6 +63,8 @@ class ClosureMixin:
                 points_to[u].append(v)
             elif rel == "constrains":
                 constrains[u].append(v)
+
+        inferred: list[dict] = []
 
         # Rule 1: creates_debate
         for conclusion in challenges:
@@ -141,7 +124,7 @@ class ClosureMixin:
 
         # Rule 5: actor_network — Papers sharing an Actor form a research lineage
         actor_papers: dict[str, list[str]] = defaultdict(list)
-        for u, v, data in self.graph.edges(data=True):
+        for u, v, data in graph.edges(data=True):
             if data["relation"] == "affiliated_with":
                 actor_papers[v].append(u)
         for actor, papers in actor_papers.items():
@@ -160,7 +143,7 @@ class ClosureMixin:
         # Rule 6: Transitive closure for RBOX transitive relations
         edge_list = [
             {"src": u, "dst": v, "relation": data["relation"], "source_paper": data["source"]}
-            for u, v, data in self.graph.edges(data=True)
+            for u, v, data in graph.edges(data=True)
         ]
         transitive_inferred = enforce_transitive(edge_list)
         for edge in transitive_inferred:
@@ -173,12 +156,53 @@ class ClosureMixin:
                 }
             )
 
-        # Rule 7: Asymmetric violation detection (logged, not inferred)
-        detect_asymmetric_violations(edge_list)
-
-        # Rule 8: Multi-hop path rules
-        path_inferred = apply_path_rules(self)
+        # Rule 7: Multi-hop path rules
+        path_inferred = _apply_path_rules_subgraph(graph)
         inferred.extend(path_inferred)
+
+        return inferred
+
+    # ------------------------------------------------------------------
+    # Public closure API
+    # ------------------------------------------------------------------
+
+    def closure(
+        self,
+        section_map: dict[str, str] | None = None,
+        mode: str = "symbolic",
+    ) -> list[dict]:
+        """Run rule-based closure, return inferred edges.
+
+        Args:
+            section_map: Optional mapping of node label → section title.
+                When provided, each inferred edge gets a ``confidence`` field
+                computed via section-aware decay.
+            mode: ``"symbolic"`` (default) for rule-based inference only,
+                or ``"hybrid"`` to additionally weight confidence via TransE
+                embedding scores.
+
+        Rules:
+        - challenges(P, C) & supports(Q, C) => creates_debate(P, Q, C)
+        - leaves_open(P, G) & addresses(Q, G) => gap_addressed(G, Q)
+        - extends(M1, M2) & replaces(M2, M3) => indirect_evolution(M1, M3)
+        """
+        import time as _time
+
+        from loguru import logger as _cl_log
+
+        _t0 = _time.monotonic()
+        node_count = self.graph.number_of_nodes()
+        edge_count = self.graph.number_of_edges()
+        _cl_log.info(f"[closure] starting mode={mode} nodes={node_count} edges={edge_count}")
+
+        inferred = self._apply_closure_rules(self.graph)
+
+        # Asymmetric violation detection (logged, not inferred)
+        edge_list = [
+            {"src": u, "dst": v, "relation": data["relation"], "source_paper": data["source"]}
+            for u, v, data in self.graph.edges(data=True)
+        ]
+        detect_asymmetric_violations(edge_list)
 
         # Section-aware confidence propagation
         if section_map:
@@ -215,6 +239,94 @@ class ClosureMixin:
             f"[closure] done in {_t_done:.1f}s — {len(inferred)} edges inferred: {dict(_by_rule)}"
         )
         return inferred
+
+    def closure_incremental(self, seed_nodes: set[str]) -> list[dict]:
+        """Run closure rules only for edges touching seed_nodes.
+
+        Instead of scanning the full graph, build a subgraph containing
+        seed nodes and their 2-hop neighborhood, then run the same
+        closure rules on that subgraph.
+        """
+        if not seed_nodes:
+            return []
+
+        # Build subgraph: seed nodes + 2-hop neighborhood
+        relevant_nodes: set[str] = set()
+        for node in seed_nodes:
+            if node not in self.graph:
+                continue
+            relevant_nodes.add(node)
+            relevant_nodes |= self.get_neighbors(node, hops=2)
+
+        if not relevant_nodes:
+            return []
+
+        sub = nx.MultiDiGraph()
+        for u, v, data in self.graph.edges(data=True):
+            if u in relevant_nodes and v in relevant_nodes:
+                sub.add_edge(
+                    u,
+                    v,
+                    relation=data["relation"],
+                    source=data["source"],
+                    weight=data.get("weight", 1.0),
+                )
+
+        if sub.number_of_edges() == 0:
+            return []
+
+        return self._apply_closure_rules(sub)
+
+    def closure_with_sections(self, conn) -> tuple[list[dict], dict]:
+        """Run closure with section provenance enrichment.
+
+        Reuses existing closure() logic and enriches inferred edges
+        with section context from source/destination concepts.
+
+        Returns (enriched_inferred_edges, meta).
+        """
+
+        # Run standard closure
+        inferred = self.closure()
+
+        # Collect all concept IDs involved (closure uses src/dst = concept IDs)
+        cids: set[str] = set()
+        for edge in inferred:
+            cids.add(str(edge.get("src", "")))
+            cids.add(str(edge.get("dst", "")))
+
+        # Fetch section contexts by concept ID (not label)
+        section_map: dict[str, dict] = {}
+        for cid in cids:
+            if not cid:
+                continue
+            ctx = self._get_section_by_cid(conn, cid)
+            if ctx:
+                section_map[cid] = ctx
+
+        # Enrich edges
+        enriched = []
+        for edge in inferred:
+            enriched_edge = dict(edge)
+            src_cid = str(edge.get("src", ""))
+            dst_cid = str(edge.get("dst", ""))
+            src_ctx = section_map.get(src_cid)
+            dst_ctx = section_map.get(dst_cid)
+            if src_ctx:
+                enriched_edge["src_section"] = src_ctx.get("section", "")
+                enriched_edge["src_node_id"] = src_ctx.get("node_id", "")
+            if dst_ctx:
+                enriched_edge["dst_section"] = dst_ctx.get("section", "")
+                enriched_edge["dst_node_id"] = dst_ctx.get("node_id", "")
+            enriched.append(enriched_edge)
+
+        meta = {
+            "total_inferred": len(enriched),
+            "with_section_provenance": sum(
+                1 for e in enriched if "src_section" in e or "dst_section" in e
+            ),
+        }
+        return enriched, meta
 
     def ground_rules(self, min_confidence: float = 0.5) -> list[dict]:
         """Ground closure rules as concrete edges via path matching (t-norm style).
@@ -535,197 +647,3 @@ class ClosureMixin:
                 )
 
         return seeds
-
-    def closure_incremental(self, seed_nodes: set[str]) -> list[dict]:
-        """Run closure rules only for edges touching seed_nodes.
-
-        Instead of scanning the full graph, build a subgraph containing
-        seed nodes and their 2-hop neighborhood, then run the same
-        closure rules on that subgraph.
-        """
-        if not seed_nodes:
-            return []
-
-        # Build subgraph: seed nodes + 2-hop neighborhood
-        relevant_nodes: set[str] = set()
-        for node in seed_nodes:
-            if node not in self.graph:
-                continue
-            relevant_nodes.add(node)
-            relevant_nodes |= self.get_neighbors(node, hops=2)
-
-        if not relevant_nodes:
-            return []
-
-        sub = nx.MultiDiGraph()
-        for u, v, data in self.graph.edges(data=True):
-            if u in relevant_nodes and v in relevant_nodes:
-                sub.add_edge(
-                    u,
-                    v,
-                    relation=data["relation"],
-                    source=data["source"],
-                    weight=data.get("weight", 1.0),
-                )
-
-        if sub.number_of_edges() == 0:
-            return []
-
-        # Build relation indices for the subgraph
-        challenges: dict[str, list[str]] = defaultdict(list)
-        supports: dict[str, list[str]] = defaultdict(list)
-        leaves_open: dict[str, list[str]] = defaultdict(list)
-        addresses: dict[str, list[str]] = defaultdict(list)
-        extends: dict[str, list[str]] = defaultdict(list)
-        replaces: dict[str, list[str]] = defaultdict(list)
-        points_to: dict[str, list[str]] = defaultdict(list)
-        constrains: dict[str, list[str]] = defaultdict(list)
-
-        for u, v, data in sub.edges(data=True):
-            rel = data["relation"]
-            if rel == "challenges":
-                challenges[v].append(u)
-            elif rel == "supports":
-                supports[v].append(u)
-            elif rel == "leaves_open":
-                leaves_open[v].append(u)
-            elif rel == "addresses":
-                addresses[v].append(u)
-            elif rel == "extends":
-                extends[u].append(v)
-            elif rel == "replaces":
-                replaces[u].append(v)
-            elif rel == "points_to":
-                points_to[u].append(v)
-            elif rel == "constrains":
-                constrains[u].append(v)
-
-        inferred: list[dict] = []
-
-        # Rule: creates_debate
-        for conclusion in challenges:
-            if conclusion in supports:
-                for p in challenges[conclusion]:
-                    for q in supports[conclusion]:
-                        if p != q:
-                            inferred.append(
-                                {
-                                    "src": p,
-                                    "dst": q,
-                                    "relation": "creates_debate",
-                                    "via": conclusion,
-                                }
-                            )
-
-        # Rule: gap_addressed
-        for gap in leaves_open:
-            if gap in addresses:
-                for p in leaves_open[gap]:
-                    for q in addresses[gap]:
-                        inferred.append(
-                            {"src": gap, "dst": q, "relation": "gap_addressed", "via": gap}
-                        )
-
-        # Rule: indirect_evolution
-        for m1 in extends:
-            for m2 in extends[m1]:
-                if m2 in replaces:
-                    for m3 in replaces[m2]:
-                        inferred.append(
-                            {"src": m1, "dst": m3, "relation": "indirect_evolution", "via": m2}
-                        )
-
-        # Rule: gap_to_debate
-        for gap in points_to:
-            for target in points_to[gap]:
-                if target in challenges and target in supports:
-                    inferred.append(
-                        {"src": gap, "dst": target, "relation": "gap_to_debate", "via": target}
-                    )
-
-        # Rule: shared_actor
-        actor_papers: dict[str, list[str]] = defaultdict(list)
-        for u, v, data in sub.edges(data=True):
-            if data["relation"] == "affiliated_with":
-                actor_papers[v].append(u)
-        for actor, papers in actor_papers.items():
-            if len(papers) > 1:
-                for i, p1 in enumerate(papers):
-                    for p2 in papers[i + 1 :]:
-                        inferred.append(
-                            {"src": p1, "dst": p2, "relation": "shared_actor", "via": actor}
-                        )
-
-        # Rule: transitive closure
-        edge_list = [
-            {"src": u, "dst": v, "relation": data["relation"], "source_paper": data["source"]}
-            for u, v, data in sub.edges(data=True)
-        ]
-        from drbrain.validator.schema import enforce_transitive
-
-        for edge in enforce_transitive(edge_list):
-            inferred.append(
-                {
-                    "src": edge["src"],
-                    "dst": edge["dst"],
-                    "relation": edge["relation"],
-                    "via": edge["via"],
-                }
-            )
-
-        # Rule: path rules
-        path_inferred = _apply_path_rules_subgraph(sub)
-        inferred.extend(path_inferred)
-
-        return inferred
-
-    def closure_with_sections(self, conn) -> tuple[list[dict], dict]:
-        """Run closure with section provenance enrichment.
-
-        Reuses existing closure() logic and enriches inferred edges
-        with section context from source/destination concepts.
-
-        Returns (enriched_inferred_edges, meta).
-        """
-
-        # Run standard closure
-        inferred = self.closure()
-
-        # Collect all concept IDs involved (closure uses src/dst = concept IDs)
-        cids: set[str] = set()
-        for edge in inferred:
-            cids.add(str(edge.get("src", "")))
-            cids.add(str(edge.get("dst", "")))
-
-        # Fetch section contexts by concept ID (not label)
-        section_map: dict[str, dict] = {}
-        for cid in cids:
-            if not cid:
-                continue
-            ctx = self._get_section_by_cid(conn, cid)
-            if ctx:
-                section_map[cid] = ctx
-
-        # Enrich edges
-        enriched = []
-        for edge in inferred:
-            enriched_edge = dict(edge)
-            src_cid = str(edge.get("src", ""))
-            dst_cid = str(edge.get("dst", ""))
-            src_ctx = section_map.get(src_cid)
-            dst_ctx = section_map.get(dst_cid)
-            if src_ctx:
-                enriched_edge["src_section"] = src_ctx.get("section", "")
-                enriched_edge["src_node_id"] = src_ctx.get("node_id", "")
-            if dst_ctx:
-                enriched_edge["dst_section"] = dst_ctx.get("section", "")
-                enriched_edge["dst_node_id"] = dst_ctx.get("node_id", "")
-            enriched.append(enriched_edge)
-
-        meta = {
-            "total_inferred": len(enriched),
-            "with_section_provenance": sum(
-                1 for e in enriched if "src_section" in e or "dst_section" in e
-            ),
-        }
-        return enriched, meta
