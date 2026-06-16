@@ -179,3 +179,22 @@ def test_closure_includes_path_rules():
     )
     inferred = g.closure()
     assert any(e["relation"] == "supersedes_address" for e in inferred)
+
+
+# -- duck-typing guard --
+
+
+def test_apply_path_rules_non_engine_returns_empty():
+    """apply_path_rules returns [] for objects without .graph attribute (duck typing)."""
+    assert apply_path_rules("not a graph") == []
+    assert apply_path_rules(42) == []
+    assert apply_path_rules(None) == []
+
+
+class _FakeGraph:
+    """Minimal duck-typed graph: has .graph but is NOT a GraphEngine."""
+
+    def __init__(self):
+        import networkx as nx
+
+        self.graph = nx.MultiDiGraph()

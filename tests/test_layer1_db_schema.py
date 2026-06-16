@@ -176,3 +176,31 @@ def test_migration_adds_node_id_to_existing_db():
         assert row[0] == ""
 
         db.conn.close()
+
+
+def test_performance_indexes_exist():
+    """Phase 2: critical performance indexes exist after DB creation."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        indexes = {
+            r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+
+        # These indexes were added in Phase 2.1 to eliminate slow table scans
+        assert "idx_concepts_local_id" in indexes
+        assert "idx_edges_dst" in indexes
+        assert "idx_edges_source_paper" in indexes
+        assert "idx_tree_vectors_paper" in indexes
+        assert "idx_tree_summaries_paper" in indexes
+        assert "idx_citation_cache_target" in indexes
+
+
+def test_pragma_wal_mode_and_busy_timeout():
+    """Phase 2: DB opens with WAL mode and busy_timeout for concurrency."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        journal_mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert journal_mode == "wal"
+
+        busy = db.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert busy >= 5000
