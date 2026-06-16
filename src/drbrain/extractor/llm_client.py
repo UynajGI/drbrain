@@ -30,6 +30,27 @@ def _cache_key(model_name: str, system_prompt: str, prompt: str, max_tokens: int
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def _messages_cache_key(
+    models: list[dict], messages: list[dict], max_tokens: int, temperature: float
+) -> str:
+    """Stable hash key for call_with_messages / acall_with_messages.
+
+    Returns the first 16 hex chars of sha256 over model name, messages,
+    max_tokens, and temperature.
+    """
+    raw = json.dumps(
+        {
+            "model": f"{models[0]['provider']}/{models[0]['model']}",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 class LLMClient:
     """Calls LLM with provider/model from config, supports fallback chain."""
 
@@ -247,6 +268,8 @@ def call_with_messages(
     max_tokens: int = 1024,
     temperature: float = 0.3,
     timeout: int = 60,
+    *,
+    _cache: ApiCache | None = None,
 ) -> dict | None:
     """Call LLM with pre-built messages list (supports multi-turn conversation).
 
@@ -259,6 +282,16 @@ def call_with_messages(
         or None if all models fail.
     """
     logger.info("[llm] call_with_messages — %d models, %d messages", len(models), len(messages))
+
+    # Cache lookup
+    key: str | None = None
+    if _cache is not None and models:
+        key = _messages_cache_key(models, messages, max_tokens, temperature)
+        cached = _cache.get(key)
+        if cached is not None:
+            logger.info(f"[llm] call_with_messages cache hit (key={key})")
+            return cached
+
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -286,7 +319,7 @@ def call_with_messages(
             logger.info(f"[llm] call_with_messages success: {name} in {elapsed}ms")
 
             usage = response.usage
-            return {
+            result = {
                 "text": msg.content or "",
                 "tool_calls": _extract_tool_calls(msg),
                 "usage": {
@@ -294,6 +327,9 @@ def call_with_messages(
                     "out": usage.completion_tokens if usage else 0,
                 },
             }
+            if _cache is not None and key is not None:
+                _cache.set(key, result)
+            return result
         except Exception as e:
             logger.warning(
                 f"[llm] call_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
@@ -310,9 +346,21 @@ async def acall_with_messages(
     max_tokens: int = 1024,
     temperature: float = 0.3,
     timeout: int = 60,
+    *,
+    _cache: ApiCache | None = None,
 ) -> dict | None:
     """Async version of call_with_messages."""
     logger.info("[llm] acall_with_messages — %d models, %d messages", len(models), len(messages))
+
+    # Cache lookup
+    key: str | None = None
+    if _cache is not None and models:
+        key = _messages_cache_key(models, messages, max_tokens, temperature)
+        cached = _cache.get(key)
+        if cached is not None:
+            logger.info(f"[llm] acall_with_messages cache hit (key={key})")
+            return cached
+
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
@@ -340,7 +388,7 @@ async def acall_with_messages(
             logger.info(f"[llm] acall_with_messages success: {name} in {elapsed}ms")
 
             usage = response.usage
-            return {
+            result = {
                 "text": msg.content or "",
                 "tool_calls": _extract_tool_calls(msg),
                 "usage": {
@@ -348,6 +396,9 @@ async def acall_with_messages(
                     "out": usage.completion_tokens if usage else 0,
                 },
             }
+            if _cache is not None and key is not None:
+                _cache.set(key, result)
+            return result
         except Exception as e:
             logger.warning(
                 f"[llm] acall_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"

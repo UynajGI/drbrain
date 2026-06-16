@@ -19,7 +19,9 @@ from drbrain.extractor.llm_client import (
     _cache_key,
     acall_text_with_fallback,
     acall_with_fallback,
+    acall_with_messages,
     call_with_fallback,
+    call_with_messages,
 )
 
 MODELS = [{"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-test"}]
@@ -205,4 +207,99 @@ class TestAcallTextWithFallbackCache:
 
         assert r1 == "plain text response"
         assert r2 == "plain text response"
+        assert call_count[0] == 1  # second call hit cache
+
+
+# ── call_with_messages cache ─────────────────────────────────────────────
+
+
+def _mock_messages_response(text: str):
+    """Build a fake litellm response for call_with_messages."""
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message.content = text
+    resp.choices[0].message.tool_calls = None
+    resp.usage = MagicMock(prompt_tokens=20, completion_tokens=10)
+    return resp
+
+
+class TestCallWithMessagesCache:
+    def test_second_identical_call_hits_cache(self, tmp_path):
+        """Second identical call_with_messages must NOT invoke litellm.completion."""
+        cache = ApiCache(str(tmp_path / "msg_cache"), ttl=3600)
+        call_count = [0]
+        msgs = [{"role": "user", "content": "hello"}]
+
+        def _fake_completion(**kwargs):
+            call_count[0] += 1
+            return _mock_messages_response("hi there")
+
+        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+            mock_litellm.completion.side_effect = _fake_completion
+            r1 = call_with_messages(msgs, MODELS, _cache=cache)
+            r2 = call_with_messages(msgs, MODELS, _cache=cache)
+
+        assert r1 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
+        assert r2 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
+        assert call_count[0] == 1  # second call hit cache
+
+    def test_different_messages_produce_cache_miss(self, tmp_path):
+        """Different messages must NOT hit cache — each invokes the LLM."""
+        cache = ApiCache(str(tmp_path / "msg_cache"), ttl=3600)
+        call_count = [0]
+        msgs_a = [{"role": "user", "content": "hello"}]
+        msgs_b = [{"role": "user", "content": "goodbye"}]
+
+        def _fake_completion(**kwargs):
+            call_count[0] += 1
+            return _mock_messages_response("response")
+
+        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+            mock_litellm.completion.side_effect = _fake_completion
+            call_with_messages(msgs_a, MODELS, _cache=cache)
+            call_with_messages(msgs_b, MODELS, _cache=cache)
+
+        assert call_count[0] == 2
+
+    def test_no_cache_backward_compat_messages(self):
+        """Without _cache, every call_with_messages hits litellm."""
+        call_count = [0]
+        msgs = [{"role": "user", "content": "hello"}]
+
+        def _fake_completion(**kwargs):
+            call_count[0] += 1
+            return _mock_messages_response("response")
+
+        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+            mock_litellm.completion.side_effect = _fake_completion
+            r1 = call_with_messages(msgs, MODELS)
+            r2 = call_with_messages(msgs, MODELS)
+
+        assert r1["text"] == "response"
+        assert r2["text"] == "response"
+        assert call_count[0] == 2
+
+
+# ── acall_with_messages cache ───────────────────────────────────────────
+
+
+class TestAcallWithMessagesCache:
+    @pytest.mark.asyncio
+    async def test_second_identical_call_hits_cache(self, tmp_path):
+        """Second identical acall_with_messages must NOT invoke litellm.acompletion."""
+        cache = ApiCache(str(tmp_path / "async_msg_cache"), ttl=3600)
+        call_count = [0]
+        msgs = [{"role": "user", "content": "hello"}]
+
+        async def _fake_acompletion(**kwargs):
+            call_count[0] += 1
+            return _mock_messages_response("async hi")
+
+        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+            mock_litellm.acompletion.side_effect = _fake_acompletion
+            r1 = await acall_with_messages(msgs, MODELS, _cache=cache)
+            r2 = await acall_with_messages(msgs, MODELS, _cache=cache)
+
+        assert r1["text"] == "async hi"
+        assert r2["text"] == "async hi"
         assert call_count[0] == 1  # second call hit cache
