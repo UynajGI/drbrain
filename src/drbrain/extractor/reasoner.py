@@ -98,6 +98,7 @@ class ReasonerAgent:
                 import litellm
 
                 model = self.models[0]
+                # TODO: add fallback to self.models[1:] on failure, like _call_llm
                 name = f"{model['provider']}/{model['model']}"
                 kwargs = {
                     "model": name,
@@ -113,7 +114,7 @@ class ReasonerAgent:
                 if model.get("base_url"):
                     kwargs["api_base"] = model["base_url"]
 
-                resp = litellm.completion(**kwargs)
+                resp = await litellm.acompletion(**kwargs)
                 msg = resp.choices[0].message
 
                 if msg.tool_calls:
