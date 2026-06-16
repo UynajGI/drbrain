@@ -89,7 +89,10 @@ def _collect_reachable_labels(
             continue
         neighbors = g.successors(node) if direction == "out" else g.predecessors(node)
         for nb in neighbors:
-            for edge_data in g[node][nb].values():
+            # Edge direction differs: successors have g[node][nb], predecessors
+            # have g[nb][node]. Access the correct adjacency to avoid KeyError.
+            adj = g[node][nb] if direction == "out" else g[nb][node]
+            for edge_data in adj.values():
                 if edge_data.get("relation", "") in relations:
                     if nb not in visited:
                         visited.add(nb)
@@ -622,11 +625,18 @@ def landscape_workspace(
         paper_ids,
     ).fetchall()
 
+    # Batch-preload concepts per paper (eliminates N+1: was 1 query per paper).
+    # Load all matching concepts, then slice top-5 per paper in Python.
+    concept_rows = db.conn.execute(
+        f"SELECT local_id, label, type FROM concepts WHERE local_id IN ({placeholders})",
+        paper_ids,
+    ).fetchall()
+    paper_concepts: dict[str, list[tuple[str, str]]] = {}
+    for local_id, label, ctype in concept_rows:
+        paper_concepts.setdefault(local_id, []).append((label, ctype))
+
     for row in rows:
-        concepts = db.conn.execute(
-            "SELECT label, type FROM concepts WHERE local_id = ? LIMIT 5",
-            (row[0],),
-        ).fetchall()
+        concepts = paper_concepts.get(row[0], [])[:5]
 
         result["timeline"].append(
             {
@@ -1009,30 +1019,26 @@ def find_transfer_history(db: Database, graph: GraphEngine) -> list[dict]:
     if not edges:
         return []
 
+    # Batch-preload concept label → (title, year) to eliminate N+1.
+    # Previously: 3 SQL queries per edge (year + src_title + tgt_title).
+    # Now: a single JOIN query builds the lookup before the loop.
+    label_info: dict[str, tuple[str | None, int | None]] = {}
+    info_rows = db.conn.execute(
+        "SELECT c.label, "
+        "(SELECT p.title FROM papers p WHERE p.local_id = c.local_id LIMIT 1) AS title, "
+        "(SELECT p.year FROM papers p WHERE p.local_id = c.local_id AND p.year IS NOT NULL "
+        "ORDER BY p.year LIMIT 1) AS year "
+        "FROM concepts c GROUP BY c.label"
+    ).fetchall()
+    for label, title, year in info_rows:
+        label_info[label] = (title, year)
+
     results: list[dict] = []
     for src_id, dst_id, conf in edges:
-        # Get year from the target concept's paper
-        year_row = db.conn.execute(
-            "SELECT p.year FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL ORDER BY p.year LIMIT 1",
-            (dst_id,),
-        ).fetchone()
-        year = year_row[0] if year_row else None
-
-        # Get source concept's paper for context
-        src_row = db.conn.execute(
-            "SELECT p.title FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? LIMIT 1",
-            (src_id,),
-        ).fetchone()
-        src_title = src_row[0][:80] if src_row else src_id
-
-        tgt_row = db.conn.execute(
-            "SELECT p.title FROM papers p JOIN concepts c ON c.local_id = p.local_id "
-            "WHERE c.label = ? LIMIT 1",
-            (dst_id,),
-        ).fetchone()
-        tgt_title = tgt_row[0][:80] if tgt_row else dst_id
+        src_title_src, _ = label_info.get(src_id, (None, None))
+        tgt_title, year = label_info.get(dst_id, (None, None))
+        src_title = (src_title_src or src_id)[:80]
+        tgt_title = (tgt_title or dst_id)[:80]
 
         results.append(
             {
