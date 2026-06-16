@@ -305,7 +305,7 @@ def test_md_to_tree_with_fallback_header(tmp_path):
     assert result.doc_name == "test"
 
 
-@mock.patch("drbrain.parser.pageindex_parser._extract_pdf_outline")
+@mock.patch("drbrain.parser.pageindex._core._extract_pdf_outline")
 def test_md_to_tree_with_fallback_outline(mock_outline, tmp_path):
     """When markdown has no headers but PDF has outline, builds tree from TOC."""
     import asyncio
@@ -340,7 +340,7 @@ def test_md_to_tree_with_fallback_outline(mock_outline, tmp_path):
     assert "Methods" in titles
 
 
-@mock.patch("drbrain.parser.pageindex_parser.acall_text_with_fallback")
+@mock.patch("drbrain.parser.pageindex._core.acall_text_with_fallback")
 def test_md_to_tree_with_fallback_llm(mock_llm, tmp_path):
     """When no headers and no PDF outline, falls back to LLM segmentation."""
     import asyncio

@@ -1,8 +1,6 @@
-"""Backward-compatibility proxy for pageindex_parser.py.
+"""PageIndex parser package — split from pageindex_parser.py monolith."""
 
-Implementation moved to the pageindex package.
-"""
-
+from drbrain.parser.pageindex._core import *  # noqa: F401, F403
 from drbrain.parser.pageindex._core import (  # noqa: F401
     DocumentTree,
     TreeConfig,
