@@ -437,8 +437,8 @@ class MinerUParser:
             md = pymupdf4llm.to_markdown(str(pdf_path))
             if md.strip():
                 return md
-        except Exception:
-            pass
+        except Exception as e:
+            _parse_log.debug("pymupdf4llm failed, falling back to plain text: {}", e)
 
         # Last resort: plain text
         import fitz
@@ -730,7 +730,8 @@ def _fetch_arxiv_metadata(arxiv_id: str) -> tuple[str | None, int | None]:
         paper = next(client.results(search))
         year = paper.published.year if paper.published else None
         return paper.title, year
-    except Exception:
+    except Exception as e:
+        _parse_log.debug("arXiv metadata fetch failed, inferring year from ID: {}", e)
         # Fallback: infer year from arXiv ID (1706.03762 → 2017)
         m = re.match(r"(\d{2})(\d{2})\.\d{4,5}", arxiv_id)
         if m:
@@ -761,8 +762,8 @@ def _fetch_openalex_metadata(
                 journal = source.get("display_name") or ""
             cited = w.get("cited_by_count") or 0
             return w.get("title"), w.get("publication_year"), oa_id or None, journal, cited
-    except Exception:
-        pass
+    except Exception as e:
+        _parse_log.debug("OpenAlex metadata fetch failed: {}", e)
     return None, None, None, None, 0
 
 
@@ -799,8 +800,8 @@ def _fetch_s2_metadata(
                 journal,
                 p.get("citationCount") or 0,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        _parse_log.debug("S2 metadata fetch failed: {}", e)
     return None, None, None, None, 0
 
 
@@ -826,7 +827,8 @@ def _fetch_deepxiv_metadata(arxiv_id: str, token: str = "") -> dict | None:
             "keywords": data.get("keywords", []),
             "citations": data.get("citations"),
         }
-    except Exception:
+    except Exception as e:
+        _parse_log.debug("DeepXiv metadata fetch failed: {}", e)
         return None
 
 
@@ -857,8 +859,8 @@ def _fetch_crossref_metadata(
             journal = item.get("container-title", [None])[0] or ""
             publisher = item.get("publisher", "")
             return cr_title, year, doi, journal, publisher
-    except Exception:
-        pass
+    except Exception as e:
+        _parse_log.debug("CrossRef metadata fetch failed: {}", e)
     return None, None, None, None, None
 
 
