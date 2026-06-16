@@ -530,21 +530,43 @@ def _resolve_metadata(
     """
     sources: dict[str, dict] = {}
 
-    # ── arXiv ──
-    if arxiv:
-        arxiv_title, arxiv_year = _fetch_arxiv_metadata(arxiv)
-        if arxiv_title or arxiv_year:
-            sources["arxiv"] = {
-                "title": arxiv_title,
-                "year": arxiv_year,
-                "doi": None,
-                "s2_id": None,
-                "openalex_id": None,
-            }
+    from concurrent.futures import ThreadPoolExecutor
 
-    # ── CrossRef (keyed by title from arXiv, or raw title) ──
-    search_title = sources.get("arxiv", {}).get("title") or raw_title or ""
-    if search_title:
+    # Determine the search title: prefer arxiv result, fall back to raw_title
+    # We run arxiv and deepxiv (which only needs the arxiv ID string) in
+    # parallel with the title-based lookups.  If arxiv returns a title we
+    # use it for the title-based sources; otherwise we fall back to raw_title.
+    _fetched_arxiv_title: str | None = None
+    _fetched_arxiv_year: int | None = None
+
+    def _run_arxiv():
+        nonlocal _fetched_arxiv_title, _fetched_arxiv_year
+        if arxiv:
+            _fetched_arxiv_title, _fetched_arxiv_year = _fetch_arxiv_metadata(arxiv)
+
+    def _run_deepxiv():
+        nonlocal sources
+        if arxiv:
+            dx = _fetch_deepxiv_metadata(arxiv, token=deepxiv_token)
+            if dx and dx.get("title"):
+                sources["deepxiv"] = {
+                    "title": dx["title"],
+                    "year": dx["year"],
+                    "doi": None,
+                    "s2_id": None,
+                    "openalex_id": None,
+                    "journal": "",
+                    "publisher": "",
+                    "citation_count": dx.get("citations") or 0,
+                }
+
+    def _run_title_sources():
+        nonlocal _fetched_arxiv_title, _fetched_arxiv_year, sources
+        search_title = _fetched_arxiv_title or raw_title or ""
+        if not search_title:
+            return
+
+        # CrossRef
         cr_title, cr_year, cr_doi, cr_journal, cr_publisher = _fetch_crossref_metadata(search_title)
         if cr_doi or cr_year:
             sources["crossref"] = {
@@ -558,8 +580,7 @@ def _resolve_metadata(
                 "citation_count": 0,
             }
 
-    # ── OpenAlex ──
-    if search_title:
+        # OpenAlex
         oa_title, oa_year, oa_id, oa_journal, oa_cited = _fetch_openalex_metadata(search_title)
         if oa_title or oa_year:
             sources["openalex"] = {
@@ -573,8 +594,7 @@ def _resolve_metadata(
                 "citation_count": oa_cited,
             }
 
-    # ── Semantic Scholar ──
-    if search_title:
+        # Semantic Scholar
         s2_title, s2_year, s2_id, s2_journal, s2_cited = _fetch_s2_metadata(search_title)
         if s2_title or s2_year:
             sources["s2"] = {
@@ -588,20 +608,28 @@ def _resolve_metadata(
                 "citation_count": s2_cited,
             }
 
-    # ── DeepXiv (arXiv papers, adds TLDR + keywords + citation count) ──
-    if arxiv:
-        dx = _fetch_deepxiv_metadata(arxiv, token=deepxiv_token)
-        if dx and dx.get("title"):
-            sources["deepxiv"] = {
-                "title": dx["title"],
-                "year": dx["year"],
-                "doi": None,
-                "s2_id": None,
-                "openalex_id": None,
-                "journal": "",
-                "publisher": "",
-                "citation_count": dx.get("citations") or 0,
-            }
+    # ── Parallel execution ──
+    # Phase 1: arxiv + deepxiv (both only need arxiv ID string)
+    # Phase 2: title-based sources (need arxiv title or raw_title)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_arxiv = pool.submit(_run_arxiv)
+        pool.submit(_run_deepxiv)
+        f_arxiv.result()  # wait for arxiv to set _fetched_arxiv_title
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pool.submit(_run_title_sources)
+        # deepxiv already done in phase 1; no additional work here
+        # We use max_workers=3 but only submit 1 task to keep it simple
+
+    # Store arxiv source if it returned data
+    if _fetched_arxiv_title or _fetched_arxiv_year:
+        sources["arxiv"] = {
+            "title": _fetched_arxiv_title,
+            "year": _fetched_arxiv_year,
+            "doi": None,
+            "s2_id": None,
+            "openalex_id": None,
+        }
 
     # ── Resolution ──
     final_doi = raw_doi
