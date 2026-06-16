@@ -28,8 +28,9 @@ class TransE:
             relations_set.add(data["relation"])
         if not edges:
             return
-
         self._entity_list = list(entities_set)
+        if len(self._entity_list) < 2:
+            return
         rng = np.random.default_rng(42)
         scale = np.sqrt(6.0 / self.dim)
         for e in entities_set:
@@ -50,7 +51,7 @@ class TransE:
                 if h not in self.entities or t not in self.entities or r not in self.relations:
                     continue
                 neg_t = self._entity_list[rng.integers(len(self._entity_list))]
-                while neg_t == t:
+                while neg_t == t or neg_t == h:
                     neg_t = self._entity_list[rng.integers(len(self._entity_list))]
 
                 h_vec = self.entities[h]
