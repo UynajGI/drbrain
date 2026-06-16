@@ -668,6 +668,7 @@ class Database:
         - contested: avg_confidence < 0.7, paper_count > 5
         - resurging: dormant > 3 years, then new papers in last 2 years
         """
+        from collections import defaultdict
         from datetime import datetime
 
         current_year = datetime.now().year
@@ -680,6 +681,19 @@ class Database:
             "GROUP BY c.label, c.type"
         ).fetchall()
 
+        # Batch-preload (label, type) → {year: count} to eliminate N+1 queries.
+        # Previously _has_resurgence / _is_growing each ran a SQL query per label;
+        # with L labels this was up to 2L extra queries. Now it's a single query.
+        year_rows = self.conn.execute(
+            "SELECT c.label, c.type, p.year, COUNT(*) as cnt "
+            "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+            "WHERE p.year IS NOT NULL "
+            "GROUP BY c.label, c.type, p.year"
+        ).fetchall()
+        label_years: dict[tuple[str, str], dict[int, int]] = defaultdict(dict)
+        for lbl, ctype, year, cnt in year_rows:
+            label_years[(lbl, ctype)][year] = cnt
+
         signals = []
         for label, ctype, first_seen, last_seen, paper_count, avg_conf in rows:
             signal = self._classify_signal(
@@ -690,6 +704,7 @@ class Database:
                 paper_count,
                 avg_conf,
                 current_year,
+                label_years=label_years.get((label, ctype)),
             )
             signals.append(
                 {
@@ -713,12 +728,16 @@ class Database:
         paper_count: int,
         avg_conf: float,
         current_year: int,
+        *,
+        label_years: dict[int, int] | None = None,
     ) -> str:
         if paper_count > 5 and avg_conf < 0.7:
             return "contested"
-        if self._has_resurgence(label, current_year):
+        if self._has_resurgence(label, current_year, label_years=label_years):
             return "resurging"
-        if first_seen >= current_year - 2 and self._is_growing(label, current_year):
+        if first_seen >= current_year - 2 and self._is_growing(
+            label, current_year, label_years=label_years
+        ):
             return "emerging"
         if last_seen < current_year - 3:
             return "declining"
@@ -726,24 +745,44 @@ class Database:
             return "established"
         return "unknown"
 
-    def _has_resurgence(self, label: str, current_year: int) -> bool:
-        rows = self.conn.execute(
-            "SELECT DISTINCT p.year FROM concepts c JOIN papers p ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL ORDER BY p.year",
-            (label,),
-        ).fetchall()
-        years = sorted([r[0] for r in rows])
+    def _has_resurgence(
+        self,
+        label: str,
+        current_year: int,
+        *,
+        label_years: dict[int, int] | None = None,
+    ) -> bool:
+        if label_years is not None:
+            years = sorted(label_years.keys())
+        else:
+            # Fallback: single-label query (used by get_concept_signal)
+            rows = self.conn.execute(
+                "SELECT DISTINCT p.year FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+                "WHERE c.label = ? AND p.year IS NOT NULL ORDER BY p.year",
+                (label,),
+            ).fetchall()
+            years = sorted([r[0] for r in rows])
         if len(years) < 2:
             return False
         has_gap = any(years[i] - years[i - 1] > 3 for i in range(1, len(years)))
         return has_gap and years[-1] >= current_year - 1
 
-    def _is_growing(self, label: str, current_year: int) -> bool:
-        rows = self.conn.execute(
-            "SELECT p.year, COUNT(*) as cnt FROM concepts c JOIN papers p ON c.local_id = p.local_id "
-            "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
-            (label,),
-        ).fetchall()
+    def _is_growing(
+        self,
+        label: str,
+        current_year: int,
+        *,
+        label_years: dict[int, int] | None = None,
+    ) -> bool:
+        if label_years is not None:
+            rows = sorted(label_years.items())  # [(year, count), ...]
+        else:
+            # Fallback: single-label query (used by get_concept_signal)
+            rows = self.conn.execute(
+                "SELECT p.year, COUNT(*) as cnt FROM concepts c JOIN papers p ON c.local_id = p.local_id "
+                "WHERE c.label = ? AND p.year IS NOT NULL GROUP BY p.year ORDER BY p.year",
+                (label,),
+            ).fetchall()
         if len(rows) < 2:
             return False
         mid = len(rows) // 2
