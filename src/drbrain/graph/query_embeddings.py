@@ -19,8 +19,16 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10))
 
 
-def _load_embeddings_for_query(db) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    """Load embeddings from DB and separate into entities and relations."""
+def _load_embeddings_for_query(
+    db, cached: tuple[dict[str, np.ndarray], dict[str, np.ndarray]] | None = None
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Load embeddings from DB and separate into entities and relations.
+
+    If *cached* is provided (non-None), returns it directly without hitting
+    the DB.  This allows callers to reuse an already-loaded embedding cache.
+    """
+    if cached is not None:
+        return cached
     raw = db.load_embeddings()
     entities: dict[str, np.ndarray] = {}
     relations: dict[str, np.ndarray] = {}
@@ -134,6 +142,7 @@ def query_embed(
     db,
     query: dict,
     top_k: int = 10,
+    _cached_embeddings: tuple[dict[str, np.ndarray], dict[str, np.ndarray]] | None = None,
 ) -> list[dict]:
     """Execute embedding-based complex query over TransE embeddings.
 
@@ -147,11 +156,14 @@ def query_embed(
         db: Database instance with load_embeddings() method.
         query: DSL query dict.
         top_k: Number of results to return.
+        _cached_embeddings: Optional (entities, relations) tuple to
+            avoid re-loading from DB.  GraphEngine passes its cached
+            TransE entities/relations when available.
 
     Returns:
         List of [{"label": ..., "score": ...}, ...] sorted by score descending.
     """
-    entities, relations = _load_embeddings_for_query(db)
+    entities, relations = _load_embeddings_for_query(db, cached=_cached_embeddings)
 
     return _evaluate(query, entities, relations, top_k)
 

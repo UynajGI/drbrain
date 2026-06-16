@@ -147,3 +147,11 @@ class EmbeddingsMixin:
                     else:
                         t.entities[key] = vec
                 self._transE = t
+
+    def invalidate_embeddings(self) -> None:
+        """Clear the in-memory embedding cache.
+
+        Call after modifying the graph or embeddings table so that
+        subsequent operations reload fresh data.
+        """
+        self._transE = None
