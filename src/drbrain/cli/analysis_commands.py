@@ -72,6 +72,12 @@ def reason_cmd(
         "-s",
         help="Use persistent session. 'new' to create, or existing session ID.",
     ),
+    workflow: str = typer.Option(
+        None,
+        "--workflow",
+        "-w",
+        help="Use a structured reasoning workflow: causal|contradiction|temporal|hypothesis",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     cfg = ctx.obj["config"]
@@ -79,6 +85,48 @@ def reason_cmd(
     graph = GraphEngine()
     graph.load_from_db(db)
 
+    models = cfg.get("llm", {}).get("models", [])
+    if not models:
+        typer.echo("No LLM models configured. Run: drbrain setup", err=True)
+        db.close()
+        raise typer.Exit(1)
+
+    # ── Workflow path (structured pipeline) ──
+    if workflow:
+        from drbrain.reasoning import WorkflowContext, get_workflow
+
+        try:
+            wf = get_workflow(workflow)
+        except ValueError as e:
+            typer.echo(str(e), err=True)
+            db.close()
+            raise typer.Exit(1)
+
+        typer.echo(f"Workflow [{wf.name}]: {question}\n")
+        wf_ctx = WorkflowContext(db=db, graph=graph, models=models, question=question)
+        results = wf.execute(wf_ctx)
+
+        # Print results — the last step is usually the LLM synthesis
+        for step_name, result in results.items():
+            if result is None:
+                continue
+            step = next((s for s in wf.steps if s.name == step_name), None)
+            if step and step.requires_llm:
+                typer.echo(f"\n{'─' * 60}")
+                typer.echo(f"Result [{step_name}]:")
+                typer.echo(f"{'─' * 60}")
+                typer.echo(result)
+            elif isinstance(result, dict):
+                typer.echo(f"[{step_name}] {result}")
+            elif isinstance(result, list) and result:
+                typer.echo(f"[{step_name}] {len(result)} items")
+                for item in result[:3]:
+                    typer.echo(f"  - {item}")
+
+        db.close()
+        return
+
+    # ── Original reasoning paths (tool-calling agent) ──
     # Compute closure-inferred edges for initial seed concepts
     closure_ctx = ""
     if graph.graph.number_of_edges() > 0:
