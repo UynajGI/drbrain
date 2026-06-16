@@ -191,6 +191,7 @@ class Config(_ConfigBase):
     fetch: FetchConfig = field(default_factory=FetchConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
+    admin: dict = field(default_factory=dict)
 
     @classmethod
     def from_yaml(

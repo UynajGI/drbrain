@@ -336,7 +336,7 @@ def audit_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
-    db_path = cfg.get("dirs", {}).get("db", "data/drbrain.db")
+    db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
     papers_root = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     db = Database(db_path)
 
