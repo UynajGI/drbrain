@@ -853,9 +853,10 @@ async def query_by_structure_hybrid(
 
             provider = _embed_provider(cfg)
             if provider != "none":
-                vec_results = search_tree(question, db_path, top_k=top_k * 2, cfg=cfg)
-                # Filter to this paper
-                vector_candidates = {r["node_id"] for r in vec_results if r["paper_id"] == paper_id}
+                vec_results = search_tree(
+                    question, db_path, top_k=top_k * 2, cfg=cfg, paper_id=paper_id
+                )
+                vector_candidates = {r["node_id"] for r in vec_results}
         except Exception:
             log.warning(
                 "Vector augmentation failed, continuing with LLM-only results", exc_info=True
