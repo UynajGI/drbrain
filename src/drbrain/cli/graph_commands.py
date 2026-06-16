@@ -8,11 +8,10 @@ from pathlib import Path
 
 import typer
 
-from drbrain.cli._common import _resolve_node_type, _resolve_workspace_papers
+from drbrain.cli._common import _resolve_node_type, _resolve_workspace_papers, open_db
 from drbrain.graph.engine import GraphEngine
 from drbrain.graph.query_embeddings import query_embed
 from drbrain.services.graph_to_text import describe_path, describe_subgraph
-from drbrain.storage.database import Database
 
 graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
 
@@ -39,115 +38,110 @@ def neighbors_cmd(
 ):
     """Traverse graph from a node, showing neighbors with path info."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        # Parse relation filter
+        _relations: set[str] | None = None
+        if relation is not None:
+            _relations = {r.strip() for r in relation.split(",") if r.strip()}
+            valid_relations = {
+                "addresses",
+                "leaves_open",
+                "points_to",
+                "proposes",
+                "extends",
+                "replaces",
+                "solves",
+                "supports",
+                "challenges",
+                "limits",
+                "constrains",
+                "affiliated_with",
+            }
+            invalid = _relations - valid_relations
+            if invalid:
+                typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
+                typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+                raise typer.Exit(1)
 
-    # Parse relation filter
-    _relations: set[str] | None = None
-    if relation is not None:
-        _relations = {r.strip() for r in relation.split(",") if r.strip()}
-        valid_relations = {
-            "addresses",
-            "leaves_open",
-            "points_to",
-            "proposes",
-            "extends",
-            "replaces",
-            "solves",
-            "supports",
-            "challenges",
-            "limits",
-            "constrains",
-            "affiliated_with",
-        }
-        invalid = _relations - valid_relations
-        if invalid:
-            typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
-            typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
+        if direction not in ("forward", "backward", "both"):
+            typer.echo(
+                f"Invalid direction '{direction}'. Must be: forward, backward, or both",
+                err=True,
+            )
             raise typer.Exit(1)
 
-    if direction not in ("forward", "backward", "both"):
-        typer.echo(
-            f"Invalid direction '{direction}'. Must be: forward, backward, or both",
-            err=True,
-        )
-        raise typer.Exit(1)
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
 
-    graph = GraphEngine()
-    paper_ids = _resolve_workspace_papers(workspace)
-    graph.load_from_db(db, paper_ids=paper_ids)
+        # Check node exists
+        if node_label not in graph.graph:
+            typer.echo(f"Node '{node_label}' not found in graph.")
+            raise typer.Exit(1)
 
-    # Check node exists
-    if node_label not in graph.graph:
-        typer.echo(f"Node '{node_label}' not found in graph.")
-        db.close()
-        raise typer.Exit(1)
-
-    results: list[dict] = []
-    trs = graph.traverse(
-        start_nodes={node_label},
-        hops=hops,
-        relations=_relations,
-        direction=direction,
-    )
-
-    seen_ids = {node_label}
-    for tr in trs:
-        if tr.target in seen_ids:
-            continue
-        seen_ids.add(tr.target)
-
-        node_type, paper = _resolve_node_type(db, tr.target)
-
-        if node_type == "Paper" and paper:
-            label = paper["title"]
-            text = paper.get("abstract", "")
-            year = paper.get("year")
-        else:
-            label = tr.target
-            text = ""
-            year = None
-
-        results.append(
-            {
-                "local_id": tr.target,
-                "type": node_type,
-                "label": label,
-                "text": text,
-                "year": year,
-                "_via_graph": True,
-                "_source_seed": tr.source,
-                "_distance": tr.distance,
-                "_path": [
-                    {"src": s.src, "relation": s.relation, "dst": s.dst, "hop": s.hop}
-                    for s in tr.path
-                ],
-            }
+        results: list[dict] = []
+        trs = graph.traverse(
+            start_nodes={node_label},
+            hops=hops,
+            relations=_relations,
+            direction=direction,
         )
 
-    graph.graph = None
+        seen_ids = {node_label}
+        for tr in trs:
+            if tr.target in seen_ids:
+                continue
+            seen_ids.add(tr.target)
 
-    if json_output:
-        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
-        db.close()
-        return
+            node_type, paper = _resolve_node_type(db, tr.target)
 
-    if not results:
-        typer.echo(f"No neighbors found for '{node_label}'.")
-        db.close()
-        return
+            if node_type == "Paper" and paper:
+                label = paper["title"]
+                text = paper.get("abstract", "")
+                year = paper.get("year")
+            else:
+                label = tr.target
+                text = ""
+                year = None
 
-    seed_type, _ = _resolve_node_type(db, node_label)
-    db.close()
+            results.append(
+                {
+                    "local_id": tr.target,
+                    "type": node_type,
+                    "label": label,
+                    "text": text,
+                    "year": year,
+                    "_via_graph": True,
+                    "_source_seed": tr.source,
+                    "_distance": tr.distance,
+                    "_path": [
+                        {"src": s.src, "relation": s.relation, "dst": s.dst, "hop": s.hop}
+                        for s in tr.path
+                    ],
+                }
+            )
 
-    typer.echo(f"Neighbors of {node_label} ({seed_type}):")
-    for r in results:
-        path_parts = [node_label]
-        for step in r.get("_path", []):
-            path_parts.append(step["relation"])
-            path_parts.append(step["dst"])
-        path_str = " -> ".join(path_parts)
-        typer.echo(f"  {r['local_id']} ({r['type']})")
-        typer.echo(f"    graph: {path_str}")
+        graph.graph = None
+
+        if json_output:
+            typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+            return
+
+        if not results:
+            typer.echo(f"No neighbors found for '{node_label}'.")
+            return
+
+        seed_type, _ = _resolve_node_type(db, node_label)
+
+        typer.echo(f"Neighbors of {node_label} ({seed_type}):")
+        for r in results:
+            path_parts = [node_label]
+            for step in r.get("_path", []):
+                path_parts.append(step["relation"])
+                path_parts.append(step["dst"])
+            path_str = " -> ".join(path_parts)
+            typer.echo(f"  {r['local_id']} ({r['type']})")
+            typer.echo(f"    graph: {path_str}")
 
 
 @graph_app.command("path")
@@ -163,75 +157,67 @@ def path_cmd(
     import networkx as nx
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
 
-    graph = GraphEngine()
-    paper_ids = _resolve_workspace_papers(workspace)
-    graph.load_from_db(db, paper_ids=paper_ids)
+        g = graph.graph
 
-    g = graph.graph
+        # Check nodes exist
+        if src_label not in g:
+            typer.echo(f"Source node '{src_label}' not found in graph.", err=True)
+            raise typer.Exit(1)
+        if dst_label not in g:
+            typer.echo(f"Target node '{dst_label}' not found in graph.", err=True)
+            raise typer.Exit(1)
+        if src_label == dst_label:
+            typer.echo("Source and target are the same node.")
+            return
 
-    # Check nodes exist
-    if src_label not in g:
-        typer.echo(f"Source node '{src_label}' not found in graph.", err=True)
-        db.close()
-        raise typer.Exit(1)
-    if dst_label not in g:
-        typer.echo(f"Target node '{dst_label}' not found in graph.", err=True)
-        db.close()
-        raise typer.Exit(1)
-    if src_label == dst_label:
-        typer.echo("Source and target are the same node.")
-        db.close()
-        return
-
-    # Shortest path on undirected copy for pathfinding
-    ug = g.to_undirected()
-    try:
-        node_path = nx.shortest_path(ug, source=src_label, target=dst_label)
-    except (nx.NetworkXNoPath, nx.NetworkXError):
-        typer.echo(
-            f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
-        )
-        db.close()
-        return
-
-    # Check max_length (cutoff applied by nx.shortest_path)
-    path_len = len(node_path) - 1
-    if path_len > max_length:
-        typer.echo(
-            f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
-        )
-        db.close()
-        return
-
-    # Recover edge data from original directed graph
-    path_steps: list[dict] = []
-    for i in range(len(node_path) - 1):
-        u, v = node_path[i], node_path[i + 1]
-        # Check both directions in the directed graph
-        if g.has_edge(u, v):
-            edge_data = list(g[u][v].values())[0]  # first edge's data
-            path_steps.append(
-                {
-                    "src": u,
-                    "relation": edge_data["relation"],
-                    "dst": v,
-                    "direction": "forward",
-                }
+        # Shortest path on undirected copy for pathfinding
+        ug = g.to_undirected()
+        try:
+            node_path = nx.shortest_path(ug, source=src_label, target=dst_label)
+        except (nx.NetworkXNoPath, nx.NetworkXError):
+            typer.echo(
+                f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
             )
-        elif g.has_edge(v, u):
-            edge_data = list(g[v][u].values())[0]
-            path_steps.append(
-                {
-                    "src": v,
-                    "relation": edge_data["relation"],
-                    "dst": u,
-                    "direction": "backward",
-                }
-            )
+            return
 
-    db.close()
+        # Check max_length (cutoff applied by nx.shortest_path)
+        path_len = len(node_path) - 1
+        if path_len > max_length:
+            typer.echo(
+                f"No path found between '{src_label}' and '{dst_label}' (max length: {max_length})"
+            )
+            return
+
+        # Recover edge data from original directed graph
+        path_steps: list[dict] = []
+        for i in range(len(node_path) - 1):
+            u, v = node_path[i], node_path[i + 1]
+            # Check both directions in the directed graph
+            if g.has_edge(u, v):
+                edge_data = list(g[u][v].values())[0]  # first edge's data
+                path_steps.append(
+                    {
+                        "src": u,
+                        "relation": edge_data["relation"],
+                        "dst": v,
+                        "direction": "forward",
+                    }
+                )
+            elif g.has_edge(v, u):
+                edge_data = list(g[v][u].values())[0]
+                path_steps.append(
+                    {
+                        "src": v,
+                        "relation": edge_data["relation"],
+                        "dst": u,
+                        "direction": "backward",
+                    }
+                )
 
     if json_output:
         typer.echo(
@@ -283,33 +269,27 @@ def related_cmd(
 ):
     """Analyze shared concepts and connections across multiple papers."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-
-    if len(paper_id) < 2:
-        typer.echo("At least 2 paper IDs required.", err=True)
-        db.close()
-        raise typer.Exit(1)
-
-    if mode not in ("concepts", "graph", "edges"):
-        typer.echo(f"Invalid mode '{mode}'. Must be: concepts, graph, or edges", err=True)
-        db.close()
-        raise typer.Exit(1)
-
-    for pid in paper_id:
-        paper = db.get_paper(pid)
-        if not paper:
-            typer.echo(f"Paper '{pid}' not found in database.", err=True)
-            db.close()
+    with open_db(cfg) as db:
+        if len(paper_id) < 2:
+            typer.echo("At least 2 paper IDs required.", err=True)
             raise typer.Exit(1)
 
-    if mode == "concepts":
-        _related_concepts(db, paper_id, min_shared, json_output)
-    elif mode == "graph":
-        _related_graph(db, paper_id, min_shared, json_output, workspace)
-    elif mode == "edges":
-        _related_edges(db, paper_id, min_shared, json_output)
+        if mode not in ("concepts", "graph", "edges"):
+            typer.echo(f"Invalid mode '{mode}'. Must be: concepts, graph, or edges", err=True)
+            raise typer.Exit(1)
 
-    db.close()
+        for pid in paper_id:
+            paper = db.get_paper(pid)
+            if not paper:
+                typer.echo(f"Paper '{pid}' not found in database.", err=True)
+                raise typer.Exit(1)
+
+        if mode == "concepts":
+            _related_concepts(db, paper_id, min_shared, json_output)
+        elif mode == "graph":
+            _related_graph(db, paper_id, min_shared, json_output, workspace)
+        elif mode == "edges":
+            _related_edges(db, paper_id, min_shared, json_output)
 
 
 def _related_concepts(db, paper_ids: list[str], min_shared: int, json_output: bool):
@@ -510,67 +490,65 @@ def describe_cmd(
 ):
     """Generate a natural language description of a subgraph centered on a node."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
 
-    graph = GraphEngine()
-    paper_ids = _resolve_workspace_papers(workspace)
-    graph.load_from_db(db, paper_ids=paper_ids)
+        if node_label not in graph.graph:
+            typer.echo(f"Node '{node_label}' not found in graph.", err=True)
+            raise typer.Exit(1)
 
-    if node_label not in graph.graph:
-        typer.echo(f"Node '{node_label}' not found in graph.", err=True)
-        db.close()
-        raise typer.Exit(1)
-
-    # Traverse and collect results for structured output
-    tr_results = graph.traverse(
-        start_nodes={node_label},
-        hops=depth,
-        direction="both",
-    )
-
-    seen = {node_label}
-    paths: list[list[dict]] = []
-    for tr in tr_results:
-        if tr.target in seen:
-            continue
-        seen.add(tr.target)
-        paths.append(
-            [{"src": s.src, "relation": s.relation, "dst": s.dst, "hop": s.hop} for s in tr.path]
+        # Traverse and collect results for structured output
+        tr_results = graph.traverse(
+            start_nodes={node_label},
+            hops=depth,
+            direction="both",
         )
 
-    # LLM summary
-    models = cfg.get("models", [])
-    if models:
-        description = asyncio.run(describe_subgraph(graph, db, node_label, models, depth=depth))
-    else:
-        description = ""
+        seen = {node_label}
+        paths: list[list[dict]] = []
+        for tr in tr_results:
+            if tr.target in seen:
+                continue
+            seen.add(tr.target)
+            paths.append(
+                [
+                    {"src": s.src, "relation": s.relation, "dst": s.dst, "hop": s.hop}
+                    for s in tr.path
+                ]
+            )
 
-    if json_output:
-        output = {
-            "center": node_label,
-            "depth": depth,
-            "neighbor_count": len(paths),
-            "paths": paths,
-            "description": description,
-        }
-        typer.echo(json.dumps(output, indent=2, ensure_ascii=False))
-        db.close()
-        return
+        # LLM summary
+        models = cfg.get("models", [])
+        if models:
+            description = asyncio.run(describe_subgraph(graph, db, node_label, models, depth=depth))
+        else:
+            description = ""
 
-    # Terminal output
-    typer.echo(f'Subgraph centered on "{node_label}":')
-    if description:
-        typer.echo(f"  {description}")
-        typer.echo("")
+        if json_output:
+            output = {
+                "center": node_label,
+                "depth": depth,
+                "neighbor_count": len(paths),
+                "paths": paths,
+                "description": description,
+            }
+            typer.echo(json.dumps(output, indent=2, ensure_ascii=False))
+            return
 
-    if paths:
-        for p in paths:
-            path_desc = describe_path(p)
-            typer.echo(f"  {path_desc}")
-    else:
-        typer.echo("  (no neighbors found)")
+        # Terminal output
+        typer.echo(f'Subgraph centered on "{node_label}":')
+        if description:
+            typer.echo(f"  {description}")
+            typer.echo("")
 
-    db.close()
+        if paths:
+            for p in paths:
+                path_desc = describe_path(p)
+                typer.echo(f"  {path_desc}")
+        else:
+            typer.echo("  (no neighbors found)")
 
 
 @graph_app.command("query")
@@ -593,22 +571,18 @@ def graph_query_cmd(
     import json as _json
 
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    with open_db(cfg) as db:
+        try:
+            query = _json.loads(query_json)
+        except _json.JSONDecodeError as e:
+            typer.echo(f"Invalid JSON: {e}", err=True)
+            raise typer.Exit(1)
 
-    try:
-        query = _json.loads(query_json)
-    except _json.JSONDecodeError as e:
-        typer.echo(f"Invalid JSON: {e}", err=True)
-        db.close()
-        raise typer.Exit(1)
+        if "type" not in query:
+            typer.echo('Query must have a "type" field', err=True)
+            raise typer.Exit(1)
 
-    if "type" not in query:
-        typer.echo('Query must have a "type" field', err=True)
-        db.close()
-        raise typer.Exit(1)
-
-    results = query_embed(db, query, top_k=top_k)
-    db.close()
+        results = query_embed(db, query, top_k=top_k)
 
     if json_output:
         typer.echo(json.dumps(results, indent=2, ensure_ascii=False))
@@ -637,119 +611,115 @@ def traverse_from_cmd(
     anchored to those sections, then traverses the knowledge graph from them.
     """
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
-    paper_ids = _resolve_workspace_papers(workspace)
+    with open_db(cfg) as db:
+        paper_ids = _resolve_workspace_papers(workspace)
 
-    # 1. Find paper(s) with tree.json that contain this section
-    papers_dir = Path(cfg.dirs.papers)
-    section_title = section.strip()
+        # 1. Find paper(s) with tree.json that contain this section
+        papers_dir = Path(cfg.dirs.papers)
+        section_title = section.strip()
 
-    # Search all papers for tree.json containing the section
-    all_section_names: set[str] = {section_title}
-    for pid_dir in sorted(papers_dir.iterdir()):
-        if not pid_dir.is_dir():
-            continue
-        tree_path = pid_dir / "tree.json"
-        if not tree_path.exists():
-            continue
-        try:
-            tree = json.loads(tree_path.read_text())
-            structure = tree.get("structure", [])
+        # Search all papers for tree.json containing the section
+        all_section_names: set[str] = {section_title}
+        for pid_dir in sorted(papers_dir.iterdir()):
+            if not pid_dir.is_dir():
+                continue
+            tree_path = pid_dir / "tree.json"
+            if not tree_path.exists():
+                continue
+            try:
+                tree = json.loads(tree_path.read_text())
+                structure = tree.get("structure", [])
 
-            # Collect matching section and all descendants
-            def _find_section(nodes: list[dict], target: str) -> list[str]:
-                names = []
-                for node in nodes:
-                    t = node.get("title", "")
-                    if target.lower() in t.lower() or t.lower() in target.lower():
-                        names.append(t)
+                # Collect matching section and all descendants
+                def _find_section(nodes: list[dict], target: str) -> list[str]:
+                    names = []
+                    for node in nodes:
+                        t = node.get("title", "")
+                        if target.lower() in t.lower() or t.lower() in target.lower():
+                            names.append(t)
 
-                        # Collect all children as descendants
-                        def _descendants(n: list[dict]) -> list[str]:
-                            ds = []
-                            for child in n:
-                                ct = child.get("title", "")
-                                if ct:
-                                    ds.append(ct)
-                                ds.extend(_descendants(child.get("nodes", [])))
-                            return ds
+                            # Collect all children as descendants
+                            def _descendants(n: list[dict]) -> list[str]:
+                                ds = []
+                                for child in n:
+                                    ct = child.get("title", "")
+                                    if ct:
+                                        ds.append(ct)
+                                    ds.extend(_descendants(child.get("nodes", [])))
+                                return ds
 
-                        names.extend(_descendants(node.get("nodes", [])))
-                        return names
-                    found = _find_section(node.get("nodes", []), target)
-                    if found:
-                        names.extend(found)
-                return names
+                            names.extend(_descendants(node.get("nodes", [])))
+                            return names
+                        found = _find_section(node.get("nodes", []), target)
+                        if found:
+                            names.extend(found)
+                    return names
 
-            found = _find_section(structure, section_title)
-            all_section_names.update(found)
-        except Exception:
-            pass
+                found = _find_section(structure, section_title)
+                all_section_names.update(found)
+            except Exception:
+                pass
 
-    if not all_section_names:
-        typer.echo(f"No section matching '{section}' found in any paper tree.", err=True)
-        db.close()
-        raise typer.Exit(1)
+        if not all_section_names:
+            typer.echo(f"No section matching '{section}' found in any paper tree.", err=True)
+            raise typer.Exit(1)
 
-    typer.echo(f"Tree: {len(all_section_names)} section(s) under '{section_title}'")
+        typer.echo(f"Tree: {len(all_section_names)} section(s) under '{section_title}'")
 
-    # 2. Find concepts anchored to these sections
-    section_list = list(all_section_names)
-    placeholders = ",".join("?" for _ in section_list)
-    rows = db.conn.execute(
-        f"SELECT DISTINCT label, type FROM concepts WHERE section IN ({placeholders})",
-        section_list,
-    ).fetchall()
+        # 2. Find concepts anchored to these sections
+        section_list = list(all_section_names)
+        placeholders = ",".join("?" for _ in section_list)
+        rows = db.conn.execute(
+            f"SELECT DISTINCT label, type FROM concepts WHERE section IN ({placeholders})",
+            section_list,
+        ).fetchall()
 
-    if not rows:
-        typer.echo("No concepts found in these sections.")
-        db.close()
-        return
+        if not rows:
+            typer.echo("No concepts found in these sections.")
+            return
 
-    concepts = [{"label": r[0], "type": r[1]} for r in rows]
-    typer.echo(f"Concepts: {len(concepts)} found in section tree")
+        concepts = [{"label": r[0], "type": r[1]} for r in rows]
+        typer.echo(f"Concepts: {len(concepts)} found in section tree")
 
-    # 3. Graph traversal from found concepts
-    graph = GraphEngine()
-    graph.load_from_db(db, paper_ids=paper_ids)
-    all_neighbors: list[dict] = []
-    seen: set[str] = set()
+        # 3. Graph traversal from found concepts
+        graph = GraphEngine()
+        graph.load_from_db(db, paper_ids=paper_ids)
+        all_neighbors: list[dict] = []
+        seen: set[str] = set()
 
-    for c in concepts:
-        label = c["label"]
-        neighbors = graph.traverse({label}, hops=depth, direction=direction)
-        for n in neighbors:
-            key = (n.get("src", ""), n.get("dst", ""), n.get("relation", ""))
-            if key not in seen:
-                seen.add(key)
-                n["source_concept"] = label
-                n["source_section"] = c.get("type", "")
-                all_neighbors.append(n)
+        for c in concepts:
+            label = c["label"]
+            neighbors = graph.traverse({label}, hops=depth, direction=direction)
+            for n in neighbors:
+                key = (n.get("src", ""), n.get("dst", ""), n.get("relation", ""))
+                if key not in seen:
+                    seen.add(key)
+                    n["source_concept"] = label
+                    n["source_section"] = c.get("type", "")
+                    all_neighbors.append(n)
 
-    db.close()
-
-    if json_output:
-        typer.echo(
-            json.dumps(
-                {
-                    "tree_sections": list(all_section_names),
-                    "source_concepts": len(concepts),
-                    "neighbors": all_neighbors,
-                },
-                indent=2,
-                ensure_ascii=False,
-                default=str,
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "tree_sections": list(all_section_names),
+                        "source_concepts": len(concepts),
+                        "neighbors": all_neighbors,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
             )
-        )
-        return
+            return
 
-    typer.echo(f"Graph neighbors: {len(all_neighbors)} edges")
-    by_concept: dict[str, list] = {}
-    for n in all_neighbors:
-        by_concept.setdefault(n["source_concept"], []).append(n)
-    for src, edges in by_concept.items():
-        typer.echo(f"\n  [{src}]")
-        for e in edges[:5]:
-            typer.echo(f"    --{e.get('relation', '?')}--> {e.get('dst', '?')}")
-        if len(edges) > 5:
-            typer.echo(f"    ... and {len(edges) - 5} more")
+        typer.echo(f"Graph neighbors: {len(all_neighbors)} edges")
+        by_concept: dict[str, list] = {}
+        for n in all_neighbors:
+            by_concept.setdefault(n["source_concept"], []).append(n)
+        for src, edges in by_concept.items():
+            typer.echo(f"\n  [{src}]")
+            for e in edges[:5]:
+                typer.echo(f"    --{e.get('relation', '?')}--> {e.get('dst', '?')}")
+            if len(edges) > 5:
+                typer.echo(f"    ... and {len(edges) - 5} more")
