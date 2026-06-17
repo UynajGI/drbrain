@@ -39,6 +39,7 @@ from drbrain.cli.export_commands import (
     queue_cmd,
     queue_resolve_all_cmd,
     queue_resolve_cmd,
+    restore_cmd,
     style_cmd,
 )
 from drbrain.cli.graph_commands import graph_app
@@ -125,6 +126,7 @@ app.command("document")(document_cmd)
 app.command("metrics")(metrics_cmd)
 app.command("clean")(clean_cmd)
 app.command("backup")(backup_cmd)
+app.command("restore")(restore_cmd)
 app.command("analyze")(analyze_cmd)
 app.command("repair")(repair_cmd)
 app.command("enrich")(enrich_cmd)

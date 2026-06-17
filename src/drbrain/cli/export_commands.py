@@ -611,3 +611,44 @@ def metrics_cmd(
 
     if not keywords and not papers:
         typer.echo("\nNo metrics recorded yet. Search and read papers to populate.")
+
+
+def restore_cmd(
+    ctx: typer.Context,
+    backup_path: str = typer.Argument(..., help="Path to tar.gz backup or directory"),
+    target: str = typer.Option(
+        None, "--target", "-t", help="Restore location (default: current directory)"
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Overwrite existing files even if newer"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Restore a tar.gz backup or copy a directory backup to a target location."""
+    from drbrain.storage.backup import restore_backup
+
+    source = Path(backup_path)
+    dest = Path(target) if target else None
+
+    try:
+        entries = restore_backup(source, dest, force=force)
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    except (FileExistsError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"restored": entries, "source": str(source), "target": str(dest or ".")},
+                indent=2,
+            )
+        )
+        return
+
+    target_label = str(dest) if dest else "."
+    typer.echo(f"Restored {len(entries)} entries to {target_label}:")
+    for entry in entries:
+        typer.echo(f"  {entry}")

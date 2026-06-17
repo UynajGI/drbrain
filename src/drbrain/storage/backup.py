@@ -237,3 +237,97 @@ def run_backup(
         stdout=completed.stdout,
         stderr=completed.stderr,
     )
+
+
+# ── Restore ───────────────────────────────────────────────────────────
+
+
+def restore_backup(
+    backup_path: Path,
+    target_dir: Path | None = None,
+    *,
+    force: bool = False,
+) -> list[str]:
+    """Restore a tar.gz backup or copy a directory backup to *target_dir*.
+
+    For tar.gz archives, the archive is extracted into *target_dir*.
+    For directory backups, contents are copied recursively.
+
+    Args:
+        backup_path: Path to a ``.tar.gz`` file or a directory.
+        target_dir: Where to restore.  If ``None`` the archive members
+            are extracted relative to the current working directory.
+        force: When ``False``, refuse to overwrite existing files that are
+            newer than the corresponding archive entry.
+
+    Returns:
+        A list of top-level entries that were restored.
+    """
+    if not backup_path.exists():
+        raise FileNotFoundError(f"Backup not found: {backup_path}")
+
+    if backup_path.is_file() and backup_path.suffix == ".gz":
+        return _restore_tarball(backup_path, target_dir, force=force)
+    if backup_path.is_dir():
+        return _restore_directory(backup_path, target_dir, force=force)
+
+    raise ValueError(f"Unsupported backup format: {backup_path}")
+
+
+def _restore_tarball(
+    archive: Path,
+    target_dir: Path | None,
+    *,
+    force: bool = False,
+) -> list[str]:
+    """Extract a tar.gz backup into *target_dir*."""
+
+    target = Path(target_dir) if target_dir is not None else Path.cwd()
+
+    with tarfile.open(archive, "r:gz") as tar:
+        members = tar.getmembers()
+
+        # Safety check: refuse to overwrite newer files unless --force
+        if not force:
+            for member in members:
+                if not member.isfile():
+                    continue
+                dest = target / member.name
+                if dest.exists() and dest.stat().st_mtime > member.mtime:
+                    raise FileExistsError(
+                        f"File is newer than backup: {member.name}. Use --force to overwrite."
+                    )
+
+        # Extract
+        target.mkdir(parents=True, exist_ok=True)
+        tar.extractall(path=str(target), filter="data")  # noqa: S202
+
+        # Return top-level entries
+        top_level = {m.name.split("/")[0] for m in members}
+        return sorted(top_level)
+
+
+def _restore_directory(
+    source: Path,
+    target_dir: Path | None,
+    *,
+    force: bool = False,
+) -> list[str]:
+    """Copy all contents of a directory backup to *target_dir*."""
+    import shutil as _shutil
+
+    target = Path(target_dir) if target_dir is not None else Path.cwd()
+    target.mkdir(parents=True, exist_ok=True)
+
+    entries: list[str] = []
+    for item in source.iterdir():
+        dest = target / item.name
+        if dest.exists() and not force:
+            raise FileExistsError(f"Target already exists: {item.name}. Use --force to overwrite.")
+        if item.is_dir():
+            _shutil.copytree(str(item), str(dest), dirs_exist_ok=force)
+        else:
+            _shutil.copy2(str(item), str(dest))
+        entries.append(item.name)
+
+    return sorted(entries)
