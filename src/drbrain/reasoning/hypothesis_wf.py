@@ -100,7 +100,7 @@ class _AnalogizeStep(WorkflowStep):
             "\n".join(prompt_parts),
             ctx.models,
             system_prompt="You are a creative but rigorous research hypothesis generator.",
-            max_tokens=1024,
+            max_tokens=2048,
         )
 
         if data and "hypotheses" in data:

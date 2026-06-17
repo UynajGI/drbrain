@@ -137,7 +137,7 @@ class _GenerateAgendaStep(WorkflowStep):
             "Be specific and grounded in the evidence."
         )
 
-        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=3072)
         return result or "Unable to generate research agenda."
 
 

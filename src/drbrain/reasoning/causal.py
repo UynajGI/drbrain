@@ -177,7 +177,7 @@ class _SynthesizeExplanationStep(WorkflowStep):
         )
 
         prompt = "\n".join(prompt_parts)
-        result = call_text_with_fallback(prompt, ctx.models, max_tokens=512)
+        result = call_text_with_fallback(prompt, ctx.models, max_tokens=2048)
         return result or "Unable to generate explanation."
 
 

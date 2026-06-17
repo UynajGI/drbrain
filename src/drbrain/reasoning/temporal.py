@@ -162,7 +162,7 @@ class _GenerateNarrativeStep(WorkflowStep):
             "current trajectory. Write in an academic but accessible style."
         )
 
-        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=768)
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=3072)
         return result or "Unable to generate narrative."
 
 

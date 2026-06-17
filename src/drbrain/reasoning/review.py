@@ -156,7 +156,7 @@ class _GenerateReviewStep(WorkflowStep):
             "Base claims strictly on the evidence provided."
         )
 
-        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=2048)
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=4096)
         return result or "Unable to generate review."
 
 

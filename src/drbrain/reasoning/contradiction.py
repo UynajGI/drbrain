@@ -179,7 +179,7 @@ class _SummarizeStep(WorkflowStep):
             "Highlight the most important contradictions and what would be needed to resolve them."
         )
 
-        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=512)
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=2048)
         return result or "Unable to generate summary."
 
 

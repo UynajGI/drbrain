@@ -211,7 +211,7 @@ def call_text_with_fallback(
     prompt: str,
     models: list[dict],
     system_prompt: str = "",
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
 ) -> str | None:
     """Sync text call with fallback. Returns raw text (not JSON)."""
     import litellm

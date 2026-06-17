@@ -166,7 +166,7 @@ class _GenerateImpactReportStep(WorkflowStep):
             "Ground all claims in the data provided."
         )
 
-        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=2048)
         return result or "Unable to generate impact report."
 
 
