@@ -18,6 +18,7 @@ uv run pytest --cov=drbrain --cov-report=term
 | Command | Key Flags | What |
 |---------|-----------|------|
 | `fetch` | `--arxiv` | DOI/title/arXiv → download PDF → ingest |
+| `batch-fetch` | `--delay`, `--skip-existing` | Bulk fetch from DOI/URL list file |
 | `ingest` | `--json`; defaults to `data/spool/inbox/` | PDF→markdown→tree→paper record |
 | `ingest-link` | `--pdf`, `--dry-run`, `--json`, `URL...` | Web URL → external extractor → paper record |
 | `import` | — | Zotero/BibTeX/Endnote import |
@@ -46,6 +47,8 @@ uv run pytest --cov=drbrain --cov-report=term
 | `graph describe` | | LLM subgraph-to-text description |
 | `graph query` | | TransE complex query (∧∨¬ operators) |
 | `graph traverse-from` | | Hybrid tree+graph: section → concepts → graph |
+| `graph export` | `--format graphml/jsonld/cypher`, `--output`, `--workspace` | Export KG to GraphML, JSON-LD, or Cypher |
+| `search` | `--limit N`, `--type`, `--json` | Quick BM25 keyword search over papers, concepts, and arguments |
 | `fsearch` | `--arxiv`, `--arxiv-only`, `--limit 20`, `--json` | Federated search: local DB + arXiv with ingested annotation |
 | `patent-search` | `--source odp/ppubs`, `--application ID`, `--limit 10` | USPTO patent search (PPUBS free or ODP with API key) |
 
@@ -94,6 +97,7 @@ uv run pytest --cov=drbrain --cov-report=term
 | `queue` | resolve, resolve-all | Accept/reject confidence queue items |
 | `index` | | Rebuild BM25 search index |
 | `backup` | `--list`, `--target NAME`, `--dry-run` | Local tar.gz + rsync remote backup |
+| `restore` | `--target PATH`, `--force`, `--json` | Restore from tar.gz backup to target location |
 | `enrich` | `--all`, `--dry-run`, `--json` | CrossRef metadata backfill + scrub detection |
 | `document` | `FILE` | Inspect Office docs (DOCX/PPTX/XLSX) — structured text summary |
 | `metrics` | `--json` | User behavior analytics: top keywords, most-read, weekly trends |
@@ -103,6 +107,16 @@ uv run pytest --cov=drbrain --cov-report=term
 | Command | Key Flags | What |
 |---------|-----------|------|
 | `pipeline` | `--preset full/quick/embed`, `--steps S1,S2`, `--list`, `--dry-run` | Chain steps (ingest→build→embed→closure) in sequence |
+
+**Session**
+| Command | Key Flags | What |
+|---------|-----------|------|
+| `session new` | `TITLE` | Create persistent reasoning session |
+| `session ask` | `SESSION_ID QUESTION` | Query within session context |
+| `session chat` | `SESSION_ID` | Interactive multi-turn chat |
+| `session list` | `--json` | List all sessions |
+| `session delete` | `SESSION_ID` | Delete a session |
+| `session export` | `SESSION_ID`, `--output` | Export session history |
 
 **Setup**
 | Command | Key Flags | What |
@@ -127,6 +141,18 @@ build paper-id2 --session sess-xxx     # inject into same session
 
 # Reason with session context
 reason -s sess-xxx "how does A compare to B?"
+
+# Structured reasoning workflows
+reason --workflow review paper-id        # literature review workflow
+reason --workflow gap-analysis -w ws1    # gap analysis across workspace
+reason --workflow impact -s sess-xxx     # impact analysis with session context
+reason --workflow lineage "concept"     # concept evolution lineage
+
+# Session management
+session new "research topic"             # create persistent session
+session ask sess-xxx "question?"         # query within session context
+session list                            # list all sessions
+session export sess-xxx                 # export session history
 
 # Explore
 query "transformer attention" --hybrid -n 1 -R addresses
@@ -165,15 +191,15 @@ DrBrain is a **symbol-driven academic knowledge graph with lightweight vector re
 | Area         | Key files                                                                                                                                                | What                                                                                              |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Graph engine | `src/drbrain/graph/engine.py`, `src/drbrain/graph/engine_closure.py`, `src/drbrain/graph/engine_embeddings.py`, `src/drbrain/graph/embedding.py`, `src/drbrain/graph/query_embeddings.py`, `src/drbrain/graph/path_reasoning.py`, `src/drbrain/graph/genealogy/` | Core graph (load/save/traverse), rule closure (8 symbolic + 4 embedding rules), embedding-grounded validation, TransE embeddings, complex query operators (project/intersect/union/negate), path reasoning for hybrid tree+graph traversal, concept lineage/landscape/paradigm/transfer detection (genealogy subpackage) |
-| Extraction   | `src/drbrain/extractor/concept.py`, `src/drbrain/extractor/agent.py`, `src/drbrain/extractor/reasoner.py`, `src/drbrain/extractor/session_agent.py`, `src/drbrain/extractor/agent_tools.py`, `src/drbrain/extractor/raptor.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, persistent SessionAgent with DB-backed sessions, shared tool definitions (TOOL_DEFINITIONS, kg_validate), RAPTOR recursive semantic tree            |
+| Extraction   | `src/drbrain/extractor/concept/` (6 modules), `src/drbrain/extractor/agent.py`, `src/drbrain/extractor/reasoner.py`, `src/drbrain/extractor/session_agent.py`, `src/drbrain/extractor/agent_tools.py`, `src/drbrain/extractor/raptor.py`, `src/drbrain/extractor/citation.py`, `src/drbrain/extractor/llm_client.py`                                                                                  | 5-stage LLM extraction (agent-based), bidirectional LLM↔KG reasoning, persistent SessionAgent with DB-backed sessions, shared tool definitions (TOOL_DEFINITIONS, kg_validate), RAPTOR recursive semantic tree, citation expansion (OpenAlex + S2 + CrossRef)            |
 | Reasoning    | `src/drbrain/extractor/causal_chain.py`, `src/drbrain/extractor/confidence_propagation.py`, `src/drbrain/extractor/counterfactual.py`, `src/drbrain/extractor/isomorphism.py`, `src/drbrain/extractor/hypothesis.py` | Causal chains, confidence decay, counterfactuals, cross-domain isomorphism, hypothesis generation |
 | Search       | `src/drbrain/query/bm25.py`, `src/drbrain/query/tree_retrieval.py`                                                                                                               | BM25 over concepts+arguments; PageIndex tree-search + RAPTOR two-stage traversal (layer descent + collapsed fallback)                                               |
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
 | Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`, `src/drbrain/services/enrich.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex, CrossRef backfill + scrub detection                                                  |
 | Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
-| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/workspace.py`, `src/drbrain/storage/proceedings.py`, `src/drbrain/storage/explore.py`                       | SQLite WAL + schema versions, BibTeX/RIS export, workspace CRUD, proceedings, explore silos                                   |
+| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/graph_export.py`, `src/drbrain/storage/workspace.py`, `src/drbrain/storage/proceedings.py`, `src/drbrain/storage/explore.py`, `src/drbrain/storage/backup.py`, `src/drbrain/storage/connection.py`                       | SQLite WAL + schema versions, BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, workspace CRUD, proceedings, explore silos, tar.gz + rsync backup, WAL connection helper                                   |
 | Providers    | `src/drbrain/providers/webtools.py`, `src/drbrain/providers/uspto_odp.py`, `src/drbrain/providers/uspto_ppubs.py`                                                                    | Web extraction (qt-web-extractor), USPTO ODP (API key) + PPUBS (free) patent search                       |
-| CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py`, `src/drbrain/cli/_setup_i18n.py` | Typer CLI, graph traversal, KGQA (`ask`), setup validation, bilingual wizard (EN/ZH)                                                          |
+| CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/_helpers/` (shared CLI utilities), `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph,session}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py`, `src/drbrain/cli/_setup_i18n.py` | Typer CLI, graph traversal, KGQA (`ask`), session management, setup validation, bilingual wizard (EN/ZH)                                                          |
 
 ### Data Layout
 

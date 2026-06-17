@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased] — dev/feature
+
+### Added
+- **Structured reasoning workflow engine**: 7 built-in workflows (review, gap-analysis, impact, compare, frontier, lineage, paradigm) with step-level result caching. CLI via `drbrain reason --workflow`.
+- **Batch-fetch command**: `drbrain batch-fetch` for bulk DOI/URL list processing.
+- **Graph export formats**: GraphML, JSON-LD, and Cypher export via `drbrain graph export --format`.
+- **Backup restore**: `drbrain restore` — restore from tar.gz backups.
+- **Standalone search command**: `drbrain search` — quick BM25 keyword search independent of graph-aware `query`.
+- **Session management CLI**: `drbrain session new/ask/chat/list/delete/export` — persistent DB-backed session CRUD.
+- **HTTP retry decorator**: `http_retry` with exponential backoff in `services/http_utils.py`.
+
+### Changed
+- **Parser splits**: `mineru_parser.py` → `parser/mineru/` subpackage; `pageindex_parser.py` → `parser/pageindex/` subpackage.
+- **Graph engine split**: `engine.py` split into `engine.py`, `engine_closure.py`, `engine_embeddings.py`, `query_embeddings.py`.
+- **Genealogy subpackage**: `genealogy.py` → `graph/genealogy/` with `lineage.py`, `paradigm.py`, `landscape.py`, `transfer.py`, `display.py`.
+- **Concept extraction subpackage**: `concept.py` → `extractor/concept/` with `pipeline.py`, `dedup.py`, `merge.py`, `tree_helpers.py`, `types.py`.
+- **`open_db()` context manager**: CLI modules migrated to shared `open_db()` for DB lifecycle management.
+- **Stats consolidation**: `Database.get_stats()` centralizes statistics queries.
+
+### Performance
+- **LLM response caching**: `ApiCache` now used by `call_with_messages` / `acall_with_messages` (disabled for temperature > 0).
+- **search_tree filtering**: `search_tree()` accepts optional `paper_id` to avoid full-table BLOB scan.
+- **DOI enrichment parallelization**: ThreadPoolExecutor for 5-source metadata resolution.
+
 ## [0.1.0a2] — 2026-05-18
 
 ### Added

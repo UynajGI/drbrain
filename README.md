@@ -74,6 +74,7 @@ This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on m
 - [Embedding](docs/embedding.md) -- local, openai-compat, and none providers
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and recovery
 - [Glossary](docs/glossary.md) -- terminology reference
+- [Skills Reference](docs/skills.md) -- 27 agent skills and their CLI commands
 - [Contributing](docs/contributing.md) -- how to add commands, modules, and skills
 
 ## Works With Your Agent

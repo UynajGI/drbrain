@@ -7,20 +7,28 @@ src/drbrain/
 ├── cli/                  # Typer CLI commands
 │   ├── main.py           # App definition, thin command registration
 │   ├── commands.py       # Backward-compatible re-exports from split modules
-│   ├── _common.py        # Shared private helpers (workspace resolution, ingest, etc.)
-│   ├── ingest_commands.py    # ingest, fetch, citations, closure, report
-│   ├── query_commands.py     # query, index, list, show, stats, seed
-│   ├── export_commands.py    # export, backup, delete, queue, lineage
+│   ├── _helpers/         # Shared CLI utilities (db, ingest helpers, display)
+│   ├── _common.py        # Shared private helpers
+│   ├── ingest_commands.py    # ingest, fetch, batch-fetch, citations, closure, report
+│   ├── query_commands.py     # query, search, index, list, show, stats, seed
+│   ├── export_commands.py    # export, backup, restore, delete, queue, lineage
 │   ├── check_commands.py     # check, audit, analyze, clean
 │   ├── ws_commands.py        # workspace CRUD (typer sub-app)
 │   ├── repair_commands.py    # repair, import
 │   ├── build_commands.py     # build, embed, translate
 │   ├── analysis_commands.py  # ask, reason, evolve, descendants, landscape, paradigm, transfers, isomorphism, difficulty, frontier
-│   ├── graph_commands.py     # graph subcommands (neighbors, path, related, describe, query, traverse-from)
+│   ├── graph_commands.py     # graph subcommands (neighbors, path, related, describe, query, traverse-from, export)
+│   ├── session_commands.py   # session subcommands (new, ask, chat, list, delete, export)
 │   ├── setup.py          # Setup wizard
+│   ├── _setup_i18n.py     # Bilingual setup (EN/ZH)
 │   └── dependencies.py   # Import check helpers
 ├── extractor/            # LLM extraction, reasoning, and API clients
-│   ├── concept.py        # 5-stage graph extraction pipeline
+│   ├── concept/          # 5-stage graph extraction pipeline (subpackage)
+│   │   ├── pipeline.py   # Main pipeline orchestration
+│   │   ├── dedup.py      # Concept deduplication
+│   │   ├── merge.py      # Cross-paper concept merging
+│   │   ├── tree_helpers.py # Tree-to-graph conversion helpers
+│   │   └── types.py      # Extraction type definitions
 │   ├── agent.py          # LLM agent base class
 │   ├── agent_tools.py    # Shared tool definitions (TOOL_DEFINITIONS, kg_validate)
 │   ├── session_agent.py  # Persistent DB-backed SessionAgent for multi-turn reasoning
@@ -29,8 +37,6 @@ src/drbrain/
 │   ├── llm_client.py     # acall_with_fallback(), litellm wrappers
 │   ├── openalex.py       # OpenAlex API client
 │   ├── crossref.py       # CrossRef API client
-│   ├── deepxiv.py        # DeepXiv API client
-│   ├── semanticscholar.py# Semantic Scholar API client
 │   ├── cache.py          # API response cache
 │   ├── causal_chain.py   # Causal chain reasoning
 │   ├── confidence_propagation.py # Multi-hop confidence decay
@@ -41,8 +47,8 @@ src/drbrain/
 │   ├── citation.py       # Citation expansion (OpenAlex + S2 + CrossRef)
 │   ├── citation_check.py # In-text citation verification
 │   ├── detection.py      # Paper type classification
-│   ├── argument.py        # Argument unit extraction and validation
-│   ├── canonical.py       # Label normalization + SmartAligner for dedup
+│   ├── argument.py       # Argument unit extraction and validation
+│   ├── canonical.py      # Label normalization + SmartAligner for dedup
 │   └── queue.py          # Confidence queue resolution
 ├── graph/                # Graph engine, embeddings, and reasoning
 │   ├── engine.py         # GraphEngine: load, save, traverse, neighborhoods
@@ -58,9 +64,17 @@ src/drbrain/
 │       ├── transfer.py   # Cross-domain method transfer discovery
 │       └── display.py    # Text tree + Mermaid rendering
 ├── parser/               # PDF parsing and content structuring
-│   ├── mineru_parser.py  # MinerU CLI + PyMuPDF fallback
-│   ├── pageindex_parser.py # LLM tree structuring (md -> tree.json)
-│   └── pdf_utils.py      # PDF validation (encryption, corruption)
+│   ├── mineru_parser.py  # Thin re-export wrapper
+│   ├── mineru/           # MinerU CLI + PyMuPDF fallback (subpackage)
+│   │   ├── parser.py     # PDF → Markdown conversion
+│   │   ├── fallback.py   # PyMuPDF fallback path
+│   │   └── metadata.py   # Multi-source metadata resolution
+│   ├── pageindex_parser.py # Thin re-export wrapper
+│   └── pageindex/        # LLM tree structuring (subpackage)
+│       ├── builder.py    # Tree construction from markdown
+│       ├── summary.py    # LLM node summarization
+│       ├── validation.py # Tree validation and repair
+│       └── retrieval.py  # Content retrieval
 ├── query/                # Search and retrieval
 │   ├── bm25.py           # BM25 index over concepts + arguments
 │   └── tree_retrieval.py # PageIndex tree search (adaptive depth)
@@ -77,6 +91,8 @@ src/drbrain/
 │   ├── inbox.py          # Inbox scanning and pending queue
 │   ├── citation_graph.py # Citation graph queries
 │   ├── proceedings.py    # Conference proceedings registry
+│   ├── graph_export.py   # GraphML / JSON-LD / Cypher export
+│   ├── connection.py     # WAL connection helper
 │   └── explore.py        # Literature discovery silos (JSONL)
 ├── services/             # Higher-level services
 │   ├── audit.py          # 15-rule data quality scan
@@ -92,16 +108,12 @@ src/drbrain/
 │   ├── metrics_panel.py  # User behavior analytics
 │   └── parser_benchmark.py # PDF parser comparison harness
 ├── report/               # Analysis reports
-│   └── analyzer.py       # Knowledge frontier analyzer
-├── dedup/                # Paper identity resolution
-│   └── resolver.py       # 5-source cross-validation
-├── validator/            # Data validation
-├── templates/            # Prompt templates
+│   ├── analyzer.py       # Knowledge frontier analyzer
+│   └── generator.py      # Report generation utilities
 ├── config.py             # Typed Config dataclass
 ├── log.py                # loguru-based structured logging
 ├── metrics.py            # LLM token usage tracking
-├── exceptions.py         # DrBrainError hierarchy
-└── stopwords.txt         # CJK + Latin stopwords for language detection
+└── exceptions.py         # DrBrainError hierarchy
 
 tests/                    # pytest suite (real SQLite, no DB mocking)
 ├── test_ingest.py

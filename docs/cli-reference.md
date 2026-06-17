@@ -125,6 +125,22 @@ drbrain ingest paper1.pdf paper2.pdf     # multiple files
 drbrain ingest --json                    # JSON output for pipelines
 ```
 
+### `drbrain batch-fetch`
+
+Bulk fetch papers from a DOI/URL list file.
+
+| Flag | Description |
+|------|-------------|
+| `--delay N` | Delay in seconds between fetches |
+| `--skip-existing` | Skip papers already in database |
+| `--output PATH` | Output directory for downloads |
+
+```bash
+drbrain batch-fetch papers.txt              # one DOI/URL per line
+drbrain batch-fetch urls.txt --delay 2      # polite fetching
+drbrain batch-fetch list.txt --skip-existing # resume interrupted batch
+```
+
 ### `drbrain build`
 
 Extract concepts and relations via 5-stage LLM pipeline. Processes all `uploaded` papers by default. When `--session` is provided, injects a structured extraction summary into the session so subsequent `reason --session` calls have full build context.
@@ -191,6 +207,22 @@ Ask a natural language question -- retrieves relevant concepts from the KG and g
 ```bash
 drbrain ask "Is attention better than CNN for NLP?"
 drbrain ask "What causes catastrophic forgetting?" --top 10 --json
+```
+
+### `drbrain search`
+
+Quick local BM25 keyword search over papers, concepts, and arguments. Distinct from `query` (graph-aware) and `fsearch` (federated with arXiv).
+
+| Flag | Description |
+|------|-------------|
+| `--limit N` | Max results (default 20) |
+| `--type TYPE` | Filter by concept type |
+| `--json` | Output machine-readable JSON |
+
+```bash
+drbrain search "transformer attention"
+drbrain search "Bayesian inference" --limit 10
+drbrain search "graph neural" --type Method --json
 ```
 
 ### `drbrain fsearch`
@@ -323,6 +355,21 @@ drbrain graph traverse-from "Experiments" --direction forward --json
 ---
 
 ## Citations
+
+### `drbrain graph export`
+
+Export knowledge graph to GraphML, JSON-LD, or Cypher format.
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Output format: `graphml`, `jsonld`, or `cypher` (required) |
+| `--output PATH` | Output file path |
+| `--workspace` | `-w` | Limit to workspace |
+
+```bash
+drbrain graph export --format graphml --output kg.graphml
+drbrain graph export --format cypher -w ws1 --output queries.cypher
+```
 
 ### `drbrain citations`
 
@@ -563,12 +610,16 @@ When `--session` is provided, uses persistent `SessionAgent` (DB-backed) instead
 | `--bidirectional` | `-b` | Use bidirectional LLM-KG iterative reasoning (validates hypotheses against graph constraints) |
 | `--max-rounds` | `-r` | Maximum hypothesis-revision rounds (default: 3) |
 | `--session` | `-s` | Use persistent session. "new" to create, or existing session ID. |
+| `--workflow` | | Run a structured reasoning workflow. Built-in: `review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`. |
 
 ```bash
 drbrain reason "What are the main approaches to reducing hallucination?"
 drbrain reason "Is dropout effective for transformer regularization?" --bidirectional --max-rounds 5
 drbrain reason -s sess-xxx "Compare concepts from yesterday's build"
 drbrain reason -s new -b "Explain the debate around scaling laws"
+drbrain reason --workflow review paper-id
+drbrain reason --workflow gap-analysis -w ws1
+drbrain reason --workflow impact -s sess-xxx "Compare methods"
 ```
 
 ### `drbrain embed`
@@ -784,6 +835,22 @@ drbrain backup --target myserver                   # rsync to remote
 drbrain backup --target myserver --dry-run         # preview rsync
 ```
 
+### `drbrain restore`
+
+Restore a tar.gz backup to a target location.
+
+| Flag | Description |
+|------|-------------|
+| `--target PATH` | Path to restore to |
+| `--force` | Overwrite existing files |
+| `--json` | Output machine-readable JSON |
+
+```bash
+drbrain restore --target ./restored
+drbrain restore --target ./restored --force
+drbrain restore --json
+```
+
 ### `drbrain enrich`
 
 Enrich paper metadata from CrossRef and detect scrub-worthy records.
@@ -985,4 +1052,65 @@ drbrain ws rename nlp nlp-transformers
 
 ```bash
 drbrain ws delete nlp
+```
+
+## Session Management
+
+Persistent DB-backed reasoning sessions with cross-invocation context continuity.
+
+### `drbrain session new`
+
+Create a new persistent reasoning session.
+
+```bash
+drbrain session new "my research topic"
+```
+
+### `drbrain session ask`
+
+Query within an existing session context.
+
+```bash
+drbrain session ask sess-xxx "what are the open problems?"
+```
+
+### `drbrain session chat`
+
+Start interactive multi-turn chat within a session.
+
+```bash
+drbrain session chat sess-xxx
+```
+
+### `drbrain session list`
+
+List all sessions.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output machine-readable JSON |
+
+```bash
+drbrain session list
+drbrain session list --json
+```
+
+### `drbrain session delete`
+
+Delete a session and its history.
+
+```bash
+drbrain session delete sess-xxx
+```
+
+### `drbrain session export`
+
+Export session history.
+
+| Flag | Description |
+|------|-------------|
+| `--output PATH` | Export file path (JSON) |
+
+```bash
+drbrain session export sess-xxx --output session.json
 ```

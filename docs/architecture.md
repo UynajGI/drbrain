@@ -37,11 +37,11 @@ PDF → MinerU/PyMuPDF → Markdown
 
 **Steps:**
 
-1. **Parse** (`parser/mineru_parser.py`): MinerU CLI converts PDF to Markdown. Falls back to `pymupdf4llm.to_markdown()` when MinerU is unavailable. PDFs over 150 pages are split into chunks.
+1. **Parse** (`parser/mineru/` subpackage): MinerU CLI converts PDF to Markdown. Falls back to `pymupdf4llm.to_markdown()` when MinerU is unavailable. PDFs over 150 pages are split into chunks.
 
-2. **Identify** (`dedup/resolver.py`, `parser/mineru_parser.py:_resolve_metadata`): Cross-validates metadata from 5 sources -- arXiv, CrossRef, Semantic Scholar, OpenAlex, DeepXiv. Stores `title`, `year`, `doi`, `arxiv`, `s2_id`, `openalex_id` in `paper_ids`, and `journal`, `publisher`, `citation_count` in `papers`. Extracts abstract from `tree.json`.
+2. **Identify** (`extractor/concept/dedup.py`, `parser/mineru/metadata.py`): Cross-validates metadata from 5 sources -- arXiv, CrossRef, Semantic Scholar, OpenAlex, DeepXiv. Stores `title`, `year`, `doi`, `arxiv`, `s2_id`, `openalex_id` in `paper_ids`, and `journal`, `publisher`, `citation_count` in `papers`. Extracts abstract from `tree.json`.
 
-3. **Tree** (`parser/pageindex_parser.py`): LLM structures the markdown into a hierarchical tree with section summaries. Each node has a title, summary, and optional content. The tree is stored as `papers/<id>/tree.json`.
+3. **Tree** (`parser/pageindex/` subpackage): LLM structures the markdown into a hierarchical tree with section summaries. Each node has a title, summary, and optional content. The tree is stored as `papers/<id>/tree.json`.
 
 4. **Record**: Paper inserted with status `uploaded`.
 
@@ -150,6 +150,8 @@ Layer 3: LLM Agent Reasoning
   - Persistent SessionAgent: DB-backed session history, cross-CLI-invocation context continuity
   - Bidirectional mode: hypothesis formation -> KG validation (TBox/RBox) -> revision loop
   - Context injection: build pipeline feeds extraction summaries into session
+  - Workflow engine: 7 structured reasoning workflows (review, gap-analysis, impact, compare, frontier, lineage, paradigm)
+  - Workflow orchestrator: step-level execution with result caching, non-deterministic queries skip cache
   - Hypothesis generation from gap/debate/technology-cliff patterns
 ```
 
@@ -183,6 +185,18 @@ Layer 3: LLM Agent Reasoning
 
 ### Complex Graph Queries
 `graph/query_embeddings.py` -- TransE complex query operators: project, intersect, union, negate. Supports `∧∨¬` logical queries over entity/relation embeddings.
+
+### Path Reasoning
+`graph/path_reasoning.py` -- Hybrid tree+graph path reasoning. Traverses from tree sections through related concepts into the graph, combining PageIndex tree navigation with graph traversal.
+
+### Workflow Engine
+`extractor/session_agent.py` -- Structured reasoning workflow engine with 7 built-in workflows (`review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`). Workflow orchestrator executes steps sequentially with result caching (temperature=0 results cached, temperature>0 skipped). CLI via `drbrain reason --workflow <name>`.
+
+### Session Management
+`cli/session_commands.py` -- Persistent reasoning session CRUD via `drbrain session`. Commands: `new`, `ask`, `chat`, `list`, `delete`, `export`. Sessions use `SessionAgent` for multi-turn, DB-backed context continuity across CLI invocations.
+
+### Graph Export
+`storage/graph_export.py` -- Export knowledge graphs to GraphML, JSON-LD, and Cypher formats. CLI via `drbrain graph export --format graphml|jsonld|cypher`.
 
 ### Cross-Domain Isomorphism
 `extractor/isomorphism.py` -- Subgraph similarity by relation signature. CLI via `drbrain isomorphism` finds structurally similar concepts across domains with Jaccard + label similarity scoring.
