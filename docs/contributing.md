@@ -19,14 +19,19 @@ src/drbrain/
 │   ├── graph_commands.py     # graph subcommands (neighbors, path, related, describe, query, traverse-from)
 │   ├── setup.py          # Setup wizard
 │   └── dependencies.py   # Import check helpers
-├── extractor/            # LLM extraction and API clients
+├── extractor/            # LLM extraction, reasoning, and API clients
 │   ├── concept.py        # 5-stage graph extraction pipeline
-│   ├── reasoner.py       # LLM agent with tool-calling
+│   ├── agent.py          # LLM agent base class
+│   ├── agent_tools.py    # Shared tool definitions (TOOL_DEFINITIONS, kg_validate)
+│   ├── session_agent.py  # Persistent DB-backed SessionAgent for multi-turn reasoning
+│   ├── reasoner.py       # Stateless ReasonerAgent with tool-calling
+│   ├── raptor.py         # RAPTOR recursive semantic tree summarization
 │   ├── llm_client.py     # acall_with_fallback(), litellm wrappers
 │   ├── openalex.py       # OpenAlex API client
 │   ├── crossref.py       # CrossRef API client
 │   ├── deepxiv.py        # DeepXiv API client
 │   ├── semanticscholar.py# Semantic Scholar API client
+│   ├── cache.py          # API response cache
 │   ├── causal_chain.py   # Causal chain reasoning
 │   ├── confidence_propagation.py # Multi-hop confidence decay
 │   ├── counterfactual.py # Node removal impact analysis
@@ -36,11 +41,22 @@ src/drbrain/
 │   ├── citation.py       # Citation expansion (OpenAlex + S2 + CrossRef)
 │   ├── citation_check.py # In-text citation verification
 │   ├── detection.py      # Paper type classification
+│   ├── argument.py        # Argument unit extraction and validation
+│   ├── canonical.py       # Label normalization + SmartAligner for dedup
 │   └── queue.py          # Confidence queue resolution
-├── graph/                # Graph engine and embeddings
-│   ├── engine.py         # GraphEngine: load, traverse, closure
-│   ├── embedding.py      # TransE training and prediction
-│   └── query_embeddings.py # Complex query operators (project, intersect, union, negate)
+├── graph/                # Graph engine, embeddings, and reasoning
+│   ├── engine.py         # GraphEngine: load, save, traverse, neighborhoods
+│   ├── engine_closure.py # Symbolic rule closure (8+4 rules) + hybrid scoring
+│   ├── engine_embeddings.py # Embedding-grounded validation for inferred edges
+│   ├── embedding.py      # TransE training and link prediction
+│   ├── query_embeddings.py # Complex query operators (project, intersect, union, negate)
+│   ├── path_reasoning.py # Hybrid tree+graph path reasoning
+│   └── genealogy/        # Knowledge genealogy subpackage
+│       ├── lineage.py    # Concept evolution trees + descendants
+│       ├── paradigm.py   # Paradigm shift detection
+│       ├── landscape.py  # Domain landscape: gaps, debates, cliffs
+│       ├── transfer.py   # Cross-domain method transfer discovery
+│       └── display.py    # Text tree + Mermaid rendering
 ├── parser/               # PDF parsing and content structuring
 │   ├── mineru_parser.py  # MinerU CLI + PyMuPDF fallback
 │   ├── pageindex_parser.py # LLM tree structuring (md -> tree.json)

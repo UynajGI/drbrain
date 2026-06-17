@@ -18,11 +18,13 @@ from drbrain.reasoning.base import (
     list_workflows,
     register_workflow,
 )
+from drbrain.reasoning.visualizer import WorkflowVisualizer
 
 __all__ = [
     "WorkflowContext",
     "WorkflowStep",
     "ReasoningWorkflow",
+    "WorkflowVisualizer",
     "get_workflow",
     "list_workflows",
     "register_workflow",

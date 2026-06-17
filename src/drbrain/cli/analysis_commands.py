@@ -88,6 +88,12 @@ def reason_cmd(
         "--no-cache",
         help="Disable workflow-level result caching.",
     ),
+    visualize: bool = typer.Option(
+        False,
+        "--visualize",
+        "-v",
+        help="Show workflow pipeline diagram and step-by-step result summary.",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     if isinstance(list_workflows_flag, typer.models.OptionInfo):
@@ -113,6 +119,8 @@ def reason_cmd(
         workflow = workflow.default
     if isinstance(no_cache, typer.models.OptionInfo):
         no_cache = no_cache.default
+    if isinstance(visualize, typer.models.OptionInfo):
+        visualize = visualize.default
 
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
@@ -136,6 +144,13 @@ def reason_cmd(
             db.close()
             raise typer.Exit(1)
 
+        from drbrain.reasoning import WorkflowVisualizer
+
+        vz = WorkflowVisualizer(wf)
+
+        if visualize:
+            typer.echo(vz.text_flowchart())
+
         typer.echo(f"Workflow [{wf.name}]: {question}\n")
         if no_cache:
             wf_ctx = WorkflowContext(db=db, graph=graph, models=models, question=question)
@@ -152,22 +167,29 @@ def reason_cmd(
             )
         results = wf.execute(wf_ctx)
 
-        # Print results — the last step is usually the LLM synthesis
-        for step_name, result in results.items():
-            if result is None:
-                continue
-            step = next((s for s in wf.steps if s.name == step_name), None)
-            if step and step.requires_llm:
-                typer.echo(f"\n{'─' * 60}")
-                typer.echo(f"Result [{step_name}]:")
-                typer.echo(f"{'─' * 60}")
-                typer.echo(result)
-            elif isinstance(result, dict):
-                typer.echo(f"[{step_name}] {result}")
-            elif isinstance(result, list) and result:
-                typer.echo(f"[{step_name}] {len(result)} items")
-                for item in result[:3]:
-                    typer.echo(f"  - {item}")
+        # Output results
+        if visualize:
+            # Detailed step-by-step summary
+            typer.echo(vz.summarize_results(wf_ctx))
+            # Mermaid diagram (can be rendered in Markdown viewers)
+            typer.echo(vz.mermaid_flowchart())
+        else:
+            # Default: show only LLM synthesis results
+            for step_name, result in results.items():
+                if result is None:
+                    continue
+                step = next((s for s in wf.steps if s.name == step_name), None)
+                if step and step.requires_llm:
+                    typer.echo(f"\n{'─' * 60}")
+                    typer.echo(f"Result [{step_name}]:")
+                    typer.echo(f"{'─' * 60}")
+                    typer.echo(result)
+                elif isinstance(result, dict):
+                    typer.echo(f"[{step_name}] {result}")
+                elif isinstance(result, list) and result:
+                    typer.echo(f"[{step_name}] {len(result)} items")
+                    for item in result[:3]:
+                        typer.echo(f"  - {item}")
 
         db.close()
         return

@@ -173,7 +173,16 @@ Layer 3: LLM Agent Reasoning
 `extractor/hypothesis.py` -- Generates actionable research hypotheses from gaps, debates, technology cliffs, and confidence collapse patterns.
 
 ### Knowledge Genealogy
-`graph/genealogy.py` -- Concept lineage trees (`evolve`), academic offspring tracking (`descendants`), domain landscape with timeline/gaps/debates (`landscape`), paradigm shift detection (`paradigm`), cross-domain method transfer discovery (`transfers`), difficulty map (`difficulty`), composite frontier report (`frontier`). All features include PageIndex provenance via `_get_concept_provenance()`. Text tree and Mermaid renderers show provenance inline.
+`graph/genealogy/` subpackage -- Concept lineage trees (`evolve`, in `lineage.py`), academic offspring tracking (`descendants`), domain landscape with timeline/gaps/debates (`landscape.py`), paradigm shift detection (`paradigm.py`), cross-domain method transfer discovery (`transfer.py`), display rendering (`display.py`). All features include PageIndex provenance via `_get_concept_provenance()`. Text tree and Mermaid renderers show provenance inline.
+
+### Rule Closure Engine
+`graph/engine_closure.py` -- Symbolic rule-based inference (8 rules in `closure()`) plus path-level rules (4 rules in `apply_path_rules()`). Handles transitive closure, debate detection, gap propagation, and T-norm path materialization. Supports `--mode hybrid` with embedding-weighted edge confidence.
+
+### Embedding-Grounded Closure
+`graph/engine_embeddings.py` -- TransE embedding-grounded validation for inferred edges. Computes path confidence via relation composition distance and filters implausible edges.
+
+### Complex Graph Queries
+`graph/query_embeddings.py` -- TransE complex query operators: project, intersect, union, negate. Supports `∧∨¬` logical queries over entity/relation embeddings.
 
 ### Cross-Domain Isomorphism
 `extractor/isomorphism.py` -- Subgraph similarity by relation signature. CLI via `drbrain isomorphism` finds structurally similar concepts across domains with Jaccard + label similarity scoring.
