@@ -18,7 +18,12 @@ from drbrain.cli._common import (
 )
 from drbrain.dedup.resolver import DedupEngine
 from drbrain.graph.engine import GraphEngine
-from drbrain.services.fetch import _resolve_identifier, fetch_paper
+from drbrain.services.fetch import (  # noqa: F401
+    _resolve_identifier,
+    download_pdf,
+    fetch_paper,
+    resolve_pdf_url,
+)
 
 console = Console()
 
@@ -472,7 +477,7 @@ def batch_fetch_cmd(
     import re
     import time
 
-    from drbrain.services.fetch import download_pdf, resolve_pdf_url
+    # resolve_pdf_url and download_pdf are imported at module top
 
     cfg = ctx.obj["config"]
     fetch_cfg = cfg.get("fetch", {})
@@ -512,17 +517,25 @@ def batch_fetch_cmd(
             typer.echo(f"[{idx}/{len(entries)}] {entry}")
             doi_safe = re.sub(r"[^\w.\-]", "_", entry)
 
-            # Check if already in DB
-            if skip_existing:
-                existing_id = db.get_paper_by_external_id("doi", entry)
-                if existing_id:
-                    typer.echo(f"  Skipped (already in DB as {existing_id})")
-                    skipped += 1
-                    continue
+            # Resolve identifier type (DOI / arXiv ID / arXiv URL / title)
+            doi, title, arxiv_id = _resolve_identifier(entry)
 
-            # Resolve PDF URL
+            # Check if already in DB (try both doi and arxiv)
+            if skip_existing:
+                ext_key = "doi" if doi else ("arxiv" if arxiv_id else None)
+                ext_val = doi or arxiv_id
+                if ext_key and ext_val:
+                    existing_id = db.get_paper_by_external_id(ext_key, ext_val)
+                    if existing_id:
+                        typer.echo(f"  Skipped (already in DB as {existing_id})")
+                        skipped += 1
+                        continue
+
+            # Resolve PDF URL through multi-stage fallback
             try:
-                pdf_url = resolve_pdf_url(doi=entry, fetch_config=fetch_cfg)
+                pdf_url = resolve_pdf_url(
+                    doi=doi, title=title, arxiv_id=arxiv_id, fetch_config=fetch_cfg
+                )
             except Exception as exc:
                 logger.warning(f"resolve_pdf_url failed for {entry}: {exc}")
                 pdf_url = None

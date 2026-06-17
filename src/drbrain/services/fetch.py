@@ -334,14 +334,29 @@ def _resolve_metadata(
 def _resolve_identifier(
     identifier: str, is_arxiv: bool = False
 ) -> tuple[str | None, str | None, str | None]:
-    """Classify an identifier as DOI, arXiv ID, or title.
+    """Classify an identifier as DOI, arXiv ID, arXiv URL, or title.
 
     Returns (doi, title, arxiv_id).
     """
     if is_arxiv:
         return (None, None, identifier)
+
+    ident = identifier.strip()
+
+    # arXiv URL: https://arxiv.org/abs/2301.00234 or /pdf/2301.00234
+    arxiv_url_match = re.search(r"arxiv\.org/(?:abs|pdf)/([\w.\-]+)", ident)
+    if arxiv_url_match:
+        arxiv_id = arxiv_url_match.group(1).replace(".pdf", "")
+        return (None, None, arxiv_id)
+
+    # arXiv ID: new-style 4 digits + dot + 4-5 digits (e.g. 1706.03762)
+    # Old-style: subject-class/digits (e.g. cs.AI/0703111)
+    if re.match(r"^\d{4}\.\d{4,5}$", ident) or re.match(r"^[A-Za-z\-\.]+/\d{7}$", ident):
+        return (None, None, ident)
+
     # DOI detection: starts with "10." or contains "/" and no spaces
-    if identifier.startswith("10.") or ("/" in identifier and " " not in identifier):
-        return (identifier, None, None)
+    if ident.startswith("10.") or ("/" in ident and " " not in ident):
+        return (ident, None, None)
+
     # Otherwise treat as title
-    return (None, identifier, None)
+    return (None, ident, None)

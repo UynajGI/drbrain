@@ -66,8 +66,8 @@ class TestFileParsing:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 batch_fetch_cmd(ctx, str(input_file), str(output_dir), delay=0.0)
 
@@ -139,8 +139,8 @@ class TestSkipExisting:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 batch_fetch_cmd(ctx, str(input_file), str(output_dir), delay=0.0)
 
@@ -170,8 +170,8 @@ class TestSkipExisting:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 batch_fetch_cmd(
                     ctx,
@@ -205,7 +205,7 @@ class TestSummaryOutput:
             cm_mock, db_mock = _make_mock_db(return_value_for_get=None)
 
             # First DOI resolves and downloads; second fails to resolve
-            def resolve_side_effect(doi=None, fetch_config=None):
+            def resolve_side_effect(doi=None, title=None, arxiv_id=None, fetch_config=None):
                 if "good" in doi:
                     return "https://example.com/good.pdf"
                 return None
@@ -215,8 +215,8 @@ class TestSummaryOutput:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 batch_fetch_cmd(ctx, str(input_file), str(output_dir), delay=0.0)
 
@@ -240,7 +240,7 @@ class TestSummaryOutput:
 
             cm_mock, db_mock = _make_mock_db(return_value_for_get=None)
 
-            def resolve_side_effect(doi=None, fetch_config=None):
+            def resolve_side_effect(doi=None, title=None, arxiv_id=None, fetch_config=None):
                 if "throws" in doi:
                     raise ValueError("bad DOI format")
                 return "https://example.com/paper.pdf"
@@ -250,8 +250,8 @@ class TestSummaryOutput:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 # Should not raise - error is caught and logged
                 batch_fetch_cmd(ctx, str(input_file), str(output_dir), delay=0.0)
@@ -283,8 +283,8 @@ class TestDirectPdfUrl:
 
             with (
                 mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
-                mock.patch("drbrain.services.fetch.resolve_pdf_url", resolve_mock),
-                mock.patch("drbrain.services.fetch.download_pdf", download_mock),
+                mock.patch("drbrain.cli.ingest_commands.resolve_pdf_url", resolve_mock),
+                mock.patch("drbrain.cli.ingest_commands.download_pdf", download_mock),
             ):
                 batch_fetch_cmd(ctx, str(input_file), str(output_dir), delay=0.0)
 
