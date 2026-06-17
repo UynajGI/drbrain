@@ -205,6 +205,43 @@ async def acall_with_fallback(
     return None
 
 
+def call_text_with_fallback(
+    prompt: str,
+    models: list[dict],
+    system_prompt: str = "",
+    max_tokens: int = 2048,
+) -> str | None:
+    """Sync text call with fallback. Returns raw text (not JSON)."""
+    import litellm
+
+    for i, model_cfg in enumerate(models):
+        name = f"{model_cfg['provider']}/{model_cfg['model']}"
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            kwargs = {
+                "model": name,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+                "timeout": 60,
+                "extra_body": {"thinking": {"type": "disabled"}},
+            }
+            if model_cfg.get("api_key"):
+                kwargs["api_key"] = model_cfg["api_key"]
+            if model_cfg.get("base_url"):
+                kwargs["api_base"] = model_cfg["base_url"]
+            response = litellm.completion(**kwargs)
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.warning(f"Text model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            continue
+    logger.error(f"All {len(models)} models failed for text call")
+    return None
+
+
 async def acall_text_with_fallback(
     prompt: str,
     models: list[dict],

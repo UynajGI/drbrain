@@ -88,7 +88,7 @@ class _DetectEvolutionStep(WorkflowStep):
         if ctx.graph.graph.number_of_edges() == 0:
             return {"shifts": [], "signals": []}
 
-        shifts = detect_paradigm_shifts(ctx.db, ctx.graph)
+        shifts = detect_paradigm_shifts(ctx.graph, ctx.db)
 
         # Get evolution signals for top critical nodes
         critical = ctx.get("find_critical_nodes", [])
@@ -119,9 +119,8 @@ class _GenerateImpactReportStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         critical = ctx.get("measure_influence", [])
         evolution = ctx.get("detect_evolution", {})
@@ -167,9 +166,7 @@ class _GenerateImpactReportStep(WorkflowStep):
             "Ground all claims in the data provided."
         )
 
-        result = asyncio.run(
-            acall_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
-        )
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
         return result or "Unable to generate impact report."
 
 

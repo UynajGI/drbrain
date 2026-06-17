@@ -107,7 +107,7 @@ class TestSummarizeResults:
         vz = WorkflowVisualizer(wf)
 
         # Run with mocked LLM
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=AsyncMock):
             wf.execute(ctx)
 
         summary = vz.summarize_results(ctx)
@@ -124,7 +124,7 @@ class TestSummarizeResults:
         wf = get_workflow("gap-analysis")
         vz = WorkflowVisualizer(wf)
 
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=AsyncMock):
             wf.execute(ctx)
 
         summary = vz.summarize_results(ctx)
@@ -140,7 +140,7 @@ class TestSummarizeResults:
         wf = get_workflow("contradiction")
         vz = WorkflowVisualizer(wf)
 
-        with patch("drbrain.extractor.llm_client.acall_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_with_fallback", new_callable=AsyncMock):
             wf.execute(ctx)
 
         summary = vz.summarize_results(ctx)
@@ -157,7 +157,7 @@ class TestSummarizeResults:
         wf = get_workflow("impact")
         vz = WorkflowVisualizer(wf)
 
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=AsyncMock):
             wf.execute(ctx)
 
         summary = vz.summarize_results(ctx)

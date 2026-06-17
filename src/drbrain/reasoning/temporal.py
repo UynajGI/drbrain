@@ -69,7 +69,7 @@ class _DetectTurningPointsStep(WorkflowStep):
         signal = ctx.db.get_concept_signal(concept)
 
         # Detect paradigm shifts involving this concept
-        all_shifts = detect_paradigm_shifts(ctx.db, ctx.graph)
+        all_shifts = detect_paradigm_shifts(ctx.graph, ctx.db)
         relevant = [s for s in all_shifts if s.get("concept", "").lower() == concept.lower()]
 
         return {
@@ -118,9 +118,8 @@ class _GenerateNarrativeStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         timeline_data = ctx.get("build_timeline", {})
         turning = ctx.get("detect_turning_points", {})
@@ -163,9 +162,7 @@ class _GenerateNarrativeStep(WorkflowStep):
             "current trajectory. Write in an academic but accessible style."
         )
 
-        result = asyncio.run(
-            acall_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=768)
-        )
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=768)
         return result or "Unable to generate narrative."
 
 

@@ -142,9 +142,8 @@ class _SynthesizeExplanationStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         entities = ctx.get("extract_entities", {})
         chain = ctx.get("find_causal_chain", {})
@@ -178,7 +177,7 @@ class _SynthesizeExplanationStep(WorkflowStep):
         )
 
         prompt = "\n".join(prompt_parts)
-        result = asyncio.run(acall_text_with_fallback(prompt, ctx.models, max_tokens=512))
+        result = call_text_with_fallback(prompt, ctx.models, max_tokens=512)
         return result or "Unable to generate explanation."
 
 
