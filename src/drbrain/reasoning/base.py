@@ -154,7 +154,15 @@ def get_workflow(name: str) -> ReasoningWorkflow:
     workflow submodules.
     """
     # Lazy-load all workflow modules to populate the registry
-    from drbrain.reasoning import causal, contradiction, hypothesis_wf, temporal  # noqa: F401
+    from drbrain.reasoning import (  # noqa: F401
+        causal,
+        contradiction,
+        gap_analysis,
+        hypothesis_wf,
+        impact,
+        review,
+        temporal,
+    )
 
     if name not in _WORKFLOW_REGISTRY:
         available = ", ".join(sorted(_WORKFLOW_REGISTRY.keys()))
@@ -164,7 +172,15 @@ def get_workflow(name: str) -> ReasoningWorkflow:
 
 def list_workflows() -> list[dict[str, str]]:
     """Return metadata for all registered workflows."""
-    from drbrain.reasoning import causal, contradiction, hypothesis_wf, temporal  # noqa: F401
+    from drbrain.reasoning import (  # noqa: F401
+        causal,
+        contradiction,
+        gap_analysis,
+        hypothesis_wf,
+        impact,
+        review,
+        temporal,
+    )
 
     return [
         {"name": cls.name, "description": cls.description} for cls in _WORKFLOW_REGISTRY.values()

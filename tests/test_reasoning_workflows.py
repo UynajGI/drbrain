@@ -47,7 +47,15 @@ class TestWorkflowRegistry:
     def test_list_workflows_returns_all_four(self):
         wfs = list_workflows()
         names = {w["name"] for w in wfs}
-        assert names == {"causal", "contradiction", "temporal", "hypothesis"}
+        assert names == {
+            "causal",
+            "contradiction",
+            "temporal",
+            "hypothesis",
+            "review",
+            "gap-analysis",
+            "impact",
+        }
 
     def test_get_workflow_causal(self):
         wf = get_workflow("causal")
@@ -377,3 +385,128 @@ class TestWorkflowCaching:
             wf.execute(ctx)
             # LLM was called again (cache miss)
             assert mock_llm.called
+
+
+# ── Review / GapAnalysis / Impact workflow tests ─────────────────────
+
+
+class TestReviewWorkflow:
+    def test_collect_papers_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("review")
+        result = wf.steps[0].run(ctx)
+        assert result["paper_count"] == 0
+
+    def test_identify_themes_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("review")
+        result = wf.steps[1].run(ctx)
+        assert isinstance(result, list)
+
+    def test_review_registered(self):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("review")
+        assert wf.name == "review"
+        assert len(wf.steps) == 4
+
+
+class TestGapAnalysisWorkflow:
+    def test_detect_gaps_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("gap-analysis")
+        result = wf.steps[0].run(ctx)
+        assert result["total_signals"] >= 0
+
+    def test_score_gaps_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("gap-analysis")
+        result = wf.steps[2].run(ctx)
+        assert result == []
+
+    def test_gap_analysis_registered(self):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("gap-analysis")
+        assert wf.name == "gap-analysis"
+        assert len(wf.steps) == 4
+
+
+class TestImpactWorkflow:
+    def test_find_critical_nodes_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("impact")
+        result = wf.steps[0].run(ctx)
+        assert result == []
+
+    def test_measure_influence_empty(self, ctx):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("impact")
+        result = wf.steps[1].run(ctx)
+        assert result == []
+
+    def test_impact_registered(self):
+        from drbrain.reasoning import get_workflow
+
+        wf = get_workflow("impact")
+        assert wf.name == "impact"
+        assert len(wf.steps) == 4
+
+
+class TestNewWorkflowsFullPipeline:
+    @pytest.mark.asyncio
+    async def test_review_empty_db(self, tmp_db, tmp_graph):
+        from unittest.mock import AsyncMock, patch
+
+        from drbrain.reasoning import WorkflowContext, get_workflow
+
+        ctx = WorkflowContext(
+            db=tmp_db,
+            graph=tmp_graph,
+            models=[{"provider": "test", "model": "m"}],
+            question="survey the field",
+        )
+        wf = get_workflow("review")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+            results = wf.execute(ctx)
+        assert "generate_review" in results
+
+    @pytest.mark.asyncio
+    async def test_gap_analysis_empty_db(self, tmp_db, tmp_graph):
+        from unittest.mock import AsyncMock, patch
+
+        from drbrain.reasoning import WorkflowContext, get_workflow
+
+        ctx = WorkflowContext(
+            db=tmp_db,
+            graph=tmp_graph,
+            models=[{"provider": "test", "model": "m"}],
+            question="what gaps exist?",
+        )
+        wf = get_workflow("gap-analysis")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+            results = wf.execute(ctx)
+        assert "generate_agenda" in results
+
+    @pytest.mark.asyncio
+    async def test_impact_empty_db(self, tmp_db, tmp_graph):
+        from unittest.mock import AsyncMock, patch
+
+        from drbrain.reasoning import WorkflowContext, get_workflow
+
+        ctx = WorkflowContext(
+            db=tmp_db,
+            graph=tmp_graph,
+            models=[{"provider": "test", "model": "m"}],
+            question="which concepts are most impactful?",
+        )
+        wf = get_workflow("impact")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+            results = wf.execute(ctx)
+        assert "generate_impact_report" in results
