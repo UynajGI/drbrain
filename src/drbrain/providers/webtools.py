@@ -15,6 +15,8 @@ from urllib.request import Request, urlopen
 
 from loguru import logger
 
+from drbrain.utils.http_retry import http_retry
+
 _DEFAULT_WEBEXTRACT_URL = "http://127.0.0.1:8766"
 
 
@@ -64,6 +66,7 @@ def _slugify_title(title: str, url: str) -> str:
     return slug or "web-link"
 
 
+@http_retry(max_retries=2, base_delay=0.5)
 def extract_web(
     url: str,
     *,
@@ -116,6 +119,7 @@ def extract_web(
     }
 
 
+@http_retry(max_retries=2, base_delay=0.5)
 def check_webextract_service(timeout: float = 3.0) -> bool:
     """Check if the web extraction service is reachable.
 

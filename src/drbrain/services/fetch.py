@@ -9,7 +9,10 @@ from pathlib import Path
 import requests
 from loguru import logger
 
+from drbrain.utils.http_retry import http_retry
 
+
+@http_retry(max_retries=3, base_delay=1.0)
 def resolve_pdf_url(
     doi: str | None = None,
     title: str | None = None,
