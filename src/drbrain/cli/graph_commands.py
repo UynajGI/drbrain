@@ -723,3 +723,58 @@ def traverse_from_cmd(
                 typer.echo(f"    --{e.get('relation', '?')}--> {e.get('dst', '?')}")
             if len(edges) > 5:
                 typer.echo(f"    ... and {len(edges) - 5} more")
+
+
+@graph_app.command("export")
+def export_cmd(
+    ctx: typer.Context,
+    format: str = typer.Option(
+        "graphml",
+        "--format",
+        "-f",
+        help="Export format: graphml, jsonld, or cypher",
+    ),
+    output: str = typer.Option(
+        "kg_export",
+        "--output",
+        "-o",
+        help="Output file path (extension added automatically if not present)",
+    ),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
+):
+    """Export knowledge graph to external graph formats.
+
+    Supported formats:
+    - graphml: GraphML for Gephi/Cytoscape
+    - jsonld: JSON-LD for RDF/semantic tools
+    - cypher: Cypher script for Neo4j import
+    """
+    from drbrain.storage.graph_export import export_cypher, export_graphml, export_jsonld
+
+    if format not in ("graphml", "jsonld", "cypher"):
+        typer.echo(f"Unknown format '{format}'. Use: graphml, jsonld, or cypher", err=True)
+        raise typer.Exit(1)
+
+    # Auto-append extension if missing
+    ext_map = {"graphml": ".graphml", "jsonld": ".jsonld", "cypher": ".cypher"}
+    if not any(output.endswith(ext) for ext in ext_map.values()):
+        output = output + ext_map[format]
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        paper_ids = _resolve_workspace_papers(workspace)
+        graph.load_from_db(db, paper_ids=paper_ids)
+
+        if graph.graph.number_of_nodes() == 0:
+            typer.echo("Graph is empty. Run: drbrain build first.")
+            raise typer.Exit(0)
+
+        exporters = {
+            "graphml": export_graphml,
+            "jsonld": export_jsonld,
+            "cypher": export_cypher,
+        }
+        exporters[format](graph, db, output)
+
+    typer.echo(f"Exported graph ({format}) → {output}")
