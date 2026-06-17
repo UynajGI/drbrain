@@ -214,6 +214,30 @@ With bidirectional mode (LLM forms hypotheses, validates against graph constrain
 drbrain reason "Is chain-of-thought more effective than direct prompting for math?" --bidirectional
 ```
 
+### Step 9: Structured Reasoning Workflows
+
+Run pre-built reasoning workflows for common research tasks:
+
+```bash
+drbrain reason --workflow review p6a321e
+drbrain reason --workflow gap-analysis --workspace nlp
+drbrain reason --workflow impact --session sess-xxx "Compare approaches"
+```
+
+Available workflows: `review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`.
+
+### Step 10: Persistent Reasoning Sessions
+
+Create a session to maintain context across multiple reasoning calls:
+
+```bash
+drbrain session new "nlp-research"                    # create named session
+drbrain build p6a321e --session new                   # build with session context
+drbrain reason -s sess-xxx "Summarize the key claims"  # reason with session
+drbrain session ask sess-xxx "Elaborate on point 3"    # follow-up question
+drbrain session export sess-xxx                        # export history
+```
+
 ## Verify Your Environment
 
 ```bash
@@ -249,4 +273,5 @@ workspace/<name>/       # Paper subsets: workspace.yaml + refs/papers.json
 - [Architecture](architecture.md) -- how the system works under the hood
 - [Troubleshooting](troubleshooting.md) -- common problems and recovery
 - [Glossary](glossary.md) -- terminology reference
+- [Skills Reference](skills.md) -- 27 agent skills and their CLI commands
 - [Contributing](contributing.md) -- add commands, modules, and skills

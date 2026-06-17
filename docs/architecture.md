@@ -190,7 +190,7 @@ Layer 3: LLM Agent Reasoning
 `graph/path_reasoning.py` -- Hybrid tree+graph path reasoning. Traverses from tree sections through related concepts into the graph, combining PageIndex tree navigation with graph traversal.
 
 ### Workflow Engine
-`extractor/session_agent.py` -- Structured reasoning workflow engine with 7 built-in workflows (`review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`). Workflow orchestrator executes steps sequentially with result caching (temperature=0 results cached, temperature>0 skipped). CLI via `drbrain reason --workflow <name>`.
+`extractor/session_agent.py` -- Structured reasoning workflow engine with 7 built-in workflows (`review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`). Workflow orchestrator executes steps sequentially with result caching (temperature=0 results cached, temperature>0 skipped). Includes workflow visualizer for pipeline diagrams and result summaries. CLI via `drbrain reason --workflow <name>`.
 
 ### Session Management
 `cli/session_commands.py` -- Persistent reasoning session CRUD via `drbrain session`. Commands: `new`, `ask`, `chat`, `list`, `delete`, `export`. Sessions use `SessionAgent` for multi-turn, DB-backed context continuity across CLI invocations.

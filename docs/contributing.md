@@ -79,6 +79,7 @@ src/drbrain/
 │   ├── bm25.py           # BM25 index over concepts + arguments
 │   └── tree_retrieval.py # PageIndex tree search (adaptive depth)
 ├── providers/            # External service clients
+│   ├── base.py           # Shared PatentBase ABC + google_patents_url helper
 │   ├── webtools.py       # Web extraction (qt-web-extractor)
 │   ├── uspto_odp.py      # USPTO ODP patent API (key required)
 │   └── uspto_ppubs.py    # USPTO PPUBS client (free, session-based)
