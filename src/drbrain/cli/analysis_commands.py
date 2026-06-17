@@ -78,8 +78,25 @@ def reason_cmd(
         "-w",
         help="Use a structured reasoning workflow: causal|contradiction|temporal|hypothesis",
     ),
+    list_workflows_flag: bool = typer.Option(
+        False,
+        "--list-workflows",
+        help="List available reasoning workflows and exit.",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
+    if isinstance(list_workflows_flag, typer.models.OptionInfo):
+        list_workflows_flag = list_workflows_flag.default
+
+    if list_workflows_flag:
+        from drbrain.reasoning import list_workflows as _list_wfs
+
+        wfs = _list_wfs()
+        typer.echo("Available reasoning workflows:")
+        for w in wfs:
+            typer.echo(f"  {w['name']:15s}  {w['description']}")
+        return
+
     # Normalize typer OptionInfo objects when called directly (not via CLI)
     if isinstance(bidirectional, typer.models.OptionInfo):
         bidirectional = bidirectional.default

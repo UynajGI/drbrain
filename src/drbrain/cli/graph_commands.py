@@ -520,7 +520,7 @@ def describe_cmd(
             )
 
         # LLM summary
-        models = cfg.get("models", [])
+        models = cfg.get("llm", {}).get("models", [])
         if models:
             description = asyncio.run(describe_subgraph(graph, db, node_label, models, depth=depth))
         else:

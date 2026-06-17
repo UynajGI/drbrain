@@ -94,85 +94,91 @@ class ReasonerAgent:
         ]
 
         for _ in range(max_turns):
-            try:
-                import litellm
+            msg = None
+            last_error = None
+            for model in self.models:
+                try:
+                    import litellm
 
-                model = self.models[0]
-                # TODO: add fallback to self.models[1:] on failure, like _call_llm
-                name = f"{model['provider']}/{model['model']}"
-                kwargs = {
-                    "model": name,
-                    "messages": messages,
-                    "temperature": 0.3,
-                    "max_tokens": 1024,
-                    "timeout": 60,
-                    "tools": tools,
-                    "extra_body": {"thinking": {"type": "disabled"}},
-                }
-                if model.get("api_key"):
-                    kwargs["api_key"] = model["api_key"]
-                if model.get("base_url"):
-                    kwargs["api_base"] = model["base_url"]
+                    name = f"{model['provider']}/{model['model']}"
+                    kwargs = {
+                        "model": name,
+                        "messages": messages,
+                        "temperature": 0.3,
+                        "max_tokens": 1024,
+                        "timeout": 60,
+                        "tools": tools,
+                        "extra_body": {"thinking": {"type": "disabled"}},
+                    }
+                    if model.get("api_key"):
+                        kwargs["api_key"] = model["api_key"]
+                    if model.get("base_url"):
+                        kwargs["api_base"] = model["base_url"]
 
-                resp = await litellm.acompletion(**kwargs)
-                msg = resp.choices[0].message
+                    resp = await litellm.acompletion(**kwargs)
+                    msg = resp.choices[0].message
+                    break  # success
+                except Exception as e:
+                    last_error = e
+                    log.warning("[reasoner] model %s failed: %s", model.get("model"), e)
+                    continue
 
-                if msg.tool_calls:
-                    _called = [tc.function.name for tc in msg.tool_calls]
-                    log.info("[reasoner] tool calls: %s", _called)
+            if msg is None:
+                return f"Reasoning error: {last_error}"
+
+            if msg.tool_calls:
+                _called = [tc.function.name for tc in msg.tool_calls]
+                log.info("[reasoner] tool calls: %s", _called)
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ],
+                    }
+                )
+                for tc in msg.tool_calls:
+                    args = json.loads(tc.function.arguments)
+                    if tc.function.name == "search_concepts":
+                        result = self._search_concepts(**args)
+                    elif tc.function.name == "get_neighbors":
+                        result = self._get_neighbors(**args)
+                    elif tc.function.name == "find_path":
+                        result = self._find_path(**args)
+                    elif tc.function.name == "get_document_structure":
+                        result = self._get_document_structure(**args)
+                    elif tc.function.name == "get_section_content":
+                        result = self._get_section_content(**args)
+                    elif tc.function.name == "search_tree":
+                        result = self._search_tree(**args)
+                    elif tc.function.name == "get_raptor_summaries":
+                        result = self._get_raptor_summaries(**args)
+                    else:
+                        result = []
                     messages.append(
                         {
-                            "role": "assistant",
-                            "content": msg.content or "",
-                            "tool_calls": [
-                                {
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                }
-                                for tc in msg.tool_calls
-                            ],
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
                         }
                     )
-                    for tc in msg.tool_calls:
-                        args = json.loads(tc.function.arguments)
-                        if tc.function.name == "search_concepts":
-                            result = self._search_concepts(**args)
-                        elif tc.function.name == "get_neighbors":
-                            result = self._get_neighbors(**args)
-                        elif tc.function.name == "find_path":
-                            result = self._find_path(**args)
-                        elif tc.function.name == "get_document_structure":
-                            result = self._get_document_structure(**args)
-                        elif tc.function.name == "get_section_content":
-                            result = self._get_section_content(**args)
-                        elif tc.function.name == "search_tree":
-                            result = self._search_tree(**args)
-                        elif tc.function.name == "get_raptor_summaries":
-                            result = self._get_raptor_summaries(**args)
-                        else:
-                            result = []
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps(result, ensure_ascii=False, default=str),
-                            }
-                        )
-                else:
-                    _content = msg.content or "No answer generated."
-                    log.info(
-                        "[reasoner] done in %.1fs — answer=%d chars",
-                        _rtime.monotonic() - _rt0,
-                        len(_content),
-                    )
-                    return _content
-            except Exception as e:
-                log.warning("[reasoner] error: %s", e)
-                return f"Reasoning error: {e}"
+            else:
+                _content = msg.content or "No answer generated."
+                log.info(
+                    "[reasoner] done in %.1fs — answer=%d chars",
+                    _rtime.monotonic() - _rt0,
+                    len(_content),
+                )
+                return _content
 
         log.warning("[reasoner] max turns (%d) exhausted", max_turns)
         return "Unable to answer after maximum reasoning turns."
