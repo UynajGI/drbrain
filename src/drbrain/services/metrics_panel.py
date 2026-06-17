@@ -5,15 +5,16 @@ Lightweight SQLite-backed analytics (separate from main DB).
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+from drbrain.storage.connection import connect_wal
 
 
 def _ensure_metrics_db(db_path: Path) -> None:
     """Create metrics tables if they don't exist."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS search_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +46,7 @@ def record_search(db_path: Path, keyword: str) -> None:
     if not normalized:
         return
     _ensure_metrics_db(db_path)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     conn.execute(
         "INSERT INTO search_events (keyword) VALUES (?)",
         (normalized,),
@@ -57,7 +58,7 @@ def record_search(db_path: Path, keyword: str) -> None:
 def record_read(db_path: Path, local_id: str, title: str) -> None:
     """Record a paper read/view event."""
     _ensure_metrics_db(db_path)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     conn.execute(
         "INSERT INTO read_events (local_id, title) VALUES (?, ?)",
         (local_id, title),
@@ -69,7 +70,7 @@ def record_read(db_path: Path, local_id: str, title: str) -> None:
 def get_top_keywords(db_path: Path, limit: int = 10) -> list[dict]:
     """Return most-used search keywords with counts."""
     _ensure_metrics_db(db_path)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     rows = conn.execute(
         """SELECT keyword, COUNT(*) as cnt
            FROM search_events
@@ -85,7 +86,7 @@ def get_top_keywords(db_path: Path, limit: int = 10) -> list[dict]:
 def get_most_read_papers(db_path: Path, limit: int = 10) -> list[dict]:
     """Return most-viewed papers with read counts."""
     _ensure_metrics_db(db_path)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     rows = conn.execute(
         """SELECT local_id, title, COUNT(*) as cnt
            FROM read_events
@@ -106,7 +107,7 @@ def get_weekly_trend(db_path: Path) -> dict:
         ``unique_papers_read``.
     """
     _ensure_metrics_db(db_path)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_wal(db_path)
     week_ago = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
 
     total_searches = conn.execute(
