@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 
 from loguru import logger
 
+from drbrain.providers.base import PatentBase, clean_publication_number
+
 USPTO_ODP_BASE_URL = "https://api.uspto.gov"
 
 
@@ -21,18 +23,18 @@ class USPTOAPIError(Exception):
 
 
 @dataclass
-class PatentResult:
-    """USPTO patent search result."""
+class PatentResult(PatentBase):
+    """USPTO patent search result.
 
-    application_number: str = ""
-    title: str = ""
+    Inherits ``google_patents_url()`` from PatentBase.
+    """
+
     inventors: list[str] = field(default_factory=list)
     applicants: list[str] = field(default_factory=list)
     filing_date: str = ""
     grant_date: str = ""
     publication_date: str = ""
     patent_number: str = ""
-    publication_number: str = ""
     application_status: str = ""
     application_type: str = ""
     earliest_publication_number: str = ""
@@ -40,15 +42,13 @@ class PatentResult:
 
     def to_dict(self) -> dict:
         return {
-            "application_number": self.application_number,
-            "title": self.title,
+            **self._common_dict(),
             "inventors": self.inventors,
             "applicants": self.applicants,
             "filing_date": self.filing_date,
             "grant_date": self.grant_date,
             "publication_date": self.publication_date,
             "patent_number": self.patent_number,
-            "publication_number": self.publication_number,
             "application_status": self.application_status,
             "application_type": self.application_type,
         }
@@ -58,11 +58,6 @@ class PatentResult:
             if d:
                 return d[:4]
         return None
-
-    def google_patents_url(self) -> str:
-        if self.publication_number:
-            return f"https://patents.google.com/patent/{self.publication_number}/en"
-        return f"https://data.uspto.gov/api/v1/patent/applications/{self.application_number}"
 
     def to_meta_dict(self) -> dict:
         """Convert to paper metadata dict for DB ingestion."""
@@ -161,7 +156,7 @@ def _extract_patent_result(item: dict) -> PatentResult:
     patent_number = str(meta.get("patentNumber", "")).strip()
     earliest_pub = str(meta.get("earliestPublicationNumber", "")).strip()
 
-    publication_number = _clean_publication_number(earliest_pub)
+    publication_number = clean_publication_number(earliest_pub)
     if not publication_number and patent_number:
         publication_number = f"US{patent_number}"
 

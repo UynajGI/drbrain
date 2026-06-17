@@ -75,6 +75,7 @@ This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on m
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and recovery
 - [Glossary](docs/glossary.md) -- terminology reference
 - [Contributing](docs/contributing.md) -- how to add commands, modules, and skills
+- [Skills Reference](docs/skills.md) -- 27 agent skills and their CLI commands
 
 ## Works With Your Agent
 

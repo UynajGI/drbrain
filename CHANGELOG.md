@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased] — dev/feature
+
+### Added
+- **Structured reasoning workflow engine**: `extractor/session_agent.py` — 7 built-in workflows (review, gap-analysis, impact, compare, frontier, lineage, paradigm). Workflow orchestrator with step-level result caching. CLI via `drbrain reason --workflow`.
+- **Workflow visualizer**: Pipeline diagrams and result summaries for reasoning workflows.
+- **Batch-fetch command**: `drbrain ingest batch-fetch` — process DOI/URL lists in bulk with progress tracking.
+- **Graph export formats**: GraphML, JSON-LD, and Cypher export via `drbrain export --format graphml|jsonld|cypher`.
+- **Backup restore**: `drbrain backup restore` — restore from local tar.gz or rsync remote backups.
+- **Standalone search command**: `drbrain search` — BM25 concept search independent of the graph traversal commands.
+- **HTTP retry decorator**: `http_retry` with exponential backoff in `services/http_utils.py`.
+- **Workflow-level result caching**: Non-deterministic queries skip cache; temperature=0 results cached.
+
+### Changed
+- **Parser split**: `parser/mineru_parser.py` split into `parser/mineru/` subpackage (core, metadata, text_utils).
+- **PageIndex parser split**: `parser/pageindex_parser.py` split into 4 submodules (tree_builder, tree_summarizer, tree_validation, tree_fallback).
+- **Graph engine split**: `graph/engine.py` split into `engine.py` (core), `engine_closure.py` (rule inference), `engine_embeddings.py` (embedding validation), `query_embeddings.py` (complex queries).
+- **Genealogy subpackage**: `graph/genealogy.py` (1011 lines) split into `graph/genealogy/` — `lineage.py`, `paradigm.py`, `landscape.py`, `transfer.py`, `display.py`.
+- **`open_db()` context manager**: CLI modules (`ingest_commands.py`, `query_commands.py`, `graph_commands.py`, `export_commands.py`) migrated to shared `open_db()` context manager, eliminating ~100 lines of DB open/close boilerplate.
+- **Stats consolidation**: `Database.get_stats()` centralizes statistics queries previously scattered across multiple files.
+
+### Performance
+- **LLM response caching**: `call_with_messages` / `acall_with_messages` now check ApiCache before calling LLM. Cache disabled for `temperature > 0`.
+- **search_tree filtering**: `search_tree()` now accepts optional `paper_id` parameter to avoid full-table BLOB scan.
+- **DOI enrichment parallelization**: `ThreadPoolExecutor` parallelizes metadata enrichment across 5 API sources.
+
+### Fixed
+- `reasoner` model fallback: respects config's model list order when primary fails.
+- `backup_cmd --list`: tolerates missing `ctx.obj`.
+- `reason_cmd`: normalized `OptionInfo` for all options.
+- `metrics_panel`: migrated to `connect_wal()` for thread-safe DB access.
+
 ## [0.1.0a2] — 2026-05-18
 
 ### Added

@@ -10,21 +10,25 @@ import pytest
 from drbrain.providers.uspto_odp import (
     PatentResult,
     USPTOAPIError,
-    _clean_publication_number,
     _extract_patent_result,
     get_patent_by_application_number,
     search_patents,
+)
+from drbrain.providers.uspto_odp import (
+    clean_publication_number as _clean_publication_number,
 )
 from drbrain.providers.uspto_ppubs import (
     PpubsClient,
     PpubsError,
     PpubsPatent,
-    _normalize_publication_number,
     _publication_search_query,
     _strip_markup,
 )
 from drbrain.providers.uspto_ppubs import (
     _extract_patent as ppubs_extract_patent,
+)
+from drbrain.providers.uspto_ppubs import (
+    clean_publication_number as _normalize_publication_number,
 )
 
 # ---------------------------------------------------------------------------
