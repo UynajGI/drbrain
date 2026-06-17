@@ -13,6 +13,44 @@ Three sources, merged in order (later wins):
 `drbrain setup` generates `config.local.yaml` interactively. `drbrain check` validates
 your configuration.
 
+### Config Files at a Glance
+
+| File | Checked in? | Contains | Edit by |
+|------|-------------|----------|---------|
+| `config.yaml` | Yes | Base defaults, no secrets | Rarely — when adding new config fields |
+| `config.local.yaml` | No (gitignored) | Secrets, local overrides | `drbrain setup` or manually |
+| `config.example.yaml` | Yes | Template with placeholder values | Maintainers only |
+
+### Merge Behavior
+
+Config sources are deep-merged in order. The merge is per-key: a key in
+`config.local.yaml` replaces the same key in `config.yaml`. Environment variable
+placeholders `${VAR_NAME}` are resolved at load time.
+
+```yaml
+# config.yaml (base)
+llm:
+  models:
+    - provider: openai
+      model: gpt-4o
+      api_key: "${OPENAI_API_KEY}"
+      base_url: null
+```
+
+```yaml
+# config.local.yaml (local override — gitignored)
+llm:
+  models:
+    - provider: deepseek
+      model: deepseek-v4-pro
+      api_key: "sk-abc123"
+      base_url: "https://api.deepseek.com"
+```
+
+Result: the DeepSeek config from `config.local.yaml` completely replaces the OpenAI
+config from `config.yaml`. The `${OPENAI_API_KEY}` placeholder is NOT resolved for
+keys that were overridden.
+
 Typed access via `src/drbrain/config.py::Config` dataclass — supports both attribute
 access (`cfg.embed.provider`) and dict-style backward compat (`cfg["embed"]["provider"]`).
 
@@ -72,6 +110,40 @@ model in the list. All litellm providers work.
 | MiniMax | `https://api.minimax.chat/v1` | `minimax-m2.1` |
 | Ollama (local) | `http://localhost:11434` | `qwen2.5:7b` |
 | vLLM / SGLang | `http://localhost:8000/v1` | `meta-llama/Llama-4-Scout-17B-16E-Instruct` |
+
+### LLM Fallback Chain
+
+When a primary model fails (timeout, auth error, malformed response), DrBrain
+iterates through the `llm.models` list. The actual fallback logic is in
+`src/drbrain/extractor/llm_client.py`:
+
+- `acall_with_fallback()` — async, used by build pipeline and reasoner agent
+- `call_with_fallback()` — sync, used by simple text generation
+- `acall_with_messages()` — async with message list, used by SessionAgent
+
+All three share the same pattern: try model 0, on failure try model 1, etc.
+Returns `None` if ALL models are exhausted.
+
+**Call types and their differences:**
+
+| Function | Used by | Temperature | Cache |
+|----------|---------|-------------|-------|
+| `acall_with_fallback` | Build pipeline (extraction stages) | 0.1 | Yes |
+| `call_with_fallback` | Simple text generation | 0 | Yes |
+| `acall_with_messages` | SessionAgent reasoning | 0.3 | Yes (skipped if T > 0) |
+
+Cache is keyed by SHA256 of (model, messages, parameters). Respects `api.cache_ttl`.
+
+### Provider-Specific Notes
+
+| Provider | Quirk |
+|----------|-------|
+| **DeepSeek** | `base_url` must be `https://api.deepseek.com` (no trailing `/v1`). Model: `deepseek-v4-pro`, `deepseek-v4-flash`. |
+| **Zhipu (GLM)** | Provider `openai` with `base_url: "https://open.bigmodel.cn/api/paas/v4"`. Model format: `glm-5.2`, `glm-4.5`. |
+| **Bailian (Qwen)** | Requires DashScope API key. `base_url` includes `/compatible-mode/v1` suffix. |
+| **Anthropic** | Uses native litellm `anthropic` provider, not `openai` compat. Prompt caching at 4000+ char threshold. |
+| **Ollama** | No API key needed. Provider `ollama` with `base_url: "http://localhost:11434"`. |
+| **vLLM / SGLang** | Self-hosted. Provider `openai`. Model name must match what's loaded on the server. |
 
 ---
 
@@ -303,7 +375,7 @@ are always available without configuration.
 
 ---
 
-## Fetch
+## Fetch Configuration
 
 ```yaml
 fetch:
@@ -325,6 +397,96 @@ fetch:
 | `unpaywall_email` | `""` | Email for Unpaywall API access |
 | `institutional_proxy` | `""` | Proxy host for paywalled papers |
 | `proxy_type` | `""` | `ezproxy` or `url_prefix` |
+
+### Fallback Order
+
+The 5-stage fetch process (in `services/fetch.py`) tries each source in sequence:
+
+1. **OpenAlex OA** — checks OpenAlex for open-access PDF URLs (free, no key)
+2. **arXiv** — searches arXiv by title or arXiv ID (free, no key)
+3. **Unpaywall** — checks Unpaywall for legal OA copies (works better with `unpaywall_email`)
+4. **DOI direct** — tries resolving the DOI URL directly
+5. If all sources fail, `fetch` reports failure and the paper is not ingested.
+
+### Institutional Proxy
+
+For paywalled papers, configure a library proxy:
+
+```yaml
+fetch:
+  institutional_proxy: "https://libproxy.university.edu"
+  proxy_type: "ezproxy"          # or "url_prefix"
+```
+
+| proxy_type | Behavior | URL transformation |
+|------------|----------|-------------------|
+| `ezproxy` | Appends proxy suffix to DOI URL | `https://doi.org/10.xxx` → `https://doi-org.libproxy.university.edu/10.xxx` |
+| `url_prefix` | Prepends proxy prefix to URL | `https://doi.org/10.xxx` → `https://libproxy.university.edu/login?url=https://doi.org/10.xxx` |
+
+---
+
+## ingest-link Configuration
+
+Web page extraction uses an external `qt-web-extractor` service. Configuration is
+via environment variables, not `config.yaml`:
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `WEBEXTRACT_URL` | `http://127.0.0.1:8766` | qt-web-extractor service URL |
+| `QT_WEB_EXTRACTOR_URL` | Same as above | Alternative env var name |
+| `WEBEXTRACT_TIMEOUT` | `30` | Request timeout in seconds |
+
+The service must be running separately. DrBrain sends the target URL and receives
+rendered markdown in response. If the service is unreachable, `drbrain ingest-link`
+fails with a connection error.
+
+```bash
+# Starting the service (external dependency)
+npm install -g qt-web-extractor
+qt-web-extractor serve --port 8766
+
+# Using from DrBrain
+drbrain ingest-link https://example.com/research-page
+drbrain ingest-link https://example.com/paper.pdf --pdf
+```
+
+---
+
+## Configuration Validation
+
+### `drbrain check`
+
+Validates the full environment. Checks grouped by section:
+
+| Section | Checks |
+|---------|--------|
+| Python | Version ≥ 3.12, critical packages (litellm, typer, loguru, requests, networkx) |
+| External tools | MinerU CLI, git (optional: qt-web-extractor) |
+| LLM connectivity | Each model in `llm.models`: API key presence, base URL reachability |
+| Database | `data/drbrain.db` exists and is readable, WAL mode enabled |
+| Directories | All `dirs.*` paths exist or are creatable |
+| APIs | S2, CrossRef, OpenAlex: key presence and rate-limit check |
+| Fetch | PDF download sources reachable |
+| Embedding | Provider-specific: local model downloaded, openai-compat endpoint reachable |
+| Backup | SSH key for rsync targets (if configured) |
+| Config | Syntax valid YAML, no unknown keys, `${VAR}` placeholders resolvable |
+
+### `drbrain setup`
+
+Validates user input interactively (or non-interactively with `--quick`):
+- LLM provider and API key format
+- MinerU token (optional)
+- File paths and permissions
+- Existing config preservation (setup won't overwrite `config.local.yaml` without confirmation)
+
+### Common Warnings
+
+| Warning | Meaning | Action |
+|---------|---------|--------|
+| `model X unreachable` | Network or auth issue | Check API key and base URL |
+| `directory Y not found` | Data dir missing | Run `drbrain setup` or create manually |
+| `placeholder detected` | Unresolved `${VAR}` | Set the env var or replace with literal value |
+| `mineru not found` | PDF quality will be lower | `npm install -g mineru-open-api` or rely on PyMuPDF fallback |
 
 ---
 

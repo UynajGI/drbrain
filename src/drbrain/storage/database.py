@@ -195,6 +195,7 @@ class Database:
     """Thin SQLite wrapper with schema auto-init."""
 
     def __init__(self, db_path: str | Path = "data/drbrain.db"):
+        """Open SQLite database at *db_path*, enabling WAL mode and auto-migrating schema."""
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path))
@@ -297,15 +298,19 @@ class Database:
             pass  # Column may not exist in very old schemas
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute a SQL statement and return the cursor."""
         return self.conn.execute(sql, params)
 
     def executemany(self, sql: str, seq: list[tuple]) -> sqlite3.Cursor:
+        """Execute a SQL statement with multiple parameter sets."""
         return self.conn.executemany(sql, seq)
 
     def commit(self) -> None:
+        """Commit the current transaction."""
         self.conn.commit()
 
     def close(self) -> None:
+        """Close the database connection."""
         self.conn.close()
 
     # -- Paper queries --
@@ -342,6 +347,7 @@ class Database:
         pages: str = "",
         authors: str = "",
     ) -> None:
+        """Insert or ignore a paper record with full metadata fields."""
         self.conn.execute(
             "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type, "
             "journal, publisher, citation_count, volume, pages, authors) "
@@ -364,18 +370,21 @@ class Database:
     def insert_paper_ids(
         self, local_id: str, doi=None, arxiv=None, s2_id=None, openalex_id=None
     ) -> None:
+        """Insert or ignore external identifier mappings for a paper."""
         self.conn.execute(
             "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
             (local_id, doi, arxiv, s2_id, openalex_id),
         )
 
     def set_paper_abstract(self, local_id: str, abstract: str) -> None:
+        """Update the abstract text for a paper."""
         self.conn.execute(
             "UPDATE papers SET abstract = ? WHERE local_id = ?",
             (abstract, local_id),
         )
 
     def upgrade_placeholder(self, local_id: str) -> None:
+        """Promote a placeholder paper to uploaded status."""
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
             (local_id,),
@@ -450,6 +459,7 @@ class Database:
     # -- Embeddings --
 
     def save_embedding(self, entity: str, vec, dim: int) -> None:
+        """Persist a TransE entity/relation vector to the embeddings table."""
         import numpy as np
 
         self.conn.execute(
@@ -458,12 +468,14 @@ class Database:
         )
 
     def load_embeddings(self) -> dict:
+        """Load all entity/relation vectors into a dict keyed by entity label."""
         import numpy as np
 
         rows = self.conn.execute("SELECT entity, vec, dim FROM embeddings").fetchall()
         return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
 
     def clear_embeddings(self) -> None:
+        """Delete all embeddings from the table (used before re-training)."""
         self.conn.execute("DELETE FROM embeddings")
 
     # -- Query helpers --
@@ -803,6 +815,7 @@ class Database:
         return late_avg > early_avg
 
     def get_concept_signal(self, label: str) -> dict | None:
+        """Classify a concept's temporal signal (emerging/established/declining/etc.)."""
         from datetime import datetime
 
         current_year = datetime.now().year
@@ -837,6 +850,7 @@ class Database:
         }
 
     def get_concept_evolution(self, label: str) -> list[dict]:
+        """Return year-by-year concept frequency with trend annotations."""
         rows = self.conn.execute(
             "SELECT p.year, COUNT(*) as count, AVG(c.confidence) as avg_conf "
             "FROM concepts c JOIN papers p ON c.local_id = p.local_id "

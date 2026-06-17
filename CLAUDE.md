@@ -240,6 +240,26 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 
 - **Editable install**: `uv pip install -e .` once after `uv sync` if `ModuleNotFoundError: No module named 'drbrain'`.
 - **typer OptionInfo**: In tests, typer `Option` defaults appear as `OptionInfo` objects — use `isinstance(param, typer.models.OptionInfo)` to extract `.default`.
+- **Workflow engine**: `src/drbrain/reasoning/base.py` — `_run_async()` handles nested event loops. Workflow cache keyed by `wf:{question}:{edges}:{nodes}:{papers}`. See [docs/workflows.md](docs/workflows.md).
+- **Session agent**: `src/drbrain/extractor/session_agent.py` — DB-backed sessions in `agent_sessions` + `agent_messages` tables. Token budget ~8K before compression. Context injection from build pipeline. See [docs/sessions.md](docs/sessions.md).
+
+## Documentation
+
+| Doc | What |
+|-----|------|
+| [Getting Started](docs/getting-started.md) | Install → first pipeline → query → reason |
+| [CLI Reference](docs/cli-reference.md) | Every command with flags and examples |
+| [Configuration](docs/configuration.md) | Every setting, provider templates, config validation |
+| [Architecture](docs/architecture.md) | System design, reasoning modules, data layout |
+| [API Reference](docs/api-reference.md) | Module-level function and class signatures |
+| [Workflows](docs/workflows.md) | 7 structured reasoning workflows + dev guide |
+| [Sessions](docs/sessions.md) | Persistent SessionAgent deep dive |
+| [Embedding](docs/embedding.md) | local / openai-compat / none provider setup |
+| [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
+| [Glossary](docs/glossary.md) | Terminology reference |
+| [Skills](docs/skills.md) | 27 agent skills → CLI command mapping |
+| [Contributing](docs/contributing.md) | Codebase tour, PR process, testing guide |
+| [CHANGELOG](CHANGELOG.md) | Version history |
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph

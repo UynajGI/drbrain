@@ -49,6 +49,7 @@ class SessionAgent:
     """
 
     def __init__(self) -> None:
+        """Create a SessionAgent. Use ``create_session()`` or ``load_session()`` to activate."""
         self.db: Database | None = None
         self.graph: GraphEngine | None = None
         self.models: list[dict] = []

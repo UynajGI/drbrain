@@ -10,14 +10,76 @@ Every design decision follows from a single principle: **the knowledge graph is 
 
 ## System Overview
 
-```
-PDF → [Phase 1: Ingest] → Markdown + Metadata + tree.json
-       ↓
-     [Phase 2: Build] → Concepts + Relations → Knowledge Graph
-       ↓
-     [Reasoning Stack] → Causal Chains, Seeds, Hypotheses, Isomorphisms
-       ↓
-     [Search] → BM25 + Graph-enhanced + PageIndex Tree Retrieval
+```mermaid
+flowchart LR
+    subgraph Input["Data In"]
+        PDF[("PDF")]
+        WEB[("Web URL")]
+        ZOT["Zotero / BibTeX"]
+    end
+
+    subgraph Phase1["Phase 1: Ingest"]
+        PARSE["MinerU<br/>PyMuPDF fallback"]
+        META["5-source metadata<br/>arXiv CrossRef S2 OA DeepXiv"]
+        TREE["LLM tree<br/>structuring"]
+        TREE_JSON[("tree.json")]
+    end
+
+    subgraph Phase2["Phase 2: Build"]
+        ONTO["Ontology<br/>Extension"]
+        ENT["Entity<br/>Extraction"]
+        REL["Relation<br/>Extraction"]
+        COREF["Coreference<br/>Resolution"]
+        REFINE["Iterative<br/>Refinement"]
+    end
+
+    subgraph Graph["Knowledge Graph"]
+        KG[(("Concepts<br/>+ Edges<br/>(SQLite)"))]
+        EMBED["TransE<br/>Embeddings"]
+        CLOSURE["Rule Closure<br/>8+4 rules"]
+        RAPTOR["RAPTOR<br/>Summaries"]
+    end
+
+    subgraph Query["Query & Reason"]
+        BM25["BM25<br/>Search"]
+        TREE_SEARCH["Tree<br/>Retrieval"]
+        AGENT["LLM Agent<br/>tool-calling"]
+        WF["Workflow<br/>Engine"]
+    end
+
+    subgraph Analysis["Analysis"]
+        LINEAGE["Lineage"]
+        PARADIGM["Paradigm"]
+        FRONTIER["Frontier"]
+        ISOMORPHISM["Isomorphism"]
+    end
+
+    PDF --> PARSE
+    WEB --> PARSE
+    ZOT --> META
+    PARSE --> META
+    META --> TREE
+    TREE --> TREE_JSON
+
+    TREE_JSON --> ONTO
+    ONTO --> ENT
+    ENT --> REL
+    REL --> COREF
+    COREF --> REFINE
+
+    REFINE --> KG
+    KG --> EMBED
+    EMBED --> CLOSURE
+    KG --> RAPTOR
+
+    KG --> BM25
+    KG --> TREE_SEARCH
+    KG --> AGENT
+    KG --> WF
+
+    AGENT --> Analysis
+    WF --> Analysis
+    CLOSURE --> Analysis
 ```
 
 ---
@@ -130,30 +192,89 @@ The relation-level inference system has 11 rules:
 
 ### 3-Layer Reasoning Stack
 
-The reasoning stack is inspired by the architecture described in papers 2202.07412, 2306.08302, and 2511.11017.
+Inspired by papers 2202.07412, 2306.08302, and 2511.11017.
 
+```mermaid
+flowchart TB
+    subgraph L3["Layer 3: LLM Agent Reasoning"]
+        direction LR
+        TOOLS["6 tool functions<br/>search_concepts get_neighbors<br/>find_path search_tree<br/>get_section_content<br/>get_raptor_summaries"]
+        S_AGENT["SessionAgent<br/>DB-backed<br/>multi-turn"]
+        R_AGENT["ReasonerAgent<br/>stateless<br/>one-shot"]
+        BD["Bidirectional<br/>hypothesis↔KG"]
+        WF_ENGINE["Workflow Engine<br/>7 workflows<br/>step caching"]
+    end
+
+    subgraph L2["Layer 2: Hybrid Closure"]
+        direction LR
+        SYMBOLIC["Symbolic Rules<br/>8 inference rules<br/>transitive gap debate"]
+        PATH_RULES["Path Rules<br/>4 rules<br/>supersede challenge<br/>inherit support"]
+        EMBED_VAL["Embedding Validation<br/>TransE scores<br/>filter implausible"]
+        MINE["Rule Mining<br/>path patterns<br/>from embeddings"]
+    end
+
+    subgraph L1["Layer 1: TransE Embeddings"]
+        direction LR
+        TRAIN["SGD Training<br/>h + r ≈ t<br/>dim=128 epochs=100"]
+        LINK["Link Prediction<br/>predict_link()"]
+        SIM["Entity Similarity<br/>similar_entities()"]
+        CPLX["Complex Queries<br/>∧∨¬ operators"]
+    end
+
+    KG_LAYER[("Knowledge Graph<br/>concepts + edges<br/>(SQLite)")]
+
+    L1 --> L2
+    L2 --> L3
+    KG_LAYER <--> L1
+    KG_LAYER <--> L2
+    KG_LAYER <--> L3
 ```
-Layer 1: TransE Embeddings
-  - Train entity/relation vectors (drbrain embed)
-  - Link prediction: predict_link()
-  - Entity similarity: similar_entities()
-  - Storage: embeddings SQLite table
 
-Layer 2: Hybrid Closure
-  - Rule-based inference (symbolic + hybrid)
-  - Confidence-weighted edges
-  - T-norm transitive path materialization
-  - Embedding-driven path rule mining (--mine-rules)
+### LLM Agent Reasoning Flow
 
-Layer 3: LLM Agent Reasoning
-  - Stateless ReasonerAgent: tool-calling with search_concepts, get_neighbors, find_path
-  - Persistent SessionAgent: DB-backed session history, cross-CLI-invocation context continuity
-  - Bidirectional mode: hypothesis formation -> KG validation (TBox/RBox) -> revision loop
-  - Context injection: build pipeline feeds extraction summaries into session
-  - Workflow engine: 7 structured reasoning workflows (review, gap-analysis, impact, compare, frontier, lineage, paradigm)
-  - Workflow orchestrator: step-level execution with result caching, non-deterministic queries skip cache
-  - Hypothesis generation from gap/debate/technology-cliff patterns
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as drbrain reason
+    participant Agent as ReasonerAgent / SessionAgent
+    participant LLM
+    participant Tools as Tool Executor
+    participant KG as Knowledge Graph
+    participant DB as SQLite DB
+
+    User->>CLI: reason "question"
+    CLI->>Agent: create context
+    Agent->>LLM: system prompt + question + tool defs
+
+    loop Tool-calling loop
+        LLM->>Agent: tool_call: search_concepts("...")
+        Agent->>Tools: execute_tool()
+        Tools->>KG: traverse graph
+        Tools->>DB: BM25 query
+        Tools-->>Agent: results (concept list)
+        Agent->>LLM: tool results + continue
+
+        LLM->>Agent: tool_call: get_neighbors("ConceptX", hops=2)
+        Agent->>Tools: execute_tool()
+        Tools->>KG: graph.neighbors()
+        Tools-->>Agent: neighbor list
+
+        LLM->>Agent: tool_call: find_path(src, dst)
+        Agent->>Tools: execute_tool()
+        Tools->>KG: shortest path
+        Tools-->>Agent: path triples
+
+        Note over LLM: Sufficient context gathered
+        LLM->>Agent: final answer (no tool call)
+    end
+
+    Agent-->>CLI: formatted answer
+    CLI-->>User: display
 ```
+
+When using bidirectional mode (`-b`), the agent additionally validates candidate
+answers against KG constraints (TBox types, RBox relation rules) and revises them
+in a multi-round loop (`--max-rounds`, default 3).
 
 ---
 
@@ -169,7 +290,7 @@ Layer 3: LLM Agent Reasoning
 `extractor/counterfactual.py` -- Node removal impact analysis. What happens to the graph if a concept is removed? Measures connectivity impact and identifies critical nodes.
 
 ### Cross-Domain Isomorphism
-`extractor/isomorphism.py` -- Subgraph similarity by relation signature. Finds structurally similar subgraphs across domains, enabling cross-domain knowledge transfer.
+`extractor/isomorphism.py` -- Subgraph similarity by relation signature. Finds structurally similar subgraphs across domains, enabling cross-domain knowledge transfer. CLI via `drbrain isomorphism` with Jaccard + label similarity scoring. See also [[workflows]] for structured reasoning workflows.
 
 ### Hypothesis Generation
 `extractor/hypothesis.py` -- Generates actionable research hypotheses from gaps, debates, technology cliffs, and confidence collapse patterns.
@@ -190,16 +311,37 @@ Layer 3: LLM Agent Reasoning
 `graph/path_reasoning.py` -- Hybrid tree+graph path reasoning. Traverses from tree sections through related concepts into the graph, combining PageIndex tree navigation with graph traversal.
 
 ### Workflow Engine
-`extractor/session_agent.py` -- Structured reasoning workflow engine with 7 built-in workflows (`review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`). Workflow orchestrator executes steps sequentially with result caching (temperature=0 results cached, temperature>0 skipped). Includes workflow visualizer for pipeline diagrams and result summaries. CLI via `drbrain reason --workflow <name>`.
+`extractor/session_agent.py` -- Structured reasoning workflow engine with 7 built-in workflows (`review`, `gap-analysis`, `impact`, `compare`, `frontier`, `lineage`, `paradigm`). Workflow orchestrator executes steps sequentially with result caching (temperature=0 results cached, temperature>0 skipped). Includes workflow visualizer for pipeline diagrams and result summaries. CLI via `drbrain reason --workflow <name>`. For a full guide, see [Workflows](workflows.md).
 
 ### Session Management
-`cli/session_commands.py` -- Persistent reasoning session CRUD via `drbrain session`. Commands: `new`, `ask`, `chat`, `list`, `delete`, `export`. Sessions use `SessionAgent` for multi-turn, DB-backed context continuity across CLI invocations.
+`cli/session_commands.py` -- Persistent reasoning session CRUD via `drbrain session`. Commands: `new`, `ask`, `chat`, `list`, `delete`, `export`. Sessions use `SessionAgent` for multi-turn, DB-backed context continuity across CLI invocations. For deep-dive, see [Sessions](sessions.md).
 
 ### Graph Export
 `storage/graph_export.py` -- Export knowledge graphs to GraphML, JSON-LD, and Cypher formats. CLI via `drbrain graph export --format graphml|jsonld|cypher`.
 
-### Cross-Domain Isomorphism
-`extractor/isomorphism.py` -- Subgraph similarity by relation signature. CLI via `drbrain isomorphism` finds structurally similar concepts across domains with Jaccard + label similarity scoring.
+### Missing Modules
+
+Additional modules not covered in the sections above:
+
+#### Services
+- `services/graph_to_text.py` -- LLM-powered subgraph-to-text description, used by `drbrain graph describe`
+- `services/http_utils.py` -- HTTP retry decorator with exponential backoff for external API calls
+
+#### Extractors
+- `extractor/argument.py` -- Argument unit extraction and validation (claim, evidence, mechanism)
+- `extractor/detection.py` -- Paper type classification (survey, empirical, theoretical, etc.)
+- `extractor/citation.py` -- Citation expansion via OpenAlex + Semantic Scholar + CrossRef
+- `extractor/citation_check.py` -- In-text citation verification against local library
+- `extractor/canonical.py` -- Label normalization + SmartAligner for cross-section concept dedup
+- `extractor/queue.py` -- Confidence queue resolution (accept/reject low-confidence items)
+- `extractor/openalex.py` -- OpenAlex API client (works, authors, concepts, sources)
+- `extractor/crossref.py` -- CrossRef API client (metadata, references, DOIs)
+- `extractor/cache.py` -- Persistent API response cache with TTL-based eviction
+
+#### Storage
+- `storage/inbox.py` -- Inbox scanning and pending queue management (`pending.jsonl`)
+- `storage/citation_graph.py` -- Citation graph queries (refs, citing papers, shared references)
+- `storage/connection.py` -- WAL-mode database connection helper with thread safety
 
 ### Structure-First Retrieval
 `query/tree_retrieval.py` -- Full PageIndex implementation. Iterative tree-search with adaptive depth navigation. Small skeletons get one-shot selection; large skeletons get top-level -> branch selection -> leaf selection.
@@ -282,6 +424,71 @@ Key tables:
 - `schema_versions` -- versioned migrations
 
 The database uses **WAL mode** for concurrent read/write access. Schema migrations are stored in `schema_versions` and applied automatically.
+
+```mermaid
+erDiagram
+    papers ||--o{ paper_ids : "1:1 identifiers"
+    papers ||--o{ concepts : "1:N extracted"
+    papers ||--o{ arguments : "1:N claims"
+    papers ||--o{ edges : "source_paper"
+    concepts ||--o{ edges : "src_id / dst_id"
+    concepts ||--o{ aliases : "canonical_id"
+    concepts ||--o{ tree_vectors : "node_id"
+    concepts ||--o{ tree_summaries : "node_id"
+
+    papers {
+        string local_id PK
+        string title
+        int year
+        string paper_type
+        string status "uploaded|placeholder|merged|extracted"
+        string journal
+        string publisher
+        int citation_count
+    }
+
+    concepts {
+        int concept_id PK
+        string local_id FK
+        string type "Problem|Method|Conclusion|Gap|Debate|Actor"
+        string label
+        float confidence
+        string section
+        string node_id
+    }
+
+    edges {
+        string src_id FK
+        string dst_id FK
+        string relation
+        string source_paper FK
+        float weight
+    }
+
+    arguments {
+        int arg_id PK
+        string source_paper FK
+        string claim
+        string claim_type
+        string target_label
+        string target_type
+        string evidence_type
+        string mechanism
+    }
+
+    embeddings {
+        string entity PK
+        blob vec
+        int dim
+    }
+
+    tree_vectors {
+        string node_id
+        string paper_id FK
+        blob embedding
+        string tree_layer
+    }
+```
 
 ### Atomic Writes
 

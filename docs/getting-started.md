@@ -271,6 +271,9 @@ workspace/<name>/       # Paper subsets: workspace.yaml + refs/papers.json
 - [CLI Reference](cli-reference.md) -- every command with examples
 - [Embedding](embedding.md) -- setup guide for local and openai-compat providers
 - [Architecture](architecture.md) -- how the system works under the hood
+- [API Reference](api-reference.md) -- module-level function and class reference
+- [Workflows](workflows.md) -- structured reasoning workflow user + developer guide
+- [Sessions](sessions.md) -- persistent Session Agent deep dive
 - [Troubleshooting](troubleshooting.md) -- common problems and recovery
 - [Glossary](glossary.md) -- terminology reference
 - [Skills Reference](skills.md) -- 27 agent skills and their CLI commands

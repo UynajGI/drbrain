@@ -31,9 +31,16 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **search_tree filtering**: `search_tree()` accepts optional `paper_id` to avoid full-table BLOB scan.
 - **DOI enrichment parallelization**: ThreadPoolExecutor for 5-source metadata resolution.
 
+### Changed
+- **LLM client consolidation**: sync and async call paths unified in `extractor/llm_client.py`. `_base_url` helper for provider-specific URL normalization.
+- **Reasoning base refactoring**: `_run_async()` helper for safe event-loop handling. Workflow cache key now fingerprints graph + DB state.
+
 ### Fixed
+- `acall_with_fallback` / `acall_with_messages`: async LLM calls now properly synced with litellm event loop handling.
+- **DeepSeek compat**: `base_url` normalization for OpenAI-compatible providers (DeepSeek expects no trailing `/v1`).
 - `reasoner` model fallback: respects config's model list order when primary fails.
 - `backup_cmd --list`: tolerates missing `ctx.obj`.
 - `reason_cmd`: normalized `OptionInfo` for all options.
 - `metrics_panel`: migrated to `connect_wal()` for thread-safe DB access.
+- Workflow steps: standardized error handling across all 7 workflows (errors set result to `None`, don't halt pipeline).
 

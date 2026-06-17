@@ -31,12 +31,13 @@ class GraphEngine(ClosureMixin, EmbeddingsMixin):
     """Graph operations and rule-based relationship closure."""
 
     def __init__(self):
+        """Initialize an empty directed multi-graph with closure mixins."""
         self.graph = nx.MultiDiGraph()
-        self._transE = None  # cached TransE instance from learn_embeddings()
 
     def add_edge(
         self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0
     ) -> None:
+        """Add a typed, weighted edge to the graph."""
         self.graph.add_edge(src, dst, relation=relation, source=source_paper, weight=weight)
 
     def get_neighbors(self, node: str, hops: int = 2) -> set[str]:

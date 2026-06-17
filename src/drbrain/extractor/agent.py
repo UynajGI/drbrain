@@ -67,6 +67,7 @@ class BuildAgent(ABC):
     prompt_file: str  # relative to prompts/
 
     def __init__(self) -> None:
+        """Load the system prompt from the agent's prompt_file."""
         self.system_prompt = (_PROMPTS / self.prompt_file).read_text(encoding="utf-8")
 
     # -- Public API --
@@ -327,6 +328,7 @@ class RefineAgent(BuildAgent):
     prompt_file = "refine.txt"
 
     def __init__(self) -> None:
+        """Initialize with empty pre-refinement snapshot."""
         super().__init__()
         self._pre_refine_snapshot: dict | None = None
 

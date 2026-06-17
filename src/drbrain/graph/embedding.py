@@ -9,6 +9,14 @@ class TransE:
     """TransE: h + r ≈ t in vector space."""
 
     def __init__(self, dim: int = 128, epochs: int = 100, lr: float = 0.01, margin: float = 1.0):
+        """Initialize TransE model.
+
+        Args:
+            dim: Embedding dimension (default 128).
+            epochs: Training epochs (default 100).
+            lr: Learning rate for SGD (default 0.01).
+            margin: Hinge loss margin (default 1.0).
+        """
         self.dim = dim
         self.epochs = epochs
         self.lr = lr
@@ -18,6 +26,13 @@ class TransE:
         self._entity_list: list[str] = []
 
     def train(self, graph, init_entities=None, init_relations=None) -> None:
+        """Train TransE embeddings on a NetworkX graph via SGD.
+
+        Args:
+            graph: NetworkX graph with edges carrying ``relation`` attribute.
+            init_entities: Optional pre-trained entity vectors keyed by label.
+            init_relations: Optional pre-trained relation vectors keyed by name.
+        """
         edges = []
         entities_set: set[str] = set()
         relations_set: set[str] = set()
@@ -79,13 +94,16 @@ class TransE:
                 if n > 0:
                     self.entities[e] /= n
 
-    def entity_embedding(self, label: str):
+    def entity_embedding(self, label: str) -> np.ndarray | None:
+        """Return the embedding vector for an entity label, or None if not found."""
         return self.entities.get(label)
 
-    def relation_embedding(self, rel: str):
+    def relation_embedding(self, rel: str) -> np.ndarray | None:
+        """Return the embedding vector for a relation name, or None if not found."""
         return self.relations.get(rel)
 
     def score(self, head: str, relation: str, tail: str) -> float:
+        """Compute TransE score: ‖head + relation - tail‖. Lower is better."""
         h = self.entities.get(head)
         r = self.relations.get(relation)
         t = self.entities.get(tail)
@@ -94,6 +112,11 @@ class TransE:
         return float(np.linalg.norm(h + r - t))
 
     def predict_link(self, head: str, relation: str, top_k: int = 10) -> list[tuple[str, float]]:
+        """Predict most likely tail entities given a head and relation.
+
+        Returns:
+            List of (entity_label, score) sorted by score ascending.
+        """
         h = self.entities.get(head)
         r = self.relations.get(relation)
         if h is None or r is None:
@@ -105,6 +128,11 @@ class TransE:
         return scores[:top_k]
 
     def similar_entities(self, label: str, top_k: int = 10) -> list[tuple[str, float]]:
+        """Find entities with the most similar embedding vectors via cosine similarity.
+
+        Returns:
+            List of (entity_label, cosine_similarity) sorted by similarity descending.
+        """
         vec = self.entities.get(label)
         if vec is None:
             return []

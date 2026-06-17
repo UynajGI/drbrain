@@ -47,6 +47,8 @@ This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on m
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
 | **Knowledge Graph** | Rule-based closure | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
+| **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm — symbolic steps + LLM synthesis |
+| **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
 | **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification against library |
 | **Export** | BibTeX, RIS, Markdown with citation styles | 4 built-in styles (APA, Vancouver, Chicago, MLA) + custom styles, full library or workspace export with venue metadata |
@@ -71,6 +73,9 @@ This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on m
 - [CLI Reference](docs/cli-reference.md) -- all commands with examples
 - [Configuration](docs/configuration.md) -- every setting, default, and provider template
 - [Architecture](docs/architecture.md) -- system design and reasoning modules
+- [API Reference](docs/api-reference.md) -- module-level function and class signatures
+- [Workflows](docs/workflows.md) -- structured reasoning workflow user + developer guide
+- [Sessions](docs/sessions.md) -- persistent Session Agent deep dive
 - [Embedding](docs/embedding.md) -- local, openai-compat, and none providers
 - [Troubleshooting](docs/troubleshooting.md) -- common problems and recovery
 - [Glossary](docs/glossary.md) -- terminology reference

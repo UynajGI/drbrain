@@ -18,6 +18,7 @@ class BM25Search:
     """BM25 search index over papers, concepts, and arguments."""
 
     def __init__(self):
+        """Initialize an empty BM25 index."""
         self._documents: list[dict[str, Any]] = []
         self._bm25: BM25Okapi | None = None
         self._tokenized: list[list[str]] = []

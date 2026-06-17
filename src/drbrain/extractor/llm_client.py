@@ -55,9 +55,11 @@ class LLMClient:
     """Calls LLM with provider/model from config, supports fallback chain."""
 
     def __init__(self, models: list[dict]):
+        """Initialize with a list of model configs for fallback chaining."""
         self.models = models
 
     def call(self, prompt: str, system_prompt: str = "", max_tokens: int = 16384) -> dict | None:
+        """Synchronous LLM call with automatic fallback. Returns parsed JSON or None."""
         return call_with_fallback(prompt, self.models, system_prompt, max_tokens)
 
 

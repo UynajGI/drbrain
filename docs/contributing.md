@@ -328,6 +328,164 @@ uv run pytest tests/test_graph_engine.py::test_traverse_forward
 - **Getting Started:** Keep `docs/getting-started.md` current if the setup or first-pipeline flow changes.
 - **Docstrings:** Public API functions should have Google-style docstrings with `Args:`, `Returns:`, and `Raises:` sections.
 
+## How to Add a New Module
+
+### Extractor Module
+
+1. Create `src/drbrain/extractor/my_module.py` with a public function:
+
+```python
+def analyze_my_pattern(graph, db, **kwargs) -> list[dict]:
+    """Analyze something in the knowledge graph."""
+    results = []
+    for node in graph.graph.nodes:
+        # ... analysis ...
+        results.append({"node": node, "finding": ...})
+    return results
+```
+
+2. Wire into the analyzer in `src/drbrain/report/analyzer.py`:
+
+```python
+from drbrain.extractor.my_module import analyze_my_pattern
+
+def analyze_paper(db, graph, paper_id, full=False, models=None):
+    if full:
+        report["my_findings"] = analyze_my_pattern(graph, db)
+```
+
+3. Add CLI support in the appropriate commands module.
+4. Add tests in `tests/test_my_module.py`.
+5. Document in `docs/architecture.md` under "Reasoning Modules".
+6. Run `uv run ruff check . && uv run ruff format .` before committing.
+
+### Service Module
+
+Services are higher-level modules in `src/drbrain/services/` that compose multiple lower-level modules. Follow the same pattern: create the module, wire it in, add CLI, add tests, document.
+
+### Graph Module
+
+Graph modules live in `src/drbrain/graph/`. Standard interface: accept `GraphEngine` and `Database` as parameters. New inference rules go in `engine_closure.py` (for `closure()`) or `path_reasoning.py` (for path-level rules).
+
+## PR Process
+
+1. **Branch**: `feature/description` or `fix/description` from `main`
+2. **Commits**: Conventional Commits format (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`)
+3. **Before PR**:
+   ```bash
+   uv run ruff check . && uv run ruff format .    # lint + format
+   uv run pytest                                   # all tests
+   uv run pytest -m "not integration"              # fast suite
+   ```
+4. **PR title**: Conventional Commit format (e.g. `feat(reasoning): add contradiction detection workflow`)
+5. **PR description**: what, why, how tested, screenshots/CLI output if relevant
+6. **Review**: at least one approving review before merge. Reviewer checks: correctness, test coverage, docs updated, no unrelated changes.
+
+## Release Process
+
+1. Update version in `pyproject.toml`
+2. Update `CHANGELOG.md` — move `[Unreleased]` entries to a new version section with date
+3. Create a git tag: `git tag -a v0.1.0 -m "v0.1.0"`
+4. Push tag: `git push origin v0.1.0`
+5. Build and publish to PyPI (TBD when PyPI publishing is set up)
+
+## Testing Guide
+
+### Test Database
+
+Use `Database(":memory:")` for fast isolated tests:
+
+```python
+from drbrain.storage.database import Database
+
+def test_something():
+    db = Database(":memory:")
+    db.insert_concept("paper1", "Problem", "Overfitting", 0.9)
+    # ... test ...
+    db.close()
+```
+
+### CLI Command Testing
+
+When testing typer commands directly, construct a minimal context:
+
+```python
+import typer
+from drbrain.config import Config
+
+def test_my_command():
+    cfg = Config.default()
+    ctx = typer.Context(typer.Typer(), obj={"config": cfg})
+    result = my_command(ctx, arg1="value")
+    assert result is not None
+```
+
+If using `Option` defaults, they come through as `OptionInfo` objects:
+
+```python
+assert isinstance(param, typer.models.OptionInfo)
+default_value = param.default
+```
+
+### Integration Tests
+
+Mark slow tests with `@pytest.mark.integration`:
+
+```python
+@pytest.mark.integration
+def test_llm_extraction():
+    ...
+```
+
+Run without integration tests: `uv run pytest -m "not integration"`
+
+### Test Fixtures
+
+Common patterns:
+- `Database(":memory:")` for isolated DB tests
+- `GraphEngine()` loads from DB, tests against loaded graph
+- Seed data manually: insert known concepts/edges, then verify analysis output
+- Never mock the database layer. Real SQLite only.
+
+## Skill Development
+
+DrBrain skills live in `skills/<name>/SKILL.md`. Each skill wraps one or more CLI commands for use with AI coding agents.
+
+### Adding a New Skill
+
+1. Create `skills/my-skill/SKILL.md`:
+
+```markdown
+---
+name: my-skill
+description: Short description shown in skill list
+---
+
+# My Skill
+
+## Quick Start
+```bash
+drbrain my-command --flag value
+```
+
+## Usage
+...
+```
+
+2. The skill name should match the primary CLI command it wraps.
+3. Include realistic examples in the skill — the AI agent uses these as few-shot prompts.
+4. Test the skill: `npx skills add ./skills/my-skill` then use it in an AI agent.
+
+### Skill Categories
+
+Skills are organized by function:
+- **Data In** (ingest, fetch, import, translate) — getting papers into DrBrain
+- **KG Build** (build, embed, closure) — constructing the knowledge graph
+- **Query & Explore** (query, search, graph, explore) — searching and navigating
+- **Analysis** (analyze, evolve, landscape, paradigm, transfers, isomorphism) — knowledge discovery
+- **Library Management** (list, show, stats, export, backup, proceedings) — maintaining the library
+- **Quality** (audit, repair, check) — data quality assurance
+
 ## Pre-commit Hooks
 
 Install pre-commit hooks for automated linting and formatting:
