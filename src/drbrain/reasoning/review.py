@@ -114,9 +114,8 @@ class _GenerateReviewStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         papers = ctx.get("collect_papers", {})
         themes = ctx.get("identify_themes", [])
@@ -157,9 +156,7 @@ class _GenerateReviewStep(WorkflowStep):
             "Base claims strictly on the evidence provided."
         )
 
-        result = asyncio.run(
-            acall_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=2048)
-        )
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=2048)
         return result or "Unable to generate review."
 
 

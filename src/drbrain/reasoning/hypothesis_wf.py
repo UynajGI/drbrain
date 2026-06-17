@@ -60,9 +60,8 @@ class _AnalogizeStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> list[dict[str, Any]]:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_with_fallback
+        from drbrain.extractor.llm_client import call_with_fallback
 
         transfers = ctx.get("find_transfer_candidates", [])
         cross_domain = ctx.get("find_cross_domain", {})
@@ -97,13 +96,11 @@ class _AnalogizeStep(WorkflowStep):
             '"source_evidence": "brief justification"}]}'
         )
 
-        data = asyncio.run(
-            acall_with_fallback(
-                "\n".join(prompt_parts),
-                ctx.models,
-                system_prompt="You are a creative but rigorous research hypothesis generator.",
-                max_tokens=1024,
-            )
+        data = call_with_fallback(
+            "\n".join(prompt_parts),
+            ctx.models,
+            system_prompt="You are a creative but rigorous research hypothesis generator.",
+            max_tokens=1024,
         )
 
         if data and "hypotheses" in data:

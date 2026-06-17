@@ -13,6 +13,7 @@ Design principles:
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,17 @@ if TYPE_CHECKING:
     from drbrain.extractor.cache import ApiCache
 
 from loguru import logger
+
+
+def _run_async(coro):
+    """Run a coroutine safely, even inside a running event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None:
+        return loop.run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 @dataclass
@@ -108,21 +120,27 @@ class ReasoningWorkflow:
                 ctx.results[step.name] = None
         logger.info("[workflow:%s] done — %d results", self.name, len(ctx.results))
 
-        # ── Store in cache ───────────────────────────────────────────────
-        if ctx.cache is not None:
-            ctx.cache.set(cache_key, ctx.results)
+        # ── Store in cache (only if all steps succeeded) ────────────────
+        if ctx.cache is not None and all(v is not None for v in ctx.results.values()):
+            try:
+                import json as _json
+
+                cacheable = {}
+                for k, v in ctx.results.items():
+                    try:
+                        _json.dumps(v, default=str)
+                        cacheable[k] = v
+                    except (TypeError, ValueError):
+                        cacheable[k] = str(v)
+                ctx.cache.set(cache_key, cacheable)
+            except Exception:
+                logger.debug("[workflow:%s] cache store skipped", self.name)
 
         return ctx.results
 
-    # ── Cache helpers ────────────────────────────────────────────────────
-
     @staticmethod
     def _build_cache_key(ctx: WorkflowContext) -> str:
-        """Build a deterministic cache key from workflow inputs + state.
-
-        Fingerprint uses: question, graph edge count, graph node count,
-        and DB paper count so that any state change invalidates the cache.
-        """
+        """Build a deterministic cache key from workflow inputs + state."""
         graph_edge_count = ctx.graph.graph.number_of_edges() if hasattr(ctx.graph, "graph") else 0
         graph_node_count = ctx.graph.graph.number_of_nodes() if hasattr(ctx.graph, "graph") else 0
         try:

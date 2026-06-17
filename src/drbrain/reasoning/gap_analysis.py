@@ -98,9 +98,8 @@ class _GenerateAgendaStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         gaps_data = ctx.get("detect_gaps", {})
         difficulty = ctx.get("classify_difficulty", {})
@@ -138,9 +137,7 @@ class _GenerateAgendaStep(WorkflowStep):
             "Be specific and grounded in the evidence."
         )
 
-        result = asyncio.run(
-            acall_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
-        )
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=1024)
         return result or "Unable to generate research agenda."
 
 

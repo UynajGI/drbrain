@@ -103,9 +103,8 @@ class _ClassifyContradictionsStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> list[dict[str, Any]]:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_with_fallback
+        from drbrain.extractor.llm_client import call_with_fallback
 
         pairs = ctx.get("build_argument_map", [])
         if not pairs:
@@ -129,13 +128,11 @@ class _ClassifyContradictionsStep(WorkflowStep):
             + "\n\n".join(pair_descriptions)
         )
 
-        data = asyncio.run(
-            acall_with_fallback(
-                prompt,
-                ctx.models,
-                system_prompt="You are a research contradiction analyst.",
-                max_tokens=1024,
-            )
+        data = call_with_fallback(
+            prompt,
+            ctx.models,
+            system_prompt="You are a research contradiction analyst.",
+            max_tokens=1024,
         )
 
         results = []
@@ -157,9 +154,8 @@ class _SummarizeStep(WorkflowStep):
     requires_llm = True
 
     def run(self, ctx: WorkflowContext) -> str:
-        import asyncio
 
-        from drbrain.extractor.llm_client import acall_text_with_fallback
+        from drbrain.extractor.llm_client import call_text_with_fallback
 
         debates = ctx.get("scan_debates", [])
         classified = ctx.get("classify_contradictions", [])
@@ -183,9 +179,7 @@ class _SummarizeStep(WorkflowStep):
             "Highlight the most important contradictions and what would be needed to resolve them."
         )
 
-        result = asyncio.run(
-            acall_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=512)
-        )
+        result = call_text_with_fallback("\n".join(prompt_parts), ctx.models, max_tokens=512)
         return result or "Unable to generate summary."
 
 

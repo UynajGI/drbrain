@@ -7,7 +7,7 @@ Tests verify:
 - Full pipeline execution produces expected result keys
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -98,7 +98,7 @@ class TestWorkflowExecute:
     def test_execute_populates_results(self, ctx):
         wf = get_workflow("causal")
         # Mock the LLM step to avoid real API calls
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
 
         # All 5 steps should have results (even if None for empty DB)
@@ -278,7 +278,7 @@ class TestFullPipelineExecution:
             question="why does X cause Y?",
         )
         wf = get_workflow("causal")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "synthesize_explanation" in results
 
@@ -291,7 +291,7 @@ class TestFullPipelineExecution:
             question="what contradictions exist?",
         )
         wf = get_workflow("contradiction")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "summarize" in results
 
@@ -304,7 +304,7 @@ class TestFullPipelineExecution:
             question="how did X evolve?",
         )
         wf = get_workflow("temporal")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "generate_narrative" in results
 
@@ -317,7 +317,7 @@ class TestFullPipelineExecution:
             question="what new hypotheses can we generate?",
         )
         wf = get_workflow("hypothesis")
-        with patch("drbrain.extractor.llm_client.acall_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "score" in results
 
@@ -347,7 +347,7 @@ class TestWorkflowCaching:
         wf = get_workflow("causal")
 
         mock_llm = AsyncMock(return_value="cached synthesis result")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", mock_llm):
             results1 = wf.execute(ctx)
 
         # Second run should be a cache hit — no LLM calls needed
@@ -362,6 +362,17 @@ class TestWorkflowCaching:
         """Adding a graph edge changes the fingerprint, causing a cache miss."""
         from drbrain.extractor.cache import ApiCache
 
+        # Seed a concept so symbolic steps don't fail
+        tmp_db.conn.execute(
+            "INSERT INTO papers (local_id, title, year, status) VALUES ('p1', 'T', 2024, 'extracted')"
+        )
+        tmp_db.conn.execute(
+            "INSERT INTO concepts (local_id, type, label, confidence, section) "
+            "VALUES ('p1', 'Method', 'TestMethod', 0.9, 'methods')"
+        )
+        tmp_db.commit()
+        tmp_graph.load_from_db(tmp_db)
+
         cache = ApiCache(cache_dir, ttl=3600)
         ctx = WorkflowContext(
             db=tmp_db,
@@ -372,19 +383,19 @@ class TestWorkflowCaching:
         )
         wf = get_workflow("causal")
 
-        mock_llm = AsyncMock(return_value="first synthesis result")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm):
-            _ = wf.execute(ctx)  # populate cache
+        mock1 = MagicMock(return_value="first synthesis result")
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", mock1):
+            wf.execute(ctx)
 
         # Mutate the graph — add an edge to change the fingerprint
         tmp_graph.add_edge("node_a", "node_b", relation="test_rel", source_paper="p1", weight=1.0)
 
         # Same question but different graph state → cache miss
-        mock_llm2 = AsyncMock(return_value="second synthesis result")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm2) as mock_llm:
+        mock2 = MagicMock(return_value="second synthesis result")
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", mock2):
             wf.execute(ctx)
-            # LLM was called again (cache miss)
-            assert mock_llm.called
+        # LLM was called again (cache miss due to graph change)
+        assert mock2.called
 
 
 # ── Review / GapAnalysis / Impact workflow tests ─────────────────────
@@ -462,7 +473,7 @@ class TestImpactWorkflow:
 class TestNewWorkflowsFullPipeline:
     @pytest.mark.asyncio
     async def test_review_empty_db(self, tmp_db, tmp_graph):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
         from drbrain.reasoning import WorkflowContext, get_workflow
 
@@ -473,13 +484,13 @@ class TestNewWorkflowsFullPipeline:
             question="survey the field",
         )
         wf = get_workflow("review")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "generate_review" in results
 
     @pytest.mark.asyncio
     async def test_gap_analysis_empty_db(self, tmp_db, tmp_graph):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
         from drbrain.reasoning import WorkflowContext, get_workflow
 
@@ -490,13 +501,13 @@ class TestNewWorkflowsFullPipeline:
             question="what gaps exist?",
         )
         wf = get_workflow("gap-analysis")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "generate_agenda" in results
 
     @pytest.mark.asyncio
     async def test_impact_empty_db(self, tmp_db, tmp_graph):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import MagicMock, patch
 
         from drbrain.reasoning import WorkflowContext, get_workflow
 
@@ -507,6 +518,6 @@ class TestNewWorkflowsFullPipeline:
             question="which concepts are most impactful?",
         )
         wf = get_workflow("impact")
-        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", new_callable=AsyncMock):
+        with patch("drbrain.extractor.llm_client.call_text_with_fallback", new_callable=MagicMock):
             results = wf.execute(ctx)
         assert "generate_impact_report" in results
