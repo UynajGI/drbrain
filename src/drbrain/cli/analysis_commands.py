@@ -80,6 +80,16 @@ def reason_cmd(
     ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
+    # Normalize typer OptionInfo objects when called directly (not via CLI)
+    if isinstance(bidirectional, typer.models.OptionInfo):
+        bidirectional = bidirectional.default
+    if isinstance(max_rounds, typer.models.OptionInfo):
+        max_rounds = max_rounds.default
+    if isinstance(session_id, typer.models.OptionInfo):
+        session_id = session_id.default
+    if isinstance(workflow, typer.models.OptionInfo):
+        workflow = workflow.default
+
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
