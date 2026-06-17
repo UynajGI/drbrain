@@ -680,3 +680,51 @@ def fsearch_cmd(
 
     if json_output:
         typer.echo(json.dumps(output, ensure_ascii=False, indent=2, default=str))
+
+
+def search_cmd(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="Search query string"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum results"),
+    type: str = typer.Option(
+        None,
+        "--type",
+        "-t",
+        help="Filter by document type (Problem, Method, Conclusion, Gap, Debate, Actor, Paper, Argument)",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Quick local BM25 keyword search over papers, concepts, and arguments."""
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        from drbrain.query.bm25 import build_bm25_index
+
+        bm25 = build_bm25_index(db)
+        results = bm25.search(
+            query,
+            type_filter=type,
+            limit=limit,
+        )
+
+    if not results:
+        if json_output:
+            typer.echo(json.dumps({"query": query, "results": []}))
+        else:
+            typer.echo(f"No results for: {query}")
+        return
+
+    if json_output:
+        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        return
+
+    typer.echo(f'Search: "{query}" — {len(results)} results')
+    for i, r in enumerate(results, 1):
+        extra = ""
+        if r["type"] == "Argument":
+            extra = f" [{r.get('arg_type', '')}]"
+        year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
+        conf_str = f", conf: {r['confidence']:.2f}" if "confidence" in r else ""
+        typer.echo(
+            f"  {i}. [{r['type']}] {r['label']}{extra}"
+            f" (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})"
+        )

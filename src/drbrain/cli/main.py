@@ -61,6 +61,7 @@ from drbrain.cli.query_commands import (
     index_cmd,
     list_cmd,
     query_cmd,
+    search_cmd,
     seed_cmd,
     show_cmd,
     stats_cmd,
@@ -112,6 +113,7 @@ app.command("show")(show_cmd)
 app.command("index")(index_cmd)
 app.command("query")(query_cmd)
 app.command("fsearch")(fsearch_cmd)
+app.command("search")(search_cmd)
 app.command("export")(export_cmd)
 app.command("queue")(queue_cmd)
 app.command("queue resolve")(queue_resolve_cmd)
