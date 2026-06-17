@@ -312,3 +312,68 @@ class TestFullPipelineExecution:
         with patch("drbrain.extractor.llm_client.acall_with_fallback", new_callable=AsyncMock):
             results = wf.execute(ctx)
         assert "score" in results
+
+
+# ── Workflow-level caching tests ──────────────────────────────────────
+
+
+class TestWorkflowCaching:
+    """Tests for workflow-level result caching in ReasoningWorkflow.execute()."""
+
+    @pytest.fixture
+    def cache_dir(self, tmp_path):
+        return str(tmp_path / "wf_cache")
+
+    def test_cache_hit_on_second_run(self, tmp_db, tmp_graph, cache_dir):
+        """Second execute() with same question + graph state returns cached results."""
+        from drbrain.extractor.cache import ApiCache
+
+        cache = ApiCache(cache_dir, ttl=3600)
+        ctx = WorkflowContext(
+            db=tmp_db,
+            graph=tmp_graph,
+            models=[{"provider": "test", "model": "m"}],
+            question="cache test question",
+            cache=cache,
+        )
+        wf = get_workflow("causal")
+
+        mock_llm = AsyncMock(return_value="cached synthesis result")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm):
+            results1 = wf.execute(ctx)
+
+        # Second run should be a cache hit — no LLM calls needed
+        results2 = wf.execute(ctx)
+
+        # Results should be identical
+        assert results1.keys() == results2.keys()
+        for key in results1:
+            assert results1[key] == results2[key]
+
+    def test_cache_miss_when_graph_changes(self, tmp_db, tmp_graph, cache_dir):
+        """Adding a graph edge changes the fingerprint, causing a cache miss."""
+        from drbrain.extractor.cache import ApiCache
+
+        cache = ApiCache(cache_dir, ttl=3600)
+        ctx = WorkflowContext(
+            db=tmp_db,
+            graph=tmp_graph,
+            models=[{"provider": "test", "model": "m"}],
+            question="graph change test",
+            cache=cache,
+        )
+        wf = get_workflow("causal")
+
+        mock_llm = AsyncMock(return_value="first synthesis result")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm):
+            _ = wf.execute(ctx)  # populate cache
+
+        # Mutate the graph — add an edge to change the fingerprint
+        tmp_graph.add_edge("node_a", "node_b", relation="test_rel", source_paper="p1", weight=1.0)
+
+        # Same question but different graph state → cache miss
+        mock_llm2 = AsyncMock(return_value="second synthesis result")
+        with patch("drbrain.extractor.llm_client.acall_text_with_fallback", mock_llm2) as mock_llm:
+            wf.execute(ctx)
+            # LLM was called again (cache miss)
+            assert mock_llm.called

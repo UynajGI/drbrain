@@ -83,6 +83,11 @@ def reason_cmd(
         "--list-workflows",
         help="List available reasoning workflows and exit.",
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable workflow-level result caching.",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     if isinstance(list_workflows_flag, typer.models.OptionInfo):
@@ -106,6 +111,8 @@ def reason_cmd(
         session_id = session_id.default
     if isinstance(workflow, typer.models.OptionInfo):
         workflow = workflow.default
+    if isinstance(no_cache, typer.models.OptionInfo):
+        no_cache = no_cache.default
 
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
@@ -130,7 +137,19 @@ def reason_cmd(
             raise typer.Exit(1)
 
         typer.echo(f"Workflow [{wf.name}]: {question}\n")
-        wf_ctx = WorkflowContext(db=db, graph=graph, models=models, question=question)
+        if no_cache:
+            wf_ctx = WorkflowContext(db=db, graph=graph, models=models, question=question)
+        else:
+            from drbrain.extractor.cache import ApiCache
+
+            _cache_dir = cfg.get("dirs", {}).get("cache", "data/cache") + "/workflows"
+            wf_ctx = WorkflowContext(
+                db=db,
+                graph=graph,
+                models=models,
+                question=question,
+                cache=ApiCache(_cache_dir),
+            )
         results = wf.execute(wf_ctx)
 
         # Print results — the last step is usually the LLM synthesis

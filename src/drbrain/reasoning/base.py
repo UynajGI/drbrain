@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from drbrain.extractor.cache import ApiCache
 
 from loguru import logger
 
@@ -36,6 +39,7 @@ class WorkflowContext:
     graph: Any  # GraphEngine
     models: list[dict]
     question: str
+    cache: ApiCache | None = None
     results: dict[str, Any] = field(default_factory=dict)
 
     def get(self, step_name: str, default: Any = None) -> Any:
@@ -75,7 +79,24 @@ class ReasoningWorkflow:
     steps: list[WorkflowStep] = []
 
     def execute(self, ctx: WorkflowContext) -> dict[str, Any]:
-        """Run all steps in order, storing each output in ctx.results."""
+        """Run all steps in order, storing each output in ctx.results.
+
+        If ``ctx.cache`` is provided, a cache key is built from the workflow
+        name, question, and graph/DB state fingerprint.  A hit skips all steps
+        and returns the previously cached result dict.
+        """
+        # ── Workflow-level cache check ──────────────────────────────────
+        if ctx.cache is not None:
+            cache_key = self._build_cache_key(ctx)
+            cached = ctx.cache.get(cache_key)
+            if cached is not None:
+                logger.info(
+                    "[workflow:%s] cache hit — skipping %d steps", self.name, len(self.steps)
+                )
+                ctx.results = cached
+                return cached
+
+        # ── Run steps ───────────────────────────────────────────────────
         logger.info("[workflow:%s] starting — %d steps", self.name, len(self.steps))
         for step in self.steps:
             logger.info("[workflow:%s] step: %s (llm=%s)", self.name, step.name, step.requires_llm)
@@ -86,7 +107,29 @@ class ReasoningWorkflow:
                 logger.warning("[workflow:%s] step %s failed: %s", self.name, step.name, e)
                 ctx.results[step.name] = None
         logger.info("[workflow:%s] done — %d results", self.name, len(ctx.results))
+
+        # ── Store in cache ───────────────────────────────────────────────
+        if ctx.cache is not None:
+            ctx.cache.set(cache_key, ctx.results)
+
         return ctx.results
+
+    # ── Cache helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_cache_key(ctx: WorkflowContext) -> str:
+        """Build a deterministic cache key from workflow inputs + state.
+
+        Fingerprint uses: question, graph edge count, graph node count,
+        and DB paper count so that any state change invalidates the cache.
+        """
+        graph_edge_count = ctx.graph.graph.number_of_edges() if hasattr(ctx.graph, "graph") else 0
+        graph_node_count = ctx.graph.graph.number_of_nodes() if hasattr(ctx.graph, "graph") else 0
+        try:
+            db_paper_count = ctx.db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+        except Exception:
+            db_paper_count = 0
+        return f"wf:{ctx.question}:{graph_edge_count}:{graph_node_count}:{db_paper_count}"
 
 
 # ── Workflow registry ────────────────────────────────────────────────
