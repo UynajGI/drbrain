@@ -280,12 +280,14 @@ def backup_cmd(
         run_backup,
     )
 
-    cfg = ctx.obj["config"]
+    # cfg may be unavailable when invoked without a Typer context (e.g. direct
+    # calls in tests). Lazy-load and guard the rsync-targets section.
+    cfg = ctx.obj["config"] if ctx is not None and ctx.obj is not None else None
 
     if list_only:
         backups = list_backups()
         # Also show rsync targets if configured
-        if cfg.backup.targets:
+        if cfg is not None and cfg.backup.targets:
             typer.echo("Rsync backup targets:\n")
             for name, t in sorted(cfg.backup.targets.items()):
                 status = "enabled" if t.enabled else "disabled"
