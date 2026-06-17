@@ -17,6 +17,8 @@ from html import unescape
 
 from loguru import logger
 
+from drbrain.providers.base import PatentBase, clean_publication_number
+
 PPUBS_BASE_URL = "https://ppubs.uspto.gov"
 US_PUBLICATION_NUMBER_PATTERN = _re.compile(
     r"^US(?P<number>\d{6,})(?P<kind>[A-Z]\d?)?$", _re.IGNORECASE
@@ -28,16 +30,16 @@ class PpubsError(Exception):
 
 
 @dataclass
-class PpubsPatent:
-    """PPUBS patent search result."""
+class PpubsPatent(PatentBase):
+    """PPUBS patent search result.
+
+    Inherits ``google_patents_url()`` and ``_common_dict()`` from PatentBase.
+    """
 
     guid: str = ""
-    publication_number: str = ""
-    title: str = ""
     inventors_short: str = ""
     applicants: list[str] = field(default_factory=list)
     assignees: list[str] = field(default_factory=list)
-    application_number: str = ""
     filing_date: str = ""
     publication_date: str = ""
     patent_type: str = ""
@@ -65,13 +67,11 @@ class PpubsPatent:
 
     def to_dict(self) -> dict:
         return {
+            **self._common_dict(),
             "guid": self.guid,
-            "publication_number": self.publication_number,
-            "title": self.title,
             "inventors": self.inventors,
             "applicants": self.applicants,
             "assignees": self.assignees,
-            "application_number": self.application_number,
             "filing_date": self.filing_date,
             "publication_date": self.publication_date,
             "patent_type": self.patent_type,
@@ -79,9 +79,6 @@ class PpubsPatent:
             "ipc_codes": self.ipc_codes,
             "cpc_codes": self.cpc_codes,
         }
-
-    def google_patents_url(self) -> str:
-        return f"https://patents.google.com/patent/{self.publication_number}/en"
 
 
 class PpubsClient:
@@ -236,24 +233,20 @@ class PpubsClient:
         self, publication_number: str, *, limit: int = 10
     ) -> PpubsPatent | None:
         """Find a patent by publication number."""
-        normalized = _normalize_publication_number(publication_number)
+        normalized = clean_publication_number(publication_number)
         if not normalized:
             return None
 
         query = _publication_search_query(normalized)
         _, results = self.search(query, limit=limit)
         for patent in results:
-            if _normalize_publication_number(patent.publication_number) == normalized:
+            if clean_publication_number(patent.publication_number) == normalized:
                 return patent
         return None
 
 
-def _normalize_publication_number(pn: str) -> str:
-    return _re.sub(r"[^A-Za-z0-9]", "", str(pn or "")).upper()
-
-
 def _publication_search_query(pn: str) -> str:
-    normalized = _normalize_publication_number(pn)
+    normalized = clean_publication_number(pn)
     match = US_PUBLICATION_NUMBER_PATTERN.match(normalized)
     return match.group("number") if match else normalized
 

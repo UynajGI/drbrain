@@ -28,7 +28,7 @@ Each skill is a `SKILL.md` file in `skills/<name>/`, installed via `npx skills a
 | Skill | CLI Command(s) | What |
 |-------|---------------|------|
 | `paper-query` | `query`, `search`, `fsearch` | BM25 + graph-enhanced + federated search |
-| `graph` | `graph neighbors/path/related/describe/query/traverse-from/export` | Graph traversal and query subcommands |
+| `graph` | `graph neighbors/path/related/describe/query/traverse-from/export` | Graph traversal, query, and export subcommands |
 | `explore` | `explore` | Literature discovery collections (JSONL silos) |
 | `fsearch` | `fsearch` | Federated search: local DB + arXiv with annotation |
 
