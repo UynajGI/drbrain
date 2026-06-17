@@ -454,6 +454,134 @@ def closure_cmd(
         )
 
 
+def batch_fetch_cmd(
+    ctx: typer.Context,
+    input_file: str = typer.Argument(..., help="File containing one DOI or URL per line"),
+    output_dir: str = typer.Option("data/spool/inbox", "--output", "-o"),
+    delay: float = typer.Option(1.0, "--delay", "-d", help="Delay between fetches (seconds)"),
+    skip_existing: bool = typer.Option(True, "--skip-existing", help="Skip DOIs already in DB"),
+):
+    """Batch fetch papers from a DOI/URL list file.
+
+    Reads a text file with one DOI or URL per line.
+    Resolves open-access PDF URLs via arXiv/OpenAlex/Unpaywall.
+    Downloads PDFs to the inbox for subsequent ingest.
+
+    Lines starting with # are ignored as comments.
+    """
+    import re
+    import time
+
+    from drbrain.services.fetch import download_pdf, resolve_pdf_url
+
+    cfg = ctx.obj["config"]
+    fetch_cfg = cfg.get("fetch", {})
+
+    # Validate input file
+    input_path = Path(input_file)
+    if not input_path.exists():
+        typer.echo(f"Input file not found: {input_file}", err=True)
+        raise typer.Exit(1)
+
+    # Read and parse lines
+    raw_lines = input_path.read_text(encoding="utf-8").splitlines()
+    entries: list[str] = []
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        entries.append(stripped)
+
+    if not entries:
+        typer.echo("No entries found in input file.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"Batch fetch: {len(entries)} entries from {input_file}")
+
+    # Ensure output directory exists
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    fetched = 0
+    skipped = 0
+    failed = 0
+    errors: list[str] = []
+
+    with open_db(cfg) as db:
+        for idx, entry in enumerate(entries, 1):
+            typer.echo(f"[{idx}/{len(entries)}] {entry}")
+            doi_safe = re.sub(r"[^\w.\-]", "_", entry)
+
+            # Check if already in DB
+            if skip_existing:
+                existing_id = db.get_paper_by_external_id("doi", entry)
+                if existing_id:
+                    typer.echo(f"  Skipped (already in DB as {existing_id})")
+                    skipped += 1
+                    continue
+
+            # Resolve PDF URL
+            try:
+                pdf_url = resolve_pdf_url(doi=entry, fetch_config=fetch_cfg)
+            except Exception as exc:
+                logger.warning(f"resolve_pdf_url failed for {entry}: {exc}")
+                pdf_url = None
+
+            # If entry looks like a direct PDF URL, use it directly
+            if not pdf_url and entry.startswith(("http://", "https://")) and entry.endswith(".pdf"):
+                pdf_url = entry
+
+            if not pdf_url:
+                msg = f"No PDF URL found for: {entry}"
+                typer.echo(f"  FAILED: {msg}")
+                errors.append(msg)
+                failed += 1
+                continue
+
+            # Download PDF
+            dest_dir = out / doi_safe
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                pdf_path = download_pdf(pdf_url, dest_dir, fetch_config=fetch_cfg)
+            except Exception as exc:
+                msg = f"Download failed for {entry}: {exc}"
+                typer.echo(f"  FAILED: {msg}")
+                errors.append(msg)
+                failed += 1
+                continue
+
+            if not pdf_path:
+                msg = f"Download returned empty for: {entry}"
+                typer.echo(f"  FAILED: {msg}")
+                errors.append(msg)
+                failed += 1
+                continue
+
+            typer.echo(f"  OK: {pdf_path}")
+            fetched += 1
+
+            # Polite delay between fetches
+            if delay > 0 and idx < len(entries):
+                time.sleep(delay)
+
+    # Summary
+    sep_line = "=" * 40
+    typer.echo(f"\n{sep_line}")
+    typer.echo(f"Batch fetch complete: {len(entries)} entries")
+    typer.echo(f"  Fetched: {fetched}, Skipped: {skipped}, Failed: {failed}")
+    if errors:
+        typer.echo("\nFailures:")
+        for e in errors:
+            typer.echo(f"  - {e}")
+
+    logger.info(
+        "[batch-fetch] done - %d fetched, %d skipped, %d failed",
+        fetched,
+        skipped,
+        failed,
+    )
+
+
 def ingest_link_cmd(
     ctx: typer.Context,
     urls: list[str] = typer.Argument(..., help="Web URL(s) to ingest"),

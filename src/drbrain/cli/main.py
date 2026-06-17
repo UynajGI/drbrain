@@ -44,6 +44,7 @@ from drbrain.cli.export_commands import (
 )
 from drbrain.cli.graph_commands import graph_app
 from drbrain.cli.ingest_commands import (
+    batch_fetch_cmd,
     check_citations_cmd,
     citations_cmd,
     closure_cmd,
@@ -101,6 +102,7 @@ app.command("patent-search")(patent_search_cmd)
 app.command("pipeline")(pipeline_cmd)
 app.command("proceedings")(proceedings_cmd)
 app.command("explore")(explore_cmd)
+app.command("batch-fetch")(batch_fetch_cmd)
 app.command("fetch")(fetch_cmd)
 app.command("citations")(citations_cmd)
 app.command("check-citations")(check_citations_cmd)
