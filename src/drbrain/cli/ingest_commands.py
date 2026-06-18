@@ -144,7 +144,9 @@ def fetch_cmd(
     pdf_path = Path(result["pdf_path"])
     with open_db(cfg) as db:
         dedup = DedupEngine(db)
-        ingest_result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=False)
+        ingest_result = _ingest_single_paper(
+            pdf_path, cfg, db, dedup, json_mode=False, override_metadata=result
+        )
 
     if ingest_result.get("ok"):
         typer.echo(f"  Ingested: {ingest_result.get('local_id')}")

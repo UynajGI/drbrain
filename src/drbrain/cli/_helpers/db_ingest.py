@@ -55,8 +55,13 @@ def _ingest_single_paper(
     db: Database,
     dedup: DedupEngine,
     json_mode: bool = False,
+    override_metadata: dict | None = None,
 ) -> dict:
-    """Ingest a single paper: parse -> identify -> tree. Returns {"ok": bool, "local_id": str|None, "error": str|None}."""
+    """Ingest a single paper: parse -> identify -> tree. Returns {"ok": bool, "local_id": str|None, "error": str|None}.
+
+    When override_metadata is provided (e.g. from arXiv API via fetch_paper),
+    its title/year/arxiv/doi values take precedence over PDF-parsed values.
+    """
 
     def echo(msg: str):
         if not json_mode:
@@ -78,6 +83,18 @@ def _ingest_single_paper(
         echo(f"Error parsing PDF: {e}")
         _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
         return {"ok": False, "local_id": None, "error": str(e)}
+
+    # Override parsed metadata with values from fetch_paper (e.g. arXiv API)
+    if override_metadata:
+        if override_metadata.get("title"):
+            parsed.title = override_metadata["title"]
+        if override_metadata.get("year"):
+            parsed.year = override_metadata["year"]
+        if override_metadata.get("arxiv"):
+            parsed.arxiv = override_metadata["arxiv"]
+        if override_metadata.get("doi"):
+            parsed.doi = override_metadata["doi"]
+
     echo(f"  Title: {parsed.title}")
     echo(f"  Year: {parsed.year}")
     echo(f"  arXiv: {parsed.arxiv}")
