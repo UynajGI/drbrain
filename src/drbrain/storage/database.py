@@ -671,12 +671,26 @@ class Database:
                 (keep_id, merge_id),
             )
             counts["arguments"] = cur.rowcount
+            # Redirect edges that reference merge_id as an endpoint (src or dst).
+            # In DrBrain edges can use either concept labels or paper local_ids
+            # as endpoints (papers are graph nodes too), so this retargeting is
+            # NOT dead code — it handles the paper-as-node case.
+            cur = self.conn.execute(
+                "UPDATE edges SET src_id = ?, updated_at = CURRENT_TIMESTAMP WHERE src_id = ?",
+                (keep_id, merge_id),
+            )
+            counts["edges_redirected"] += cur.rowcount
+            cur = self.conn.execute(
+                "UPDATE edges SET dst_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dst_id = ?",
+                (keep_id, merge_id),
+            )
+            counts["edges_redirected"] += cur.rowcount
             cur = self.conn.execute(
                 "UPDATE edges SET source_paper = ?, updated_at = CURRENT_TIMESTAMP "
                 "WHERE source_paper = ?",
                 (keep_id, merge_id),
             )
-            counts["edges_redirected"] = cur.rowcount
+            counts["edges_redirected"] += cur.rowcount
             self.conn.execute(
                 "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
                 (keep_id,),
