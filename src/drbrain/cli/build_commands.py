@@ -420,26 +420,69 @@ def embed_cmd(
         db.close()
         raise typer.Exit(1)
 
-    # Load existing embeddings for incremental training
+    # Load existing embeddings. Relations are stored with a __rel__ prefix.
     existing = db.load_embeddings()
-    init_ents = existing if existing and not retrain else None
-    init_rels = None  # relations are re-learned each time (fewer, changes matter)
+    init_ents: dict | None = None
+    init_rels: dict | None = None
+    if existing and not retrain:
+        init_ents = {k: v for k, v in existing.items() if not k.startswith("__rel__")}
+        init_rels = {k[len("__rel__") :]: v for k, v in existing.items() if k.startswith("__rel__")}
 
-    db.clear_embeddings()
     from drbrain.graph.embedding import TransE
 
     t = TransE(dim=dim, epochs=epochs)
-    typer.echo(
-        f"Training embeddings (dim={dim}, epochs={epochs}, "
-        f"nodes={graph.graph.number_of_nodes()}"
-        f"{', incremental' if init_ents else ', from scratch'})..."
-    )
-    t.train(graph.graph, init_entities=init_ents, init_relations=init_rels)
 
+    if init_ents and init_rels:
+        # ── Incremental path: only train on edges from dirty papers ──
+        last_embed = db.get_last_run("embed")
+        if last_embed is not None:
+            changed = db.get_papers_since(last_embed)
+        else:
+            changed = None  # no watermark -> fall back to full
+        if changed:
+            placeholders = ",".join("?" * len(changed))
+            new_edge_rows = db.conn.execute(
+                f"SELECT src_id, relation, dst_id FROM edges WHERE source_paper IN ({placeholders})",
+                changed,
+            ).fetchall()
+            new_edges = [(r[0], r[2], r[1]) for r in new_edge_rows]
+            typer.echo(
+                f"Training embeddings incremental ({len(new_edges)} new/changed edges "
+                f"from {len(changed)} papers, dim={dim})..."
+            )
+            t.train_incremental(
+                graph.graph,
+                new_edges,
+                init_entities=init_ents,
+                init_relations=init_rels,
+            )
+            # Seed t with all entities/relations so save loop persists everything
+            for k, v in init_ents.items():
+                if k not in t.entities:
+                    t.entities[k] = v
+            for k, v in init_rels.items():
+                if k not in t.relations:
+                    t.relations[k] = v
+        else:
+            typer.echo(
+                f"Training embeddings full (dim={dim}, epochs={epochs}, "
+                f"nodes={graph.graph.number_of_nodes()})..."
+            )
+            t.train(graph.graph, init_entities=init_ents, init_relations=init_rels)
+    else:
+        # ── Full path (first run, --retrain, or no existing vectors) ──
+        typer.echo(
+            f"Training embeddings (dim={dim}, epochs={epochs}, "
+            f"nodes={graph.graph.number_of_nodes()}, from scratch)..."
+        )
+        t.train(graph.graph, init_entities=init_ents, init_relations=init_rels)
+
+    # Persist: save_embedding uses INSERT OR REPLACE, so no need to clear first.
     for label, vec in t.entities.items():
         db.save_embedding(label, vec, dim)
     for label, vec in t.relations.items():
         db.save_embedding(f"__rel__{label}", vec, dim)
+    db.set_last_run("embed")
     db.commit()
     typer.echo(f"Trained {len(t.entities)} entities, {len(t.relations)} relations")
     db.close()

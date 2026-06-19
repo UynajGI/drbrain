@@ -41,33 +41,130 @@ class TransE:
             entities_set.add(u)
             entities_set.add(v)
             relations_set.add(data["relation"])
+        self._train_on_edges(
+            edges,
+            entities_set,
+            relations_set,
+            init_entities=init_entities,
+            init_relations=init_relations,
+        )
+
+    def train_incremental(
+        self,
+        graph,
+        new_edges: list[tuple[str, str, str]],
+        epochs_multiplier: float = 0.3,
+        init_entities: dict | None = None,
+        init_relations: dict | None = None,
+    ) -> None:
+        """Continue training TransE only on a subset of (new/changed) edges.
+
+        Unlike train(), this does NOT reinitialize all entities from scratch.
+        Existing entity/relation vectors (loaded from disk or passed via
+        init_entities/init_relations) are preserved and only nudged by training
+        on ``new_edges``. Brand-new entities (not in init) get random init.
+
+        Args:
+            graph: NetworkX graph (used only for entity discovery / neighbor lookup).
+            new_edges: list of (head, relation, tail) triples to train on.
+            epochs_multiplier: scale self.epochs by this factor for incremental
+                training (fewer epochs needed since most vectors are already good).
+            init_entities: pre-trained entity vectors keyed by label.
+            init_relations: pre-trained relation vectors keyed by name.
+        """
+        if not new_edges:
+            return
+        # Seed self.entities / self.relations with the prior vectors so that
+        # _train_on_edges preserves them (its guard skips already-loaded keys)
+        # and so they get persisted by the caller's save loop.
+        if init_entities:
+            for k, v in init_entities.items():
+                self.entities.setdefault(k, np.array(v, dtype=np.float32))
+        if init_relations:
+            for k, v in init_relations.items():
+                self.relations.setdefault(k, np.array(v, dtype=np.float32))
+        entities_set: set[str] = set()
+        relations_set: set[str] = set()
+        edge_list = []
+        for h, r, t in new_edges:
+            edge_list.append((h, r, t))
+            entities_set.add(h)
+            entities_set.add(t)
+            relations_set.add(r)
+        # Use a shortened epoch budget for the incremental pass
+        original_epochs = self.epochs
+        self.epochs = max(1, int(original_epochs * epochs_multiplier))
+        try:
+            self._train_on_edges(
+                edge_list,
+                entities_set,
+                relations_set,
+                init_entities=init_entities,
+                init_relations=init_relations,
+            )
+        finally:
+            self.epochs = original_epochs  # restore for subsequent calls
+
+    def _train_on_edges(
+        self,
+        edges: list[tuple[str, str, str]],
+        entities_set: set[str],
+        relations_set: set[str],
+        init_entities: dict | None = None,
+        init_relations: dict | None = None,
+    ) -> None:
+        """Shared SGD training loop over a list of (head, relation, tail) edges.
+
+        Seeds known entities/relations from init_* if provided; random-inits
+        the rest. The negative-sampling entity pool is the full entity set seen
+        in ``edges`` (for incremental training this is a subset, which is fine
+        because we are nudging, not learning from scratch).
+        """
         if not edges:
             return
-        self._entity_list = list(entities_set)
-        if len(self._entity_list) < 2:
-            return
+        # Keep entities already loaded (e.g. from a previous train_incremental
+        # call or via train()) and add any new ones.
         rng = np.random.default_rng(42)
         scale = np.sqrt(6.0 / self.dim)
         for e in entities_set:
+            if e in self.entities:
+                continue
             if init_entities and e in init_entities:
                 self.entities[e] = np.array(init_entities[e], dtype=np.float32)
             else:
                 self.entities[e] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
         for r in relations_set:
+            if r in self.relations:
+                continue
             if init_relations and r in init_relations:
                 self.relations[r] = np.array(init_relations[r], dtype=np.float32)
             else:
                 self.relations[r] = rng.uniform(-scale, scale, self.dim).astype(np.float32)
                 self.relations[r] /= np.linalg.norm(self.relations[r])
 
+        # Entity pool for negative sampling: all known entities so far
+        self._entity_list = list(self.entities.keys())
+        if len(self._entity_list) < 2:
+            return
+
         for epoch in range(self.epochs):
             total_loss = 0.0
             for h, r, t in edges:
                 if h not in self.entities or t not in self.entities or r not in self.relations:
                     continue
-                neg_t = self._entity_list[rng.integers(len(self._entity_list))]
-                while neg_t == t or neg_t == h:
+                # Negative sampling: pick a random entity != h,t. Guard against
+                # infinite loops when the entity pool is tiny.
+                if len(self._entity_list) <= 2:
+                    candidates = [e for e in self._entity_list if e != t and e != h]
+                    neg_t = candidates[0] if candidates else t
+                else:
                     neg_t = self._entity_list[rng.integers(len(self._entity_list))]
+                    _tries = 0
+                    while (neg_t == t or neg_t == h) and _tries < 10:
+                        neg_t = self._entity_list[rng.integers(len(self._entity_list))]
+                        _tries += 1
+                    if neg_t == t or neg_t == h:
+                        continue  # give up on this edge, can't sample a clean negative
 
                 h_vec = self.entities[h]
                 r_vec = self.relations[r]
