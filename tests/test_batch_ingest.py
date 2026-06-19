@@ -1,4 +1,14 @@
-"""Tests for batch ingest functionality."""
+"""Tests for batch ingest orchestration (file enumeration, counting, skip-on-fail).
+
+These tests verify how ingest_cmd dispatches PDFs to _ingest_single_paper and
+aggregates results. The per-paper pipeline (PDF parse, identify, tree build,
+LLM extraction) is mocked at the _ingest_single_paper boundary so the tests
+exercise only batch logic — not the 6+ external calls the real pipeline makes
+(MinerU, OpenAlex, CrossRef, async LLM calls, etc.).
+
+Each mock inserts a real paper row into the DB so the tests can assert on the
+post-ingest DB state that ingest_cmd's callers rely on.
+"""
 
 import tempfile
 from pathlib import Path
@@ -7,7 +17,6 @@ from unittest import mock
 import typer
 
 from drbrain.cli.commands import ingest_cmd
-from drbrain.parser.mineru_parser import ParsedPaper
 
 
 def _make_minimal_config(db_path: str, reports_dir: str) -> dict:
@@ -43,15 +52,84 @@ def _make_ctx(cfg: dict):
     return ctx
 
 
-def _make_parsed_paper(idx: int = 0) -> ParsedPaper:
-    """Create a dummy ParsedPaper with unique metadata."""
-    return ParsedPaper(
-        title=f"Test Paper {idx}",
-        year=2024 + idx,
-        arxiv=f"2401.{10000 + idx}",
-        text_blocks=[f"Introduction.—This is test paper #{idx} about ML."],
-        raw_md=f"# Test Paper {idx}\n\nIntroduction.—This is test paper #{idx} about ML.",
-    )
+def _make_success_factory(start_idx: int = 0):
+    """Build a side_effect that inserts a real paper row for each PDF.
+
+    Returns a (side_effect_fn, call_counter) pair. The side_effect mimics the
+    DB-writing portion of _ingest_single_paper (insert_paper + insert_paper_ids)
+    so callers can assert on post-ingest DB state. ``call_counter`` is a list
+    whose [0] tracks how many times the mock was invoked.
+    """
+
+    import uuid
+
+    counter = [start_idx]
+    calls = [0]
+
+    def side_effect(pdf_path, cfg, db, dedup, **kwargs):
+        calls[0] += 1
+        idx = counter[0]
+        counter[0] += 1
+        local_id = f"p{uuid.uuid4().hex[:6]}"
+        db.insert_paper(
+            local_id,
+            f"Test Paper {idx}",
+            2024 + idx,
+            "uploaded",
+        )
+        db.insert_paper_ids(local_id, arxiv=f"2401.{10000 + idx}")
+        db.commit()
+        return {
+            "ok": True,
+            "local_id": local_id,
+            "report": {"local_id": local_id, "title": f"Test Paper {idx}"},
+        }
+
+    return side_effect, calls
+
+
+def _failing_on(filename_substr: str, start_idx: int = 0):
+    """Build a side_effect that reports failure for files matching ``filename_substr``.
+
+    Mirrors the real _ingest_single_paper contract: failures are returned as
+    ``{"ok": False, ...}`` rather than raised, so ingest_cmd's batch loop can
+    continue. Successful invocations insert a real paper row.
+    """
+
+    import uuid
+
+    counter = [start_idx]
+    calls = [0]
+
+    def side_effect(pdf_path, cfg, db, dedup, **kwargs):
+        calls[0] += 1
+        if filename_substr in str(pdf_path):
+            return {
+                "ok": False,
+                "local_id": None,
+                "error": "simulated parse failure",
+            }
+        idx = counter[0]
+        counter[0] += 1
+        local_id = f"p{uuid.uuid4().hex[:6]}"
+        db.insert_paper(
+            local_id,
+            f"Test Paper {idx}",
+            2024 + idx,
+            "uploaded",
+        )
+        db.insert_paper_ids(local_id, arxiv=f"2401.{10000 + idx}")
+        db.commit()
+        return {
+            "ok": True,
+            "local_id": local_id,
+            "report": {"local_id": local_id, "title": f"Test Paper {idx}"},
+        }
+
+    return side_effect, calls
+
+
+# ── Tests ─────────────────────────────────────────────────────────────────
 
 
 def test_ingest_single_file():
@@ -65,7 +143,10 @@ def test_ingest_single_file():
         pdf_path.write_bytes(b"%PDF-1.4 dummy")
 
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli._common.extract_pdf", return_value=_make_parsed_paper(0)):
+        side_effect, _ = _make_success_factory()
+        with mock.patch(
+            "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
+        ):
             ingest_cmd(ctx, [str(pdf_path)])
 
         from drbrain.storage.database import Database
@@ -89,15 +170,11 @@ def test_ingest_directory():
         (pdfs_dir / "paper1.pdf").write_bytes(b"%PDF-1.4 dummy1")
         (pdfs_dir / "paper2.pdf").write_bytes(b"%PDF-1.4 dummy2")
 
-        call_idx = [0]
-
-        def extract_side_effect(path, cfg):
-            idx = call_idx[0]
-            call_idx[0] += 1
-            return _make_parsed_paper(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=extract_side_effect):
+        side_effect, _ = _make_success_factory()
+        with mock.patch(
+            "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
+        ):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
         from drbrain.storage.database import Database
@@ -123,30 +200,21 @@ def test_ingest_skips_failed_papers():
         (pdfs_dir / "fail.pdf").write_bytes(b"%PDF-1.4 fail")
         (pdfs_dir / "ok2.pdf").write_bytes(b"%PDF-1.4 dummy")
 
-        call_count = 0
-        paper_idx = [0]
-
-        def side_effect_extract(path, cfg):
-            nonlocal call_count
-            call_count += 1
-            if "fail" in str(path):
-                raise Exception("simulated parse failure")
-            idx = paper_idx[0]
-            paper_idx[0] += 1
-            return _make_parsed_paper(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=side_effect_extract):
+        side_effect, calls = _failing_on("fail")
+        with mock.patch(
+            "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
+        ):
             ingest_cmd(ctx, [str(pdfs_dir)])
 
-        # Should have attempted all 3 files
-        assert call_count == 3
+        # Should have attempted all 3 files.
+        assert calls[0] == 3
 
         from drbrain.storage.database import Database
 
         db = Database(str(db_path))
         papers = [p for p in db.get_all_papers() if p["status"] == "uploaded"]
-        # Only 2 should succeed
+        # Only the two non-failing papers should land in the DB.
         assert len(papers) == 2
         db.close()
 
@@ -163,15 +231,11 @@ def test_ingest_multiple_files():
         pdf1.write_bytes(b"%PDF-1.4 dummy")
         pdf2.write_bytes(b"%PDF-1.4 dummy")
 
-        call_idx = [0]
-
-        def extract_side_effect(path, cfg):
-            idx = call_idx[0]
-            call_idx[0] += 1
-            return _make_parsed_paper(idx)
-
         ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
-        with mock.patch("drbrain.cli._common.extract_pdf", side_effect=extract_side_effect):
+        side_effect, _ = _make_success_factory()
+        with mock.patch(
+            "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
+        ):
             ingest_cmd(ctx, [str(pdf1), str(pdf2)])
 
         from drbrain.storage.database import Database
