@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS papers (
     volume TEXT DEFAULT '',
     pages TEXT DEFAULT '',
     authors TEXT DEFAULT '',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS paper_ids (
@@ -42,7 +43,8 @@ CREATE TABLE IF NOT EXISTS concepts (
     section TEXT DEFAULT '',
     node_id TEXT DEFAULT '',
     first_seen INTEGER,
-    last_seen INTEGER
+    last_seen INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS arguments (
@@ -67,6 +69,7 @@ CREATE TABLE IF NOT EXISTS edges (
     relation TEXT NOT NULL,
     source_paper TEXT NOT NULL,
     weight REAL DEFAULT 1.0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (src_id, dst_id, relation, source_paper)
 );
 
@@ -128,6 +131,8 @@ CREATE INDEX IF NOT EXISTS idx_tree_vectors_layer_paper ON tree_vectors(tree_lay
 CREATE INDEX IF NOT EXISTS idx_tree_summaries_paper ON tree_summaries(paper_id);
 CREATE INDEX IF NOT EXISTS idx_paper_ids_local ON paper_ids(local_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity);
+-- v8 change_tracking indexes (updated_at/status) are created by _migrate_add_change_tracking
+-- so that pre-v8 DBs can ALTER TABLE first, then index. Do not add them here.
 
 CREATE TABLE IF NOT EXISTS research_seeds (
     seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,6 +229,7 @@ class Database:
             (5, "edge_provenance", self._migrate_add_edge_provenance),
             (6, "agent_sessions", self._migrate_add_agent_sessions),
             (7, "indexes_v2", self._migrate_add_indexes_v2),
+            (8, "change_tracking", self._migrate_add_change_tracking),
         ]
 
         for version, name, fn in migrations:
@@ -297,6 +303,40 @@ class Database:
         except sqlite3.OperationalError:
             pass  # Column may not exist in very old schemas
 
+    def _migrate_add_change_tracking(self) -> None:
+        """Add updated_at columns to papers/concepts/edges for incremental updates.
+
+        SQLite forbids non-constant DEFAULTs on ALTER TABLE ADD COLUMN, so we
+        add the column as nullable then backfill with CURRENT_TIMESTAMP. New DBs
+        get the column with a proper DEFAULT via SCHEMA_SQL instead.
+        """
+        # papers.updated_at
+        paper_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "updated_at" not in paper_cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN updated_at TIMESTAMP")
+            self.conn.execute("UPDATE papers SET updated_at = CURRENT_TIMESTAMP")
+        # concepts.updated_at
+        concept_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concepts)").fetchall()]
+        if "updated_at" not in concept_cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN updated_at TIMESTAMP")
+            self.conn.execute("UPDATE concepts SET updated_at = CURRENT_TIMESTAMP")
+        # edges.updated_at
+        edge_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(edges)").fetchall()]
+        if "updated_at" not in edge_cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN updated_at TIMESTAMP")
+            self.conn.execute("UPDATE edges SET updated_at = CURRENT_TIMESTAMP")
+        # Indexes (safe even if columns pre-existed). status index is guarded
+        # because very old / synthetic schemas may lack the column.
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_updated_at ON papers(updated_at)")
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_status ON papers(status)")
+        except sqlite3.OperationalError:
+            pass
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_updated_at ON edges(updated_at)")
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_concepts_updated_at ON concepts(updated_at)"
+        )
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
         return self.conn.execute(sql, params)
@@ -347,11 +387,16 @@ class Database:
         pages: str = "",
         authors: str = "",
     ) -> None:
-        """Insert or ignore a paper record with full metadata fields."""
+        """Insert or ignore a paper record with full metadata fields.
+
+        On conflict (existing local_id), bump updated_at to signal downstream
+        incremental stages that this paper changed.
+        """
         self.conn.execute(
-            "INSERT OR IGNORE INTO papers (local_id, title, year, status, paper_type, "
-            "journal, publisher, citation_count, volume, pages, authors) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO papers (local_id, title, year, status, paper_type, "
+            "journal, publisher, citation_count, volume, pages, authors, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
             (
                 local_id,
                 title,
@@ -379,15 +424,38 @@ class Database:
     def set_paper_abstract(self, local_id: str, abstract: str) -> None:
         """Update the abstract text for a paper."""
         self.conn.execute(
-            "UPDATE papers SET abstract = ? WHERE local_id = ?",
+            "UPDATE papers SET abstract = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (abstract, local_id),
         )
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""
         self.conn.execute(
-            "UPDATE papers SET status = 'uploaded' WHERE local_id = ? AND status = 'placeholder'",
+            "UPDATE papers SET status = 'uploaded', updated_at = CURRENT_TIMESTAMP "
+            "WHERE local_id = ? AND status = 'placeholder'",
             (local_id,),
+        )
+
+    def set_paper_status(self, local_id: str, status: str) -> None:
+        """Update paper status and bump updated_at."""
+        self.conn.execute(
+            "UPDATE papers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (status, local_id),
+        )
+
+    def touch_paper(self, local_id: str) -> None:
+        """Bump updated_at timestamp on a paper to signal downstream stages."""
+        self.conn.execute(
+            "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (local_id,),
+        )
+
+    def touch_edge(self, src_id: str, dst_id: str, relation: str, source_paper: str) -> None:
+        """Bump updated_at on an edge to signal downstream stages."""
+        self.conn.execute(
+            "UPDATE edges SET updated_at = CURRENT_TIMESTAMP "
+            "WHERE src_id = ? AND dst_id = ? AND relation = ? AND source_paper = ?",
+            (src_id, dst_id, relation, source_paper),
         )
 
     def update_paper_venue(
@@ -402,7 +470,7 @@ class Database:
         """Update paper metadata after ingest (for upgraded placeholders)."""
         self.conn.execute(
             "UPDATE papers SET title = ?, year = ?, journal = ?, publisher = ?, "
-            "citation_count = ? WHERE local_id = ?",
+            "citation_count = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (title, year, journal, publisher, citation_count, local_id),
         )
 
@@ -435,9 +503,16 @@ class Database:
         node_id: str = "",
         section: str = "",
     ) -> None:
-        """Insert an edge between concepts with tree provenance."""
+        """Insert an edge between concepts with tree provenance.
+
+        On conflict (duplicate PK), bump updated_at so downstream incremental
+        stages notice the edge was re-asserted.
+        """
         self.conn.execute(
-            "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight, node_id, section) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO edges (src_id, dst_id, relation, source_paper, weight, node_id, "
+            "section, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(src_id, dst_id, relation, source_paper) "
+            "DO UPDATE SET updated_at = CURRENT_TIMESTAMP, weight = excluded.weight",
             (src_id, dst_id, relation, source_paper, weight, node_id, section),
         )
 
@@ -508,6 +583,69 @@ class Database:
             "openalex_id",
         ]
         return [dict(zip(cols, row)) for row in rows]
+
+    def get_dirty_papers(self) -> list[str]:
+        """Return local_ids of papers needing (re)building.
+
+        A paper is dirty if its status is not 'extracted' (never built or
+        explicitly marked for rebuild) OR was touched after extraction.
+        """
+        rows = self.conn.execute(
+            "SELECT local_id FROM papers WHERE status != 'extracted' ORDER BY updated_at"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_papers_since(self, ts: str | None) -> list[str]:
+        """Return local_ids of papers with updated_at > ts.
+
+        If ts is None, returns all papers (first run).
+        """
+        if ts is None:
+            rows = self.conn.execute("SELECT local_id FROM papers").fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT local_id FROM papers WHERE updated_at > ?", (ts,)
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def get_paper_timestamp(self, local_id: str) -> str | None:
+        """Return the updated_at timestamp of a paper, or None if not found."""
+        row = self.conn.execute(
+            "SELECT updated_at FROM papers WHERE local_id = ?", (local_id,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def get_max_paper_timestamp(self) -> str | None:
+        """Return the max updated_at across all papers, or None if empty."""
+        row = self.conn.execute("SELECT MAX(updated_at) FROM papers").fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def get_last_run(self, name: str) -> str | None:
+        """Return the timestamp of the last successful run of a named stage.
+
+        Stored in vector_metadata with key 'last_run:<name>'.
+        """
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = ?", (f"last_run:{name}",)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_last_run(self, name: str, ts: str | None = None) -> None:
+        """Record the timestamp of a successful run of a named stage.
+
+        Defaults to CURRENT_TIMESTAMP. Stored in vector_metadata.
+        """
+        if ts is None:
+            ts_expr = "CURRENT_TIMESTAMP"
+            self.conn.execute(
+                "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES (?, " + ts_expr + ")",
+                (f"last_run:{name}",),
+            )
+        else:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES (?, ?)",
+                (f"last_run:{name}", ts),
+            )
 
     def get_paper(self, local_id: str) -> dict | None:
         """Get a single paper by local_id."""
