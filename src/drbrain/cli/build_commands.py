@@ -183,8 +183,21 @@ def build_cmd(
             else:
                 typer.echo(f"Paper not found: {pid}", err=True)
     else:
+        # Incremental default: build papers that are either (a) not yet
+        # extracted (status == 'uploaded') or (b) extracted but touched since
+        # the last build run (e.g. rebuilt via 'drbrain build PID' after a
+        # re-ingest). Falls back to pure status filter when no last_run is set
+        # or when the db helper is unavailable (keeps test mocks working).
         all_papers = db.get_all_papers()
-        papers = [p for p in all_papers if p.get("status") == "uploaded"]
+        base = [p for p in all_papers if p.get("status") == "uploaded"]
+        last_build = db.get_last_run("build") if hasattr(db, "get_last_run") else None
+        if last_build:
+            for p in all_papers:
+                if p.get("status") == "extracted":
+                    ts = db.get_paper_timestamp(p["local_id"])
+                    if ts and ts > last_build:
+                        base.append(p)
+        papers = base
 
     _build_log.info(f"[build] starting: {len(papers)} papers, skip_refine={skip_refine}")
 
@@ -303,8 +316,9 @@ def build_cmd(
                     _build_log.debug(f"duplicate or invalid edge: {head} --[{rel}]--> {tail}")
                     pass  # duplicate edge or invalid reference
 
-        # Mark as extracted
-        db.conn.execute("UPDATE papers SET status = 'extracted' WHERE local_id = ?", (pid,))
+        # Mark as extracted (set_paper_status also bumps updated_at)
+        db.set_paper_status(pid, "extracted")
+        db.set_last_run("build")
         db.commit()
 
         _t_done = _time.monotonic() - _t_paper

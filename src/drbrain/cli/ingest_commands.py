@@ -368,8 +368,19 @@ def closure_cmd(
     ground: bool = typer.Option(
         False, "--ground", help="Ground transitive rules as concrete triples (t-norm)"
     ),
+    incremental: bool = typer.Option(
+        True,
+        "--incremental/--full",
+        help="Incremental: only run rules near papers changed since last closure run. "
+        "Use --full to scan the whole graph.",
+    ),
 ):
-    """Run rule-based closure on the full graph."""
+    """Run rule-based closure on the graph.
+
+    By default incremental: only applies rules to the 2-hop neighborhood of
+    concepts touched by papers modified since the last closure run. Use --full
+    to scan the entire graph (previous behavior).
+    """
     # Normalize typer OptionInfo objects when calling directly (not via CLI)
     if isinstance(rule, typer.models.OptionInfo):
         rule = rule.default
@@ -385,6 +396,8 @@ def closure_cmd(
         min_confidence = min_confidence.default
     if isinstance(ground, typer.models.OptionInfo):
         ground = ground.default
+    if isinstance(incremental, typer.models.OptionInfo):
+        incremental = incremental.default
 
     valid_rules = {
         "creates_debate",
@@ -412,7 +425,42 @@ def closure_cmd(
         paper_ids = _resolve_workspace_papers(workspace)
         graph.load_from_db(db, paper_ids=paper_ids)
 
-        inferred = graph.closure(mode=mode)
+        # Decide incremental vs full. Incremental falls back to full when there
+        # is no last_run watermark (first run) or no changed papers.
+        use_incremental = incremental
+        seed_nodes: set[str] = set()
+        if incremental:
+            last_run = db.get_last_run("closure")
+            if last_run is None:
+                use_incremental = False  # first run -> full
+            else:
+                changed_papers = db.get_papers_since(last_run)
+                if changed_papers:
+                    # Collect concept labels from changed papers as seeds
+                    placeholders = ",".join("?" * len(changed_papers))
+                    rows = db.conn.execute(
+                        f"SELECT DISTINCT label FROM concepts WHERE local_id IN ({placeholders})",
+                        changed_papers,
+                    ).fetchall()
+                    seed_nodes = {r[0] for r in rows}
+                if not seed_nodes:
+                    # Nothing changed since last closure -> no-op
+                    if json_output:
+                        typer.echo(json.dumps({"inferred": [], "count": 0, "skipped": True}))
+                    else:
+                        typer.echo("Closure: no changes since last run, skipping")
+                    db.set_last_run("closure")
+                    db.commit()
+                    return
+
+        if use_incremental and seed_nodes:
+            if not json_output:
+                typer.echo(
+                    f"Closure: incremental ({len(seed_nodes)} seed nodes from changed papers)"
+                )
+            inferred = graph.closure_incremental(seed_nodes)
+        else:
+            inferred = graph.closure(mode=mode)
 
         # ── Embedding-driven rule mining ───────────────────────────────────
         if mine_rules:
@@ -441,6 +489,7 @@ def closure_cmd(
         if not dry_run:
             for edge in inferred:
                 db.insert_edge(edge["src"], edge["dst"], edge["relation"], "closure")
+            db.set_last_run("closure")
             db.commit()
 
     if json_output:
