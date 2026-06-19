@@ -284,22 +284,47 @@ def backup_cmd(
     # calls in tests). Lazy-load and guard the rsync-targets section.
     cfg = ctx.obj["config"] if ctx is not None and ctx.obj is not None else None
 
+    # Resolve the backup config view. Production cfg is a Config dataclass with
+    # a .backup attribute (BackupConfig); tests/ad-hoc callers may pass a raw
+    # dict. Normalize to (backup_cfg_obj_or_dict, targets_dict) so both paths work.
+    if cfg is not None and hasattr(cfg, "backup"):
+        backup_cfg = cfg.backup
+        targets = backup_cfg.targets or {}
+    elif cfg is not None and isinstance(cfg, dict):
+        backup_cfg = cfg.get("backup", {})
+        targets = backup_cfg.get("targets", {}) if isinstance(backup_cfg, dict) else {}
+    else:
+        backup_cfg = None
+        targets = {}
+
+    def _tgt_get(t, key, default=None):
+        """Read a target field from either a BackupTargetConfig or a dict."""
+        if hasattr(t, key):
+            return getattr(t, key)
+        return t.get(key, default) if isinstance(t, dict) else default
+
     if list_only:
         backups = list_backups()
         # Also show rsync targets if configured
-        if cfg is not None and cfg.backup.targets:
+        if targets:
             typer.echo("Rsync backup targets:\n")
-            for name, t in sorted(cfg.backup.targets.items()):
-                status = "enabled" if t.enabled else "disabled"
-                remote = f"{t.user}@{t.host}" if t.user else t.host
+            for name, t in sorted(targets.items()):
+                enabled = _tgt_get(t, "enabled", True)
+                status = "enabled" if enabled else "disabled"
+                user = _tgt_get(t, "user", "")
+                host = _tgt_get(t, "host", "")
+                remote = f"{user}@{host}" if user else host
                 typer.echo(f"  [{name}] {status}")
-                typer.echo(f"    Remote: {remote}:{t.path}")
-                typer.echo(f"    Mode: {t.mode}  Compress: {'on' if t.compress else 'off'}")
-                if t.exclude:
-                    typer.echo(f"    Exclude: {', '.join(t.exclude)}")
+                typer.echo(f"    Remote: {remote}:{_tgt_get(t, 'path', '')}")
+                typer.echo(
+                    f"    Mode: {_tgt_get(t, 'mode', 'push')}  "
+                    f"Compress: {'on' if _tgt_get(t, 'compress') else 'off'}"
+                )
+                exclude = _tgt_get(t, "exclude", []) or []
+                if exclude:
+                    typer.echo(f"    Exclude: {', '.join(exclude)}")
             typer.echo()
 
-        typer.echo("Local tar.gz backups:\n")
         if json_output:
             typer.echo(
                 json.dumps(
@@ -308,6 +333,7 @@ def backup_cmd(
                 )
             )
             return
+        typer.echo("Local tar.gz backups:\n")
         if not backups:
             typer.echo("No backups found.")
             return
@@ -321,12 +347,16 @@ def backup_cmd(
     if target:
         import shlex as _shlex
 
-        if not cfg.backup.targets:
+        if not targets:
             typer.echo("No rsync backup targets configured.", err=True)
             raise typer.Exit(1)
 
         # Default source: data/ directory
-        source_dir = cfg.get("dirs", {}).get("papers", "data/papers")
+        source_dir = (
+            cfg.get("dirs", {}).get("papers", "data/papers")
+            if hasattr(cfg, "get")
+            else "data/papers"
+        )
         source_dir = str(Path(source_dir).parent)
 
         try:
@@ -338,9 +368,9 @@ def backup_cmd(
             typer.echo("  ... (see config for full SSH/rsync options)")
 
             result = run_backup(
-                rsync_bin=cfg.backup.rsync_bin,
-                ssh_bin=cfg.backup.ssh_bin,
-                targets=cfg.backup.targets,
+                rsync_bin=getattr(backup_cfg, "rsync_bin", "rsync"),
+                ssh_bin=getattr(backup_cfg, "ssh_bin", "ssh"),
+                targets=targets,
                 source_dir=source_dir,
                 target_name=target,
                 dry_run=dry_run,

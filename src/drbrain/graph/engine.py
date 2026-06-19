@@ -33,6 +33,10 @@ class GraphEngine(ClosureMixin, EmbeddingsMixin):
     def __init__(self):
         """Initialize an empty directed multi-graph with closure mixins."""
         self.graph = nx.MultiDiGraph()
+        # Cached TransE instance, populated by EmbeddingsMixin on first use.
+        # Must be initialized here so embedding/closure reads (self._transE)
+        # work on a freshly-constructed engine; see engine_embeddings.py.
+        self._transE = None
 
     def add_edge(
         self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0
