@@ -143,20 +143,20 @@ drbrain batch-fetch list.txt --skip-existing # resume interrupted batch
 
 ### `drbrain build`
 
-Extract concepts and relations via 5-stage LLM pipeline. Processes all `uploaded` papers by default. When `--session` is provided, injects a structured extraction summary into the session so subsequent `reason --session` calls have full build context.
+Extract concepts and relations via 5-stage LLM pipeline. **Incremental by default**: processes papers whose status is not yet `extracted` *or* that were touched since the last successful build (e.g. re-ingested). Records a `build` stage watermark so the next run skips unchanged papers. When `--session` is provided, injects a structured extraction summary into the session so subsequent `reason --session` calls have full build context.
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--all` | | Build graph for all papers in database |
+| `--all` | | Build graph for all papers (force, ignores incremental watermarks) |
 | `--skip-refine` | | Skip iterative refinement stage (saves LLM cost) |
 | `--session` | `-s` | Session ID ("new" to create, or existing ID). Injects extraction summary after build. |
 | `--json` | | Output JSON |
 
 ```bash
-drbrain build                      # all unprocessed papers
+drbrain build                      # incremental: dirty/touched papers only
 drbrain build p6a321e              # single paper
 drbrain build p6a321e p3b452c      # multiple papers
-drbrain build --all                # re-extract everything
+drbrain build --all                # re-extract everything (full)
 drbrain build --skip-refine        # faster, less polished
 drbrain build --session new        # create session, inject summary
 drbrain build p6a321e -s sess-xxx  # inject into existing session
@@ -244,16 +244,16 @@ drbrain fsearch "graph neural network" --arxiv-only --json
 
 ### `drbrain index`
 
-Build or rebuild the BM25 search index. Run this after adding or modifying papers if query results seem stale.
+Build or rebuild the BM25 search index. **Incremental by default**: skips the rebuild when no paper changed since the last successful index run (tracked via the `index` stage watermark). Use `--rebuild` to force a full rebuild.
 
 | Flag | Description |
 |------|-------------|
-| `--rebuild` | Force full index rebuild |
+| `--rebuild` | Force full index rebuild (ignore the watermark) |
 | `--json` | Output JSON |
 
 ```bash
-drbrain index
-drbrain index --rebuild
+drbrain index                      # incremental: no-op if nothing changed
+drbrain index --rebuild            # force full rebuild
 drbrain index --rebuild --json
 ```
 
@@ -576,10 +576,11 @@ drbrain seed --workspace cv --json
 
 ### `drbrain closure`
 
-Run rule-based closure on the full graph to infer new edges via symbolic or hybrid inference.
+Run rule-based closure to infer new edges via symbolic or hybrid inference. **Incremental by default**: reads `last_run('closure')` and runs rules only on the 2-hop neighborhood of concepts touched by papers modified since that watermark. Use `--full` to scan the entire graph (previous behavior).
 
 | Flag | Description |
 |------|-------------|
+| `--incremental` / `--full` | Incremental (default): 2-hop neighborhood of changed concepts. `--full`: whole-graph scan. |
 | `--dry-run` | Output inferred edges but do not persist to database |
 | `--rule` | Run only named rule(s). Repeatable. Omit for all. |
 | `--workspace` | `-w` | Limit to workspace |
@@ -592,7 +593,8 @@ Run rule-based closure on the full graph to infer new edges via symbolic or hybr
 **Available rules:** `creates_debate`, `gap_addressed`, `indirect_evolution`, `gap_to_debate`, `shared_actor`, `transitive_closure`, `asymmetric_violations`, `method_supersedes_problem`, `challenge_chain`, `gap_inheritance`, `indirect_support`
 
 ```bash
-drbrain closure
+drbrain closure                                  # incremental (default)
+drbrain closure --full                           # whole-graph scan
 drbrain closure --rule transitive_closure --rule challenge_chain
 drbrain closure --mode hybrid --workspace nlp
 drbrain closure --dry-run --json
@@ -630,18 +632,20 @@ Use `--tree` to generate text embeddings for PageIndex and RAPTOR tree nodes.
 Provider is configured via `embed.provider` in config: `local` (default, sentence-transformers),
 `openai-compat` (OpenAI-compatible `/v1/embeddings` API), or `none` (disable).
 
+**TransE is incremental by default**: when prior embeddings exist, loads them as warm-start (entities AND relations) and runs `train_incremental` only on edges from papers changed since the last `embed` watermark, with a shortened epoch budget. Untouched entity vectors are preserved. `--retrain` forces a full from-scratch training. `--tree` uses content-hash per node, so only changed paper text is re-embedded.
+
 | Flag | Description |
 |------|-------------|
 | `--dim` | Embedding dimension (default: 128) |
 | `--epochs` | Training epochs (default: 100) |
-| `--retrain` | Force retrain from scratch |
+| `--retrain` | Force full retrain from scratch (discard prior vectors) |
 | `--tree` | Generate tree node text embeddings (PageIndex + RAPTOR) |
 
 ```bash
-drbrain embed
+drbrain embed                      # incremental: micro-adjust on new edges
 drbrain embed --dim 256 --epochs 200
-drbrain embed --retrain
-drbrain embed --tree
+drbrain embed --retrain            # full from-scratch training
+drbrain embed --tree               # text embeddings for PageIndex/RAPTOR
 ```
 
 ### `drbrain report`
@@ -690,6 +694,26 @@ drbrain export p6a321e --format bib
 drbrain export --all --format ris -o library.ris
 drbrain export --all --format md --style vancouver
 drbrain export p6a321e --format md --json
+```
+
+### `drbrain export-okf`
+
+Export the knowledge graph as an **OKF (Open Knowledge Format) v0.1** bundle — a directory tree of markdown files with YAML frontmatter and markdown cross-links. Designed to be human-readable, git-friendly, and consumable by AI agents without bespoke tooling. Run `git init` inside the output directory to version it.
+
+Each concept becomes `concepts/{type}/{slug}.md` with frontmatter (`type`, `title`, `tags`, `timestamp`) and a body containing `## Relationships` (edges as markdown links with the relation type in prose) and `## Arguments` (structured claims as quote blocks). Each paper becomes `papers/{local_id}.md` with abstract, metadata, and a concept listing. A root `index.md` groups concepts by type.
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--paper` | `-p` | Export only a single paper's subgraph |
+| `--workspace` | `-w` | Limit to a workspace |
+| `--json` | | Output JSON stats to stdout |
+
+```bash
+drbrain export-okf ./my_bundle                 # full knowledge graph
+drbrain export-okf ./sub --paper p6a321e       # single paper's subgraph
+drbrain export-okf ./ws --workspace nlp        # workspace-scoped
+drbrain export-okf ./bundle --json             # stats as JSON
+cd ./my_bundle && git init && git add .         # version it
 ```
 
 ### `drbrain style`
@@ -941,7 +965,7 @@ drbrain queue resolve-all --reject --type alias
 
 ### `drbrain pipeline`
 
-Chain multiple processing steps in sequence via presets or custom step lists.
+Chain multiple processing steps in sequence via presets or custom step lists. **Incremental by default**: each step (build, closure, embed) runs in its incremental mode — only dirty papers, 2-hop closure neighborhood, micro-adjusted embeddings. Pass `--full` to force the legacy full-rebuild behavior across every step.
 
 | Flag | Short | Description |
 |------|-------|-------------|
@@ -949,9 +973,11 @@ Chain multiple processing steps in sequence via presets or custom step lists.
 | `--steps` | `-s` | Comma-separated step names |
 | `--list` | | List available steps and presets |
 | `--dry-run` | | Preview steps without executing |
+| `--full` | | Force full (non-incremental) processing on every step |
 
 ```bash
-drbrain pipeline --preset full
+drbrain pipeline --preset full              # incremental (default)
+drbrain pipeline --preset full --full       # force full rebuild
 drbrain pipeline --preset quick
 drbrain pipeline --steps build,embed
 drbrain pipeline --preset full --dry-run

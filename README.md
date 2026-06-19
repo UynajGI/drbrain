@@ -43,22 +43,22 @@ This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on m
 |  | Feature | Details |
 |--|---------|---------|
 | **Ingest** | PDF to structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
-| **Build** | 5-stage concept extraction | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
+| **Build** | 5-stage concept extraction (incremental) | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement. Only re-processes dirty/touched papers by default |
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
-| **Knowledge Graph** | Rule-based closure | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
+| **Knowledge Graph** | Rule-based closure (incremental) | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction. Default scans the 2-hop neighborhood of changed concepts |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm — symbolic steps + LLM synthesis |
 | **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
 | **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification against library |
-| **Export** | BibTeX, RIS, Markdown with citation styles | 4 built-in styles (APA, Vancouver, Chicago, MLA) + custom styles, full library or workspace export with venue metadata |
+| **Export** | BibTeX, RIS, Markdown + OKF | Citation styles (APA, Vancouver, Chicago, MLA) + **OKF v0.1** markdown bundle export (`export-okf`) for human/agent consumption |
 | **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
 | **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
 | **Knowledge Genealogy** | Concept lineage + paper descendants | Concept evolution trees (evolve), academic offspring (descendants), paradigm shift detection, cross-domain migration discovery |
 | **Fetch** | PDF acquisition from OA sources | 5-stage fallback (arXiv, OpenAlex, Unpaywall, direct DOI), institutional proxy support |
 | **Federated Search** | Local + arXiv with annotation | Cross-source search with automatic ingested status, DOI/arXiv cross-reference |
 | **Patent Search** | USPTO PPUBS + ODP | Free (PPUBS) or API-key (ODP) patent search, application number lookup |
-| **Pipeline** | Step chaining | Presets (full/quick/embed) and custom step lists for batch processing |
+| **Pipeline** | Step chaining (incremental by default) | Presets (full/quick/embed) and custom step lists; each step runs incrementally, `--full` forces rebuild |
 | **Proceedings** | Conference management | Create/list/show proceedings, associate papers by conference |
 | **Explore** | Discovery collections | Lightweight JSONL-backed silos with keyword search for literature discovery |
 | **Enrich** | CrossRef metadata backfill | Fill missing fields, detect scrub-worthy records |

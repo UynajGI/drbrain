@@ -24,12 +24,12 @@ uv run pytest --cov=drbrain --cov-report=term
 | `import` | — | Zotero/BibTeX/Endnote import |
 | `translate` | — | LLM translation with resume |
 
-**KG Build**
+**KG Build** (all incremental by default — touch only changed papers; use `--all`/`--full`/`--retrain` to force full)
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `build` | `--all`, `--skip-refine`, `--json`, `-s`/`--session`, `[PAPER_ID...]` | 5-stage LLM extraction; `--session new|ID` injects summary into persistent session |
-| `embed` | `--dim 128`, `--epochs 100`, `--retrain`, `--tree` | TransE graph embeddings; `--tree` = PageIndex+RAPTOR text embeddings |
-| `closure` | `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference (8 symbolic + 4 embedding rules) |
+| `build` | `--all`, `--skip-refine`, `--json`, `-s`/`--session`, `[PAPER_ID...]` | 5-stage LLM extraction; default = dirty/touched papers; `--session new|ID` injects summary into persistent session |
+| `embed` | `--dim 128`, `--epochs 100`, `--retrain`, `--tree` | TransE graph embeddings (incremental: warm-start + train only on new edges); `--tree` = PageIndex+RAPTOR text embeddings |
+| `closure` | `--incremental`/`--full`, `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference; default incremental = 2-hop neighborhood of changed concepts (8 symbolic + 4 embedding rules) |
 
 **Query & Explore**
 | Command | Key Flags | What |
@@ -80,6 +80,8 @@ uv run pytest --cov=drbrain --cov-report=term
 | `delete` | | Remove paper + all associated data |
 | `report` | | Single-paper report |
 | `export` | `--style apa/vancouver/chicago-author-date/mla` | BibTeX/RIS/Markdown with 4 built-in citation styles + custom |
+| `export-okf` | `--paper ID`, `-w WS`, `--json` | Export KG as OKF v0.1 markdown bundle (human/agent-readable, git-friendly) |
+| `graph export` | `--format graphml/jsonld/cypher` | Export KG to GraphML/JSON-LD/Cypher (for Neo4j/Gephi/RDF tooling) |
 | `style` | `--list`, `--show NAME` | Manage citation styles |
 | `proceedings` | `--create`, `--list`, `--show`, `--add` | Conference proceedings management |
 | `explore` | `--create`, `--list`, `--delete`, `--name N`, `--search Q` | Literature discovery collections (JSONL silos) |
@@ -129,11 +131,14 @@ uv run pytest --cov=drbrain --cov-report=term
 # First run
 setup → fetch "DOI" → build → embed → closure
 
-# Add papers from inbox
+# Add papers from inbox (incremental — only new/touched work is redone)
 ingest                      # processes data/spool/inbox/
-build                       # builds all unprocessed
-embed --retrain --tree      # retrain graph + text embeddings
-closure --mode hybrid       # re-run inference
+build                       # incremental: only dirty papers
+embed                       # incremental: warm-start + train on new edges only
+closure                     # incremental: 2-hop neighborhood of changed concepts
+
+# Force full rebuild when needed
+pipeline --preset full --full
 
 # Build with persistent session (context carries across calls)
 build paper-id --session new          # create session, inject build results
@@ -197,7 +202,7 @@ DrBrain is a **symbol-driven academic knowledge graph with lightweight vector re
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
 | Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`, `src/drbrain/services/enrich.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex, CrossRef backfill + scrub detection                                                  |
 | Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
-| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/graph_export.py`, `src/drbrain/storage/workspace.py`, `src/drbrain/storage/proceedings.py`, `src/drbrain/storage/explore.py`, `src/drbrain/storage/backup.py`, `src/drbrain/storage/connection.py`                       | SQLite WAL + schema versions, BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, workspace CRUD, proceedings, explore silos, tar.gz + rsync backup, WAL connection helper                                   |
+| Storage      | `src/drbrain/storage/database.py`, `src/drbrain/storage/export.py`, `src/drbrain/storage/graph_export.py`, `src/drbrain/storage/okf_export.py`, `src/drbrain/storage/workspace.py`, `src/drbrain/storage/proceedings.py`, `src/drbrain/storage/explore.py`, `src/drbrain/storage/backup.py`, `src/drbrain/storage/connection.py`                       | SQLite WAL + schema versions (v8: change tracking), BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, OKF v0.1 markdown bundle export, workspace CRUD, proceedings, explore silos, tar.gz + rsync backup, WAL connection helper                                   |
 | Providers    | `src/drbrain/providers/base.py`, `src/drbrain/providers/webtools.py`, `src/drbrain/providers/uspto_odp.py`, `src/drbrain/providers/uspto_ppubs.py`                                                                    | Shared PatentBase ABC + google_patents_url helper, web extraction (qt-web-extractor), USPTO ODP (API key) + PPUBS (free) patent search                       |
 | CLI          | `src/drbrain/cli/main.py` (registration), `src/drbrain/cli/commands.py` (re-exports), `src/drbrain/cli/_common.py`, `src/drbrain/cli/_helpers/` (shared CLI utilities), `src/drbrain/cli/{ingest,query,export,check,ws,repair,build,analysis,graph,session}_commands.py`, `src/drbrain/cli/setup.py`, `src/drbrain/cli/dependencies.py`, `src/drbrain/cli/_setup_i18n.py` | Typer CLI, graph traversal, KGQA (`ask`), session management, setup validation, bilingual wizard (EN/ZH)                                                          |
 
@@ -228,8 +233,9 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 - **LLM**: `acall_with_fallback()` iterates model list in config; any litellm provider.
 - **Lightweight vectors**: Vectors for semantically-complete tree nodes only (PageIndex sections, RAPTOR summaries). Stored in `tree_vectors` table with FAISS. `provider=none` disables — pure BM25 + LLM navigation. Never chunk-level embedding. Reference: ScholarAIO embedding engine.
 - **Section provenance**: `section` and `node_id` fields flow from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.). `node_id` links back to PageIndex tree nodes.
-- **DB tables**: concepts, arguments, edges, aliases, embeddings, tree_vectors, tree_summaries, vector_metadata, papers, paper_ids, confidence_queue, citation_cache, research_seeds, build_stages, schema_versions.
+- **DB tables**: concepts, arguments, edges, aliases, embeddings, tree_vectors, tree_summaries, vector_metadata, papers, paper_ids, confidence_queue, citation_cache, research_seeds, build_stages, schema_versions. Schema v8 added `updated_at` to papers/concepts/edges for incremental change tracking; `vector_metadata` stores `last_run:<stage>` watermarks.
 - **Atomic writes**: tmp→rename pattern throughout. `src/drbrain/storage/paths.py` for centralized paths.
+- **Centralized SQL writes**: `database.py` is the SOLE write surface. Application code must NEVER write raw `INSERT`/`UPDATE`/`DELETE` — add a `Database` method instead. Raw SQL outside `storage/` is a bug. Read-only `SELECT` is tolerated in callers.
 
 ### Testing
 

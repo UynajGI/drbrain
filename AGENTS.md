@@ -37,7 +37,7 @@ new relationships through rule-based graph closure.
 ### Quick Reference
 
 - CLI: `drbrain --help`
-- Key commands: `setup`, `ingest`, `build`, `embed`, `closure`, `query`, `ask`, `reason`, `graph`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `ws`, `audit`
+- Key commands: `setup`, `ingest`, `build`, `embed`, `closure`, `query`, `ask`, `reason`, `graph`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `export`, `export-okf`, `ws`, `audit`
 - Skills: `skills/*/SKILL.md` (27 total) — paper-ingest, kg-build, kg-reason, paper-query, knowledge-cartography, graph, research-analysis, citation-tracking, workspace-analysis, library-maintenance, audit, export, import, index, show, translate, citation-styles, backup, document, patent-search, pipeline, fsearch, proceedings, explore, enrich, metrics, ingest-link
 - Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"` (fast), `uv run pytest` (all)
@@ -54,10 +54,10 @@ new relationships through rule-based graph closure.
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/drbrain/cli/` | Typer CLI (main.py registration, 9 *_commands.py modules, _common.py helpers, setup.py) |
+| `src/drbrain/cli/` | Typer CLI (main.py registration, *_commands.py modules, _common.py helpers, setup.py) |
 | `src/drbrain/extractor/` | LLM extraction, reasoning, API clients (openalex, crossref) |
-| `src/drbrain/graph/` | Graph engine, TransE embeddings (learn/predict/similar), rule closure, query embeddings |
-| `src/drbrain/storage/` | SQLite database, export, workspace, paths, proceedings, explore silos |
+| `src/drbrain/graph/` | Graph engine, TransE embeddings (learn/predict/similar, incremental train), rule closure, query embeddings |
+| `src/drbrain/storage/` | SQLite database (schema v8, centralized writes), BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, OKF v0.1 markdown export, workspace, paths, proceedings, explore silos, backup |
 | `src/drbrain/services/` | Embedding, audit, repair, enrich, translate, zotero import, citation_styles, document, fsearch, pipeline, metrics_panel, parser_benchmark |
 | `src/drbrain/providers/` | Web extraction (qt-web-extractor), USPTO ODP + PPUBS patent search |
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |

@@ -185,6 +185,25 @@ db:
 
 Metrics tracked separately in `data/metrics.db`.
 
+### Schema versioning & migrations
+
+The database schema is versioned in the `schema_versions` table and migrated automatically on every `Database.__init__` via `_migrate()`. Each migration is idempotent: it detects whether the target column/index exists via `PRAGMA table_info` and only then runs `ALTER TABLE` / `CREATE INDEX`. You never need to run a manual migration step — opening the DB upgrades it in place.
+
+Current schema version: **v8** (`change_tracking`).
+
+| Version | Name | What it adds |
+|---------|------|--------------|
+| v1 | `paper_type` | `papers.paper_type` column |
+| v2 | `venue_columns` | `journal`, `publisher`, `citation_count`, `volume`, `pages` |
+| v3 | `authors` | `papers.authors` |
+| v4 | `node_id` | `concepts.node_id`, `arguments.node_id` |
+| v5 | `edge_provenance` | `edges.node_id`, `edges.section` |
+| v6 | `agent_sessions` | `agent_sessions`, `agent_messages` tables |
+| v7 | `indexes_v2` | performance indexes referencing earlier columns |
+| v8 | `change_tracking` | `updated_at` on `papers`/`concepts`/`edges` + supporting indexes — the foundation of the incremental update system |
+
+The `updated_at` columns (v8) and `last_run:<stage>` watermarks (stored in `vector_metadata`) together drive the incremental pipeline: stages compare `max(papers.updated_at)` against their watermark to decide whether to skip. There is nothing to configure here — it is automatic — but if you ever need a full rebuild, pass `--all` (build), `--full` (closure/pipeline), or `--retrain` (embed) to bypass the watermarks.
+
 ---
 
 ## Data Directories

@@ -154,6 +154,41 @@ Embedding is incremental: unchanged nodes (by content hash) are skipped on re-ru
 
 ---
 
+## TransE Graph Embeddings
+
+Separate from the text embeddings above, DrBrain trains **TransE** knowledge-graph embeddings (`graph/embedding.py`) over the concept/relation graph. These power link prediction (`predict_link`), entity similarity (`similar_entities`), and complex query operators (project/intersect/union/negate in `graph/query_embeddings.py`).
+
+```bash
+drbrain embed                 # train TransE (no --tree)
+drbrain embed --dim 256 --epochs 200
+drbrain embed --retrain       # force full from-scratch training
+```
+
+### Incremental TransE training
+
+`embed` (without `--tree`) is **incremental by default**. When prior embeddings exist:
+
+1. Loads existing entity AND relation vectors from the `embeddings` table (relations use the `__rel__` prefix).
+2. Computes the set of edges whose `source_paper` was modified since the last `embed` watermark (`get_papers_since(last_run('embed'))`).
+3. Calls `TransE.train_incremental(graph, new_edges, ...)` which:
+   - Seeds `self.entities` / `self.relations` with the prior vectors (untouched keys preserved with zero drift).
+   - Initializes brand-new entities/relations randomly.
+   - Trains only on `new_edges` with a shortened epoch budget (default `epochs × 0.3`).
+4. Persists via `save_embedding` upserts (no `clear_embeddings()` — the old "clear and retrain" path is gone).
+
+Untouched entity vectors drift only slightly (via negative sampling), far less than a fresh random init. Relations are now warm-started instead of discarded on every run (a prior bug).
+
+`--retrain` bypasses this path entirely: loads no prior vectors, trains from scratch over all edges for the full epoch budget.
+
+| Scenario | What happens |
+|----------|--------------|
+| First run (no prior vectors) | Full training from scratch |
+| Add 1 paper to N-paper library | Warm-start + train only on that paper's edges |
+| `--retrain` | Discard all, retrain from scratch |
+| Relation vector changes | Incremental path preserves + nudges; full path relearns |
+
+---
+
 ## Search
 
 ```bash

@@ -134,6 +134,31 @@ tree.json → [Stage 1: Ontology Extension]
 
 Paper status transitions: `uploaded` -> `extracted` (after successful build). Papers with status `placeholder` are citation-only records that haven't been ingested.
 
+**Incremental build:** `build` is incremental by default. It selects papers whose status is not `extracted` OR that were touched (via `updated_at`) since the last successful `build` watermark. Each successful build records `set_last_run('build')`. Use `build --all` to force re-extraction of every paper regardless of state.
+
+---
+
+## Incremental Update System
+
+DrBrain's pipeline (`build`, `closure`, `embed`, `index`) is **incremental by default** — adding one paper to an N-paper library no longer forces N LLM extractions or a full-graph scan. The mechanism rests on three pillars introduced in schema v8:
+
+1. **`updated_at` columns** on `papers`, `concepts`, `edges`. Every centralized write method (`insert_paper`, `insert_edge`, `set_paper_field`, `touch_paper`, ...) bumps the timestamp. SQLite's `CURRENT_TIMESTAMP` has second precision.
+
+2. **Stage watermarks** in `vector_metadata` (`last_run:<stage>`). Each stage records when it last ran successfully. The next run compares `max(papers.updated_at)` against the watermark to decide whether to skip or process.
+
+3. **Dirty detection helpers** on `Database`: `get_dirty_papers()` (status != `extracted`), `get_papers_since(ts)`, `get_last_run(name)` / `set_last_run(name)`.
+
+| Stage | Incremental behavior | Full mode |
+|-------|---------------------|-----------|
+| `build` | Select dirty/touched papers only | `--all` rebuilds every paper |
+| `closure` | `closure_incremental()`: 2-hop neighborhood of changed concepts' labels | `--full` scans the whole graph |
+| `embed` (TransE) | `train_incremental()`: warm-start all vectors, train only on edges from dirty papers with a shortened epoch budget | `--retrain` clears and retrains from scratch |
+| `embed --tree` | Per-node content-hash skip (unchanged paper text not re-embedded) | always full per paper |
+| `index` (BM25) | No-op if `max(updated_at) <= last_run('index')` | `--rebuild` forces full rebuild |
+| `pipeline` | Each step runs in incremental mode | `--full` flag propagates to all steps |
+
+`delete_paper` participates in the system: it touches neighbor papers sharing the deleted concepts' edges and clears the closure/embed/index watermarks, so the next pipeline run re-evaluates instead of skipping.
+
 ---
 
 ## Knowledge Graph
@@ -299,7 +324,7 @@ in a multi-round loop (`--max-rounds`, default 3).
 `graph/genealogy/` subpackage -- Concept lineage trees (`evolve`, in `lineage.py`), academic offspring tracking (`descendants`), domain landscape with timeline/gaps/debates (`landscape.py`), paradigm shift detection (`paradigm.py`), cross-domain method transfer discovery (`transfer.py`), display rendering (`display.py`). All features include PageIndex provenance via `_get_concept_provenance()`. Text tree and Mermaid renderers show provenance inline.
 
 ### Rule Closure Engine
-`graph/engine_closure.py` -- Symbolic rule-based inference (8 rules in `closure()`) plus path-level rules (4 rules in `apply_path_rules()`). Handles transitive closure, debate detection, gap propagation, and T-norm path materialization. Supports `--mode hybrid` with embedding-weighted edge confidence.
+`graph/engine_closure.py` -- Symbolic rule-based inference (8 rules in `closure()`) plus path-level rules (4 rules in `apply_path_rules()`). Handles transitive closure, debate detection, gap propagation, and T-norm path materialization. Supports `--mode hybrid` with embedding-weighted edge confidence. The `closure_incremental(seed_nodes)` variant restricts rule application to the 2-hop neighborhood of seed concept labels — used by the incremental `closure` command to avoid full-graph scans when only a few papers changed.
 
 ### Embedding-Grounded Closure
 `graph/engine_embeddings.py` -- TransE embedding-grounded validation for inferred edges. Computes path confidence via relation composition distance and filters implausible edges.
@@ -317,7 +342,8 @@ in a multi-round loop (`--max-rounds`, default 3).
 `cli/session_commands.py` -- Persistent reasoning session CRUD via `drbrain session`. Commands: `new`, `ask`, `chat`, `list`, `delete`, `export`. Sessions use `SessionAgent` for multi-turn, DB-backed context continuity across CLI invocations. For deep-dive, see [Sessions](sessions.md).
 
 ### Graph Export
-`storage/graph_export.py` -- Export knowledge graphs to GraphML, JSON-LD, and Cypher formats. CLI via `drbrain graph export --format graphml|jsonld|cypher`.
+- `storage/graph_export.py` -- Export knowledge graphs to GraphML, JSON-LD, and Cypher formats. CLI via `drbrain graph export --format graphml|jsonld|cypher` (for Neo4j/Gephi/RDF tooling).
+- `storage/okf_export.py` -- Export the knowledge graph as an **OKF (Open Knowledge Format) v0.1** markdown bundle: one `.md` per concept (`concepts/{type}/{slug}.md`) with YAML frontmatter (`type`, `title`, `tags`, `timestamp`) and a markdown body where edges become cross-links and arguments become quote blocks. Human- and agent-readable; `git clone`/`cat` consumable. CLI via `drbrain export-okf <bundle>`.
 
 ### Missing Modules
 
@@ -417,13 +443,15 @@ Key tables:
 - `embeddings` -- TransE entity/relation vectors
 - `tree_vectors` -- per-node embeddings (node_id, paper_id, embedding BLOB, content_hash, tree_layer)
 - `tree_summaries` -- RAPTOR recursive summaries (node_id, paper_id, summary_text, source_node_ids, tree_layer)
-- `vector_metadata` -- embedding signature tracking (key, value)
+- `vector_metadata` -- embedding signature tracking (key, value); also stores `last_run:<stage>` watermarks for incremental updates
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
 - `build_stages` -- per-paper pipeline stage status (paper_id, stage, status, result_json) for agent idempotency
-- `schema_versions` -- versioned migrations
+- `schema_versions` -- versioned migrations (currently v8)
 
-The database uses **WAL mode** for concurrent read/write access. Schema migrations are stored in `schema_versions` and applied automatically.
+The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Current version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system.
+
+**Centralized writes:** `Database` is the sole write surface. All `INSERT`/`UPDATE`/`DELETE` go through `Database` methods (`insert_paper`, `set_paper_field`, `merge_papers`, `upsert_build_stage`, etc.). Application-layer code must not write raw SQL — this guarantees `updated_at` is bumped, transactions are used for multi-step operations, and column allowlists prevent injection via dynamic field names. Read-only `SELECT` is tolerated in callers.
 
 ```mermaid
 erDiagram
@@ -529,6 +557,12 @@ Stage 2 (entity extraction) runs with 10-way concurrency on leaf nodes. Translat
 
 ### Data Quality
 `drbrain audit` applies 15 severity-graded rules covering paper metadata, concept integrity, edge consistency, and graph structure. PDF pre-validation detects encryption and corruption before ingest. Three non-blocking quality gates run during ingest.
+
+### Incremental by Default
+The pipeline (`build`/`closure`/`embed`/`index`) is incremental by default — see [Incremental Update System](#incremental-update-system) above. Adding one paper to an N-paper library only re-processes the new paper and its 2-hop neighborhood; existing embeddings are warm-started and micro-adjusted rather than discarded. Stage watermarks (`last_run:<stage>` in `vector_metadata`) drive the skip logic. `--all` / `--full` / `--retrain` escape hatches force full rebuilds when needed.
+
+### Centralized Write Surface
+`Database` is the only component that writes to SQLite. Application code calls methods like `set_paper_field`, `merge_papers`, `upsert_build_stage` — never raw `INSERT`/`UPDATE`/`DELETE`. This enforces `updated_at` bumping, transactional multi-step operations (e.g. `merge_papers` runs concept/argument/edge migration + source deletion in one `BEGIN`/`COMMIT`), and column-name allowlists. Read-only `SELECT` remains tolerated in callers.
 
 ### New Modules (v0.1.0a2)
 
