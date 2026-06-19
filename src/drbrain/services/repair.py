@@ -281,42 +281,27 @@ def repair_paper(db, local_id: str, *, dry_run: bool = False) -> list[dict]:
 
     if repairs and not dry_run:
         for r in repairs:
-            if r["field"] == "title":
-                db.conn.execute(
-                    "UPDATE papers SET title = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "year":
-                db.conn.execute(
-                    "UPDATE papers SET year = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "doi":
-                db.conn.execute(
-                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "journal":
-                db.conn.execute(
-                    "UPDATE papers SET journal = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "abstract":
-                db.conn.execute(
-                    "UPDATE papers SET abstract = ? WHERE local_id = ?", (r["new"][:2000], local_id)
-                )
-            elif r["field"] == "citation_count":
-                db.conn.execute(
-                    "UPDATE papers SET citation_count = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "authors":
-                db.conn.execute(
-                    "UPDATE papers SET authors = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "volume":
-                db.conn.execute(
-                    "UPDATE papers SET volume = ? WHERE local_id = ?", (r["new"], local_id)
-                )
-            elif r["field"] == "pages":
-                db.conn.execute(
-                    "UPDATE papers SET pages = ? WHERE local_id = ?", (r["new"], local_id)
-                )
+            field = r["field"]
+            new_val = r["new"]
+            # Route through database.py so writes are centralized and bump
+            # updated_at (which the old raw UPDATEs skipped, breaking the
+            # incremental-update change tracking).
+            if field == "doi":
+                db.set_external_id(local_id, "doi", new_val)
+            elif field in (
+                "title",
+                "year",
+                "journal",
+                "abstract",
+                "citation_count",
+                "authors",
+                "volume",
+                "pages",
+            ):
+                value = new_val[:2000] if field == "abstract" else new_val
+                db.set_paper_field(local_id, field, value)
+            else:
+                logger.warning("[repair] unknown field %r, skipping", field)
         db.commit()
 
     logger.info("[repair] %s — %d fields repaired (dry_run=%s)", local_id, len(repairs), dry_run)

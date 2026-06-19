@@ -46,6 +46,9 @@ class FakeDB:
         self._committed = False
         self._executed = []
         self._paper = paper
+        # Track centralized-write-method calls (post SQL-leak consolidation).
+        self._field_updates = []  # list of (local_id, field, value)
+        self._external_id_updates = []  # list of (local_id, kind, value)
         self.conn = self._FakeConn(self)
 
     class _FakeConn:
@@ -62,6 +65,15 @@ class FakeDB:
 
             def fetchall(self):
                 return []
+
+    def set_paper_field(self, local_id, field, value):
+        self._field_updates.append((local_id, field, value))
+
+    def set_external_id(self, local_id, kind, value):
+        self._external_id_updates.append((local_id, kind, value))
+
+    def touch_paper(self, local_id):
+        pass  # no-op for tests
 
     def get_paper(self, lid):
         if self._paper is None:
@@ -293,13 +305,9 @@ def test_repair_paper_dry_run_false_applies_updates():
     # Verify commit was called
     assert db._committed
 
-    # Verify SQL UPDATE statements were issued for title and year
-    title_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE papers SET title" in sql
-    ]
-    year_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE papers SET year" in sql
-    ]
+    # Verify field updates went through set_paper_field (centralized writes).
+    title_updates = [(lid, f, v) for lid, f, v in db._field_updates if f == "title"]
+    year_updates = [(lid, f, v) for lid, f, v in db._field_updates if f == "year"]
     assert len(title_updates) >= 1  # normalization + CrossRef title
     assert len(year_updates) >= 1
 
@@ -316,10 +324,10 @@ def test_repair_paper_dry_run_false_applies_doi_update():
 
     assert db._committed
     doi_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE paper_ids SET doi" in sql
+        (lid, kind, val) for lid, kind, val in db._external_id_updates if kind == "doi"
     ]
     assert len(doi_updates) == 1
-    assert doi_updates[0][1] == ("10.5678/founddoi2", "p1")
+    assert doi_updates[0] == ("p1", "doi", "10.5678/founddoi2")
 
 
 # ---------------------------------------------------------------------------
@@ -724,10 +732,10 @@ def test_repair_paper_applies_authors_to_db():
 
     assert db._committed
     authors_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE papers SET authors" in sql
+        (lid, f, v) for lid, f, v in db._field_updates if f == "authors"
     ]
     assert len(authors_updates) == 1
-    assert authors_updates[0][1] == ("Alice Smith", "p1")
+    assert authors_updates[0] == ("p1", "authors", "Alice Smith")
 
 
 def test_repair_paper_applies_volume_pages_to_db():
@@ -775,15 +783,15 @@ def test_repair_paper_applies_volume_pages_to_db():
 
     assert db._committed
     volume_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE papers SET volume" in sql
+        (lid, f, v) for lid, f, v in db._field_updates if f == "volume"
     ]
     pages_updates = [
-        (sql, params) for sql, params in db._executed if "UPDATE papers SET pages" in sql
+        (lid, f, v) for lid, f, v in db._field_updates if f == "pages"
     ]
     assert len(volume_updates) == 1
+    assert volume_updates[0] == ("p1", "volume", "42")
     assert len(pages_updates) == 1
-    assert volume_updates[0][1] == ("42", "p1")
-    assert pages_updates[0][1] == ("200-250", "p1")
+    assert pages_updates[0] == ("p1", "pages", "200-250")
 
 
 def test_enrich_via_openalex_paper_already_has_data_skips():
