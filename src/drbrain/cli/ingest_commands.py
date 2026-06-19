@@ -889,8 +889,19 @@ def pipeline_cmd(
     steps: str = typer.Option(None, "--steps", "-s", help="Comma-separated step names"),
     list_steps_flag: bool = typer.Option(False, "--list", help="List available steps and presets"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview steps without executing"),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Force full (non-incremental) processing on every step. Default is incremental.",
+    ),
 ):
-    """Chain multiple processing steps in sequence (ingest → build → embed → closure)."""
+    """Chain multiple processing steps in sequence (ingest → build → embed → closure).
+
+    By default each step runs in incremental mode: build only touches papers
+    not yet extracted (or touched since last build), closure only scans the
+    neighborhood of recently-changed concepts, embed only trains on new edges.
+    Use --full to force a complete rebuild across every step.
+    """
     from drbrain.services.pipeline import list_steps_info, resolve_steps
 
     if list_steps_flag:
@@ -911,9 +922,11 @@ def pipeline_cmd(
 
     if dry_run:
         typer.echo(f"[dry-run] Would execute {len(step_names)} step(s): {', '.join(step_names)}")
+        typer.echo(f"[dry-run] Mode: {'full' if full else 'incremental'}")
         return
 
-    typer.echo(f"Pipeline: {' -> '.join(step_names)}")
+    mode_label = "full" if full else "incremental"
+    typer.echo(f"Pipeline ({mode_label}): {' -> '.join(step_names)}")
     typer.echo()
 
     import subprocess as _sp
@@ -924,19 +937,30 @@ def pipeline_cmd(
         if name == "ingest":
             _sp.run([_sys.executable, "-m", "drbrain.cli.main", "ingest"], check=False)
         elif name == "build":
-            _sp.run([_sys.executable, "-m", "drbrain.cli.main", "build", "--all"], check=False)
+            # Incremental (default): no --all → builds only dirty papers.
+            # Full: --all → rebuilds every paper.
+            args = [_sys.executable, "-m", "drbrain.cli.main", "build"]
+            if full:
+                args.append("--all")
+            _sp.run(args, check=False)
         elif name == "embed":
+            # Pipeline runs tree-embedding (PageIndex/RAPTOR) which is already
+            # content-hash incremental. Standalone 'drbrain embed' (no --tree)
+            # does TransE and has its own incremental path; pipeline does not
+            # invoke TransE to match prior behavior.
             _sp.run(
                 [_sys.executable, "-m", "drbrain.cli.main", "embed", "--tree"],
                 check=False,
             )
         elif name == "closure":
-            _sp.run(
-                [_sys.executable, "-m", "drbrain.cli.main", "closure"],
-                check=False,
-            )
+            # Incremental (default): --incremental → 2-hop neighborhood.
+            # Full: --full flag on closure_cmd → whole-graph scan.
+            args = [_sys.executable, "-m", "drbrain.cli.main", "closure"]
+            if full:
+                args.append("--full")
+            _sp.run(args, check=False)
 
-    typer.echo(f"\nPipeline complete: {', '.join(step_names)}")
+    typer.echo(f"\nPipeline complete ({mode_label}): {', '.join(step_names)}")
 
 
 def proceedings_cmd(
