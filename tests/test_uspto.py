@@ -101,7 +101,7 @@ class TestPatentResult:
         d = r.to_dict()
         assert d["application_number"] == "17/123456"
         assert d["title"] == "Test"
-        assert "patent_number" not in d  # not part of to_dict
+        assert d["patent_number"] == "9999"  # to_dict includes patent_number
 
     def test_google_patents_url_with_publication_number(self):
         r = PatentResult(publication_number="US2024001234A1")
@@ -250,7 +250,8 @@ class TestUSPTOODPSearchPatents:
         call_args = mock_open.call_args
         req = call_args[0][0]
         assert req.method == "POST"
-        assert "api_key" in req.headers or "X-API-Key" in req.headers
+        # urllib normalizes header names (e.g. X-API-Key -> X-api-key)
+        assert any(k.lower() == "x-api-key" for k in req.headers)
 
     @mock.patch("drbrain.providers.uspto_odp.urllib.request.urlopen")
     def test_search_custom_base_url(self, mock_open):
@@ -264,11 +265,10 @@ class TestUSPTOODPSearchPatents:
 
     @mock.patch("drbrain.providers.uspto_odp.urllib.request.urlopen")
     def test_search_api_error_raises(self, mock_open):
-        mock_open.side_effect = (
-            _mock_urlopen_error.__wrapped__
-            if hasattr(_mock_urlopen_error, "__wrapped__")
-            else lambda *a, **kw: _make_http_error(500, "Server Error")
-        )
+        # side_effect must be the exception instance so urlopen raises it,
+        # not a callable returning the exception (which would be treated as a
+        # normal return value).
+        mock_open.side_effect = _make_http_error(500, "Server Error")
 
         with pytest.raises(USPTOAPIError, match="500"):
             search_patents("test", api_key="k")

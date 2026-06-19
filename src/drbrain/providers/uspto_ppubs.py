@@ -104,7 +104,10 @@ class PpubsClient:
             "User-Agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
-        self._opener.open(req1)
+        try:
+            self._opener.open(req1)
+        except urllib.error.HTTPError as e:
+            raise PpubsError(f"Failed to establish PPUBS session: {e}") from e
 
         req2 = urllib.request.Request(
             f"{self.base_url}/api/users/me/session",
