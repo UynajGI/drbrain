@@ -265,6 +265,45 @@ def test_transe_negative_sampling_no_deadlock_tiny_pool():
     assert "x" in t.entities and "y" in t.entities
 
 
+# ── edge deletion correctness (pre-existing bug fix) ─────────────────────
+
+
+def test_delete_paper_removes_only_asserted_edges(tmp_db):
+    """delete_paper removes edges the paper asserted (source_paper = id),
+    keeps edges from other papers and from closure inference."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_paper("p2", "B", 2023, "extracted")
+    tmp_db.insert_edge("conceptA", "conceptB", "rel", "p1")
+    tmp_db.insert_edge("conceptA", "conceptC", "rel", "p1")
+    tmp_db.insert_edge("conceptB", "conceptC", "rel", "p2")
+    tmp_db.insert_edge("conceptA", "conceptC", "inferred", "closure")
+    tmp_db.commit()
+    assert tmp_db.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == 4
+
+    result = tmp_db.delete_paper("p1")
+    # Only p1's two asserted edges are counted/removed.
+    assert result["edges"] == 2
+    remaining = {
+        tuple(r)
+        for r in tmp_db.conn.execute(
+            "SELECT src_id, dst_id, relation, source_paper FROM edges"
+        ).fetchall()
+    }
+    assert remaining == {
+        ("conceptB", "conceptC", "rel", "p2"),
+        ("conceptA", "conceptC", "inferred", "closure"),
+    }
+
+
+def test_delete_paper_no_asserted_edges_zero_count(tmp_db):
+    """A paper that asserted no edges reports edge_count == 0."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_edge("x", "y", "r", "p2")  # belongs to a non-existent p2
+    tmp_db.commit()
+    result = tmp_db.delete_paper("p1")
+    assert result["edges"] == 0
+
+
 # ── closure_incremental ───────────────────────────────────────────────────
 
 

@@ -809,8 +809,11 @@ class Database:
         arg_count = self.conn.execute(
             "SELECT COUNT(*) FROM arguments WHERE source_paper = ?", (local_id,)
         ).fetchone()[0]
+        # edges.src_id/dst_id hold concept labels, not paper ids. A paper's
+        # edges are those it asserted (source_paper) plus closure-inferred edges
+        # whose endpoints reference its concepts.
         edge_count = self.conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE src_id = ? OR dst_id = ?", (local_id, local_id)
+            "SELECT COUNT(*) FROM edges WHERE source_paper = ?", (local_id,)
         ).fetchone()[0]
         queue_count = self.conn.execute(
             "SELECT COUNT(*) FROM confidence_queue WHERE source_paper = ?", (local_id,)
@@ -818,7 +821,9 @@ class Database:
 
         self.conn.execute("DELETE FROM concepts WHERE local_id = ?", (local_id,))
         self.conn.execute("DELETE FROM arguments WHERE source_paper = ?", (local_id,))
-        self.conn.execute("DELETE FROM edges WHERE src_id = ? OR dst_id = ?", (local_id, local_id))
+        # Delete edges this paper asserted. (Closure-inferred edges with
+        # source_paper='closure' are left for the next closure run to re-evaluate.)
+        self.conn.execute("DELETE FROM edges WHERE source_paper = ?", (local_id,))
         self.conn.execute("DELETE FROM paper_ids WHERE local_id = ?", (local_id,))
         self.conn.execute("DELETE FROM confidence_queue WHERE source_paper = ?", (local_id,))
         self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
