@@ -787,7 +787,22 @@ class Database:
         return [dict(zip(cols, row)) for row in rows]
 
     def delete_paper(self, local_id: str) -> dict:
-        """Delete a paper and all associated data. Returns counts of deleted items."""
+        """Delete a paper and all associated data. Returns counts of deleted items.
+
+        To keep downstream incremental stages consistent, neighbor papers
+        sharing edges with this paper's concepts are touched (updated_at bumped)
+        and the closure/embed/index watermarks are cleared, so the next pipeline
+        run re-evaluates them instead of skipping.
+        """
+        # Collect this paper's concept labels BEFORE deletion so we can find
+        # neighbor papers that shared edges with them.
+        labels = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT DISTINCT label FROM concepts WHERE local_id = ?", (local_id,)
+            ).fetchall()
+        ]
+
         concept_count = self.conn.execute(
             "SELECT COUNT(*) FROM concepts WHERE local_id = ?", (local_id,)
         ).fetchone()[0]
@@ -809,6 +824,30 @@ class Database:
         self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
         self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (local_id,))
         self.conn.execute("DELETE FROM papers WHERE local_id = ?", (local_id,))
+
+        # Touch neighbor papers that shared edges with the deleted concepts so
+        # the next closure/embed pass re-evaluates them.
+        touched_neighbors = 0
+        if labels:
+            placeholders = ",".join("?" * len(labels))
+            # Exclude the just-deleted paper and any already-removed ids
+            neighbor_ids = {
+                r[0]
+                for r in self.conn.execute(
+                    f"SELECT DISTINCT source_paper FROM edges "
+                    f"WHERE source_paper != ? "
+                    f"AND (src_id IN ({placeholders}) OR dst_id IN ({placeholders}))",
+                    (local_id, *labels, *labels),
+                ).fetchall()
+            }
+            for nid in neighbor_ids:
+                self.touch_paper(nid)
+                touched_neighbors += 1
+
+        # Invalidate stage watermarks so the next run doesn't skip the cleanup
+        for stage in ("closure", "embed", "index"):
+            self.conn.execute("DELETE FROM vector_metadata WHERE key = ?", (f"last_run:{stage}",))
+
         self.commit()
 
         return {
@@ -816,6 +855,7 @@ class Database:
             "arguments": arg_count,
             "edges": edge_count,
             "queue_items": queue_count,
+            "touched_neighbors": touched_neighbors,
         }
 
     # ── Temporal evolution signals ──────────────────────────────
