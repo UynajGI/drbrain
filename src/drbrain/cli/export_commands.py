@@ -72,6 +72,56 @@ def export_cmd(
         typer.echo(result)
 
 
+def export_okf_cmd(
+    ctx: typer.Context,
+    output: str = typer.Argument(..., help="Output bundle directory path"),
+    paper_id: str = typer.Option(None, "--paper", "-p", help="Export a single paper's subgraph"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to a workspace"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON stats to stdout"),
+):
+    """Export the knowledge graph as an OKF (Open Knowledge Format) bundle.
+
+    Produces a directory tree of markdown files (one per concept/paper) with
+    YAML frontmatter and markdown cross-links. The bundle is human-readable,
+    git-friendly, and consumable by AI agents without bespoke tooling.
+
+    Examples:
+      drbrain export-okf ./my_bundle
+      drbrain export-okf ./sub --paper p3f8a2c
+      drbrain export-okf ./ws_bundle --workspace myws
+    """
+    from drbrain.graph.engine import GraphEngine
+    from drbrain.storage.okf_export import export_okf
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        graph = GraphEngine()
+        # Optional allowlist
+        paper_ids: list[str] | None = None
+        if paper_id:
+            paper_ids = [paper_id]
+        elif workspace:
+            try:
+                from drbrain.storage.workspace import load_workspace_papers
+
+                paper_ids = load_workspace_papers(workspace) or None
+            except (FileNotFoundError, OSError):
+                paper_ids = None
+        graph.load_from_db(db, paper_ids=paper_ids)
+        stats = export_okf(graph, db, output, paper_ids=paper_ids)
+
+    if json_output:
+        typer.echo(json.dumps(stats, indent=2, ensure_ascii=False))
+        return
+
+    typer.echo(f"OKF bundle exported to {output}")
+    typer.echo(
+        f"  {stats['concepts']} concepts, {stats['papers']} papers, "
+        f"{stats['edges']} edges, {stats['arguments']} arguments"
+    )
+    typer.echo(f"  Tip: cd {output} && git init to version the bundle")
+
+
 def queue_cmd(
     ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),

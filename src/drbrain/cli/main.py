@@ -34,6 +34,7 @@ from drbrain.cli.export_commands import (
     delete_cmd,
     document_cmd,
     export_cmd,
+    export_okf_cmd,
     lineage_cmd,
     metrics_cmd,
     queue_cmd,
@@ -117,6 +118,7 @@ app.command("query")(query_cmd)
 app.command("fsearch")(fsearch_cmd)
 app.command("search")(search_cmd)
 app.command("export")(export_cmd)
+app.command("export-okf")(export_okf_cmd)
 app.command("queue")(queue_cmd)
 app.command("queue resolve")(queue_resolve_cmd)
 app.command("queue resolve-all")(queue_resolve_all_cmd)
