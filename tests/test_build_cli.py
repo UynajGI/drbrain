@@ -205,9 +205,12 @@ def test_embed_trains_and_saves(mock_db_cls, mock_graph_cls):
 @patch("drbrain.cli.build_commands.GraphEngine")
 @patch("drbrain.cli.build_commands.Database")
 def test_embed_retrain_uses_no_init_entities(mock_db_cls, mock_graph_cls):
-    """embed --retrain should skip loading initial entities."""
+    """embed --retrain should skip loading initial entities (full retrain)."""
     mock_db = MagicMock()
-    mock_db.load_embeddings.return_value = [{"label": "X"}]
+    # load_embeddings returns a dict keyed by entity label (real contract).
+    mock_db.load_embeddings.return_value = {"X": "vec", "__rel__r": "vec"}
+    mock_db.get_last_run.return_value = None  # no watermark -> full path
+    mock_db.get_papers_since.return_value = []
     mock_db_cls.return_value = mock_db
 
     mock_graph = MagicMock()
@@ -215,18 +218,20 @@ def test_embed_retrain_uses_no_init_entities(mock_db_cls, mock_graph_cls):
     mock_graph_cls.return_value = mock_graph
 
     fake_transe = MagicMock()
-    fake_transe.entities = {}
-    fake_transe.relations = {}
+    fake_transe.entities = {"A": "vA", "B": "vB"}
+    fake_transe.relations = {"r1": "vr"}
 
     app = _make_app(_cfg())
     with patch("drbrain.graph.embedding.TransE", return_value=fake_transe) as m_transe:
         result = runner.invoke(app, ["embed", "--retrain"])
 
     assert result.exit_code == 0
-    # init_entities should be None when retrain=True
+    # With --retrain, init_entities is None (full from-scratch training).
     _, kwargs = m_transe.return_value.train.call_args
     assert kwargs.get("init_entities") is None
-    mock_db.clear_embeddings.assert_called()
+    # New implementation uses save_embedding upserts instead of clear_embeddings.
+    assert mock_db.save_embedding.called
+    mock_db.set_last_run.assert_called_with("embed")
 
 
 # ---------------------------------------------------------------------------
