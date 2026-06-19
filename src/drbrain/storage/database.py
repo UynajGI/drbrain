@@ -531,6 +531,212 @@ class Database:
         )
         return cur.lastrowid
 
+    # ── Centralized write helpers (SQL-leak consolidation) ──────────────
+    # These methods exist so callers outside storage/ never need to write raw
+    # SQL. They also enforce invariants (e.g. bumping updated_at, atomic
+    # merges) that ad-hoc SQL bypassed.
+
+    _VALID_EXTERNAL_IDS = ("doi", "arxiv", "s2_id", "openalex_id")
+
+    def set_external_id(self, local_id: str, kind: str, value: str | None) -> None:
+        """Update a single external identifier (doi/arxiv/s2_id/openalex_id).
+
+        Raises ValueError for unknown kinds. Bumps the paper's updated_at so
+        the change is visible to incremental stages.
+        """
+        if kind not in self._VALID_EXTERNAL_IDS:
+            raise ValueError(f"unknown external id kind: {kind}")
+        self.conn.execute(f"UPDATE paper_ids SET {kind} = ? WHERE local_id = ?", (value, local_id))
+        self.touch_paper(local_id)
+
+    def insert_citation_cache(
+        self,
+        source_paper: str,
+        target_title: str,
+        target_year: int | None,
+        relation: str,
+        target_doi: str | None = None,
+        target_s2_id: str | None = None,
+    ) -> None:
+        """Insert a citation_cache row (idempotent on PK)."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO citation_cache "
+            "(source_paper, target_title, target_year, relation, target_doi, target_s2_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (source_paper, target_title, target_year, relation, target_doi, target_s2_id),
+        )
+
+    _VALID_PAPER_FIELDS = (
+        "title",
+        "abstract",
+        "year",
+        "paper_type",
+        "journal",
+        "publisher",
+        "citation_count",
+        "volume",
+        "pages",
+        "authors",
+        "status",
+    )
+
+    def set_paper_field(self, local_id: str, field: str, value) -> None:
+        """Update a single papers column by name.
+
+        Allows callers (e.g. repair.py) to set one field without rewriting the
+        whole row. Bumps updated_at. ``field`` is validated against an
+        allowlist to prevent SQL injection via column names.
+        """
+        if field not in self._VALID_PAPER_FIELDS:
+            raise ValueError(f"unknown paper field: {field}")
+        self.conn.execute(
+            f"UPDATE papers SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (value, local_id),
+        )
+
+    def set_paper_type(self, local_id: str, paper_type: str) -> None:
+        """Update paper_type and bump updated_at."""
+        self.set_paper_field(local_id, "paper_type", paper_type)
+
+    def delete_concept(self, concept_id: int) -> None:
+        """Delete a single concept row by concept_id."""
+        self.conn.execute("DELETE FROM concepts WHERE concept_id = ?", (concept_id,))
+
+    def redirect_edge_endpoint(self, old_label: str, new_label: str) -> int:
+        """Rewrite edges referencing ``old_label`` to ``new_label``.
+
+        Used by concept-merge to retarget src_id/dst_id. Returns the number of
+        rows touched. Each updated edge also gets updated_at bumped so the
+        change is visible to incremental closure/embed.
+        """
+        n = 0
+        cur = self.conn.execute(
+            "UPDATE edges SET src_id = ?, updated_at = CURRENT_TIMESTAMP WHERE src_id = ?",
+            (new_label, old_label),
+        )
+        n += cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE edges SET dst_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dst_id = ?",
+            (new_label, old_label),
+        )
+        n += cur.rowcount
+        return n
+
+    def accept_queue_by_label(self, label: str) -> int:
+        """Accept all pending queue items whose item_data contains ``label``.
+
+        Returns the number of items accepted.
+        """
+        cur = self.conn.execute(
+            "UPDATE confidence_queue SET status = 'accepted' "
+            "WHERE status = 'pending' AND item_data LIKE ?",
+            (f"%{label}%",),
+        )
+        return cur.rowcount
+
+    def upsert_build_stage(
+        self, paper_id: str, stage: str, status: str, result_json: str = ""
+    ) -> None:
+        """Insert or replace a build_stages row."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO build_stages (paper_id, stage, status, result_json, updated_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (paper_id, stage, status, result_json),
+        )
+
+    def merge_papers(self, keep_id: str, merge_id: str) -> dict:
+        """Merge two paper records atomically, keeping ``keep_id``.
+
+        Migrates concepts, arguments, and edges from merge_id onto keep_id,
+        then deletes merge_id. Runs as a single transaction so a failure at any
+        point rolls back — no torn state. Returns a dict of migrated counts.
+
+        Note: unlike delete_paper(), this does NOT touch neighbors or clear
+        closure/embed watermarks — the merge target (keep_id) already
+        represents the surviving identity, and edges now point at it.
+        """
+        counts = {
+            "concepts": 0,
+            "arguments": 0,
+            "edges_redirected": 0,
+        }
+        try:
+            self.conn.execute("BEGIN")
+            cur = self.conn.execute(
+                "UPDATE concepts SET local_id = ? WHERE local_id = ?", (keep_id, merge_id)
+            )
+            counts["concepts"] = cur.rowcount
+            cur = self.conn.execute(
+                "UPDATE arguments SET source_paper = ? WHERE source_paper = ?",
+                (keep_id, merge_id),
+            )
+            counts["arguments"] = cur.rowcount
+            cur = self.conn.execute(
+                "UPDATE edges SET source_paper = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE source_paper = ?",
+                (keep_id, merge_id),
+            )
+            counts["edges_redirected"] = cur.rowcount
+            self.conn.execute(
+                "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+                (keep_id,),
+            )
+            self.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return counts
+
+    # ── agent_sessions / agent_messages ─────────────────────────────────
+
+    def insert_agent_session(
+        self,
+        session_id: str,
+        title: str = "",
+        system_prompt: str = "",
+        model_config: str = "{}",
+    ) -> None:
+        """Create a new agent session row."""
+        self.conn.execute(
+            "INSERT INTO agent_sessions (session_id, title, system_prompt, model_config) "
+            "VALUES (?, ?, ?, ?)",
+            (session_id, title, system_prompt, model_config),
+        )
+
+    def soft_delete_session(self, session_id: str) -> None:
+        """Mark an agent session as deleted (soft delete)."""
+        self.conn.execute(
+            "UPDATE agent_sessions SET status = 'deleted', updated_at = CURRENT_TIMESTAMP "
+            "WHERE session_id = ?",
+            (session_id,),
+        )
+
+    def touch_session(self, session_id: str) -> None:
+        """Bump an agent session's updated_at."""
+        self.conn.execute(
+            "UPDATE agent_sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+            (session_id,),
+        )
+
+    def insert_agent_message(
+        self,
+        session_id: str,
+        seq: int,
+        role: str,
+        content: str = "",
+        tool_calls_json: str = "",
+        tool_call_id: str = "",
+        tool_name: str = "",
+    ) -> None:
+        """Append a message to an agent session."""
+        self.conn.execute(
+            "INSERT INTO agent_messages "
+            "(session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
+        )
+
     # -- Embeddings --
 
     def save_embedding(self, entity: str, vec, dim: int) -> None:

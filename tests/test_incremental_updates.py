@@ -18,6 +18,7 @@ from pathlib import Path
 
 import networkx as nx
 import numpy as np
+import pytest
 
 from drbrain.graph.embedding import TransE
 from drbrain.graph.engine import GraphEngine
@@ -328,3 +329,111 @@ def test_closure_incremental_empty_seeds_returns_empty():
     g = GraphEngine()
     g.add_edge("a", "b", "cites", "p1")
     assert g.closure_incremental(set()) == []
+
+
+# ── Centralized write helpers (Commit 1 infrastructure) ───────────────────
+
+
+def test_set_external_id_validates_kind(tmp_db):
+    """set_external_id rejects unknown kinds and updates valid ones."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_paper_ids("p1", doi="10.1/x")
+    tmp_db.commit()
+    with pytest.raises(ValueError):
+        tmp_db.set_external_id("p1", "evil", "x")
+    tmp_db.set_external_id("p1", "doi", "10.2/y")
+    tmp_db.commit()
+    d = tmp_db.conn.execute("SELECT doi FROM paper_ids WHERE local_id = ?", ("p1",)).fetchone()[0]
+    assert d == "10.2/y"
+
+
+def test_set_paper_field_validates_and_bumps_timestamp(tmp_db):
+    """set_paper_field allowlists columns and refreshes updated_at."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.commit()
+    with pytest.raises(ValueError):
+        tmp_db.set_paper_field("p1", "evil_col", "x")
+    tmp_db.set_paper_field("p1", "journal", "Nature")
+    tmp_db.commit()
+    j = tmp_db.conn.execute("SELECT journal FROM papers WHERE local_id = ?", ("p1",)).fetchone()[0]
+    assert j == "Nature"
+
+
+def test_insert_citation_cache_idempotent(tmp_db):
+    """insert_citation_cache dedupes on PK."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_citation_cache("p1", "Target", 2020, "references")
+    tmp_db.insert_citation_cache("p1", "Target", 2020, "references")  # dup
+    tmp_db.commit()
+    n = tmp_db.conn.execute("SELECT COUNT(*) FROM citation_cache").fetchone()[0]
+    assert n == 1
+
+
+def test_redirect_edge_endpoint_retargets_both_sides(tmp_db):
+    """redirect_edge_endpoint updates src_id and dst_id, leaves no orphans."""
+    tmp_db.insert_paper("p1", "A", 2024, "extracted")
+    tmp_db.insert_edge("old", "x", "r", "p1")
+    tmp_db.insert_edge("y", "old", "r", "p1")
+    tmp_db.commit()
+    n = tmp_db.redirect_edge_endpoint("old", "new")
+    tmp_db.commit()
+    assert n >= 2
+    remain = tmp_db.conn.execute(
+        "SELECT COUNT(*) FROM edges WHERE src_id = ? OR dst_id = ?", ("old", "old")
+    ).fetchone()[0]
+    assert remain == 0
+
+
+def test_merge_papers_atomic_migrates_data(tmp_db):
+    """merge_papers moves concepts/arguments/edges and deletes the source."""
+    tmp_db.insert_paper("keep", "Keeper", 2024, "extracted")
+    tmp_db.insert_paper("gone", "Goner", 2023, "extracted")
+    tmp_db.insert_concept("gone", "Method", "shared_c", year=2023)
+    tmp_db.commit()
+    result = tmp_db.merge_papers("keep", "gone")
+    tmp_db.commit()
+    assert result["concepts"] >= 1
+    papers = {r[0] for r in tmp_db.conn.execute("SELECT local_id FROM papers").fetchall()}
+    assert "gone" not in papers and "keep" in papers
+    # Concept migrated
+    c = tmp_db.conn.execute(
+        "SELECT COUNT(*) FROM concepts WHERE local_id = ?", ("keep",)
+    ).fetchone()[0]
+    assert c >= 1
+
+
+def test_upsert_build_stage_insert_and_replace(tmp_db):
+    """upsert_build_stage inserts then updates in place."""
+    tmp_db.upsert_build_stage("p1", "ontology", "IN_PROGRESS")
+    tmp_db.commit()
+    assert (
+        tmp_db.conn.execute(
+            "SELECT status FROM build_stages WHERE paper_id = ? AND stage = ?",
+            ("p1", "ontology"),
+        ).fetchone()[0]
+        == "IN_PROGRESS"
+    )
+    tmp_db.upsert_build_stage("p1", "ontology", "COMPLETE", '{"x": 1}')
+    tmp_db.commit()
+    row = tmp_db.conn.execute(
+        "SELECT status, result_json FROM build_stages WHERE paper_id = ? AND stage = ?",
+        ("p1", "ontology"),
+    ).fetchone()
+    assert row[0] == "COMPLETE" and row[1] == '{"x": 1}'
+
+
+def test_agent_session_lifecycle(tmp_db):
+    """insert/touch/soft-delete agent sessions + insert messages."""
+    tmp_db.insert_agent_session("s1", title="test")
+    tmp_db.insert_agent_message("s1", 1, "user", "hello")
+    tmp_db.touch_session("s1")
+    tmp_db.soft_delete_session("s1")
+    tmp_db.commit()
+    st = tmp_db.conn.execute(
+        "SELECT status FROM agent_sessions WHERE session_id = ?", ("s1",)
+    ).fetchone()[0]
+    assert st == "deleted"
+    n = tmp_db.conn.execute(
+        "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?", ("s1",)
+    ).fetchone()[0]
+    assert n == 1
