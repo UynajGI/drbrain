@@ -212,18 +212,39 @@ def index_cmd(
     rebuild: bool = typer.Option(False, "--rebuild", help="Force full rebuild"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
-    """Rebuild the BM25 search index."""
+    """Rebuild the BM25 search index.
+
+    By default incremental: skips rebuild if no paper changed since the last
+    successful index run. Use --rebuild to force a full rebuild.
+    """
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
         from drbrain.query.bm25 import build_bm25_index
 
+        # Incremental check: skip if nothing changed since last index run
+        if not rebuild:
+            last_run = db.get_last_run("index")
+            max_ts = db.get_max_paper_timestamp()
+            if last_run is not None and (max_ts is None or max_ts <= last_run):
+                count = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+                if json_output:
+                    typer.echo(
+                        json.dumps({"documents": count, "indexed": False, "up_to_date": True})
+                    )
+                else:
+                    typer.echo(f"Index up to date ({count} documents, no changes since last run)")
+                return
+
         typer.echo("Building BM25 index...")
-        index, doc_ids = build_bm25_index(db, force=rebuild)
+        index = build_bm25_index(db)
+        doc_count = len(index._documents)
+        db.set_last_run("index")
+        db.commit()
 
     if json_output:
-        typer.echo(json.dumps({"documents": len(doc_ids), "indexed": True}))
+        typer.echo(json.dumps({"documents": doc_count, "indexed": True}))
     else:
-        typer.echo(f"Indexed {len(doc_ids)} documents")
+        typer.echo(f"Indexed {doc_count} documents")
 
 
 def query_cmd(
