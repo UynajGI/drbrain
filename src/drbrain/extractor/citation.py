@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import time
 import uuid
 
@@ -252,10 +253,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
                 parsed = parse_s2_response(results[0])
                 s2_id = parsed.get("s2_id")
                 if s2_id:
-                    db.conn.execute(
-                        "UPDATE paper_ids SET s2_id = ? WHERE local_id = ?",
-                        (s2_id, local_id),
-                    )
+                    db.set_external_id(local_id, "s2_id", s2_id)
                     db.commit()
 
     if s2_id:
@@ -268,10 +266,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
             crossref_email = config.get("api", {}).get("crossref_email")
             crossref_result = _crossref_doi_enrich(paper, crossref_email)
             if crossref_result and crossref_result.get("doi"):
-                db.conn.execute(
-                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                    (crossref_result["doi"], local_id),
-                )
+                db.set_external_id(local_id, "doi", crossref_result["doi"])
                 db.commit()
         return refs, cits
 
@@ -280,10 +275,7 @@ def expand_citations(db, local_id: str, config: dict) -> tuple[list[RefEntry], l
         crossref_email = config.get("api", {}).get("crossref_email")
         crossref_result = _crossref_doi_enrich(paper, crossref_email)
         if crossref_result and crossref_result.get("doi"):
-            db.conn.execute(
-                "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                (crossref_result["doi"], local_id),
-            )
+            db.set_external_id(local_id, "doi", crossref_result["doi"])
             db.commit()
 
     # Fallback: OpenAlex
@@ -305,12 +297,10 @@ def _process_citations_from_s2(
         existing_doi = paper.get("doi")
         existing_arxiv = paper.get("arxiv")
         if not existing_doi and s2_doi:
-            db.conn.execute("UPDATE paper_ids SET doi = ? WHERE local_id = ?", (s2_doi, local_id))
+            db.set_external_id(local_id, "doi", s2_doi)
             db.commit()
         if not existing_arxiv and s2_arxiv:
-            db.conn.execute(
-                "UPDATE paper_ids SET arxiv = ? WHERE local_id = ?", (s2_arxiv, local_id)
-            )
+            db.set_external_id(local_id, "arxiv", s2_arxiv)
             db.commit()
 
     rate_limit = config.get("api", {}).get("s2_rate_limit", 100)
@@ -352,10 +342,7 @@ def _process_citations_from_s2(
                 openalex_id=ids.get("openalex_id"),
             )
         for src_id, dst_id, relation, source_paper, weight in new_ref_edges:
-            db.conn.execute(
-                "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-                (src_id, dst_id, relation, source_paper, weight),
-            )
+            db.insert_edge(src_id, dst_id, relation, source_paper, weight=weight)
         db.commit()
 
     # Process citations (papers citing this one)
@@ -394,10 +381,7 @@ def _process_citations_from_s2(
                 openalex_id=ids.get("openalex_id"),
             )
         for src_id, dst_id, relation, source_paper, weight in new_cit_edges:
-            db.conn.execute(
-                "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-                (src_id, dst_id, relation, source_paper, weight),
-            )
+            db.insert_edge(src_id, dst_id, relation, source_paper, weight=weight)
         db.commit()
 
     return references, citations
@@ -477,18 +461,12 @@ def _expand_with_openalex(
 
     # Backfill DOI from OpenAlex
     if not paper.get("doi") and oa_work.get("doi"):
-        db.conn.execute(
-            "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-            (oa_work["doi"], local_id),
-        )
+        db.set_external_id(local_id, "doi", oa_work["doi"])
         db.commit()
 
     # Update openalex_id if we have it
     if oa_work.get("openalex_id"):
-        db.conn.execute(
-            "UPDATE paper_ids SET openalex_id = ? WHERE local_id = ?",
-            (oa_work["openalex_id"], local_id),
-        )
+        db.set_external_id(local_id, "openalex_id", oa_work["openalex_id"])
         db.commit()
 
     # Fetch references using batch endpoint
@@ -508,10 +486,7 @@ def _expand_with_openalex(
                     arxiv=entry.ids.get("arxiv"),
                     openalex_id=entry.ids.get("openalex_id"),
                 )
-                db.conn.execute(
-                    "INSERT OR IGNORE INTO edges (src_id, dst_id, relation, source_paper, weight) VALUES (?, ?, ?, ?, ?)",
-                    (local_id, pid, "cites", local_id, 1.0),
-                )
+                db.insert_edge(local_id, pid, "cites", local_id, weight=1.0)
                 db.commit()
 
     return references, []
@@ -526,11 +501,13 @@ def _cache_citation(
     target_doi: str | None = None,
     target_s2_id: str | None = None,
 ) -> None:
-    db.conn.execute(
-        "INSERT OR IGNORE INTO citation_cache "
-        "(source_paper, target_title, target_year, relation, target_doi, target_s2_id) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (source_paper, target_title, target_year, relation, target_doi, target_s2_id),
+    db.insert_citation_cache(
+        source_paper,
+        target_title,
+        target_year,
+        relation,
+        target_doi=target_doi,
+        target_s2_id=target_s2_id,
     )
 
 
@@ -660,11 +637,12 @@ def expand_citations_multi(
     refs_added = citing_added = 0
     for r in all_refs:
         try:
-            db.conn.execute(
-                "INSERT OR IGNORE INTO citation_cache "
-                "(source_paper, target_title, target_year, relation, target_doi) "
-                "VALUES (?, ?, ?, 'references', ?)",
-                (local_id, r["title"][:200], r.get("year"), r.get("doi")),
+            db.insert_citation_cache(
+                local_id,
+                r["title"][:200],
+                r.get("year"),
+                "references",
+                target_doi=r.get("doi"),
             )
             # Create placeholder if DOI is new
             dval = r.get("doi")
@@ -673,25 +651,28 @@ def expand_citations_multi(
                 db.insert_paper(pid, r["title"][:200], r.get("year"), "placeholder")
                 db.insert_paper_ids(pid, doi=dval)
                 db.commit()
+            # Only count on success — previously this was before the except,
+            # inflating the count when the write failed.
             refs_added += 1
-        except Exception as e:
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             _cit_log.warning("Citation cache store error (references): {}", e)
-    for c in all_citing:
+    for cit_row in all_citing:
         try:
-            db.conn.execute(
-                "INSERT OR IGNORE INTO citation_cache "
-                "(source_paper, target_title, target_year, relation, target_doi) "
-                "VALUES (?, ?, ?, 'citing', ?)",
-                (local_id, c["title"][:200], c.get("year"), c.get("doi")),
+            db.insert_citation_cache(
+                local_id,
+                cit_row["title"][:200],
+                cit_row.get("year"),
+                "citing",
+                target_doi=cit_row.get("doi"),
             )
-            dval = c.get("doi")
+            dval = cit_row.get("doi")
             if dval and not db.get_paper_by_external_id("doi", dval):
                 pid = f"p{uuid.uuid4().hex[:6]}"
-                db.insert_paper(pid, c["title"][:200], c.get("year"), "placeholder")
+                db.insert_paper(pid, cit_row["title"][:200], cit_row.get("year"), "placeholder")
                 db.insert_paper_ids(pid, doi=dval)
                 db.commit()
             citing_added += 1
-        except Exception as e:
+        except (sqlite3.IntegrityError, sqlite3.OperationalError) as e:
             _cit_log.warning("Citation cache store error (citing): {}", e)
 
     db.commit()
