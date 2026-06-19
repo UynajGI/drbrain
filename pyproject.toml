@@ -1,6 +1,6 @@
 [project]
 name = "drbrain"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Academic knowledge graph system — symbol-driven research discovery with lightweight vector retrieval"
 readme = "README.md"
 license = { text = "MIT" }

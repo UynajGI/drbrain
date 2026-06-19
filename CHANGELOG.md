@@ -7,6 +7,10 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ## [Unreleased] — dev/feature
 
+_Nothing yet._
+
+## [0.1.0a3] — 2026-06-19
+
 ### Added
 - **Structured reasoning workflow engine**: `extractor/session_agent.py` — 7 built-in workflows (review, gap-analysis, impact, compare, frontier, lineage, paradigm). Workflow orchestrator with step-level result caching. CLI via `drbrain reason --workflow`.
 - **Workflow visualizer**: Pipeline diagrams and result summaries for reasoning workflows.
