@@ -86,15 +86,11 @@ class SessionAgent:
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.session_id = _new_session_id()
 
-        db.conn.execute(
-            """INSERT INTO agent_sessions (session_id, title, system_prompt, model_config)
-               VALUES (?, ?, ?, ?)""",
-            (
-                self.session_id,
-                title,
-                self.system_prompt,
-                json.dumps(self.models),
-            ),
+        db.insert_agent_session(
+            self.session_id,
+            title=title,
+            system_prompt=self.system_prompt,
+            model_config=json.dumps(self.models),
         )
         db.commit()
 
@@ -181,10 +177,7 @@ class SessionAgent:
 
     def delete_session(self, db: Database, session_id: str) -> bool:
         """Mark a session as deleted (soft delete)."""
-        db.conn.execute(
-            "UPDATE agent_sessions SET status='deleted', updated_at=? WHERE session_id=?",
-            (_now_iso(), session_id),
-        )
+        db.soft_delete_session(session_id)
         db.commit()
         if self.session_id == session_id:
             self.session_id = ""
@@ -515,21 +508,21 @@ class SessionAgent:
             ).fetchone()
             seq = row[0] if row else 0
 
-        self.db.conn.execute(
-            """INSERT INTO agent_messages
-               (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (self.session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
+        self.db.insert_agent_message(
+            self.session_id,
+            seq,
+            role,
+            content=content,
+            tool_calls_json=tool_calls_json,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
         )
         self.db.commit()
 
     def _touch_session(self) -> None:
         """Update session updated_at timestamp."""
         if self.db and self.session_id:
-            self.db.conn.execute(
-                "UPDATE agent_sessions SET updated_at=? WHERE session_id=?",
-                (_now_iso(), self.session_id),
-            )
+            self.db.touch_session(self.session_id)
             self.db.commit()
 
     def _papers_dir(self) -> Path | None:

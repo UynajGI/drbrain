@@ -168,10 +168,7 @@ class BuildAgent(ABC):
     def _save_status(self, db, paper_id: str, status: StageStatus) -> None:
         """Upsert stage status."""
         try:
-            db.conn.execute(
-                "INSERT OR REPLACE INTO build_stages (paper_id, stage, status) VALUES (?, ?, ?)",
-                (paper_id, self.name, status.value),
-            )
+            db.upsert_build_stage(paper_id, self.name, status.value)
             db.commit()
         except sqlite3.Error as e:
             logger.warning(f"[agent] _save_status failed for {paper_id}: {e}")
@@ -179,9 +176,8 @@ class BuildAgent(ABC):
     def _save_result(self, db, paper_id: str, result: dict) -> None:
         """Persist validated output for idempotency replay."""
         try:
-            db.conn.execute(
-                "INSERT OR REPLACE INTO build_stages (paper_id, stage, status, result_json) VALUES (?, ?, ?, ?)",
-                (paper_id, self.name, StageStatus.COMPLETE.value, _json.dumps(result)),
+            db.upsert_build_stage(
+                paper_id, self.name, StageStatus.COMPLETE.value, _json.dumps(result)
             )
             db.commit()
         except sqlite3.Error as e:

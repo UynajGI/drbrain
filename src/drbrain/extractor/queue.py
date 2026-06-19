@@ -59,11 +59,7 @@ def resolve_accept(db: Database, queue_id: int) -> None:
     db.accept_queue_item(queue_id)
 
     if label and check_consensus(db, label):
-        db.conn.execute(
-            "UPDATE confidence_queue SET status = 'accepted' "
-            "WHERE status = 'pending' AND item_data LIKE ?",
-            (f'%"{label}"%',),
-        )
+        db.accept_queue_by_label(label)
 
     db.commit()
 

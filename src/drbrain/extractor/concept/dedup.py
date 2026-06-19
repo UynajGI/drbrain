@@ -39,17 +39,10 @@ def dedup_concepts_by_label(db) -> int:
         for dup in entries[1:]:
             dup_id = dup[0]
             dup_label = dup[1]
-            # Update edges pointing to duplicate
-            db.conn.execute(
-                "UPDATE edges SET src_id = ? WHERE src_id = ?",
-                (canonical_label, dup_label),
-            )
-            db.conn.execute(
-                "UPDATE edges SET dst_id = ? WHERE dst_id = ?",
-                (canonical_label, dup_label),
-            )
-            # Delete duplicate concept
-            db.conn.execute("DELETE FROM concepts WHERE concept_id = ?", (dup_id,))
+            # Redirect edges from the duplicate label to the canonical one,
+            # then delete the duplicate concept. Both go through database.py.
+            db.redirect_edge_endpoint(dup_label, canonical_label)
+            db.delete_concept(dup_id)
             merged += 1
 
     db.commit()
