@@ -6,7 +6,12 @@ similarity. Mixed into ``GraphEngine`` so callers see a single object.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 
 class EmbeddingsMixin:
@@ -15,6 +20,10 @@ class EmbeddingsMixin:
     Depends on the host class providing ``self.graph`` (NetworkX) and
     ``self._transE`` (cached TransE instance or None).
     """
+
+    # Declared for mypy; provided by the host GraphEngine. _transE is declared
+    # on ClosureMixin to avoid a duplicate-definition conflict under MRO.
+    graph: nx.MultiDiGraph
 
     def learn_embeddings(
         self, dim: int = 128, epochs: int = 100, lr: float = 0.01, db=None
@@ -154,4 +163,4 @@ class EmbeddingsMixin:
         Call after modifying the graph or embeddings table so that
         subsequent operations reload fresh data.
         """
-        self._transE = None
+        self._transE = None  # type: ignore[assignment]  # Optional cache reset

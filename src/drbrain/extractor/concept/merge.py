@@ -88,14 +88,14 @@ def _merge_concepts(
     raw_args: list[dict] = []
     for result in results:
         for arg in result.arguments:
-            key = (arg.claim.strip().lower(), arg.target.strip().lower())
-            if key in seen_args:
+            arg_key = (arg.claim.strip().lower(), arg.target.strip().lower())
+            if arg_key in seen_args:
                 # Keep higher confidence
-                idx = seen_args[key]
+                idx = seen_args[arg_key]
                 if arg.confidence > raw_args[idx].get("confidence", 0):
                     raw_args[idx] = arg.to_dict()
             else:
-                seen_args[key] = len(raw_args)
+                seen_args[arg_key] = len(raw_args)
                 raw_args.append(arg.to_dict())
     merged["arguments"] = raw_args
 
@@ -120,7 +120,7 @@ async def extract_section_concepts(
         models=models,
         system_prompt=system_prompt,
     )
-    if data is None:
+    if data is None or not isinstance(data, dict):
         return None
     return ExtractedConcepts(data)
 

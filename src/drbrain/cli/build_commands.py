@@ -188,11 +188,11 @@ def build_cmd(
         # the last build run (e.g. rebuilt via 'drbrain build PID' after a
         # re-ingest). Falls back to pure status filter when no last_run is set
         # or when the db helper is unavailable (keeps test mocks working).
-        all_papers = db.get_all_papers()
-        base = [p for p in all_papers if p.get("status") == "uploaded"]
+        all_paper_rows = db.get_all_papers()
+        base = [p for p in all_paper_rows if p.get("status") == "uploaded"]
         last_build = db.get_last_run("build") if hasattr(db, "get_last_run") else None
         if last_build:
-            for p in all_papers:
+            for p in all_paper_rows:
                 if p.get("status") == "extracted":
                     ts = db.get_paper_timestamp(p["local_id"])
                     if ts and ts > last_build:

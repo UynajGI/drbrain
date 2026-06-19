@@ -139,11 +139,7 @@ def _render_concept_md(
     ts = concept.get("updated_at") or (
         str(concept["last_seen"]) if concept.get("last_seen") else None
     )
-    tags = sorted(
-        {ctype}
-        | {rel for _, rel in edges_out}
-        | {rel for _, rel in edges_in}
-    )
+    tags = sorted({ctype} | {rel for _, rel in edges_out} | {rel for _, rel in edges_in})
     fm_lines = [
         "---",
         f"type: {ctype}",

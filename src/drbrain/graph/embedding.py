@@ -173,7 +173,7 @@ class TransE:
 
                 pos = np.linalg.norm(h_vec + r_vec - t_vec)
                 neg = np.linalg.norm(h_vec + r_vec - n_vec)
-                loss = max(0.0, self.margin + pos - neg)
+                loss = float(max(0.0, self.margin + pos - neg))
                 if loss <= 0:
                     continue
                 total_loss += loss

@@ -151,7 +151,8 @@ class TestExportOkf:
         export_okf(populated_graph, populated_db, tmp_path / "bundle")
         bundle = tmp_path / "bundle"
         md_files = [
-            p for p in bundle.rglob("*.md")
+            p
+            for p in bundle.rglob("*.md")
             if p.name != "index.md"  # index has no frontmatter per OKF §6
         ]
         assert len(md_files) >= 4  # 3 concepts + 2 papers - at least

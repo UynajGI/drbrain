@@ -247,7 +247,7 @@ def _build_tree_from_nodes(node_list: list[dict]) -> list[dict]:
     """Convert flat node list to hierarchical tree."""
     if not node_list:
         return []
-    stack = []
+    stack: list = []
     root_nodes = []
     node_counter = 1
 
@@ -367,7 +367,7 @@ async def md_to_tree(
             order=["title", "node_id", "line_num", "summary", "prefix_summary", "text", "nodes"],
         )
         tree_structure = await _generate_summaries_for_structure_md(
-            tree_structure, config.summary_token_threshold, model, models
+            tree_structure, config.summary_token_threshold, str(model) if model else "", models
         )
 
         if not config.if_add_node_text:
@@ -380,7 +380,9 @@ async def md_to_tree(
     doc_description = None
     if config.if_add_doc_description and models:
         clean_structure = _create_clean_structure_for_description(tree_structure)
-        doc_description = await _generate_doc_description(clean_structure, models)
+        doc_description = await _generate_doc_description(
+            clean_structure if isinstance(clean_structure, dict) else {}, models
+        )
 
     return DocumentTree(
         doc_name=md_path.stem,

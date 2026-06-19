@@ -67,6 +67,8 @@ class MetricsStore:
         return self._conn
 
     def _run_migrations(self) -> None:
+        if self._conn is None:
+            return
         for migration in MIGRATIONS:
             try:
                 self._conn.execute(migration)

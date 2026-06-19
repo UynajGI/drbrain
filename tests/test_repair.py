@@ -323,9 +323,7 @@ def test_repair_paper_dry_run_false_applies_doi_update():
         repair_paper(db, "p1", dry_run=False)
 
     assert db._committed
-    doi_updates = [
-        (lid, kind, val) for lid, kind, val in db._external_id_updates if kind == "doi"
-    ]
+    doi_updates = [(lid, kind, val) for lid, kind, val in db._external_id_updates if kind == "doi"]
     assert len(doi_updates) == 1
     assert doi_updates[0] == ("p1", "doi", "10.5678/founddoi2")
 
@@ -731,9 +729,7 @@ def test_repair_paper_applies_authors_to_db():
         repair_paper(db, "p1", dry_run=False)
 
     assert db._committed
-    authors_updates = [
-        (lid, f, v) for lid, f, v in db._field_updates if f == "authors"
-    ]
+    authors_updates = [(lid, f, v) for lid, f, v in db._field_updates if f == "authors"]
     assert len(authors_updates) == 1
     assert authors_updates[0] == ("p1", "authors", "Alice Smith")
 
@@ -782,12 +778,8 @@ def test_repair_paper_applies_volume_pages_to_db():
         repair_paper(db, "p1", dry_run=False)
 
     assert db._committed
-    volume_updates = [
-        (lid, f, v) for lid, f, v in db._field_updates if f == "volume"
-    ]
-    pages_updates = [
-        (lid, f, v) for lid, f, v in db._field_updates if f == "pages"
-    ]
+    volume_updates = [(lid, f, v) for lid, f, v in db._field_updates if f == "volume"]
+    pages_updates = [(lid, f, v) for lid, f, v in db._field_updates if f == "pages"]
     assert len(volume_updates) == 1
     assert volume_updates[0] == ("p1", "volume", "42")
     assert len(pages_updates) == 1

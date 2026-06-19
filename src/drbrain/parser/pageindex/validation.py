@@ -374,7 +374,9 @@ async def _verify_tree_sample(
         return 0.0
 
 
-async def _verify_and_correct_tree(tree, md_path: str, models: list[dict], max_retries: int = 2):
+async def _verify_and_correct_tree(
+    tree, md_path: str | Path, models: list[dict], max_retries: int = 2
+):
     """Verify tree structure, re-extract with adjusted settings if accuracy is low."""
     if not models or not tree.structure:
         return tree

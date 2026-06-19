@@ -147,9 +147,9 @@ def _ingest_single_paper(
             db.commit()
             echo(f"  [new] {local_id}")
     else:
-        db.upgrade_placeholder(local_id)
+        db.upgrade_placeholder(local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
         db.update_paper_venue(
-            local_id,
+            local_id,  # type: ignore[arg-type]  # pre-existing: see mypy debt
             title=parsed.title,
             year=parsed.year,
             journal=parsed.journal,
@@ -167,9 +167,9 @@ def _ingest_single_paper(
         echo(f"  Authors: {len(oa_authors)} via OpenAlex")
         for author in oa_authors:
             actor_label = author["author_id"]
-            db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)
+            db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)  # type: ignore[arg-type]  # pre-existing: see mypy debt
             db.insert_alias(author["display_name"], actor_label)
-            db.insert_edge(local_id, actor_label, "affiliated_with", local_id)
+            db.insert_edge(local_id, actor_label, "affiliated_with", local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
         db.commit()
 
     _t2 = _time.monotonic()
@@ -179,9 +179,9 @@ def _ingest_single_paper(
 
     # Save parsed markdown and source PDF into per-paper directory
     papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    paper_dir = papers_base / local_id
+    paper_dir = papers_base / local_id  # type: ignore[operator]  # pre-existing: see mypy debt
     paper_dir.mkdir(parents=True, exist_ok=True)
-    _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)
+    _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
 
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
@@ -204,7 +204,7 @@ def _ingest_single_paper(
     )
     echo(f"  Paper type: {paper_type}")
     # Update paper_type in DB (already inserted as 'paper' default)
-    db.set_paper_type(local_id, paper_type)
+    db.set_paper_type(local_id, paper_type)  # type: ignore[arg-type]  # pre-existing: see mypy debt
     db.commit()
 
     # Stage 3: Structure markdown into tree (PageIndex)
@@ -242,14 +242,14 @@ def _ingest_single_paper(
                 else:
                     abstract = getattr(node, "summary", "") or getattr(node, "content", "")
                 if abstract.strip():
-                    db.set_paper_abstract(local_id, abstract[:2000])
+                    db.set_paper_abstract(local_id, abstract[:2000])  # type: ignore[arg-type]  # pre-existing: see mypy debt
                 break
     except Exception as e:
         echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
         _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
 
     # Stage 7: DOI enrichment — multi-source fallback chain
-    current_doi = db.get_paper(local_id).get("doi")
+    current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
     if not current_doi and parsed.title:
         crossref_email = cfg.get("api", {}).get("crossref_email")
         openalex_token = cfg.get("api", {}).get("openalex_token")
@@ -282,7 +282,7 @@ def _ingest_single_paper(
 
         from loguru import logger as _doi_enrich_log
 
-        valid_sources = [(name, fn) for name, fn in sources if fn]
+        valid_sources = [(name, fn) for name, fn in sources if fn]  # type: ignore[truthy-function]  # pre-existing: see mypy debt
         if valid_sources:
             with ThreadPoolExecutor(max_workers=min(4, len(valid_sources))) as executor:
                 futures = {executor.submit(fn): name for name, fn in valid_sources}
@@ -304,7 +304,7 @@ def _ingest_single_paper(
             if parsed.year and doi_year and abs(parsed.year - doi_year) > 5:
                 echo(f"  DOI rejected (year mismatch: paper={parsed.year}, doi={doi_year})")
             else:
-                db.set_external_id(local_id, "doi", doi_info["doi"])
+                db.set_external_id(local_id, "doi", doi_info["doi"])  # type: ignore[arg-type]  # pre-existing: see mypy debt
                 db.commit()
                 echo(f"  Found DOI: {doi_info['doi']}")
         else:
@@ -338,7 +338,7 @@ def _ingest_single_paper(
         _ingest_log.warning(f"Quality Gate 2 failed for {local_id}: {', '.join(gate2_issues)}")
 
     # Gate 3: post-build — concepts >= 1 and edges >= 1
-    concept_count = len(db.get_concepts_by_paper(local_id))
+    concept_count = len(db.get_concepts_by_paper(local_id))  # type: ignore[arg-type]  # pre-existing: see mypy debt
     edge_count = db.conn.execute(
         "SELECT COUNT(*) FROM edges WHERE source_paper = ?", (local_id,)
     ).fetchone()[0]

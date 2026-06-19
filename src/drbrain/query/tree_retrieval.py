@@ -840,7 +840,8 @@ async def query_by_structure_hybrid(
                         llm_selected.add(nid)
     except (json.JSONDecodeError, TypeError):
         # Fallback: extract node_ids from text
-        for line in llm_response.strip().split("\n"):
+        response_text = llm_response if isinstance(llm_response, str) else ""
+        for line in response_text.strip().split("\n"):
             for leaf_id in all_leaf_ids:
                 if leaf_id in line:
                     llm_selected.add(leaf_id)

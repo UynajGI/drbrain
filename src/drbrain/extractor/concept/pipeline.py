@@ -167,7 +167,7 @@ async def _build_ontology(
         system_prompt=prompt,
         _cache=cache,
     )
-    if not data:
+    if not isinstance(data, dict):
         return {}
 
     ontology = {k: v for k, v in data.items() if k in valid_types and isinstance(v, list)}
@@ -206,7 +206,7 @@ async def _build_ontology(
             f"not already present. Do not remove existing entries.",
             _cache=cache,
         )
-        if not data:
+        if not isinstance(data, dict):
             break
 
         new_count = 0
@@ -297,7 +297,7 @@ async def _extract_entities(
             data = await acall_with_fallback(
                 prompt=user, models=models, system_prompt=prompt_tpl, _cache=cache
             )
-        if not data:
+        if not isinstance(data, dict):
             return []
         concepts = data.get("concepts", [])
         # Tag each concept with its source section + node_id for tree provenance
@@ -338,7 +338,7 @@ async def _extract_relations(
     prompt = RELATIONS_PROMPT.read_text(encoding="utf-8")
     user = prompt.format(concepts="\n".join(concept_list))
     data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt, _cache=cache)
-    if not data:
+    if not isinstance(data, dict):
         return []
     relations = data.get("relations", [])
     # Attach provenance from source concept
@@ -362,7 +362,7 @@ async def _resolve_coreferences(
     prompt = COREFERENCE_PROMPT.read_text(encoding="utf-8")
     user = prompt.format(concepts="\n".join(concept_list))
     data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt, _cache=cache)
-    if not data:
+    if not isinstance(data, dict):
         return concepts, []
 
     merges = data.get("merges", [])
@@ -396,6 +396,6 @@ async def _refine_extraction(
     prompt = REFINE_PROMPT.read_text(encoding="utf-8")
     user = prompt.format(concept_count=len(concepts), relation_count=len(relations))
     data = await acall_with_fallback(prompt=user, models=models, system_prompt=prompt, _cache=cache)
-    if not data:
+    if not isinstance(data, dict):
         return []
     return data.get("corrections", [])

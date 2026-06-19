@@ -27,7 +27,7 @@ def compose_path(rel_vecs: list[np.ndarray]) -> np.ndarray:
     """
     if not rel_vecs:
         return np.zeros(1, dtype=np.float32)
-    return sum(rel_vecs)
+    return np.add.reduce(rel_vecs)
 
 
 def mine_path_rules(
@@ -105,7 +105,7 @@ def mine_path_rules(
     return rules[:top_k]
 
 
-def _count_path_patterns(graph, rel_names: set[str]) -> dict[tuple[str, str], int]:
+def _count_path_patterns(graph, rel_names: list[str]) -> dict[tuple[str, str], int]:
     """Count occurrences of each 2-hop relation path pattern in the graph.
 
     For each node that has both incoming and outgoing edges, record the

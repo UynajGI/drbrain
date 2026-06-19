@@ -63,7 +63,7 @@ async def extract_concepts(
         models=models,
         system_prompt=system_prompt,
     )
-    if data is None:
+    if data is None or not isinstance(data, dict):
         return None
     return ExtractedConcepts(data)
 

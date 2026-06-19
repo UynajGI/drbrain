@@ -60,8 +60,8 @@ def analyze_paper(
         for c in find_chains_from(parsed_args, concept):
             chains.append(
                 {
-                    "source": c.source,
-                    "target": c.target,
+                    "source": c.links[0].target if c.links else "",
+                    "target": c.links[-1].target if c.links else "",
                     "via": getattr(c, "mechanism", ""),
                 }
             )

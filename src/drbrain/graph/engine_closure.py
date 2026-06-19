@@ -9,11 +9,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import networkx as nx
 
 from drbrain.graph.path_reasoning import _apply_path_rules_subgraph
 from drbrain.validator.schema import detect_asymmetric_violations, enforce_transitive
+
+if TYPE_CHECKING:
+    from drbrain.graph.embedding import TransE
 
 
 class ClosureMixin:
@@ -22,6 +26,15 @@ class ClosureMixin:
     Depends on the host class providing ``self.graph`` (NetworkX) and
     ``self._transE`` (cached TransE instance or None).
     """
+
+    # Host-class attributes (provided by GraphEngine). Declared here so
+    # mypy can type-check methods defined in this mixin.
+    graph: nx.MultiDiGraph
+    _transE: TransE | None  # noqa: N815 - matches host attribute name
+
+    # Methods provided by the host GraphEngine (declared for mypy).
+    def get_neighbors(self, node: str, hops: int = 1) -> set[str]: ...  # type: ignore[empty-body]
+    def _get_section_by_cid(self, *args, **kwargs): ...  # type: ignore[empty-body]
 
     # ------------------------------------------------------------------
     # Shared rule-application kernel (called by both closure paths)
@@ -474,7 +487,7 @@ class ClosureMixin:
     def _detect_stale_problems(self, db, edges_by_rel) -> list[dict]:
         """Problem with >=5 incoming addresses edges but no new ones in last 2 years."""
         current = datetime.now().year
-        seeds = []
+        seeds: list = []
         address_targets: dict[str, list] = defaultdict(list)
         for src, dst in edges_by_rel.get("addresses", []):
             address_targets[dst].append(src)
@@ -500,7 +513,7 @@ class ClosureMixin:
 
     def _detect_technology_cliffs(self, db) -> list[dict]:
         """Method with dense extends chain that ended, and a related Gap constrains it."""
-        seeds = []
+        seeds: list = []
 
         # Get all methods that appear in extends edges
         extends_methods: set[str] = set()
@@ -546,7 +559,7 @@ class ClosureMixin:
 
     def _detect_cross_domain_isomorphism(self, db) -> list[dict]:
         """Two disconnected subgraphs share the same Problem label, path length > 3."""
-        seeds = []
+        seeds: list = []
 
         # Find problems addressed by methods in distinct groups
         # Batch-preload concept types for addresses targets (avoid N+1)
@@ -600,7 +613,7 @@ class ClosureMixin:
 
     def _detect_confidence_collapse(self, db) -> list[dict]:
         """Concept with avg_confidence dropping > 0.2 between consecutive 2-year windows."""
-        seeds = []
+        seeds: list = []
 
         rows = db.conn.execute(
             "SELECT c.label, c.type, p.year, AVG(c.confidence) as avg_conf "

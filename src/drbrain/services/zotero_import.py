@@ -17,7 +17,7 @@ _BIB_FIELD = re.compile(r"""(\w+)\s*=\s*[{"]([^}"]+)[}"]""", re.DOTALL)
 _DOI_PREFIX_RE = re.compile(r"^https?://(?:dx\.)?doi\.org/", re.IGNORECASE)
 
 # RIS field tag -> dict key mapping
-_RIS_TAG_MAP: dict[str, str] = {
+_RIS_TAG_MAP: dict[str, str | None] = {
     "TY": "ris_type",
     "TI": "title",
     "T1": "title",

@@ -167,7 +167,7 @@ async def _summarize_cluster(
         "Concise summary (2-4 sentences):"
     )
     summary = await acall_text_with_fallback(prompt, models)
-    return summary.strip() if summary else " ".join(t.split()[:200] for t in texts)[:500]
+    return summary.strip() if summary else " ".join(" ".join(t.split()[:200]) for t in texts)[:500]
 
 
 # ── Main RAPTOR tree builder ─────────────────────────────────────────────────

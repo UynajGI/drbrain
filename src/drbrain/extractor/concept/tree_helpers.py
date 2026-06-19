@@ -164,10 +164,10 @@ def _apply_tree_weights(concepts: list[dict], leaves: list[dict], structure: lis
 
     for c in concepts:
         section = (c.get("section", "") or "").lower().strip()
-        leaf = leaf_by_title.get(section)
-        if leaf:
-            depth = node_depths.get(leaf.get("node_id", ""), 2)
-            weight = _tree_position_weight(leaf, depth)
+        found_leaf: dict | None = leaf_by_title.get(section)
+        if found_leaf:
+            depth = node_depths.get(found_leaf.get("node_id", ""), 2)
+            weight = _tree_position_weight(found_leaf, depth)
             # Blend with existing confidence
             existing = c.get("confidence", 1.0)
             c["confidence"] = round(existing * weight, 3)

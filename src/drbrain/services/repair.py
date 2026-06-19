@@ -60,9 +60,9 @@ def _repair_via_crossref(db, paper: dict) -> list[dict]:
     if not doi:
         return []
     try:
-        from drbrain.extractor.crossref import fetch_work_by_doi
+        from drbrain.extractor.crossref import fetch_doi_by_doi
 
-        data = fetch_work_by_doi(doi)
+        data = fetch_doi_by_doi(doi)
     except Exception as e:
         logger.warning("CrossRef repair failed for DOI: {}", e)
         return []

@@ -26,7 +26,7 @@ class _FindCrossDomainStep(WorkflowStep):
     name = "find_cross_domain"
     requires_llm = False
 
-    def run(self, ctx: WorkflowContext) -> list[dict[str, Any]]:
+    def run(self, ctx: WorkflowContext) -> dict[str, Any]:
         seeds = ctx.graph.detect_research_seeds(ctx.db)
         cross_domain = [s for s in seeds if s.get("type") == "cross_domain_isomorphism"]
 

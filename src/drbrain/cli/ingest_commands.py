@@ -258,7 +258,7 @@ def check_citations_cmd(
     """Verify in-text citations against local library."""
     # Normalize typer params when called directly (not through CLI)
     if isinstance(text, typer.models.ArgumentInfo):
-        text = text.default
+        text = str(text.default)
     if isinstance(file, typer.models.OptionInfo):
         file = file.default
     if isinstance(json_output, typer.models.OptionInfo):
@@ -393,7 +393,7 @@ def closure_cmd(
     if isinstance(mine_rules, typer.models.OptionInfo):
         mine_rules = mine_rules.default
     if isinstance(min_confidence, typer.models.OptionInfo):
-        min_confidence = min_confidence.default
+        min_confidence = float(min_confidence.default or 0.6)
     if isinstance(ground, typer.models.OptionInfo):
         ground = ground.default
     if isinstance(incremental, typer.models.OptionInfo):
@@ -838,7 +838,7 @@ def patent_search_cmd(
     from drbrain.providers.uspto_ppubs import search_patents as ppubs_search
 
     try:
-        results = ppubs_search(query_str, limit=limit)
+        results: list = ppubs_search(query_str, limit=limit)  # type: ignore[assignment,no-redef]  # PpubsPatent redef  # type: ignore[assignment]
     except PpubsError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
@@ -1009,18 +1009,18 @@ def proceedings_cmd(
         return
 
     if show:
-        p = get_proceeding(store_path, show)
-        if not p:
+        proc: dict | None = get_proceeding(store_path, show)
+        if not proc:
             typer.echo(f"Proceeding not found: {show}", err=True)
             raise typer.Exit(1)
         if json_output:
-            typer.echo(json.dumps(p, ensure_ascii=False, indent=2))
+            typer.echo(json.dumps(proc, ensure_ascii=False, indent=2))
             return
-        typer.echo(f"[{p['id']}] {p['name']} ({p['year']})")
-        if p.get("venue"):
-            typer.echo(f"  Venue: {p['venue']}")
-        typer.echo(f"  Papers: {len(p.get('papers', []))}")
-        for paper_id in p.get("papers", []):
+        typer.echo(f"[{proc['id']}] {proc['name']} ({proc['year']})")
+        if proc.get("venue"):
+            typer.echo(f"  Venue: {proc['venue']}")
+        typer.echo(f"  Papers: {len(proc.get('papers', []))}")
+        for paper_id in proc.get("papers", []):
             typer.echo(f"    - {paper_id}")
         return
 

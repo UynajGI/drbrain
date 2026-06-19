@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import typer
 
@@ -112,7 +113,7 @@ def reason_cmd(
     if isinstance(bidirectional, typer.models.OptionInfo):
         bidirectional = bidirectional.default
     if isinstance(max_rounds, typer.models.OptionInfo):
-        max_rounds = max_rounds.default
+        max_rounds = int(max_rounds.default or 3)
     if isinstance(session_id, typer.models.OptionInfo):
         session_id = session_id.default
     if isinstance(workflow, typer.models.OptionInfo):
@@ -216,7 +217,7 @@ def reason_cmd(
         # ── SessionAgent path (persistent multi-turn reasoning) ──
         from drbrain.extractor.session_agent import SessionAgent
 
-        agent = SessionAgent()
+        agent: Any = SessionAgent()
         if session_id == "new":
             sid = agent.create_session(db, title="reason", models=models)
             if closure_ctx:
@@ -256,11 +257,15 @@ def reason_cmd(
         # ── ReasonerAgent path (stateless, original behavior) ──
         from drbrain.extractor.reasoner import ReasonerAgent
 
-        agent = ReasonerAgent(db=db, graph_engine=graph, models=models, closure_context=closure_ctx)
+        reasoner_agent: Any = ReasonerAgent(
+            db=db, graph_engine=graph, models=models, closure_context=closure_ctx
+        )
 
         if bidirectional:
             typer.echo(f"Bidirectional reasoning: {question}\n")
-            result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
+            result = asyncio.run(
+                reasoner_agent.reason_bidirectional(question, max_rounds=max_rounds)
+            )
             if "error" in result:
                 typer.echo(f"Error: {result['error']}", err=True)
             else:
@@ -273,7 +278,7 @@ def reason_cmd(
                     )
         else:
             typer.echo(f"Reasoning: {question}\n")
-            answer = asyncio.run(agent.reason(question))
+            answer = asyncio.run(reasoner_agent.reason(question))
             typer.echo(answer)
 
     db.close()
@@ -295,7 +300,7 @@ def ask_cmd(
 
     # Normalize typer OptionInfo objects when called directly (not via CLI)
     if isinstance(top_k, typer.models.OptionInfo):
-        top_k = top_k.default
+        top_k = int(top_k.default or 5)
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
 
@@ -411,7 +416,7 @@ def evolve_cmd(
         raise typer.Exit(0)
 
     if json_output:
-        result = {"trees": trees}
+        result: dict[str, Any] = {"trees": trees}
         if stats:
             signal = db.get_concept_signal(concept)
             evolution = db.get_concept_evolution(concept)

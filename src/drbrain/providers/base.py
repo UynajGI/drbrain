@@ -71,7 +71,7 @@ def __getattr__(name: str):
 
         return search_patents
     if name == "search_patents_ppubs":
-        from drbrain.providers.uspto_ppubs import search_patents
+        from drbrain.providers.uspto_ppubs import search_patents  # type: ignore[assignment]
 
         return search_patents
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

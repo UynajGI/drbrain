@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
@@ -129,25 +129,25 @@ class ReasonerAgent:
             if msg.tool_calls:
                 _called = [tc.function.name for tc in msg.tool_calls]
                 log.info("[reasoner] tool calls: %s", _called)
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": msg.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in msg.tool_calls
-                        ],
-                    }
-                )
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ],
+                }
+                messages.append(assistant_msg)
                 for tc in msg.tool_calls:
                     args = json.loads(tc.function.arguments)
+                    result: Any
                     if tc.function.name == "search_concepts":
                         result = self._search_concepts(**args)
                     elif tc.function.name == "get_neighbors":

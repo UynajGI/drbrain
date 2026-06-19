@@ -21,12 +21,11 @@ def describe_path(path: list[dict]) -> str:
 
     parts: list[str] = []
     for step in path:
-        if hasattr(step, "src"):
-            src, rel, dst = step.src, step.relation, step.dst
-        else:
-            src = step.get("src", "")
-            rel = step.get("relation", "")
-            dst = step.get("dst", "")
+        src = getattr(step, "src", None) or (step.get("src", "") if isinstance(step, dict) else "")
+        rel = getattr(step, "relation", None) or (
+            step.get("relation", "") if isinstance(step, dict) else ""
+        )
+        dst = getattr(step, "dst", None) or (step.get("dst", "") if isinstance(step, dict) else "")
 
         _rel_text = _relation_to_text(rel)
         parts.append(f"{src} {_rel_text} {dst}")
@@ -37,8 +36,14 @@ def describe_path(path: list[dict]) -> str:
     # Chain with ", which "
     result = parts[0]
     for i in range(1, len(parts)):
-        prev_dst = path[i - 1].dst if hasattr(path[i - 1], "dst") else path[i - 1].get("dst", "")
-        curr_src = path[i].src if hasattr(path[i], "src") else path[i].get("src", "")
+        prev_step = path[i - 1]
+        curr_step = path[i]
+        prev_dst = getattr(prev_step, "dst", None) or (
+            prev_step.get("dst", "") if isinstance(prev_step, dict) else ""
+        )
+        curr_src = getattr(curr_step, "src", None) or (
+            curr_step.get("src", "") if isinstance(curr_step, dict) else ""
+        )
         if prev_dst == curr_src:
             # Natural chaining: "A proposes B, which extends C"
             result += f", which\n{parts[i]}"

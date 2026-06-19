@@ -101,7 +101,7 @@ class ReasoningWorkflow:
         if ctx.cache is not None:
             cache_key = self._build_cache_key(ctx)
             cached = ctx.cache.get(cache_key)
-            if cached is not None:
+            if isinstance(cached, dict):
                 logger.info(
                     "[workflow:%s] cache hit — skipping %d steps", self.name, len(self.steps)
                 )

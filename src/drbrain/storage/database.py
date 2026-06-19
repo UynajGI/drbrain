@@ -491,7 +491,7 @@ class Database:
             "INSERT INTO concepts (local_id, type, label, confidence, section, node_id, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (local_id, ctype, label, confidence, section, node_id, year, year),
         )
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
     def insert_edge(
         self,
@@ -529,7 +529,7 @@ class Database:
             "INSERT INTO research_seeds (pattern_type, description, confidence) VALUES (?, ?, ?)",
             (pattern_type, description, confidence),
         )
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
     # ── Centralized write helpers (SQL-leak consolidation) ──────────────
     # These methods exist so callers outside storage/ never need to write raw
@@ -951,7 +951,7 @@ class Database:
                 confidence,
             ),
         )
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
     def insert_queue_item(
         self, source_paper: str, item_type: str, item_data: str, confidence: float
@@ -962,7 +962,7 @@ class Database:
             "VALUES (?, ?, ?, ?, 'pending')",
             (source_paper, item_type, item_data, confidence),
         )
-        return cur.lastrowid
+        return cur.lastrowid or 0
 
     def accept_queue_item(self, queue_id: int) -> None:
         """Mark queue item as accepted."""

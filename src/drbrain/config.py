@@ -35,7 +35,9 @@ class _ConfigBase:
 
     def values(self):
         """Return field values as a list (supports list(dirs_config.values()) pattern)."""
-        return [getattr(self, f.name) for f in fields(self)]
+        from typing import Any, cast
+
+        return [getattr(self, f.name) for f in fields(cast(Any, self))]
 
 
 # ── Sub-config dataclasses ──

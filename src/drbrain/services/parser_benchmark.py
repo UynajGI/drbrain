@@ -36,7 +36,9 @@ PARSERS = {
 }
 
 
-def run_single_benchmark(parser_name: str, pdf_path: Path) -> BenchmarkResult:
+def run_single_benchmark(
+    parser_name: str, pdf_path: Path, config: dict | None = None
+) -> BenchmarkResult:
     """Benchmark a single parser on one PDF.
 
     Args:
@@ -77,7 +79,8 @@ def run_single_benchmark(parser_name: str, pdf_path: Path) -> BenchmarkResult:
         elif parser_name == "mineru":
             from drbrain.parser.mineru_parser import extract_pdf
 
-            text = extract_pdf(pdf_path)
+            parsed = extract_pdf(pdf_path, config or {})
+            text = getattr(parsed, "raw_md", "") or getattr(parsed, "text", "") or ""
             output_size = len(text) if text else 0
 
         else:

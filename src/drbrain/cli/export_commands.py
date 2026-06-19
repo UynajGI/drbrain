@@ -107,7 +107,7 @@ def export_okf_cmd(
                 paper_ids = load_workspace_papers(workspace) or None
             except (FileNotFoundError, OSError):
                 paper_ids = None
-        graph.load_from_db(db, paper_ids=paper_ids)
+        graph.load_from_db(db, paper_ids=set(paper_ids) if paper_ids else None)
         stats = export_okf(graph, db, output, paper_ids=paper_ids)
 
     if json_output:
@@ -286,7 +286,8 @@ def delete_cmd(
 
     file_deleted = False
     if rm_files:
-        papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+        _dvcfg = cfg if isinstance(cfg, dict) else {}
+        papers_dir = Path(_dvcfg.get("dirs", {}).get("papers", "data/papers"))
         paper_dir = papers_dir / local_id
         if paper_dir.exists():
             _shutil.rmtree(paper_dir)
@@ -402,11 +403,8 @@ def backup_cmd(
             raise typer.Exit(1)
 
         # Default source: data/ directory
-        source_dir = (
-            cfg.get("dirs", {}).get("papers", "data/papers")
-            if hasattr(cfg, "get")
-            else "data/papers"
-        )
+        _rcfg = cfg if isinstance(cfg, dict) else {}
+        source_dir = _rcfg.get("dirs", {}).get("papers", "data/papers")
         source_dir = str(Path(source_dir).parent)
 
         try:
@@ -459,11 +457,12 @@ def backup_cmd(
         return
 
     # Tar.gz mode (default)
-    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    db_path = Path(cfg.get("db", {}).get("path", "data/drbrain.db"))
-    backup_dir = Path(cfg.get("dirs", {}).get("backups", "data/backups"))
+    _cfg = cfg if isinstance(cfg, dict) else {}
+    papers_dir = Path(_cfg.get("dirs", {}).get("papers", "data/papers"))
+    db_path = Path(_cfg.get("db", {}).get("path", "data/drbrain.db"))
+    backup_dir = Path(_cfg.get("dirs", {}).get("backups", "data/backups"))
     workspace_dir = Path("workspace")
-    reports_dir = Path(cfg.get("dirs", {}).get("reports", "data/reports"))
+    reports_dir = Path(_cfg.get("dirs", {}).get("reports", "data/reports"))
 
     if output:
         path = create_backup(

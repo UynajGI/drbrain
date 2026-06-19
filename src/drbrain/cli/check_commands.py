@@ -311,11 +311,11 @@ def check_cmd(ctx: typer.Context):
             import urllib.request as _urllib
 
             try:
-                req = _urllib.request.Request(
+                req = _urllib.Request(
                     "https://api.mineru.com/api/v1/status",
                     headers={"Authorization": f"Bearer {mineru_token}"},
                 )
-                _urllib.request.urlopen(req, timeout=5)
+                _urllib.urlopen(req, timeout=5)
                 table_api.add_row("  MinerU API", "[green]Reachable[/green]")
             except Exception as e:
                 logger.debug("MinerU API unreachable: {}", e)
@@ -417,8 +417,8 @@ def check_cmd(ctx: typer.Context):
     console.print("\n[bold]Summary[/bold]")
     if errors:
         console.print(f"\n[bold red]Errors ({len(errors)}):[/bold red]")
-        for e in errors:
-            console.print(f"  [red]✗[/red] {e}")
+        for err in errors:
+            console.print(f"  [red]✗[/red] {err}")
     if warnings:
         console.print(f"\n[bold yellow]Warnings ({len(warnings)}):[/bold yellow]")
         for w in warnings:
@@ -608,7 +608,7 @@ def clean_cmd(
     if force:
         from drbrain.auth import has_password, verify_password
 
-        if has_password(cfg):
+        if has_password(cfg):  # type: ignore[arg-type]
             pw = typer.prompt("Admin password", hide_input=True)
             if not verify_password(pw, cfg["admin"]["password_hash"]):
                 typer.echo("Wrong password.", err=True)

@@ -169,7 +169,7 @@ def detect_paradigm_shifts(
 
     for src_id, dst_id, conf in applies_edges:
         # Check if dst has further descendants (cascade in new domain)
-        cascade = []
+        cascade: list = []
         visited = {src_id, dst_id}
         queue = [dst_id]
         while queue and len(cascade) <= 5:

@@ -47,7 +47,9 @@ def ws_add_cmd(
         if json_output:
             typer.echo(json.dumps(ws, indent=2))
         else:
-            typer.echo(f"Added {len(local_ids)} paper(s) to '{name}' ({ws['paper_count']} total)")
+            typer.echo(
+                f"Added {len(local_ids)} paper(s) to '{name}' ({(ws or {}).get('paper_count', 0)} total)"
+            )
     except WorkspaceError as e:
         if json_output:
             typer.echo(json.dumps({"error": str(e)}))
@@ -70,7 +72,9 @@ def ws_remove_cmd(
     if json_output:
         typer.echo(json.dumps(ws, indent=2))
     else:
-        typer.echo(f"Removed {len(local_ids)} paper(s) from '{name}' ({ws['paper_count']} total)")
+        typer.echo(
+            f"Removed {len(local_ids)} paper(s) from '{name}' ({(ws or {}).get('paper_count', 0)} total)"
+        )
 
 
 @ws_app.command("list")

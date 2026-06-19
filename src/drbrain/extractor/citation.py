@@ -47,7 +47,7 @@ def fetch_s2_paper(
 
     if cache:
         cached = cache.get(f"s2_paper:{paper_id}")
-        if cached is not None:
+        if isinstance(cached, dict):
             return cached
 
     try:
@@ -75,7 +75,7 @@ def search_s2(
 
     if cache:
         cached = cache.get(cache_key)
-        if cached is not None:
+        if isinstance(cached, list):
             return cached
 
     try:

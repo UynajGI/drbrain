@@ -46,7 +46,7 @@ class _ScanDebatesStep(WorkflowStep):
             )
 
         # Find targets with both supports and challenges
-        debates = []
+        debates: list[dict[str, Any]] = []
         for target, args in by_target.items():
             supports = [a for a in args if "support" in a["claim_type"]]
             challenges = [

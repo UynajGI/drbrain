@@ -124,6 +124,8 @@ class BuildAgent(ABC):
             )
 
         # Validate
+        if not isinstance(raw, dict):
+            raw = {}
         validated = self._validate_output(raw)
 
         # Persist

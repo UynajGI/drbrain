@@ -27,7 +27,7 @@ class TraverseResult:
     path: list[TraverseStep]
 
 
-class GraphEngine(ClosureMixin, EmbeddingsMixin):
+class GraphEngine(ClosureMixin, EmbeddingsMixin):  # type: ignore[misc]  # _transE on both mixins
     """Graph operations and rule-based relationship closure."""
 
     def __init__(self):

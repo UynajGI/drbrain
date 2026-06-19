@@ -141,7 +141,7 @@ def call_with_fallback(
             f"{models[0]['provider']}/{models[0]['model']}", system_prompt, prompt, max_tokens
         )
         cached = _cache.get(key)
-        if cached is not None:
+        if isinstance(cached, dict):
             logger.info(f"[llm] cache hit (key={key})")
             return cached
     for i, model_cfg in enumerate(models):
@@ -183,7 +183,7 @@ async def acall_with_fallback(
             f"{models[0]['provider']}/{models[0]['model']}", system_prompt, prompt, max_tokens
         )
         cached = _cache.get(key)
-        if cached is not None:
+        if isinstance(cached, dict):
             logger.info(f"[llm] async cache hit (key={key})")
             return cached
     for i, model_cfg in enumerate(models):
@@ -327,7 +327,7 @@ def call_with_messages(
     if _cache is not None and models and temperature == 0:
         key = _messages_cache_key(models, messages, max_tokens, temperature)
         cached = _cache.get(key)
-        if cached is not None:
+        if isinstance(cached, dict):
             logger.info(f"[llm] call_with_messages cache hit (key={key})")
             return cached
 
@@ -396,7 +396,7 @@ async def acall_with_messages(
     if _cache is not None and models and temperature == 0:
         key = _messages_cache_key(models, messages, max_tokens, temperature)
         cached = _cache.get(key)
-        if cached is not None:
+        if isinstance(cached, dict):
             logger.info(f"[llm] acall_with_messages cache hit (key={key})")
             return cached
 
