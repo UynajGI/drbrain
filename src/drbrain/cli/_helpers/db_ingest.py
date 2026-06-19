@@ -204,10 +204,7 @@ def _ingest_single_paper(
     )
     echo(f"  Paper type: {paper_type}")
     # Update paper_type in DB (already inserted as 'paper' default)
-    db.conn.execute(
-        "UPDATE papers SET paper_type = ? WHERE local_id = ?",
-        (paper_type, local_id),
-    )
+    db.set_paper_type(local_id, paper_type)
     db.commit()
 
     # Stage 3: Structure markdown into tree (PageIndex)
@@ -307,10 +304,7 @@ def _ingest_single_paper(
             if parsed.year and doi_year and abs(parsed.year - doi_year) > 5:
                 echo(f"  DOI rejected (year mismatch: paper={parsed.year}, doi={doi_year})")
             else:
-                db.conn.execute(
-                    "UPDATE paper_ids SET doi = ? WHERE local_id = ?",
-                    (doi_info["doi"], local_id),
-                )
+                db.set_external_id(local_id, "doi", doi_info["doi"])
                 db.commit()
                 echo(f"  Found DOI: {doi_info['doi']}")
         else:
@@ -387,33 +381,14 @@ def _check_and_merge_duplicates(
 
 
 def _merge_papers(db: Database, keep_id: str, merge_id: str) -> None:
-    """Merge merge_id into keep_id: move concepts, edges, update references."""
-    # Move concepts
-    db.conn.execute(
-        "UPDATE concepts SET local_id = ? WHERE local_id = ?",
-        (keep_id, merge_id),
-    )
-    # Move arguments
-    db.conn.execute(
-        "UPDATE arguments SET source_paper = ? WHERE source_paper = ?",
-        (keep_id, merge_id),
-    )
-    # Redirect edges pointing to merge_id
-    db.conn.execute(
-        "UPDATE edges SET src_id = ? WHERE src_id = ?",
-        (keep_id, merge_id),
-    )
-    db.conn.execute(
-        "UPDATE edges SET dst_id = ? WHERE dst_id = ?",
-        (keep_id, merge_id),
-    )
-    # Update source_paper in edges
-    db.conn.execute(
-        "UPDATE edges SET source_paper = ? WHERE source_paper = ?",
-        (keep_id, merge_id),
-    )
-    # Delete the merged paper (cascades to paper_ids)
-    db.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
+    """Merge merge_id into keep_id atomically via database.merge_papers.
+
+    Delegates to the centralized merge, which runs the concept/argument/edge
+    migration + source deletion inside a single transaction. A failure at any
+    point rolls back — previously the 6 separate UPDATEs/DELETEs here could
+    leave concepts migrated but the source paper intact (torn state).
+    """
+    db.merge_papers(keep_id, merge_id)
     db.commit()
 
 
