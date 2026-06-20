@@ -37,7 +37,6 @@ mineru_*/
 # Superpowers tooling docs (plans/skills are local, specs are project docs)
 docs/superpowers/plans/
 docs/superpowers/skills/
-!docs/superpowers/specs/
 
 # Learning notes (open source project studies)
 docs/learn/
@@ -46,3 +45,8 @@ docs/learn/
 .mcp.json
 .claude/
 .coverage.*
+
+# Local-only tooling directories (not for public repo)
+.trellis/
+.qoder/
+docs/superpowers/specs/
