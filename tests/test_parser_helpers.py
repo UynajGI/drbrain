@@ -5,6 +5,8 @@ import tempfile
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 from drbrain.parser.mineru_parser import (
     MinerUParser,
     _extract_arxiv_from_filename,
@@ -94,6 +96,7 @@ def test_fetch_arxiv_metadata_success():
         assert year == 2024
 
 
+@pytest.mark.integration  # mock path mismatch causes real network call
 def test_fetch_arxiv_metadata_error_returns_none():
     """_fetch_arxiv_metadata returns None on network error."""
     with unittest.mock.patch("urllib.request.urlopen", side_effect=Exception("network")):

@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from drbrain.services.repair import (
     REPAIR_SOURCES,
     normalize_title,
@@ -117,6 +119,7 @@ def test_repair_paper_dry_run():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration  # calls real CrossRef/OpenAlex API
 def test_repair_via_crossref_returns_repairs():
     """When CrossRef returns data with differing fields, repairs are emitted."""
     db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", title="OLD TITLE"))
@@ -279,6 +282,7 @@ def test_repair_via_title_year_empty_title_no_call():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration  # calls real CrossRef/OpenAlex API
 def test_repair_paper_dry_run_false_applies_updates():
     """With dry_run=False, DB updates are executed and commit is called."""
     db = FakeDB(paper=_make_paper(doi="10.1234/testdoi", title="OLD TITLE", year=2022))

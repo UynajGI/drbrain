@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 import typer
 
 from drbrain.storage.database import Database
@@ -149,6 +150,7 @@ def test_citations_cmd_json_output():
 # -- check_citations_cmd --
 
 
+@pytest.mark.integration  # network-dependent: check_citations initializes DB
 def test_check_citations_cmd_no_input():
     """check_citations_cmd raises Exit when no text provided."""
     from drbrain.cli.commands import check_citations_cmd
@@ -732,6 +734,7 @@ def test_merge_papers_redirects_edge_source_paper():
 # -- check_cmd --
 
 
+@pytest.mark.integration  # network-dependent: check probes live APIs
 def test_check_cmd_all_configured():
     """check_cmd passes when all dependencies and config are set."""
     from drbrain.cli.commands import check_cmd
@@ -747,6 +750,7 @@ def test_check_cmd_all_configured():
         check_cmd(ctx)  # Should not raise
 
 
+@pytest.mark.integration  # network-dependent: check probes live APIs
 def test_check_cmd_missing_config():
     """check_cmd exits with code 1 when config.yaml is missing (detected at filesystem level)."""
     from drbrain.cli.commands import check_cmd
