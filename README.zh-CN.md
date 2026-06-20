@@ -168,6 +168,37 @@ DrBrain 的代理优先设计受
 
 ---
 
+## 🤝 贡献
+
+欢迎贡献——bug 报告、功能建议、文档、代码都有帮助。完整指南见
+**[CONTRIBUTING.md](CONTRIBUTING.md)**（英文）。
+
+贡献者快速上手：
+
+```bash
+git clone https://github.com/UynajGI/DrBrain.git && cd DrBrain
+uv sync && uv pip install -e .
+pre-commit install                      # 可选：提交时自动 lint
+uv run pytest -m "not integration"      # 快速测试
+```
+
+提交 PR 前请确保以下检查通过：
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+uv run mypy src/drbrain
+uv run pytest -m "not integration"
+```
+
+我们遵循 [Conventional Commits](https://www.conventionalcommits.org/) 规范
+（`feat:`、`fix:`、`docs:`、`refactor:`、`test:`、`chore:`）。
+
+有问题或想法？开一个
+[讨论](https://github.com/UynajGI/DrBrain/discussions)。发现 bug？
+提一个 [issue](https://github.com/UynajGI/DrBrain/issues)。
+
+---
+
 ## 📄 许可证
 
 MIT——详见 [LICENSE](LICENSE)。

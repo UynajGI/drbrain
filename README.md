@@ -171,6 +171,37 @@ Tree-structured retrieval is inspired by
 
 ---
 
+## 🤝 Contributing
+
+Contributions are welcome — bug reports, feature requests, docs, and code
+all help. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full guide.
+
+Quick start for contributors:
+
+```bash
+git clone https://github.com/UynajGI/DrBrain.git && cd DrBrain
+uv sync && uv pip install -e .
+pre-commit install                      # optional: auto-lint on commit
+uv run pytest -m "not integration"      # fast tests
+```
+
+Before opening a PR, make sure these pass:
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+uv run mypy src/drbrain
+uv run pytest -m "not integration"
+```
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/)
+(`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+
+Have a question or idea? Open a
+[discussion](https://github.com/UynajGI/DrBrain/discussions). Found a bug?
+File an [issue](https://github.com/UynajGI/DrBrain/issues).
+
+---
+
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
