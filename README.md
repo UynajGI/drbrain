@@ -1,88 +1,118 @@
 <div align="center">
 
-# DrBrain
+# 🧠 DrBrain
 
 **Symbol-driven academic knowledge graph with lightweight vector retrieval.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-0.1.0a3-orange.svg)](https://github.com/UynajGI/DrBrain/releases)
 [![Agent Skills](https://img.shields.io/badge/Agent_Skills-DrBrain-purple.svg)](skills/)
+[![CI](https://github.com/UynajGI/DrBrain/actions/workflows/ci.yml/badge.svg)](https://github.com/UynajGI/DrBrain/actions)
+
+**[English](README.md)** · [简体中文](README.zh-CN.md)
 
 </div>
 
 ---
 
-Your AI coding agent already reads code and writes code. DrBrain gives it a structured
-knowledge graph of academic papers — so it can search literature, trace causal chains,
-find research gaps, and infer new relationships through rule-based reasoning.
+Your AI coding agent already reads code and writes code. DrBrain gives it a
+**structured knowledge graph of academic papers** — so it can search
+literature, trace causal chains, find research gaps, and infer new
+relationships through rule-based reasoning.
 
-- Your paper library becomes a queryable knowledge graph with concept-level granularity.
-- Reasoning is symbol-driven: closure rules, confidence propagation, counterfactuals.
-- Lightweight vectors for retrieval: semantically-complete tree nodes only, never arbitrary chunks.
-- Built for AI agents: every feature is accessible through the CLI that your agent already uses.
+- 📚 Your paper library becomes a queryable knowledge graph with
+  **concept-level granularity**.
+- 🧩 Reasoning is **symbol-driven**: closure rules, confidence propagation,
+  counterfactuals — not just embedding similarity.
+- ⚡ Lightweight vectors for retrieval: **semantically-complete tree nodes**
+  only, never arbitrary chunks.
+- 🤖 **Built for AI agents**: every feature is accessible through the CLI
+  that your agent already uses.
 
-## Quick Start
+---
+
+## ✨ Highlights
+
+- **Incremental by default** — add one paper to an N-paper library and only
+  that paper builds; closure scans its neighborhood; embeddings micro-adjust.
+- **7 reasoning workflows** — review, gap-analysis, impact, compare,
+  frontier, lineage, paradigm.
+- **OKF export** — emit the entire knowledge graph as an
+  [OKF](https://github.com/UynajGI/DrBrain) v0.1 markdown bundle that humans
+  and agents can read with `cat`.
+- **27 agent skills** following the open
+  [AgentSkills.io](https://agentskills.io) standard.
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-# Source install (alpha)
 git clone https://github.com/UynajGI/DrBrain.git
 cd DrBrain
 uv sync && uv pip install -e .
-drbrain setup
-
-# Coming in beta:
-# pipx install drbrain
-# uv tool install drbrain
+drbrain setup          # interactive wizard (bilingual EN / 中文)
 ```
 
-This creates `~/DrBrain/` as your library root (cross-platform: `~/DrBrain` on macOS/Linux,
-`%USERPROFILE%/DrBrain` on Windows).
+This creates `~/DrBrain/` as your library root
+(`%USERPROFILE%/DrBrain` on Windows).
 
-## What It Does
+```bash
+# Ingest → build → embed → closure (all incremental)
+drbrain fetch "10.1038/nature14539"     # grab a paper by DOI
+drbrain build                           # 5-stage LLM extraction
+drbrain embed                           # TransE graph embeddings
+drbrain closure                         # rule-based inference
+drbrain ask "What gaps remain in deep learning?"
 
-|  | Feature | Details |
-|--|---------|---------|
-| **Ingest** | PDF to structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
-| **Build** | 5-stage concept extraction (incremental) | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement. Only re-processes dirty/touched papers by default |
+# Or chain everything at once
+drbrain pipeline --preset full
+```
+
+> `pipx install drbrain` and `uv tool install drbrain` are coming in beta.
+
+---
+
+## 📖 What It Does
+
+| Category | Feature | Details |
+|----------|---------|---------|
+| **Ingest** | PDF → structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
+| **Build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
-| **Knowledge Graph** | Rule-based closure (incremental) | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction. Default scans the 2-hop neighborhood of changed concepts |
+| **Knowledge Graph** | Rule-based closure *(incremental)* | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
-| **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm — symbolic steps + LLM synthesis |
+| **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm |
 | **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
-| **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification against library |
-| **Export** | BibTeX, RIS, Markdown + OKF | Citation styles (APA, Vancouver, Chicago, MLA) + **OKF v0.1** markdown bundle export (`export-okf`) for human/agent consumption |
-| **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote, BibTeX files |
-| **Translate** | LLM paper translation | Placeholder-protected chunking, language detection, concurrent translation with resume |
-| **Knowledge Genealogy** | Concept lineage + paper descendants | Concept evolution trees (evolve), academic offspring (descendants), paradigm shift detection, cross-domain migration discovery |
-| **Fetch** | PDF acquisition from OA sources | 5-stage fallback (arXiv, OpenAlex, Unpaywall, direct DOI), institutional proxy support |
-| **Federated Search** | Local + arXiv with annotation | Cross-source search with automatic ingested status, DOI/arXiv cross-reference |
-| **Patent Search** | USPTO PPUBS + ODP | Free (PPUBS) or API-key (ODP) patent search, application number lookup |
-| **Pipeline** | Step chaining (incremental by default) | Presets (full/quick/embed) and custom step lists; each step runs incrementally, `--full` forces rebuild |
-| **Proceedings** | Conference management | Create/list/show proceedings, associate papers by conference |
-| **Explore** | Discovery collections | Lightweight JSONL-backed silos with keyword search for literature discovery |
-| **Enrich** | CrossRef metadata backfill | Fill missing fields, detect scrub-worthy records |
+| **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification |
+| **Export** | BibTeX, RIS, Markdown + **OKF** | 4 citation styles (APA, Vancouver, Chicago, MLA) + OKF v0.1 markdown bundle |
+| **Import** | Zotero, BibTeX, Endnote | Web API + local SQLite for Zotero, XML/RIS for Endnote |
+| **Genealogy** | Concept lineage + descendants | Evolution trees, academic offspring, paradigm shift detection, cross-domain migration |
+| **Fetch** | PDF acquisition from OA sources | 5-stage fallback (arXiv, OpenAlex, Unpaywall, direct DOI), proxy support |
+| **Federated Search** | Local + arXiv | Cross-source search with ingested-status annotation |
+| **Patent Search** | USPTO PPUBS + ODP | Free (PPUBS) or API-key (ODP) patent search |
+| **Pipeline** | Step chaining *(incremental)* | Presets (full/quick/embed) + custom steps; `--full` forces rebuild |
 | **Audit** | Data quality scan | 15 severity-graded rules, PDF pre-validation, ingest quality gates |
-| **Backup** | tar.gz + rsync | Local archive backups and remote SSH rsync sync with configurable targets |
-| **Document** | Office file inspection | Structured text summaries for DOCX/PPTX/XLSX without a GUI |
-| **Metrics** | Usage analytics | Top search keywords, most-read papers, weekly trends |
 
-## Documentation
+<details>
+<summary><b>All commands</b></summary>
 
-- [Getting Started](docs/getting-started.md) -- from install to first query
-- [CLI Reference](docs/cli-reference.md) -- all commands with examples
-- [Configuration](docs/configuration.md) -- every setting, default, and provider template
-- [Architecture](docs/architecture.md) -- system design and reasoning modules
-- [API Reference](docs/api-reference.md) -- module-level function and class signatures
-- [Workflows](docs/workflows.md) -- structured reasoning workflow user + developer guide
-- [Sessions](docs/sessions.md) -- persistent Session Agent deep dive
-- [Embedding](docs/embedding.md) -- local, openai-compat, and none providers
-- [Troubleshooting](docs/troubleshooting.md) -- common problems and recovery
-- [Glossary](docs/glossary.md) -- terminology reference
-- [Skills Reference](docs/skills.md) -- 27 agent skills and their CLI commands
-- [Contributing](docs/contributing.md) -- how to add commands, modules, and skills
+`setup` `ingest` `fetch` `build` `embed` `closure` `query` `search` `ask`
+`reason` `graph` `analyze` `evolve` `landscape` `frontier` `paradigm`
+`citations` `export` `export-okf` `import` `translate` `session` `ws`
+`pipeline` `repair` `enrich` `audit` `backup` `restore` `metrics`
+`document` `fsearch` `patent-search` `proceedings` `explore` `check` `clean`
 
-## Works With Your Agent
+Run `drbrain --help` for the full list, or see the
+[CLI Reference](docs/cli-reference.md).
+
+</details>
+
+---
+
+## 🤖 Works With Your Agent
 
 Install DrBrain skills so your coding agent can use them:
 
@@ -90,28 +120,57 @@ Install DrBrain skills so your coding agent can use them:
 npx skills add https://github.com/UynajGI/DrBrain/skills
 ```
 
-Skills follow the open [AgentSkills.io](https://agentskills.io) standard and work with
-Claude Code, Codex, Cline, Cursor, Windsurf, Qwen Code, GitHub Copilot, and other
-AI coding tools.
+Skills follow the open [AgentSkills.io](https://agentskills.io) standard and
+work with Claude Code, Codex, Cline, Cursor, Windsurf, Qwen Code, GitHub
+Copilot, and other AI coding tools.
 
-## Configuration
+---
 
-`drbrain setup` walks you through the basics interactively (bilingual EN/ZH):
+## ⚙️ Configuration
 
-- Language selection at start (English / 中文)
-- LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, etc.)
+`drbrain setup` walks you through the basics interactively (bilingual
+EN / 中文):
+
+- LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, …)
 - MinerU token (optional; PyMuPDF fallback for PDF parsing)
-- Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate limits)
-- `drbrain check` verifies your environment
+- Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate
+  limits)
 
-## Inspired By
+`drbrain check` verifies your environment end-to-end. See
+[Configuration](docs/configuration.md) for every setting.
 
-DrBrain's agent-first design is inspired by [ScholarAIO](https://github.com/ZimoLiao/scholaraio) — the
-pioneering "research infrastructure for AI agents." DrBrain takes a different technical path:
-symbol-driven knowledge graph reasoning with lightweight vector retrieval for semantically-complete nodes
-(vs full-text chunk embedding). Tree-structured retrieval is inspired by
-[PageIndex](https://github.com/answerdotai/pageindex) and [RAPTOR](https://arxiv.org/abs/2401.18059).
+---
 
-## License
+## 📚 Documentation
+
+| | |
+|---|---|
+| [Getting Started](docs/getting-started.md) | From install to first query |
+| [CLI Reference](docs/cli-reference.md) | All commands with examples |
+| [Architecture](docs/architecture.md) | System design and reasoning modules |
+| [Configuration](docs/configuration.md) | Every setting, default, and provider template |
+| [Workflows](docs/workflows.md) | Structured reasoning workflow guide |
+| [Sessions](docs/sessions.md) | Persistent Session Agent deep dive |
+| [Embedding](docs/embedding.md) | Local, openai-compat, and none providers |
+| [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
+| [Skills Reference](docs/skills.md) | 27 agent skills and their CLI commands |
+| [Contributing](docs/contributing.md) | How to add commands, modules, and skills |
+
+---
+
+## 🙏 Inspired By
+
+DrBrain's agent-first design is inspired by
+[ScholarAIO](https://github.com/ZimoLiao/scholaraio) — the pioneering
+"research infrastructure for AI agents." DrBrain takes a different technical
+path: symbol-driven knowledge graph reasoning with lightweight vector
+retrieval for semantically-complete nodes (vs full-text chunk embedding).
+Tree-structured retrieval is inspired by
+[PageIndex](https://github.com/answerdotai/pageindex) and
+[RAPTOR](https://arxiv.org/abs/2401.18059).
+
+---
+
+## 📄 License
 
 MIT — see [LICENSE](LICENSE).
