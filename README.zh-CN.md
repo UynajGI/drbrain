@@ -122,7 +122,7 @@ npx skills add https://github.com/UynajGI/DrBrain/skills
 ```
 
 技能遵循开放的 [AgentSkills.io](https://agentskills.io) 标准，兼容
-Claude Code、Codex、Cline、Cursor、Windsurf、通义千问 Code、GitHub
+Claude Code、Codex、Cline、Cursor、Windsurf、Qwen Code、GitHub
 Copilot 等 AI 编程工具。
 
 ---
