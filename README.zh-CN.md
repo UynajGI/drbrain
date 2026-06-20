@@ -70,28 +70,35 @@ drbrain pipeline --preset full
 
 ## 📖 功能一览
 
-| 分类 | 功能 | 说明 |
+| 分类 | 命令 | 说明 |
 |------|------|------|
-| **Ingest** | PDF → 结构化知识 | MinerU 解析 → 5 源元数据交叉验证（arXiv、CrossRef、S2、OpenAlex、DeepXiv）→ LLM 树结构化 |
-| **Build** | 5 阶段概念抽取 *（增量）* | 本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
-| **Query** | BM25 + 图增强搜索 | 关键词搜索 + PageRank 加权、有向图遍历、混合排序 |
-| **知识图谱** | 规则闭包 *（增量）* | 8+4 条推理规则、t-norm 传递接地、TransE 嵌入做链接预测 |
-| **Reasoning** | 符号驱动发现 | 因果链、置信度传播、反事实分析、跨域同构、假设生成 |
-| **Workflows** | 7 条结构化推理工作流 | review、gap-analysis、impact、compare、frontier、lineage、paradigm |
-| **Sessions** | 持久推理上下文 | 数据库多轮会话、构建上下文注入、跨调用连续性 |
-| **Analyze** | 知识前沿报告 | 研究种子、辩论区、技术断崖、LLM 执行摘要 |
-| **Citations** | 多源引用扩展 | 前向/后向引用、共同引用分析、引用验证 |
-| **Export** | BibTeX、RIS、Markdown + **OKF** | 4 种引用样式（APA、Vancouver、Chicago、MLA）+ OKF v0.1 markdown bundle |
-| **Import** | Zotero、BibTeX、Endnote | Zotero Web API + 本地 SQLite、Endnote XML/RIS |
-| **Genealogy** | 概念谱系 + 后代 | 进化树、学术后代、范式转移检测、跨域迁移 |
-| **Fetch** | OA 源 PDF 获取 | 5 级回退（arXiv、OpenAlex、Unpaywall、直连 DOI）、代理支持 |
-| **联邦搜索** | 本地 + arXiv | 跨源搜索，自动标注已入库状态 |
-| **专利搜索** | USPTO PPUBS + ODP | 免费（PPUBS）或 API-key（ODP）专利检索 |
-| **Pipeline** | 步骤串联 *（增量）* | 预设（full/quick/embed）+ 自定义步骤；`--full` 强制全量重建 |
-| **Audit** | 数据质量扫描 | 15 条分级规则、PDF 预校验、入库质量门 |
+| **入库** | `ingest` `fetch` | PDF 经 MinerU 解析 → 5 源元数据交叉验证（arXiv、CrossRef、S2、OpenAlex、DeepXiv）→ LLM 树结构化 |
+| **构建** | `build` | 5 阶段概念抽取（增量）：本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
+| **检索** | `query` `search` | BM25 关键词搜索 + PageRank 加权、有向图遍历、混合排序 |
+| **知识图谱** | `closure` | 规则闭包（增量）：8+4 条推理规则、t-norm 传递接地、TransE 嵌入链接预测 |
+| **嵌入** | `embed` | TransE 图嵌入（增量微调）或 PageIndex/RAPTOR 文本向量 |
+| **推理** | `reason` | 符号驱动发现：因果链、置信度传播、反事实分析、跨域同构、假设生成 |
+| **工作流** | `reason --workflow` | 7 条结构化推理管线：review、gap-analysis、impact、compare、frontier、lineage、paradigm |
+| **会话** | `session` | 持久推理上下文：数据库多轮会话、构建上下文注入、跨调用连续性 |
+| **分析** | `analyze` `frontier` | 知识前沿报告：研究种子、辩论区、技术断崖、LLM 执行摘要 |
+| **谱系** | `evolve` `descendants` `paradigm` | 概念进化树、学术后代、范式转移检测、跨域迁移 |
+| **引用** | `citations` | 多源引用扩展：前向/后向引用、共同引用分析、引用验证 |
+| **导出** | `export` `export-okf` | BibTeX/RIS/Markdown（4 种样式）+ OKF v0.1 markdown bundle |
+| **导入** | `import` | Zotero（Web API + 本地 SQLite）、BibTeX、Endnote XML/RIS |
+| **翻译** | `translate` | LLM 论文翻译：占位符保护分块、语种检测、断点续译 |
+| **联邦搜索** | `fsearch` | 本地库 + arXiv 跨源搜索，自动标注已入库状态 |
+| **专利搜索** | `patent-search` | USPTO PPUBS（免费）或 ODP（API-key）专利检索 |
+| **流水线** | `pipeline` | 步骤串联（增量）：预设（full/quick/embed）+ 自定义步骤；`--full` 强制全量重建 |
+| **修复/富化** | `repair` `enrich` | CrossRef/arXiv/OpenAlex 元数据回填、字段补全、可疑记录检测 |
+| **审计** | `audit` | 数据质量扫描：15 条分级规则、PDF 预校验、入库质量门 |
+| **工作区** | `ws` | 工作区 CRUD：按主题分组论文子集 |
+| **备份** | `backup` `restore` | tar.gz 本地归档 + rsync 远程同步 |
+| **文档** | `document` | DOCX/PPTX/XLSX 结构化摘要（无需 GUI） |
+| **指标** | `metrics` | 使用分析：热门搜索词、最多阅读论文、周趋势 |
+| **其他** | `proceedings` `explore` `check` `clean` | 会议集管理、发现集合、环境检查、数据清理 |
 
 <details>
-<summary><b>全部命令</b></summary>
+<summary><b>全部命令一览</b></summary>
 
 `setup` `ingest` `fetch` `build` `embed` `closure` `query` `search` `ask`
 `reason` `graph` `analyze` `evolve` `landscape` `frontier` `paradigm`
