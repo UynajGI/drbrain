@@ -749,3 +749,71 @@ def search_cmd(
             f"  {i}. [{r['type']}] {r['label']}{extra}"
             f" (score: {r['score']:.3f}, paper: {r['local_id']}{year_str}{conf_str})"
         )
+
+
+def hybrid_cmd(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="Natural language query"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum results"),
+    rerank: bool = typer.Option(
+        False,
+        "--rerank",
+        help="Apply cross-encoder rerank (auto no-op if sentence-transformers missing)",
+    ),
+    rerank_model: str = typer.Option(
+        None, "--rerank-model", help="Cross-encoder model id (default: BAAI/bge-reranker-base)"
+    ),
+    rrf_k: int = typer.Option(60, "--rrf-k", help="RRF damping constant"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Hybrid retrieval: BM25 + embedding fused via RRF, with optional rerank.
+
+    Distinct from `query --hybrid` (which boosts by graph PageRank): this
+    command fuses BM25 and vector results at the paper level using Reciprocal
+    Rank Fusion, then optionally reranks with a cross-encoder. When embedding
+    is disabled (provider=none), runs in pure-BM25 mode.
+    """
+    from drbrain.config import EmbedConfig
+
+    cfg = ctx.obj["config"]
+    db_path_val = cfg.get("db", {}).get("path", "data/drbrain.db")
+    embed_cfg_raw = cfg.get("embed", EmbedConfig())
+    embed_cfg = EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
+
+    from drbrain.query.hybrid_retrieval import hybrid_search
+
+    with open_db(cfg) as db:
+        hits = hybrid_search(
+            query,
+            db,
+            Path(db_path_val),
+            embed_cfg=embed_cfg,
+            top_k=limit,
+            rerank=rerank,
+            rerank_model=rerank_model,
+            rrf_k=rrf_k,
+        )
+
+    if not hits:
+        if json_output:
+            typer.echo(json.dumps({"query": query, "results": []}))
+        else:
+            typer.echo(f"No results for: {query}")
+        return
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"query": query, "results": [h.to_dict() for h in hits]},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    typer.echo(f'Hybrid search: "{query}" — {len(hits)} results')
+    for hit in hits:
+        sources = ", ".join(hit.metadata.get("sources", [hit.source]))
+        typer.echo(
+            f"  {hit.rank}. {hit.paper_id}  (rrf: {hit.score:.4f}, sources: {sources})"
+        )
