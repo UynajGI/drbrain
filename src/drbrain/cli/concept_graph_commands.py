@@ -107,3 +107,63 @@ def cg_build_cmd(
         typer.echo(
             f"[cg.build] edges={edges} concepts={stats['total_concepts']} kept={stats['kept']}"
         )
+
+
+@cg_app.command("embed")
+def cg_embed_cmd(
+    ctx: typer.Context,
+    context: bool = typer.Option(
+        False, "--context", help="Average label with containing-paper titles"
+    ),
+    model_name: str = typer.Option("", "--model", help="Model label recorded in the DB"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON stats"),
+) -> None:
+    """Compute semantic embeddings for concept nodes."""
+    from drbrain.concept_graph.embeddings import compute_concept_embeddings
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        count = compute_concept_embeddings(db, cfg, context=context, model_name=model_name)
+    if json_output:
+        typer.echo(json.dumps({"embedded": count}))
+    else:
+        typer.echo(f"[cg.embed] embedded {count} concepts")
+
+
+@cg_app.command("neighbors")
+def cg_neighbors_cmd(
+    ctx: typer.Context,
+    concept: str = typer.Argument(..., help="Query concept label"),
+    top: int = typer.Option(10, "--top", "-k", help="Number of neighbours"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    """Show the nearest concepts to a query concept by embedding similarity."""
+    from drbrain.concept_graph.embeddings import nearest_neighbors
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        results = nearest_neighbors(db, concept, k=top)
+    if json_output:
+        typer.echo(
+            json.dumps([{"label": l, "score": round(s, 4)} for l, s in results], ensure_ascii=False)
+        )
+        return
+    if not results:
+        typer.echo(f"No embedding found for '{concept}'.")
+        return
+    for label, score in results:
+        typer.echo(f"  {score:.4f}  {label}")
+
+
+@cg_app.command("map")
+def cg_map_cmd(
+    ctx: typer.Context,
+    output: str = typer.Option("concept_map.html", "--output", "-o", help="Output HTML path"),
+) -> None:
+    """Export an interactive UMAP concept map to HTML."""
+    from drbrain.concept_graph.map import export_html
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        path = export_html(db, output)
+    typer.echo(f"[cg.map] wrote {path}")
