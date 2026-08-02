@@ -260,3 +260,62 @@ def cg_predict_cmd(
             f"[cg.predict] model={model} auc={metrics['auc']} "
             f"P@{top_k}={metrics[f'precision@{top_k}']} R@{top_k}={metrics[f'recall@{top_k}']}"
         )
+
+
+@cg_app.command("recommend")
+def cg_recommend_cmd(
+    ctx: typer.Context,
+    author: str = typer.Option(..., "--author", "-a", help="Author name (substring match)"),
+    top: int = typer.Option(25, "--top", "-k", help="Suggestions per section"),
+    sim_min: float = typer.Option(0.15, "--sim-min", help="Minimum similarity to keep"),
+    sim_max: float = typer.Option(0.95, "--sim-max", help="Maximum similarity to keep"),
+    max_hub_freq: int = typer.Option(
+        None, "--max-hub-freq", help="Exclude concepts above this doc_freq"
+    ),
+    curate: bool = typer.Option(False, "--curate", help="Add LLM curation paragraph"),
+    output: str = typer.Option(None, "--output", "-o", help="Write a markdown report to this path"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON"),
+) -> None:
+    """Recommend novel research-direction concept combinations for an author."""
+    from drbrain.concept_graph.recommend import llm_curation, recommend_combinations
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        result = recommend_combinations(
+            db, author, top_k=top, sim_min=sim_min, sim_max=sim_max, max_hub_freq=max_hub_freq
+        )
+        curation = ""
+        if curate:
+            models = cfg.llm.models if hasattr(cfg, "llm") else []
+            curation = llm_curation(result["own_x_other"], models)
+
+    if json_output:
+        result["curation"] = curation
+        typer.echo(json.dumps(result, ensure_ascii=False))
+        return
+
+    lines = [f"# Research directions for: {author}", ""]
+    lines.append(
+        f"Own concepts ({len(result['c_own'])}): " + ", ".join(result["c_own"]) or "(none)"
+    )
+    lines.append("")
+    lines.append("## Suggested new combinations (own × other)")
+    for item in result["own_x_other"]:
+        lines.append(f"- {item['concept']}  (score {item['score']})")
+    if result["many_own_x_other"]:
+        lines.append("")
+        lines.append("## Connects to many own concepts")
+        for item in result["many_own_x_other"]:
+            lines.append(f"- {item['concept']}  (related own: {item['related_own_count']})")
+    if curation:
+        lines.append("")
+        lines.append("## LLM curation")
+        lines.append(curation)
+    report = "\n".join(lines)
+    if output:
+        from pathlib import Path
+
+        Path(output).write_text(report, encoding="utf-8")
+        typer.echo(f"[cg.recommend] wrote {output}")
+    else:
+        typer.echo(report)
