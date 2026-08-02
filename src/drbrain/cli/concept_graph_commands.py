@@ -78,3 +78,32 @@ def cg_ingest_cmd(
             f"skipped={stats.skipped} citations={stats.citations}"
         )
     logger.info("[cg.ingest] done: {}", payload)
+
+
+@cg_app.command("build")
+def cg_build_cmd(
+    ctx: typer.Context,
+    source: str = typer.Option(
+        "terms", "--source", "-s", help="Concept source: terms | concepts | abstract"
+    ),
+    min_freq: int = typer.Option(
+        3, "--min-freq", help="Minimum document frequency to keep a concept"
+    ),
+    min_words: int = typer.Option(2, "--min-words", help="Minimum words in a concept label"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON stats"),
+) -> None:
+    """Build the concept co-occurrence graph (cliques + frequency filtering)."""
+    from drbrain.concept_graph.builder import apply_filter, build_cliques
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        edges = build_cliques(db, source=source)
+        stats = apply_filter(db, min_freq=min_freq, min_words=min_words)
+
+    payload = {"edges": edges, "total_concepts": stats["total_concepts"], "kept": stats["kept"]}
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+    else:
+        typer.echo(
+            f"[cg.build] edges={edges} concepts={stats['total_concepts']} kept={stats['kept']}"
+        )

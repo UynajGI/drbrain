@@ -131,6 +131,12 @@ def _insert_paper(db: Database, local_id: str, record: PaperRecord) -> None:
     doi = record.doi.strip().lower() if record.doi else None
     openalex_id = record.unique_id if record.source == "openalex" else None
     db.insert_paper_ids(local_id, doi=doi, openalex_id=openalex_id)
+    for kw in record.keywords:
+        if kw.strip():
+            db.insert_paper_term(local_id, kw.strip(), kind="keyword")
+    for topic in record.topics:
+        if topic.strip():
+            db.insert_paper_term(local_id, topic.strip(), kind="topic")
 
 
 def ingest_citations(

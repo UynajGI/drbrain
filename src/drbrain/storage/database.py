@@ -244,6 +244,14 @@ CREATE TABLE IF NOT EXISTS paper_citations (
     year INTEGER,
     PRIMARY KEY (citing_id, cited_id)
 );
+
+-- Source-provided keywords / topics per paper (zero-LLM concept source).
+CREATE TABLE IF NOT EXISTS paper_terms (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    term TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
+    PRIMARY KEY (local_id, term, kind)
+);
 """
 
 
@@ -435,6 +443,12 @@ class Database:
                 source TEXT DEFAULT '',
                 year INTEGER,
                 PRIMARY KEY (citing_id, cited_id)
+            );
+            CREATE TABLE IF NOT EXISTS paper_terms (
+                local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                term TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
+                PRIMARY KEY (local_id, term, kind)
             );
             """
         )
@@ -711,6 +725,19 @@ class Database:
             "VALUES (?, ?, ?, ?)",
             (citing_id, cited_id, source, year),
         )
+
+    def insert_paper_term(self, local_id: str, term: str, kind: str = "keyword") -> None:
+        """Insert a source-provided keyword/topic term for a paper."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO paper_terms (local_id, term, kind) VALUES (?, ?, ?)",
+            (local_id, term, kind),
+        )
+
+    def get_paper_terms(self, local_id: str) -> list[tuple[str, str]]:
+        """Return (term, kind) pairs for a paper."""
+        return self.conn.execute(
+            "SELECT term, kind FROM paper_terms WHERE local_id = ?", (local_id,)
+        ).fetchall()
 
     # ── Centralized write helpers (SQL-leak consolidation) ──────────────
     # These methods exist so callers outside storage/ never need to write raw
