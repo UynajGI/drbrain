@@ -29,6 +29,7 @@ from drbrain.cli.check_commands import (
     check_cmd,
     clean_cmd,
 )
+from drbrain.cli.concept_graph_commands import cg_app
 from drbrain.cli.export_commands import (
     backup_cmd,
     delete_cmd,
@@ -156,6 +157,7 @@ app.command("reason")(reason_cmd)
 app.add_typer(session_app, name="session")
 app.add_typer(graph_app, name="graph")
 app.add_typer(ws_app, name="ws")
+app.add_typer(cg_app, name="cg")
 
 if __name__ == "__main__":
     app()

@@ -193,6 +193,65 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_messages_session
     ON agent_messages(session_id, seq);
+
+-- ── Concept graph layer (v9) ───────────────────────────────────
+-- Provenance mapping for corpus ingested from external academic APIs
+-- (Sciverse / OpenAlex / ...). Enables unique_id-first dedup + incremental ingest.
+CREATE TABLE IF NOT EXISTS corpus_sources (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    source TEXT NOT NULL,
+    source_unique_id TEXT NOT NULL,
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source, source_unique_id)
+);
+
+-- Concept graph nodes (unique normalized concept labels + aggregated stats).
+CREATE TABLE IF NOT EXISTS concept_nodes (
+    node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL UNIQUE,
+    doc_freq INTEGER DEFAULT 0,
+    word_count INTEGER DEFAULT 0,
+    first_year INTEGER,
+    last_year INTEGER
+);
+
+-- Concept co-occurrence edges, timestamped by publication year. Each paper
+-- contributes a clique over its concepts; weight accumulates on re-assertion.
+CREATE TABLE IF NOT EXISTS concept_cooccurrence (
+    src_label TEXT NOT NULL,
+    dst_label TEXT NOT NULL,
+    year INTEGER,
+    paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    weight REAL DEFAULT 1.0,
+    PRIMARY KEY (src_label, dst_label, year, paper_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cooccurrence_year ON concept_cooccurrence(year);
+CREATE INDEX IF NOT EXISTS idx_cooccurrence_src ON concept_cooccurrence(src_label);
+
+-- Per-concept semantic embeddings (averaged across source abstracts).
+CREATE TABLE IF NOT EXISTS concept_embeddings (
+    label TEXT PRIMARY KEY,
+    vec BLOB NOT NULL,
+    dim INTEGER NOT NULL,
+    model TEXT DEFAULT ''
+);
+
+-- Paper-level citation edges harvested from external APIs.
+CREATE TABLE IF NOT EXISTS paper_citations (
+    citing_id TEXT NOT NULL,
+    cited_id TEXT NOT NULL,
+    source TEXT DEFAULT '',
+    year INTEGER,
+    PRIMARY KEY (citing_id, cited_id)
+);
+
+-- Source-provided keywords / topics per paper (zero-LLM concept source).
+CREATE TABLE IF NOT EXISTS paper_terms (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    term TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
+    PRIMARY KEY (local_id, term, kind)
+);
 """
 
 
@@ -230,6 +289,7 @@ class Database:
             (6, "agent_sessions", self._migrate_add_agent_sessions),
             (7, "indexes_v2", self._migrate_add_indexes_v2),
             (8, "change_tracking", self._migrate_add_change_tracking),
+            (9, "concept_graph", self._migrate_add_concept_graph),
         ]
 
         for version, name, fn in migrations:
@@ -335,6 +395,62 @@ class Database:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_updated_at ON edges(updated_at)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_concepts_updated_at ON concepts(updated_at)"
+        )
+
+    def _migrate_add_concept_graph(self) -> None:
+        """Create concept graph layer tables (v9). Idempotent.
+
+        Fresh databases already get these tables via SCHEMA_SQL; this migration
+        records v9 in schema_versions for pre-existing databases and re-asserts
+        the tables/indexes with IF NOT EXISTS for safety.
+        """
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS corpus_sources (
+                local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                source TEXT NOT NULL,
+                source_unique_id TEXT NOT NULL,
+                ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source, source_unique_id)
+            );
+            CREATE TABLE IF NOT EXISTS concept_nodes (
+                node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL UNIQUE,
+                doc_freq INTEGER DEFAULT 0,
+                word_count INTEGER DEFAULT 0,
+                first_year INTEGER,
+                last_year INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS concept_cooccurrence (
+                src_label TEXT NOT NULL,
+                dst_label TEXT NOT NULL,
+                year INTEGER,
+                paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                weight REAL DEFAULT 1.0,
+                PRIMARY KEY (src_label, dst_label, year, paper_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cooccurrence_year ON concept_cooccurrence(year);
+            CREATE INDEX IF NOT EXISTS idx_cooccurrence_src ON concept_cooccurrence(src_label);
+            CREATE TABLE IF NOT EXISTS concept_embeddings (
+                label TEXT PRIMARY KEY,
+                vec BLOB NOT NULL,
+                dim INTEGER NOT NULL,
+                model TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS paper_citations (
+                citing_id TEXT NOT NULL,
+                cited_id TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                year INTEGER,
+                PRIMARY KEY (citing_id, cited_id)
+            );
+            CREATE TABLE IF NOT EXISTS paper_terms (
+                local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                term TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
+                PRIMARY KEY (local_id, term, kind)
+            );
+            """
         )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -530,6 +646,98 @@ class Database:
             (pattern_type, description, confidence),
         )
         return cur.lastrowid or 0
+
+    # -- Concept graph layer write helpers (v9) -------------------------
+
+    def upsert_concept_node(
+        self,
+        label: str,
+        doc_freq: int = 0,
+        word_count: int = 0,
+        first_year: int | None = None,
+        last_year: int | None = None,
+    ) -> None:
+        """Insert a concept node or update its aggregated statistics."""
+        self.conn.execute(
+            "INSERT INTO concept_nodes (label, doc_freq, word_count, first_year, last_year) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(label) DO UPDATE SET "
+            "doc_freq = excluded.doc_freq, word_count = excluded.word_count, "
+            "first_year = excluded.first_year, last_year = excluded.last_year",
+            (label, doc_freq, word_count, first_year, last_year),
+        )
+
+    def insert_cooccurrence(
+        self,
+        src_label: str,
+        dst_label: str,
+        year: int | None,
+        paper_id: str,
+        weight: float = 1.0,
+    ) -> None:
+        """Insert a co-occurrence edge; accumulate weight on re-assertion."""
+        self.conn.execute(
+            "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(src_label, dst_label, year, paper_id) "
+            "DO UPDATE SET weight = concept_cooccurrence.weight + excluded.weight",
+            (src_label, dst_label, year, paper_id, weight),
+        )
+
+    def insert_concept_embedding(self, label: str, vec: bytes, dim: int, model: str = "") -> None:
+        """Insert or replace the semantic embedding for a concept label."""
+        self.conn.execute(
+            "INSERT INTO concept_embeddings (label, vec, dim, model) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(label) DO UPDATE SET vec = excluded.vec, dim = excluded.dim, "
+            "model = excluded.model",
+            (label, vec, dim, model),
+        )
+
+    def insert_corpus_source(self, local_id: str, source: str, source_unique_id: str) -> None:
+        """Record the external-source provenance for an ingested paper."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO corpus_sources (local_id, source, source_unique_id) "
+            "VALUES (?, ?, ?)",
+            (local_id, source, source_unique_id),
+        )
+
+    def find_corpus_source(self, source: str, source_unique_id: str) -> str | None:
+        """Return the local_id already ingested for a source unique_id, if any."""
+        row = self.conn.execute(
+            "SELECT local_id FROM corpus_sources WHERE source = ? AND source_unique_id = ?",
+            (source, source_unique_id),
+        ).fetchone()
+        return row[0] if row else None
+
+    def find_local_id_by_doi(self, doi: str) -> str | None:
+        """Return the local_id mapped to a DOI, if any (secondary dedup key)."""
+        row = self.conn.execute(
+            "SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def insert_paper_citation(
+        self, citing_id: str, cited_id: str, source: str = "", year: int | None = None
+    ) -> None:
+        """Insert a paper-level citation edge (citing -> cited)."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO paper_citations (citing_id, cited_id, source, year) "
+            "VALUES (?, ?, ?, ?)",
+            (citing_id, cited_id, source, year),
+        )
+
+    def insert_paper_term(self, local_id: str, term: str, kind: str = "keyword") -> None:
+        """Insert a source-provided keyword/topic term for a paper."""
+        self.conn.execute(
+            "INSERT OR IGNORE INTO paper_terms (local_id, term, kind) VALUES (?, ?, ?)",
+            (local_id, term, kind),
+        )
+
+    def get_paper_terms(self, local_id: str) -> list[tuple[str, str]]:
+        """Return (term, kind) pairs for a paper."""
+        return self.conn.execute(
+            "SELECT term, kind FROM paper_terms WHERE local_id = ?", (local_id,)
+        ).fetchall()
 
     # ── Centralized write helpers (SQL-leak consolidation) ──────────────
     # These methods exist so callers outside storage/ never need to write raw
