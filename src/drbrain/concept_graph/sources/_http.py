@@ -24,7 +24,7 @@ from drbrain.utils.http_retry import http_retry
 class SciverseAPIError(RuntimeError):
     """Raised when a Sciverse call fails (HTTP error or non-success envelope)."""
 
-    def __init__(self, message: str, *, status: int | None = None, code: str | None = None):
+    def __init__(self, message: str, *, status: int | None = None, code: int | str | None = None):
         super().__init__(message)
         self.status = status
         self.code = code
@@ -113,11 +113,21 @@ class SciverseClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         url = f"{self.base_url}/{path.lstrip('/')}"
+        retryable = {429, 502, 503, 504}
 
         @http_retry(max_retries=3, base_delay=1.0)
         def _do_request() -> requests.Response:
             self.limiter.acquire()
-            return self._session.request(method, url, timeout=self.timeout, **kwargs)
+            resp = self._session.request(method, url, timeout=self.timeout, **kwargs)
+            # Raise retryable statuses INSIDE the wrapper so http_retry actually
+            # backs off and retries (a returned response is treated as success).
+            if resp.status_code in retryable:
+                raise SciverseAPIError(
+                    f"Sciverse {method} {path}: HTTP {resp.status_code} (retryable)",
+                    status=resp.status_code,
+                    code=resp.status_code,
+                )
+            return resp
 
         resp = _do_request()
         if resp.status_code >= 400:

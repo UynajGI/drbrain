@@ -169,12 +169,18 @@ def ingest_citations(
         relations = source.fetch_relations(source_unique_id)
         if relations is None:
             continue
-        for item in relations.references + relations.citations:
+        # references: this paper cites item.id  ->  (local_id -> item.id)
+        for item in relations.references:
             cited_id = item.get("id")
-            if not cited_id:
-                continue
-            db.insert_paper_citation(local_id, cited_id, source=source.name)
-            stats.citations += 1
+            if cited_id:
+                db.insert_paper_citation(local_id, cited_id, source=source.name)
+                stats.citations += 1
+        # citations: item.id cites this paper  ->  (item.id -> local_id)
+        for item in relations.citations:
+            citing_id = item.get("id")
+            if citing_id:
+                db.insert_paper_citation(citing_id, local_id, source=source.name)
+                stats.citations += 1
         stats.fetched += 1
         if stats.fetched % commit_every == 0:
             db.conn.commit()

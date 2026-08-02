@@ -134,6 +134,7 @@ def build_cliques(
     source: str = "terms",
     paper_ids: list[str] | None = None,
     commit_every: int = 200,
+    rebuild: bool = True,
 ) -> int:
     """Build co-occurrence clique edges for each paper's concept set.
 
@@ -145,11 +146,16 @@ def build_cliques(
         source: Concept source (see :func:`concepts_for_paper`).
         paper_ids: Restrict to these papers (default: all with a year).
         commit_every: Commit cadence.
+        rebuild: When doing a full build (``paper_ids is None``), clear existing
+            co-occurrence edges first so reruns are idempotent (weights do not
+            accumulate). Ignored for incremental ``paper_ids`` builds.
 
     Returns:
         The number of edge upserts performed.
     """
     if paper_ids is None:
+        if rebuild:
+            db.conn.execute("DELETE FROM concept_cooccurrence")
         rows = db.conn.execute("SELECT local_id, year FROM papers").fetchall()
     else:
         placeholders = ",".join("?" * len(paper_ids))
@@ -193,17 +199,18 @@ def apply_filter(db: Database, *, min_freq: int = 3, min_words: int = 2) -> dict
     Returns:
         Stats dict with ``total_concepts`` and ``kept`` counts.
     """
-    # Accurate doc_freq: count distinct papers each concept appears in (as either
-    # endpoint of a co-occurrence edge).
+    # Accurate doc_freq: count distinct papers each concept appears in, across
+    # BOTH endpoint roles. A UNION ALL of (label, paper_id) from src and dst sides
+    # followed by COUNT(DISTINCT paper_id) yields the true union of paper sets
+    # (a plain max() of per-role counts would undercount).
     freq_rows = db.conn.execute(
-        "SELECT src_label, COUNT(DISTINCT paper_id) FROM concept_cooccurrence GROUP BY src_label"
+        "SELECT label, COUNT(DISTINCT paper_id) FROM ("
+        "  SELECT src_label AS label, paper_id FROM concept_cooccurrence"
+        "  UNION ALL"
+        "  SELECT dst_label AS label, paper_id FROM concept_cooccurrence"
+        ") GROUP BY label"
     ).fetchall()
-    dst_freq = db.conn.execute(
-        "SELECT dst_label, COUNT(DISTINCT paper_id) FROM concept_cooccurrence GROUP BY dst_label"
-    ).fetchall()
-    doc_freq: dict[str, int] = {}
-    for label, cnt in list(freq_rows) + list(dst_freq):
-        doc_freq[label] = max(doc_freq.get(label, 0), cnt)
+    doc_freq: dict[str, int] = {label: cnt for label, cnt in freq_rows}
 
     year_rows = db.conn.execute(
         "SELECT src_label, MIN(year), MAX(year) FROM concept_cooccurrence GROUP BY src_label"
@@ -219,6 +226,9 @@ def apply_filter(db: Database, *, min_freq: int = 3, min_words: int = 2) -> dict
         if mx is not None:
             last_year[label] = max(last_year.get(label, mx), mx)
 
+    # Recompute the filtered node set from scratch so repeated `cg build` runs are
+    # idempotent (stale nodes from a previous run are dropped).
+    db.conn.execute("DELETE FROM concept_nodes")
     kept = 0
     for label, freq in doc_freq.items():
         word_count = len(label.split())

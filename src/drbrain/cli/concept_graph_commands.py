@@ -145,7 +145,9 @@ def cg_neighbors_cmd(
         results = nearest_neighbors(db, concept, k=top)
     if json_output:
         typer.echo(
-            json.dumps([{"label": lab, "score": round(s, 4)} for lab, s in results], ensure_ascii=False)
+            json.dumps(
+                [{"label": lab, "score": round(s, 4)} for lab, s in results], ensure_ascii=False
+            )
         )
         return
     if not results:
@@ -188,24 +190,51 @@ def cg_predict_cmd(
     from drbrain.concept_graph.dataset import feature_years, temporal_pairs
     from drbrain.concept_graph.embeddings import load_concept_embeddings
     from drbrain.concept_graph.eval import precision_recall_at_k, roc_auc, stratify_by_dprev
-    from drbrain.concept_graph.features import semantic_features, topo_features, yearly_subgraph
+    from drbrain.concept_graph.features import (
+        precompute_yearly_subgraphs,
+        semantic_features,
+        topo_features,
+        yearly_subgraph,
+    )
     from drbrain.concept_graph.link_predict import MixtureEnsemble, MLPLinkClassifier
 
     if model not in ("baseline", "embed", "mixture", "gnn"):
         typer.echo(f"Invalid model '{model}'.", err=True)
         raise typer.Exit(1)
 
+    if not (feat_cutoff <= train_end < test_end):
+        typer.echo("Require --feat-cutoff <= --train-end < --test-end.", err=True)
+        raise typer.Exit(1)
+
     cfg = ctx.obj["config"]
     years = feature_years(feat_cutoff)
     with open_db(cfg) as db:
-        train = temporal_pairs(db, feat_cutoff, train_end, neg_ratio=neg_ratio)
-        test = temporal_pairs(db, train_end, test_end, neg_ratio=neg_ratio)
+        # Restrict prediction to the filtered concept set reported by `cg build`
+        # (None when concept_nodes is empty -> no whitelist).
+        node_labels = {
+            r[0] for r in db.conn.execute("SELECT label FROM concept_nodes").fetchall()
+        } or None
+        train = temporal_pairs(db, feat_cutoff, train_end, neg_ratio=neg_ratio, labels=node_labels)
+        # Held-out test set: exclude every training pair and draw a fresh seed so
+        # test negatives are disjoint from what the classifier saw during fitting.
+        train_pair_set = {frozenset(p) for p in train["positives"]} | {
+            frozenset(p) for p in train["negatives"]
+        }
+        test = temporal_pairs(
+            db,
+            train_end,
+            test_end,
+            neg_ratio=neg_ratio,
+            labels=node_labels,
+            seed=43,
+            exclude_pairs=train_pair_set,
+        )
         embeddings = load_concept_embeddings(db)
 
         def _pairs_labels(data: dict) -> tuple[list[tuple[str, str]], np.ndarray]:
             pairs = list(data["positives"]) + list(data["negatives"])
-            labels = np.array([1] * len(data["positives"]) + [0] * len(data["negatives"]))
-            return pairs, labels
+            labels_arr = np.array([1] * len(data["positives"]) + [0] * len(data["negatives"]))
+            return pairs, labels_arr
 
         train_pairs, y_train = _pairs_labels(train)
         test_pairs, y_test = _pairs_labels(test)
@@ -217,8 +246,12 @@ def cg_predict_cmd(
             use_sem = False
             use_topo = True
 
+        # Build each year's subgraph once and reuse across all pairs (avoids an
+        # N-pairs x N-years rebuild storm).
+        graphs = precompute_yearly_subgraphs(db, years, labels=node_labels)
+
         def _topo_matrix(pairs):
-            return np.array([topo_features(db, u, v, years) for u, v in pairs])
+            return np.array([topo_features(db, u, v, years, graphs=graphs) for u, v in pairs])
 
         def _sem_matrix(pairs):
             return np.array([semantic_features(u, v, embeddings) for u, v in pairs])
@@ -242,7 +275,7 @@ def cg_predict_cmd(
             clf = MLPLinkClassifier().fit(_topo_matrix(train_pairs), y_train)
             scores = clf.predict_proba(_topo_matrix(test_pairs))
 
-        g_train_end = yearly_subgraph(db, train_end)
+        g_train_end = yearly_subgraph(db, train_end, labels=node_labels)
         prec, rec = precision_recall_at_k(y_test, scores, top_k)
         metrics = {
             "model": model,
@@ -303,9 +336,8 @@ def cg_recommend_cmd(
         return
 
     lines = [f"# Research directions for: {author}", ""]
-    lines.append(
-        f"Own concepts ({len(result['c_own'])}): " + ", ".join(result["c_own"]) or "(none)"
-    )
+    own = ", ".join(result["c_own"]) or "(none)"
+    lines.append(f"Own concepts ({len(result['c_own'])}): {own}")
     lines.append("")
     lines.append("## Suggested new combinations (own × other)")
     for item in result["own_x_other"]:

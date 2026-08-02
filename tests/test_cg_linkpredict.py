@@ -28,7 +28,9 @@ def _tmp_db() -> tuple[Database, tempfile.TemporaryDirectory]:
 def _seed_graph(db: Database) -> None:
     # before (<=2016): a-b, b-c, c-d ; test window adds a-c (2018)
     for src, dst, year in [("a", "b", 2015), ("b", "c", 2015), ("c", "d", 2015), ("a", "c", 2018)]:
-        db.insert_cooccurrence(src, dst, year, f"p-{src}{dst}")
+        pid = f"p-{src}{dst}"
+        db.insert_paper(pid, f"Paper {pid}", year, "extracted")
+        db.insert_cooccurrence(src, dst, year, pid)
     db.conn.commit()
 
 

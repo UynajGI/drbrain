@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS concept_cooccurrence (
     src_label TEXT NOT NULL,
     dst_label TEXT NOT NULL,
     year INTEGER,
-    paper_id TEXT NOT NULL,
+    paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
     weight REAL DEFAULT 1.0,
     PRIMARY KEY (src_label, dst_label, year, paper_id)
 );
@@ -425,7 +425,7 @@ class Database:
                 src_label TEXT NOT NULL,
                 dst_label TEXT NOT NULL,
                 year INTEGER,
-                paper_id TEXT NOT NULL,
+                paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
                 weight REAL DEFAULT 1.0,
                 PRIMARY KEY (src_label, dst_label, year, paper_id)
             );

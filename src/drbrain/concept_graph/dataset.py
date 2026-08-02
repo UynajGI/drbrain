@@ -24,6 +24,7 @@ def temporal_pairs(
     neg_ratio: int = 1,
     seed: int = 42,
     labels: set[str] | None = None,
+    exclude_pairs: set[frozenset] | None = None,
 ) -> dict:
     """Build positive (emerging) and negative node pairs for link prediction.
 
@@ -34,12 +35,15 @@ def temporal_pairs(
         neg_ratio: Number of negatives sampled per positive.
         seed: RNG seed.
         labels: Optional node whitelist.
+        exclude_pairs: Optional set of ``frozenset`` pairs to never emit as
+            negatives (used to keep test negatives disjoint from training).
 
     Returns:
         Dict with ``positives``, ``negatives`` (lists of ``(u, v)`` tuples),
         ``g_before`` (NetworkX graph) and ``nodes``.
     """
     rng = random.Random(seed)
+    excluded = exclude_pairs or set()
     g_before = yearly_subgraph(db, train_end, labels=labels)
     g_test = yearly_subgraph(db, test_end, labels=labels)
 
@@ -61,7 +65,7 @@ def temporal_pairs(
         attempts += 1
         u, v = rng.sample(nodes, 2)
         pair = frozenset((u, v))
-        if pair in before_edges or pair in positive_lookup:
+        if pair in before_edges or pair in positive_lookup or pair in excluded:
             continue
         if u not in node_set or v not in node_set:
             continue

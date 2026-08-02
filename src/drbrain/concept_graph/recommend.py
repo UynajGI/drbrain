@@ -142,7 +142,9 @@ def recommend_combinations(
     own_x_other = [{"concept": lab, "score": round(s, 4)} for lab, s, _ in scored[:top_k]]
 
     many_own.sort(key=lambda t: t[1], reverse=True)
-    many_section = [{"concept": lab, "related_own_count": n} for lab, n in many_own if n >= 2][:top_k]
+    many_section = [{"concept": lab, "related_own_count": n} for lab, n in many_own if n >= 2][
+        :top_k
+    ]
 
     logger.info(
         "[cg.recommend] author='{}' c_own={} suggestions={}", author, len(c_own), len(own_x_other)

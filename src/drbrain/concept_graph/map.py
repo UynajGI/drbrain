@@ -81,7 +81,9 @@ def export_html(
 
 
 def _render_html(points: list[dict]) -> str:
-    data_json = json.dumps(points, ensure_ascii=False)
+    # Escape "<" so a malicious label containing "</script>" cannot terminate the
+    # inline script and inject JS (labels come from external corpus metadata).
+    data_json = json.dumps(points, ensure_ascii=False).replace("<", "\\u003c")
     title = html.escape("DrBrain Concept Map")
     return f"""<!DOCTYPE html>
 <html lang="en">

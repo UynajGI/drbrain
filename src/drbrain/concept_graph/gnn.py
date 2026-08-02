@@ -134,7 +134,11 @@ class GNNLinkClassifier:
         torch = require_torch()
         torch.manual_seed(self.seed)
 
-        nodes = sorted({n for pair in pairs for n in pair})
+        # Vocabulary = ALL nodes in the cutoff graph (so message passing sees the
+        # full neighbourhood and test pairs over valid nodes get real scores),
+        # unioned with any training-pair endpoints.
+        cutoff_nodes = set(yearly_subgraph(db, cutoff).nodes())
+        nodes = sorted(cutoff_nodes | {n for pair in pairs for n in pair})
         self._nodes = nodes
         self._label2idx = {lab: i for i, lab in enumerate(nodes)}
         x_np = build_node_topo_features(db, nodes, years)
@@ -155,8 +159,8 @@ class GNNLinkClassifier:
         pair_idx_t = torch.tensor(pair_idx, dtype=torch.long)
         y_t = torch.tensor(y, dtype=torch.float32)
 
-        for _ in range(self.epochs):
-            order = oversample_indices(y, pos_fraction=self.pos_fraction, seed=self.seed)
+        for epoch in range(self.epochs):
+            order = oversample_indices(y, pos_fraction=self.pos_fraction, seed=self.seed + epoch)
             emb = encoder(x, self._adj)
             sel = pair_idx_t[order]
             pair_emb = torch.cat([emb[sel[:, 0]], emb[sel[:, 1]]], dim=1)
