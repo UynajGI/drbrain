@@ -66,6 +66,9 @@ class ApiConfig(_ConfigBase):
     cache_ttl: int = 86400
     crossref_email: str = ""
     openalex_token: str = ""
+    sciverse_token: str = ""
+    sciverse_base_url: str = "https://api.sciverse.space"
+    sciverse_rate_limit: int = 30
 
 
 @dataclass
