@@ -95,6 +95,9 @@ api:
   cache_ttl: 86400 # API cache TTL in seconds (24h)
   crossref_email: "${CROSSREF_EMAIL}" # optional, for polite pool
   openalex_token: "${OPENALEX_TOKEN}" # optional, for higher rate limits
+  sciverse_token: "${SCIVERSE_TOKEN}" # Sciverse API token — https://sciverse.opendatalab.com/tokens
+  sciverse_base_url: "https://api.sciverse.space" # Sciverse API base URL
+  sciverse_rate_limit: 30 # Sciverse requests/minute (account default)
 
 # ── Search ───────────────────────────────────────────────────────
 bm25:
