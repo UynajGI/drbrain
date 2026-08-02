@@ -177,7 +177,7 @@ def cg_predict_cmd(
     ),
     train_end: int = typer.Option(..., "--train-end", help="End of training label window"),
     test_end: int = typer.Option(..., "--test-end", help="End of test label window"),
-    model: str = typer.Option("mixture", "--model", help="baseline | embed | mixture"),
+    model: str = typer.Option("mixture", "--model", help="baseline | embed | mixture | gnn"),
     neg_ratio: int = typer.Option(1, "--neg-ratio", help="Negatives per positive"),
     top_k: int = typer.Option(50, "--top-k", help="k for Precision/Recall@k"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON metrics"),
@@ -191,7 +191,7 @@ def cg_predict_cmd(
     from drbrain.concept_graph.features import semantic_features, topo_features, yearly_subgraph
     from drbrain.concept_graph.link_predict import MixtureEnsemble, MLPLinkClassifier
 
-    if model not in ("baseline", "embed", "mixture"):
+    if model not in ("baseline", "embed", "mixture", "gnn"):
         typer.echo(f"Invalid model '{model}'.", err=True)
         raise typer.Exit(1)
 
@@ -223,7 +223,15 @@ def cg_predict_cmd(
         def _sem_matrix(pairs):
             return np.array([semantic_features(u, v, embeddings) for u, v in pairs])
 
-        if use_topo and use_sem:
+        if model == "gnn":
+            from drbrain.concept_graph.gnn import GNNLinkClassifier, is_available
+
+            if not is_available():
+                typer.echo("[cg.predict] GNN needs PyTorch: pip install drbrain[gnn]", err=True)
+                raise typer.Exit(1)
+            gnn = GNNLinkClassifier().fit(db, train_pairs, y_train, years, feat_cutoff)
+            scores = gnn.predict_proba(test_pairs)
+        elif use_topo and use_sem:
             ens = MixtureEnsemble(MLPLinkClassifier(), MLPLinkClassifier(), weight_a=0.6)
             ens.fit(_topo_matrix(train_pairs), _sem_matrix(train_pairs), y_train)
             scores = ens.predict_proba(_topo_matrix(test_pairs), _sem_matrix(test_pairs))
