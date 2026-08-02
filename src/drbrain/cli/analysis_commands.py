@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -291,8 +292,22 @@ def ask_cmd(
     ),
     top_k: int = typer.Option(5, "--top", "-k", help="Number of graph concepts to retrieve"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    hyde: bool = typer.Option(
+        False,
+        "--hyde",
+        help="Reformulate the query via HyDE (one extra LLM call) before retrieval",
+    ),
+    rerank: bool = typer.Option(
+        False, "--rerank", help="Apply cross-encoder rerank (auto no-op if unavailable)"
+    ),
+    rrf_k: int = typer.Option(60, "--rrf-k", help="RRF damping constant"),
 ):
     """Ask a question in natural language — searches the KG and returns an answer.
+
+    Retrieval uses hybrid search (BM25 + embedding fused via RRF) at the paper
+    level, then expands each paper's concepts for graph context. ``--hyde``
+    reformulates the query with a hypothetical document first; ``--rerank``
+    applies a cross-encoder. When embedding is disabled, runs in pure-BM25 mode.
 
     Example: drbrain ask "Is attention better than CNN for NLP?"
     """
@@ -303,39 +318,92 @@ def ask_cmd(
         top_k = int(top_k.default or 5)
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
+    if isinstance(hyde, typer.models.OptionInfo):
+        hyde = hyde.default
+    if isinstance(rerank, typer.models.OptionInfo):
+        rerank = rerank.default
+    if isinstance(rrf_k, typer.models.OptionInfo):
+        rrf_k = rrf_k.default
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
 
-    from drbrain.query.bm25 import build_bm25_index
+    models = cfg.llm.models if hasattr(cfg, "llm") else cfg.get("llm", {}).get("models", [])
 
-    idx = build_bm25_index(db)
-    results = idx.search(question_text, limit=top_k)
+    # ── Optional HyDE query transform (LLM; auto-falls-back on failure) ──
+    query_text = question_text
+    if hyde:
+        from drbrain.query.query_transform import ahyde_transform
 
-    if not results:
+        try:
+            hyde_result = asyncio.run(ahyde_transform(question_text, models))
+            query_text = hyde_result.query  # original on failure, hypothesis on success
+        except Exception:
+            # Defensive: ahyde_transform already swallows caller errors, but the
+            # CLI must never crash the whole query because of a HyDE hiccup.
+            query_text = question_text
+
+    # ── Hybrid retrieval (BM25 + embedding RRF; pure BM25 when embed disabled) ──
+    from drbrain.config import EmbedConfig
+    from drbrain.query.hybrid_retrieval import hybrid_search
+
+    embed_cfg_raw = (
+        cfg.get("embed", EmbedConfig())
+        if isinstance(cfg, dict)
+        else getattr(cfg, "embed", EmbedConfig())
+    )
+    embed_cfg = EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
+    db_path_val = cfg["db"]["path"] if isinstance(cfg, dict) else cfg.db.path
+
+    hits = hybrid_search(
+        query_text,
+        db,
+        Path(db_path_val),
+        embed_cfg=embed_cfg,
+        top_k=top_k,
+        rerank=rerank,
+        rrf_k=rrf_k,
+    )
+
+    if not hits:
         db.close()
         typer.echo("No relevant concepts found in the knowledge graph.")
         return
 
+    # ── Build context: expand each paper hit into its concepts ──
     graph = GraphEngine()
     graph.load_from_db(db)
-    context_parts = []
-    for r in results[:top_k]:
-        label = r.get("label", "")
-        ctype = r.get("type", "")
-        paper_id = r.get("local_id", "")
+    context_parts: list[str] = []
+    seed_labels: list[str] = []
+    for hit in hits:
+        paper_id = hit.paper_id
         paper_info = db.get_paper(paper_id) if paper_id else {}
         paper_title = paper_info.get("title", paper_id) if paper_info else paper_id
-        context_parts.append(f"- {label} ({ctype}) from {paper_title}")
-        if label in graph.graph:
-            neighbors = graph.traverse({label}, hops=1, direction="both")[:5]
-            for n in neighbors:
-                rel = n.path[0].relation.replace("_", " ") if n.path else "related to"
-                context_parts.append(f"  --{rel}--> {n.target}")
+        concepts = db.get_concepts_by_paper(paper_id) if paper_id else []
+        if not concepts:
+            # Fallback: use the best BM25 row's label/type from the hit payload
+            row = hit.payload.get("bm25", hit.payload) if isinstance(hit.payload, dict) else {}
+            label = row.get("label", "")
+            ctype = row.get("type", "")
+            if label:
+                context_parts.append(f"- {label} ({ctype}) from {paper_title}")
+                seed_labels.append(label)
+            continue
+        for c in concepts:
+            label = c.get("label", "")
+            ctype = c.get("type", "")
+            if not label:
+                continue
+            context_parts.append(f"- {label} ({ctype}) from {paper_title}")
+            seed_labels.append(label)
+            if label in graph.graph:
+                neighbors = graph.traverse({label}, hops=1, direction="both")[:5]
+                for n in neighbors:
+                    rel = n.path[0].relation.replace("_", " ") if n.path else "related to"
+                    context_parts.append(f"  --{rel}--> {n.target}")
 
-    # Inject closure-inferred edges for BM25-matched concept labels
-    seed_labels = [r.get("label", "") for r in results[:top_k] if r.get("label")]
+    # Inject closure-inferred edges for matched concept labels
     if seed_labels:
         closure_ctx = _build_closure_context(graph, seed_labels, top_k=top_k)
         if closure_ctx:
@@ -344,7 +412,6 @@ def ask_cmd(
 
     context = "\n".join(context_parts[:50])
 
-    models = cfg.llm.models if hasattr(cfg, "llm") else cfg.get("llm", {}).get("models", [])
     if not models:
         db.close()
         typer.echo("No LLM models configured. Showing graph context only:\n\n" + context)
@@ -377,7 +444,7 @@ def ask_cmd(
 
     typer.echo(f"\nQ: {question_text}\n")
     typer.echo(f"A: {answer}\n")
-    typer.echo(f"(based on {len(results)} graph concepts)")
+    typer.echo(f"(based on {len(hits)} papers, {len(seed_labels)} concepts)")
 
 
 def evolve_cmd(

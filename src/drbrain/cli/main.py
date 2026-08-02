@@ -60,6 +60,7 @@ from drbrain.cli.ingest_commands import (
 )
 from drbrain.cli.query_commands import (
     fsearch_cmd,
+    hybrid_cmd,
     index_cmd,
     list_cmd,
     query_cmd,
@@ -117,6 +118,7 @@ app.command("index")(index_cmd)
 app.command("query")(query_cmd)
 app.command("fsearch")(fsearch_cmd)
 app.command("search")(search_cmd)
+app.command("hybrid")(hybrid_cmd)
 app.command("export")(export_cmd)
 app.command("export-okf")(export_okf_cmd)
 app.command("queue")(queue_cmd)
