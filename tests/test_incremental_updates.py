@@ -28,12 +28,12 @@ from drbrain.storage.database import Database
 
 
 def test_v8_migration_adds_updated_at_to_fresh_db(tmp_db):
-    """A brand-new DB has updated_at on papers/concepts/edges and is at v8."""
+    """A brand-new DB has updated_at on papers/concepts/edges and is at >= v8."""
     for table in ("papers", "concepts", "edges"):
         cols = [r[1] for r in tmp_db.conn.execute(f"PRAGMA table_info({table})").fetchall()]
         assert "updated_at" in cols, f"{table}.updated_at missing"
     version = tmp_db.conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
-    assert version == 8
+    assert version >= 8
 
 
 def test_v8_migration_upgrades_old_db(tmp_path: Path):
@@ -72,7 +72,7 @@ def test_v8_migration_upgrades_old_db(tmp_path: Path):
         cols = [r[1] for r in db.conn.execute(f"PRAGMA table_info({table})").fetchall()]
         assert "updated_at" in cols
     version = db.conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
-    assert version == 8
+    assert version >= 8
     # Data preserved, backfilled with a timestamp
     row = db.conn.execute(
         "SELECT title, status, updated_at FROM papers WHERE local_id = ?", ("legacy1",)

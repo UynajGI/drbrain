@@ -145,7 +145,7 @@ def cg_neighbors_cmd(
         results = nearest_neighbors(db, concept, k=top)
     if json_output:
         typer.echo(
-            json.dumps([{"label": l, "score": round(s, 4)} for l, s in results], ensure_ascii=False)
+            json.dumps([{"label": lab, "score": round(s, 4)} for lab, s in results], ensure_ascii=False)
         )
         return
     if not results:
