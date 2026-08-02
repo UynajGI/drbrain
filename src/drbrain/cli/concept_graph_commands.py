@@ -167,3 +167,96 @@ def cg_map_cmd(
     with open_db(cfg) as db:
         path = export_html(db, output)
     typer.echo(f"[cg.map] wrote {path}")
+
+
+@cg_app.command("predict")
+def cg_predict_cmd(
+    ctx: typer.Context,
+    feat_cutoff: int = typer.Option(
+        ..., "--feat-cutoff", help="Feature snapshot year (G_t, leakage-free)"
+    ),
+    train_end: int = typer.Option(..., "--train-end", help="End of training label window"),
+    test_end: int = typer.Option(..., "--test-end", help="End of test label window"),
+    model: str = typer.Option("mixture", "--model", help="baseline | embed | mixture"),
+    neg_ratio: int = typer.Option(1, "--neg-ratio", help="Negatives per positive"),
+    top_k: int = typer.Option(50, "--top-k", help="k for Precision/Recall@k"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON metrics"),
+) -> None:
+    """Train/evaluate temporal link prediction on the concept graph."""
+    import numpy as np
+
+    from drbrain.concept_graph.dataset import feature_years, temporal_pairs
+    from drbrain.concept_graph.embeddings import load_concept_embeddings
+    from drbrain.concept_graph.eval import precision_recall_at_k, roc_auc, stratify_by_dprev
+    from drbrain.concept_graph.features import semantic_features, topo_features, yearly_subgraph
+    from drbrain.concept_graph.link_predict import MixtureEnsemble, MLPLinkClassifier
+
+    if model not in ("baseline", "embed", "mixture"):
+        typer.echo(f"Invalid model '{model}'.", err=True)
+        raise typer.Exit(1)
+
+    cfg = ctx.obj["config"]
+    years = feature_years(feat_cutoff)
+    with open_db(cfg) as db:
+        train = temporal_pairs(db, feat_cutoff, train_end, neg_ratio=neg_ratio)
+        test = temporal_pairs(db, train_end, test_end, neg_ratio=neg_ratio)
+        embeddings = load_concept_embeddings(db)
+
+        def _pairs_labels(data: dict) -> tuple[list[tuple[str, str]], np.ndarray]:
+            pairs = list(data["positives"]) + list(data["negatives"])
+            labels = np.array([1] * len(data["positives"]) + [0] * len(data["negatives"]))
+            return pairs, labels
+
+        train_pairs, y_train = _pairs_labels(train)
+        test_pairs, y_test = _pairs_labels(test)
+
+        use_topo = model in ("baseline", "mixture")
+        use_sem = model in ("embed", "mixture") and bool(embeddings)
+        if model in ("embed", "mixture") and not embeddings:
+            typer.echo("[cg.predict] no concept embeddings; falling back to baseline", err=True)
+            use_sem = False
+            use_topo = True
+
+        def _topo_matrix(pairs):
+            return np.array([topo_features(db, u, v, years) for u, v in pairs])
+
+        def _sem_matrix(pairs):
+            return np.array([semantic_features(u, v, embeddings) for u, v in pairs])
+
+        if use_topo and use_sem:
+            ens = MixtureEnsemble(MLPLinkClassifier(), MLPLinkClassifier(), weight_a=0.6)
+            ens.fit(_topo_matrix(train_pairs), _sem_matrix(train_pairs), y_train)
+            scores = ens.predict_proba(_topo_matrix(test_pairs), _sem_matrix(test_pairs))
+        elif use_sem:
+            clf = MLPLinkClassifier().fit(_sem_matrix(train_pairs), y_train)
+            scores = clf.predict_proba(_sem_matrix(test_pairs))
+        else:
+            clf = MLPLinkClassifier().fit(_topo_matrix(train_pairs), y_train)
+            scores = clf.predict_proba(_topo_matrix(test_pairs))
+
+        g_train_end = yearly_subgraph(db, train_end)
+        prec, rec = precision_recall_at_k(y_test, scores, top_k)
+        metrics = {
+            "model": model,
+            "test_pairs": int(len(y_test)),
+            "test_positives": int(y_test.sum()),
+            "auc": round(roc_auc(y_test, scores), 4),
+            f"precision@{top_k}": round(prec, 4),
+            f"recall@{top_k}": round(rec, 4),
+            "by_dprev": {
+                str(d): {
+                    "count": v["count"],
+                    "positives": v["positives"],
+                    "auc": round(v["auc"], 4),
+                }
+                for d, v in stratify_by_dprev(test_pairs, y_test, scores, g_train_end).items()
+            },
+        }
+
+    if json_output:
+        typer.echo(json.dumps(metrics, ensure_ascii=False))
+    else:
+        typer.echo(
+            f"[cg.predict] model={model} auc={metrics['auc']} "
+            f"P@{top_k}={metrics[f'precision@{top_k}']} R@{top_k}={metrics[f'recall@{top_k}']}"
+        )
