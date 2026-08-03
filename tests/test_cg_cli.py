@@ -70,3 +70,59 @@ def test_cg_ingest_unknown_source(monkeypatch) -> None:
     monkeypatch.setattr(registry, "get_source", _raise)
     result = runner.invoke(cg_app, ["ingest", "--source", "nope"], obj={"config": {}})
     assert result.exit_code == 1
+
+
+def test_cg_predict_invalid_model() -> None:
+    result = runner.invoke(
+        cg_app,
+        [
+            "predict",
+            "--feat-cutoff",
+            "2016",
+            "--train-end",
+            "2019",
+            "--test-end",
+            "2022",
+            "--model",
+            "nope",
+        ],
+        obj={"config": {}},
+    )
+    assert result.exit_code == 1
+    assert "Invalid model" in result.output
+
+
+def test_cg_predict_gnn_mixture_requires_embeddings() -> None:
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(db_path)
+        db.conn.execute("INSERT INTO papers (local_id, title, year) VALUES ('p', 'Paper', 2010)")
+        # Pre-cutoff triangle + one edge emerging in the test window.
+        for u, v, year in [("a", "b", 2010), ("a", "c", 2012), ("b", "c", 2021)]:
+            db.conn.execute(
+                "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+                "VALUES (?, ?, ?, 'p', 1)",
+                (u, v, year),
+            )
+        db.conn.commit()
+        db.close()
+        cfg = {"db": {"path": str(db_path)}}
+        result = runner.invoke(
+            cg_app,
+            [
+                "predict",
+                "--feat-cutoff",
+                "2016",
+                "--train-end",
+                "2019",
+                "--test-end",
+                "2022",
+                "--model",
+                "gnn-mixture",
+            ],
+            obj={"config": cfg},
+        )
+        assert result.exit_code == 1
+        assert "embeddings" in result.output

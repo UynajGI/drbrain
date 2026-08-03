@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from drbrain.concept_graph.embeddings import (
+    _paper_titles_for_concept,
     aggregate_vectors,
     compute_concept_embeddings,
     load_concept_embeddings,
@@ -118,6 +119,58 @@ def test_export_html_writes_file() -> None:
         assert path.exists()
         assert "DrBrain Concept Map" in content
         assert '"label": "x"' in content
+    finally:
+        db.close()
+        td.cleanup()
+
+
+def _seed_concept_edges(db: Database) -> None:
+    """Seed two papers (2010 / 2021) co-occurring with concept ``alpha``."""
+    for pid, title, year in [("p1", "Old Paper", 2010), ("p2", "New Paper", 2021)]:
+        db.conn.execute(
+            "INSERT INTO papers (local_id, title, year) VALUES (?, ?, ?)", (pid, title, year)
+        )
+    db.conn.execute(
+        "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+        "VALUES ('alpha', 'beta', 2010, 'p1', 1)"
+    )
+    db.conn.execute(
+        "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+        "VALUES ('alpha', 'gamma', 2021, 'p2', 1)"
+    )
+    db.conn.commit()
+
+
+def test_paper_titles_for_concept_year_cutoff() -> None:
+    db, td = _tmp_db()
+    try:
+        _seed_concept_edges(db)
+        assert set(_paper_titles_for_concept(db, "alpha")) == {"Old Paper", "New Paper"}
+        # Anti-leakage cutoff: only pre-2017 papers may contribute context.
+        assert _paper_titles_for_concept(db, "alpha", year_to=2016) == ["Old Paper"]
+        assert _paper_titles_for_concept(db, "alpha", year_to=2021) == ["Old Paper", "New Paper"]
+    finally:
+        db.close()
+        td.cleanup()
+
+
+def test_context_embeddings_respect_year_cutoff() -> None:
+    db, td = _tmp_db()
+    try:
+        _seed_concept_edges(db)
+        _seed_nodes(db, ["alpha"])
+        seen: list[str] = []
+
+        def fake(texts: list[str]) -> list[list[float]]:
+            seen.extend(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+        count = compute_concept_embeddings(
+            db, embed_fn=fake, context=True, model_name="fake", context_year_to=2016
+        )
+        assert count == 1
+        assert "New Paper" not in seen  # no post-cutoff text leaked in
+        assert "Old Paper" in seen
     finally:
         db.close()
         td.cleanup()

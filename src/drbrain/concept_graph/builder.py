@@ -100,11 +100,20 @@ def concepts_for_paper(db: Database, local_id: str, source: str = "terms") -> li
 
 
 def _concepts_from_abstract(db: Database, local_id: str) -> list[str]:
-    """Extract concept labels from a paper's title+abstract via the LLM chain."""
+    """Extract concept labels from a paper's title+abstract via the LLM chain.
+
+    Prefers the lean extraction cache (``paper_concepts_cache``, populated by
+    ``drbrain cg extract``) to avoid spending tokens on repeated builds.
+    """
     import asyncio
 
+    from drbrain.concept_graph.concept_extract import cached_concepts_for_paper
     from drbrain.config import load_config
     from drbrain.extractor.concept.types import extract_concepts
+
+    cached = cached_concepts_for_paper(db, local_id)
+    if cached is not None:
+        return cached
 
     row = db.conn.execute(
         "SELECT title, abstract FROM papers WHERE local_id = ?", (local_id,)

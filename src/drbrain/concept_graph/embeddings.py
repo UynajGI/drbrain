@@ -54,6 +54,7 @@ def compute_concept_embeddings(
     embed_fn: EmbedFn | None = None,
     context: bool = False,
     model_name: str = "",
+    context_year_to: int | None = None,
 ) -> int:
     """Compute and store a semantic embedding for every concept node.
 
@@ -64,6 +65,10 @@ def compute_concept_embeddings(
         context: When True, average the label embedding with the titles of papers
             containing the concept for a richer vector.
         model_name: Label recorded in the ``model`` column.
+        context_year_to: Only use papers published up to (and including) this
+            year as context. Mirrors the paper's anti-leakage rule that
+            embeddings must be computed from text available before the
+            prediction cutoff. Ignored when ``context`` is False.
 
     Returns:
         The number of concept embeddings written (0 if the provider is disabled).
@@ -87,7 +92,7 @@ def compute_concept_embeddings(
     # Context mode: per-concept average of label + containing-paper titles.
     written = 0
     for label in labels:
-        titles = _paper_titles_for_concept(db, label)
+        titles = _paper_titles_for_concept(db, label, year_to=context_year_to)
         texts = [label] + titles
         vectors = fn(texts)
         if not vectors:
@@ -100,13 +105,19 @@ def compute_concept_embeddings(
     return written
 
 
-def _paper_titles_for_concept(db: Database, label: str, limit: int = 16) -> list[str]:
-    rows = db.conn.execute(
+def _paper_titles_for_concept(
+    db: Database, label: str, limit: int = 16, *, year_to: int | None = None
+) -> list[str]:
+    query = (
         "SELECT DISTINCT p.title FROM concept_cooccurrence c "
         "JOIN papers p ON p.local_id = c.paper_id "
-        "WHERE (c.src_label = ? OR c.dst_label = ?) AND p.title != '' LIMIT ?",
-        (label, label, limit),
-    ).fetchall()
+        "WHERE (c.src_label = ? OR c.dst_label = ?) AND p.title != ''"
+    )
+    params: tuple = (label, label)
+    if year_to is not None:
+        query += " AND c.year <= ?"
+        params = (label, label, year_to)
+    rows = db.conn.execute(query + " LIMIT ?", params + (limit,)).fetchall()
     return [r[0] for r in rows]
 
 

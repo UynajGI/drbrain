@@ -109,6 +109,31 @@ def cg_build_cmd(
         )
 
 
+@cg_app.command("extract")
+def cg_extract_cmd(
+    ctx: typer.Context,
+    limit: int = typer.Option(0, "--limit", "-n", help="Max papers this run (0 = all uncached)"),
+    concurrency: int = typer.Option(2, "--concurrency", help="Parallel LLM calls"),
+    rpm: int = typer.Option(10, "--rpm", help="Max LLM calls per minute (0 = unlimited)"),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON stats"),
+) -> None:
+    """Extract concepts from abstracts via the lean LLM prompt (cached, resumable)."""
+    from drbrain.concept_graph.concept_extract import extract_paper_concepts_batch
+
+    cfg = ctx.obj["config"]
+    with open_db(cfg) as db:
+        stats = extract_paper_concepts_batch(
+            db, limit=limit or None, concurrency=concurrency, rpm=rpm
+        )
+    if json_output:
+        typer.echo(json.dumps(stats, ensure_ascii=False))
+    else:
+        typer.echo(
+            f"[cg.extract] processed={stats['processed']} failed={stats['failed']} "
+            f"cached_total={stats['cached_total']}"
+        )
+
+
 @cg_app.command("embed")
 def cg_embed_cmd(
     ctx: typer.Context,
@@ -116,6 +141,11 @@ def cg_embed_cmd(
         False, "--context", help="Average label with containing-paper titles"
     ),
     model_name: str = typer.Option("", "--model", help="Model label recorded in the DB"),
+    year_to: int = typer.Option(
+        0,
+        "--year-to",
+        help="Context mode only: use papers up to this year (anti-leakage cutoff)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON stats"),
 ) -> None:
     """Compute semantic embeddings for concept nodes."""
@@ -123,7 +153,13 @@ def cg_embed_cmd(
 
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
-        count = compute_concept_embeddings(db, cfg, context=context, model_name=model_name)
+        count = compute_concept_embeddings(
+            db,
+            cfg.embed,
+            context=context,
+            model_name=model_name,
+            context_year_to=year_to or None,
+        )
     if json_output:
         typer.echo(json.dumps({"embedded": count}))
     else:
@@ -179,7 +215,9 @@ def cg_predict_cmd(
     ),
     train_end: int = typer.Option(..., "--train-end", help="End of training label window"),
     test_end: int = typer.Option(..., "--test-end", help="End of test label window"),
-    model: str = typer.Option("mixture", "--model", help="baseline | embed | mixture | gnn"),
+    model: str = typer.Option(
+        "mixture", "--model", help="baseline | embed | mixture | gnn | gnn-mixture"
+    ),
     neg_ratio: int = typer.Option(1, "--neg-ratio", help="Negatives per positive"),
     top_k: int = typer.Option(50, "--top-k", help="k for Precision/Recall@k"),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON metrics"),
@@ -198,7 +236,7 @@ def cg_predict_cmd(
     )
     from drbrain.concept_graph.link_predict import MixtureEnsemble, MLPLinkClassifier
 
-    if model not in ("baseline", "embed", "mixture", "gnn"):
+    if model not in ("baseline", "embed", "mixture", "gnn", "gnn-mixture"):
         typer.echo(f"Invalid model '{model}'.", err=True)
         raise typer.Exit(1)
 
@@ -264,6 +302,26 @@ def cg_predict_cmd(
                 raise typer.Exit(1)
             gnn = GNNLinkClassifier().fit(db, train_pairs, y_train, years, feat_cutoff)
             scores = gnn.predict_proba(test_pairs)
+        elif model == "gnn-mixture":
+            # Paper's best model: 1:1 weighted average of GNN and Concept
+            # embeddings (MatSciBERT) predictions.
+            from drbrain.concept_graph.gnn import GNNLinkClassifier, is_available
+
+            if not is_available():
+                typer.echo("[cg.predict] GNN needs PyTorch: pip install drbrain[gnn]", err=True)
+                raise typer.Exit(1)
+            if not embeddings:
+                typer.echo(
+                    "[cg.predict] gnn-mixture needs concept embeddings: run `cg embed` first",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            gnn = GNNLinkClassifier().fit(db, train_pairs, y_train, years, feat_cutoff)
+            emb_clf = MLPLinkClassifier().fit(_sem_matrix(train_pairs), y_train)
+            scores = (
+                0.5 * gnn.predict_proba(test_pairs)
+                + 0.5 * emb_clf.predict_proba(_sem_matrix(test_pairs))
+            ).astype(np.float32)
         elif use_topo and use_sem:
             ens = MixtureEnsemble(MLPLinkClassifier(), MLPLinkClassifier(), weight_a=0.6)
             ens.fit(_topo_matrix(train_pairs), _sem_matrix(train_pairs), y_train)
