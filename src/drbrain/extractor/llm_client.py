@@ -8,6 +8,7 @@ Caching is opt-in via keyword-only ``_cache``; existing callers are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -95,6 +96,10 @@ def _build_litellm_kwargs(
         "max_tokens": max_tokens,
         "timeout": 60,
     }
+    # Structured extraction needs no reasoning: disable thinking by default
+    # (Qwen/Zhipu convention). Override via ``extra_body`` in the model config.
+    extra_body = model_cfg.get("extra_body")
+    kwargs["extra_body"] = extra_body if extra_body is not None else {"enable_thinking": False}
     if model_cfg.get("api_key"):
         kwargs["api_key"] = model_cfg["api_key"]
     if model_cfg.get("base_url"):
@@ -202,6 +207,9 @@ async def acall_with_fallback(
             return parsed
         except Exception as e:
             logger.warning(f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            if "RateLimitError" in type(e).__name__:
+                # Back off before burning the next fallback model.
+                await asyncio.sleep(10)
             continue
     logger.error(f"[llm] async all {len(models)} models exhausted")
     return None
