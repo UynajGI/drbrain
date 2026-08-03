@@ -92,18 +92,24 @@ def norm_score(labels: list[str]) -> float:
 
 
 def main() -> None:
+    cfg = load_config()
+    api = cfg.api
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--local-base", default="http://localhost:8000/v1")
     ap.add_argument("--local-model", default="qwen3.5-9b")
-    ap.add_argument("--ref-base", default="https://api.deepseek.com")
-    ap.add_argument("--ref-model", default="deepseek-v4-flash")
-    ap.add_argument("--ref-key", default=os.environ.get("CG_REF_KEY", ""))
+    ap.add_argument("--ref-base", default=api.ref_base_url)
+    ap.add_argument("--ref-model", default=api.ref_model)
+    ap.add_argument("--ref-key", default=api.ref_api_key or os.environ.get("CG_REF_KEY", ""))
     args = ap.parse_args()
+    if not args.ref_base or not args.ref_model:
+        raise SystemExit(
+            "reference endpoint required: set api.ref_base_url / api.ref_model in "
+            "config.local.yaml or pass --ref-base / --ref-model"
+        )
     if not args.ref_key:
-        raise SystemExit("reference key required: --ref-key or CG_REF_KEY env var")
+        raise SystemExit("reference key required: api.ref_api_key, CG_REF_KEY or --ref-key")
 
-    cfg = load_config()
     glm_client = OpenAI(api_key=args.ref_key, base_url=args.ref_base, max_retries=1)
     ref_extra = (
         {"thinking": {"type": "disabled"}}
