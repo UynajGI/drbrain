@@ -48,6 +48,8 @@ dependencies = [
     "typer>=0.15",
     "umap-learn>=0.5",
     "deepxiv-sdk>=0.2.5",
+    "sentence-transformers>=5.6.1",
+    "modelscope>=1.39.0",
 ]
 
 [project.optional-dependencies]
