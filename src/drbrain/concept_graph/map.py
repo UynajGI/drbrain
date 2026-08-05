@@ -269,7 +269,10 @@ def export_html(
     out_path.write_text(_render_html(points, named), encoding="utf-8")
     logger.info(
         "[cg.map] wrote {} ({} points, {} named communities, {} leaves total)",
-        out_path, len(points), len(named), len(all_comms),
+        out_path,
+        len(points),
+        len(named),
+        len(all_comms),
     )
     return out_path
 

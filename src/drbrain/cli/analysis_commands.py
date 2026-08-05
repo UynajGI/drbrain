@@ -323,7 +323,7 @@ def ask_cmd(
     if isinstance(rerank, typer.models.OptionInfo):
         rerank = rerank.default
     if isinstance(rrf_k, typer.models.OptionInfo):
-        rrf_k = rrf_k.default
+        rrf_k = int(rrf_k.default) if rrf_k.default is not None else 60
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]

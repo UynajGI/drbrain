@@ -181,9 +181,7 @@ def build_cliques(
 
         ensure_cache_table(db)
         abstract_cache = {}
-        for lid, cj in db.conn.execute(
-            "SELECT local_id, concepts_json FROM paper_concepts_cache"
-        ):
+        for lid, cj in db.conn.execute("SELECT local_id, concepts_json FROM paper_concepts_cache"):
             try:
                 abstract_cache[lid] = list(json.loads(cj))
             except (json.JSONDecodeError, TypeError):
