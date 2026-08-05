@@ -69,6 +69,10 @@ class ApiConfig(_ConfigBase):
     sciverse_token: str = ""
     sciverse_base_url: str = "https://api.sciverse.space"
     sciverse_rate_limit: int = 30
+    # Reference endpoint for extraction quality comparison (cg_quality_compare).
+    ref_base_url: str = ""
+    ref_model: str = ""
+    ref_api_key: str = ""
 
 
 @dataclass

@@ -13,6 +13,7 @@ Concept sources (no-fulltext-first):
 
 from __future__ import annotations
 
+import json
 import re
 from itertools import combinations
 
@@ -100,11 +101,20 @@ def concepts_for_paper(db: Database, local_id: str, source: str = "terms") -> li
 
 
 def _concepts_from_abstract(db: Database, local_id: str) -> list[str]:
-    """Extract concept labels from a paper's title+abstract via the LLM chain."""
+    """Extract concept labels from a paper's title+abstract via the LLM chain.
+
+    Prefers the lean extraction cache (``paper_concepts_cache``, populated by
+    ``drbrain cg extract``) to avoid spending tokens on repeated builds.
+    """
     import asyncio
 
+    from drbrain.concept_graph.concept_extract import cached_concepts_for_paper
     from drbrain.config import load_config
     from drbrain.extractor.concept.types import extract_concepts
+
+    cached = cached_concepts_for_paper(db, local_id)
+    if cached is not None:
+        return cached
 
     row = db.conn.execute(
         "SELECT title, abstract FROM papers WHERE local_id = ?", (local_id,)
@@ -164,19 +174,63 @@ def build_cliques(
             paper_ids,
         ).fetchall()
 
+    # Bulk-preload the abstract extraction cache once (avoids one query per paper).
+    abstract_cache: dict[str, list[str]] | None = None
+    if source == "abstract":
+        from drbrain.concept_graph.concept_extract import ensure_cache_table
+
+        ensure_cache_table(db)
+        abstract_cache = {}
+        for lid, cj in db.conn.execute("SELECT local_id, concepts_json FROM paper_concepts_cache"):
+            try:
+                abstract_cache[lid] = list(json.loads(cj))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        logger.info("[cg.build] preloaded {} cached abstract extractions", len(abstract_cache))
+
+    insert_sql = (
+        "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+        "VALUES (?, ?, ?, ?, 1.0) "
+        "ON CONFLICT(src_label, dst_label, year, paper_id) "
+        "DO UPDATE SET weight = concept_cooccurrence.weight + excluded.weight"
+    )
+    flush_at = 50000
+
     edge_count = 0
     processed = 0
+    edge_buf: list[tuple] = []
     for local_id, year in rows:
-        concepts = concepts_for_paper(db, local_id, source=source)
+        if abstract_cache is not None:
+            raw = abstract_cache.get(local_id)
+            if raw is None:
+                # Uncached paper: fall back to the cached-then-LLM path so a
+                # build without a prior `cg extract` does not silently skip
+                # every paper and produce an empty graph.
+                concepts = list(concepts_for_paper(db, local_id, source="abstract"))
+            else:
+                seen: set[str] = set()
+                concepts = []
+                for label in raw:
+                    norm = normalize_concept(label)
+                    if norm and norm not in seen:
+                        seen.add(norm)
+                        concepts.append(norm)
+        else:
+            concepts = list(concepts_for_paper(db, local_id, source=source))
         if len(concepts) < 2:
             continue
         for a, b in combinations(sorted(concepts), 2):
-            db.insert_cooccurrence(a, b, year, local_id)
-            edge_count += 1
+            edge_buf.append((a, b, year, local_id))
+        edge_count += len(concepts) * (len(concepts) - 1) // 2
         processed += 1
+        if len(edge_buf) >= flush_at:
+            db.conn.executemany(insert_sql, edge_buf)
+            edge_buf.clear()
         if processed % commit_every == 0:
             db.conn.commit()
 
+    if edge_buf:
+        db.conn.executemany(insert_sql, edge_buf)
     db.conn.commit()
     logger.info("[cg.build] cliques: {} papers -> {} edges", processed, edge_count)
     return edge_count

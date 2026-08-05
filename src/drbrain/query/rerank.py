@@ -100,6 +100,7 @@ class CrossEncoderReranker:
             return []
         if not self._ensure_model():
             return list(hits)[:top_n]
+        assert self._model is not None  # _ensure_model() succeeded
 
         # Build (query, doc) pairs; track which hits have usable text.
         pairs: list[tuple[int, str]] = []

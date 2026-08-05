@@ -98,6 +98,10 @@ api:
   sciverse_token: "${SCIVERSE_TOKEN}" # Sciverse API token — https://sciverse.opendatalab.com/tokens
   sciverse_base_url: "https://api.sciverse.space" # Sciverse API base URL
   sciverse_rate_limit: 30 # Sciverse requests/minute (account default)
+  # Reference LLM endpoint for extraction quality comparison (scripts/cg_quality_compare.py)
+  ref_base_url: "" # e.g. https://api.deepseek.com
+  ref_model: "" # e.g. deepseek-v4-flash
+  ref_api_key: "" # reference endpoint API key
 
 # ── Search ───────────────────────────────────────────────────────
 bm25:

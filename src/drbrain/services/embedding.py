@@ -104,24 +104,72 @@ def _find_local_model_path(model_name: str, cache_dir: str) -> str | None:
     return None
 
 
+def _find_hf_cached_model(model_name: str) -> str | None:
+    """Return a usable snapshot path from the HuggingFace hub cache, if present."""
+    parts = model_name.split("/", 1)
+    if len(parts) != 2:
+        return None
+
+    org, repo = parts
+    hf_home = Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser()
+    repo_dir = hf_home / "hub" / f"models--{org}--{repo}"
+    snapshots = (
+        sorted((repo_dir / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if repo_dir.is_dir()
+        else []
+    )
+    for snapshot in snapshots:
+        if _looks_like_sentence_transformer_dir(snapshot):
+            return str(snapshot)
+    return None
+
+
+def _local_candidate_dirs(model_name: str, cache_dir: str) -> list[str]:
+    """Ordered local cache locations to probe before any download."""
+    dirs = [cache_dir]
+    default_ms = os.path.expanduser("~/.cache/modelscope/hub/models")
+    if default_ms != cache_dir:
+        dirs.append(default_ms)
+    found: list[str] = []
+    for d in dirs:
+        path = _find_local_model_path(model_name, d)
+        if path:
+            found.append(path)
+    hf_path = _find_hf_cached_model(model_name)
+    if hf_path:
+        found.append(hf_path)
+    return found
+
+
 def _resolve_model_path(model_name: str, cache_dir: str, source: str) -> str | None:
-    """Find local model path or download via ModelScope.
+    """Resolve a local model path adaptively, downloading only if needed.
+
+    Resolution order (regardless of ``source``):
+
+    1. Any local cache hit — ModelScope cache dirs first, then the
+       HuggingFace hub cache (``~/.cache/huggingface/hub``).
+    2. If no local hit: download via ModelScope when ``source`` is
+       ``"modelscope"`` (or when the ``modelscope`` package is available
+       and HuggingFace appears unreachable), otherwise fall through.
+    3. Return ``None`` to let SentenceTransformer download from
+       HuggingFace (honouring ``HF_ENDPOINT`` mirrors).
 
     Args:
         model_name: Model ID (e.g. ``"Qwen/Qwen3-Embedding-0.6B"``).
-        cache_dir: Local cache directory.
-        source: ``"modelscope"`` or ``"huggingface"``.
+        cache_dir: Local ModelScope-style cache directory.
+        source: ``"modelscope"`` or ``"huggingface"`` (preferred download
+            origin when no local cache exists).
 
     Returns:
         Local folder path if found or downloaded, ``None`` to fall back
         to HuggingFace (SentenceTransformer handles download internally).
     """
-    if source != "modelscope":
-        return None
+    local_hits = _local_candidate_dirs(model_name, cache_dir)
+    if local_hits:
+        return local_hits[0]
 
-    local_path = _find_local_model_path(model_name, cache_dir)
-    if local_path:
-        return local_path
+    if source == "huggingface":
+        return None
 
     try:
         from modelscope import snapshot_download  # noqa: PLC0415
@@ -165,14 +213,18 @@ def _load_model(cfg: EmbedConfig | None = None):
         cache_dir = os.path.expanduser(cfg.cache_dir)
         device_cfg = cfg.device
         source = cfg.source
+        hf_endpoint = (cfg.hf_endpoint or "").strip()
     else:
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         cache_dir = os.path.expanduser("~/.cache/modelscope/hub/models")
         device_cfg = "auto"
         source = "modelscope"
+        hf_endpoint = ""
 
     if source == "modelscope":
         os.environ["MODELSCOPE_CACHE"] = cache_dir
+    if hf_endpoint:
+        os.environ.setdefault("HF_ENDPOINT", hf_endpoint)
 
     SentenceTransformer = importlib.import_module("sentence_transformers").SentenceTransformer  # noqa: N806
 

@@ -8,6 +8,7 @@ Caching is opt-in via keyword-only ``_cache``; existing callers are unaffected.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -64,7 +65,12 @@ class LLMClient:
 
 
 def _build_litellm_kwargs(
-    model_cfg: dict, prompt: str, system_prompt: str, max_tokens: int
+    model_cfg: dict,
+    prompt: str,
+    system_prompt: str,
+    max_tokens: int,
+    *,
+    disable_thinking: bool = False,
 ) -> dict:
     name = f"{model_cfg['provider']}/{model_cfg['model']}"
     messages = []
@@ -95,6 +101,13 @@ def _build_litellm_kwargs(
         "max_tokens": max_tokens,
         "timeout": 60,
     }
+    # Structured extraction needs no reasoning: disable thinking on request
+    # (Qwen/Zhipu convention). A model-level ``extra_body`` always wins.
+    extra_body = model_cfg.get("extra_body")
+    if disable_thinking:
+        kwargs["extra_body"] = extra_body if extra_body is not None else {"enable_thinking": False}
+    elif extra_body is not None:
+        kwargs["extra_body"] = extra_body
     if model_cfg.get("api_key"):
         kwargs["api_key"] = model_cfg["api_key"]
     if model_cfg.get("base_url"):
@@ -129,6 +142,7 @@ def call_with_fallback(
     max_tokens: int = 16384,
     *,
     _cache: ApiCache | None = None,
+    disable_thinking: bool = False,
 ) -> dict | None:
     """Try models in order, return first successful parsed JSON response.
 
@@ -148,7 +162,9 @@ def call_with_fallback(
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
             start = time.monotonic()
-            kwargs = _build_litellm_kwargs(model_cfg, prompt, system_prompt, max_tokens)
+            kwargs = _build_litellm_kwargs(
+                model_cfg, prompt, system_prompt, max_tokens, disable_thinking=disable_thinking
+            )
             response = litellm.completion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
@@ -172,6 +188,7 @@ async def acall_with_fallback(
     max_tokens: int = 16384,
     *,
     _cache: ApiCache | None = None,
+    disable_thinking: bool = False,
 ) -> dict | list | None:
     """Async version of call_with_fallback.
 
@@ -190,7 +207,9 @@ async def acall_with_fallback(
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
         try:
             start = time.monotonic()
-            kwargs = _build_litellm_kwargs(model_cfg, prompt, system_prompt, max_tokens)
+            kwargs = _build_litellm_kwargs(
+                model_cfg, prompt, system_prompt, max_tokens, disable_thinking=disable_thinking
+            )
             response = await litellm.acompletion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
@@ -202,6 +221,9 @@ async def acall_with_fallback(
             return parsed
         except Exception as e:
             logger.warning(f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            if "RateLimitError" in type(e).__name__:
+                # Back off before burning the next fallback model.
+                await asyncio.sleep(10)
             continue
     logger.error(f"[llm] async all {len(models)} models exhausted")
     return None
