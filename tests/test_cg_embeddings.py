@@ -118,7 +118,8 @@ def test_export_html_writes_file() -> None:
         content = path.read_text(encoding="utf-8")
         assert path.exists()
         assert "DrBrain Concept Map" in content
-        assert '"label": "x"' in content
+        assert "new graphology.Graph()" in content
+        assert '"label": "x"' in content  # node data embedded as JSON
     finally:
         db.close()
         td.cleanup()

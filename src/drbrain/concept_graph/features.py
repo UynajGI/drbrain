@@ -26,11 +26,22 @@ def yearly_subgraph(db: Database, t: int, *, labels: set[str] | None = None) -> 
     Returns:
         A weighted undirected NetworkX graph keyed by concept label.
     """
-    rows = db.conn.execute(
-        "SELECT src_label, dst_label, SUM(weight) FROM concept_cooccurrence "
-        "WHERE year <= ? GROUP BY src_label, dst_label",
-        (t,),
-    ).fetchall()
+    if labels is not None:
+        # Push the whitelist into SQL (uses idx_cooccurrence_src) so only the
+        # subfield's rows are scanned instead of the full 22M-edge table.
+        ph = ",".join("?" * len(labels))
+        rows = db.conn.execute(
+            "SELECT src_label, dst_label, SUM(weight) FROM concept_cooccurrence "
+            f"WHERE year <= ? AND (src_label IN ({ph}) OR dst_label IN ({ph})) "
+            "GROUP BY src_label, dst_label",
+            (t, *labels, *labels),
+        ).fetchall()
+    else:
+        rows = db.conn.execute(
+            "SELECT src_label, dst_label, SUM(weight) FROM concept_cooccurrence "
+            "WHERE year <= ? GROUP BY src_label, dst_label",
+            (t,),
+        ).fetchall()
     g = nx.Graph()
     for src, dst, weight in rows:
         if labels is not None and (src not in labels or dst not in labels):

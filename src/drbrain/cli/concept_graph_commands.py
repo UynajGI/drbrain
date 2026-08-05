@@ -197,13 +197,19 @@ def cg_neighbors_cmd(
 def cg_map_cmd(
     ctx: typer.Context,
     output: str = typer.Option("concept_map.html", "--output", "-o", help="Output HTML path"),
+    communities: int = typer.Option(
+        150, "--communities", help="Number of largest communities shown in the legend"
+    ),
+    density_bins: int = typer.Option(
+        384, "--density-bins", help="Grid resolution for density shading"
+    ),
 ) -> None:
-    """Export an interactive UMAP concept map to HTML."""
+    """Export an interactive UMAP concept map to HTML (density-shaded, community-colored)."""
     from drbrain.concept_graph.map import export_html
 
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
-        path = export_html(db, output)
+        path = export_html(db, output, top_communities=communities, density_bins=density_bins)
     typer.echo(f"[cg.map] wrote {path}")
 
 
@@ -220,6 +226,16 @@ def cg_predict_cmd(
     ),
     neg_ratio: int = typer.Option(1, "--neg-ratio", help="Negatives per positive"),
     top_k: int = typer.Option(50, "--top-k", help="k for Precision/Recall@k"),
+    labels_file: str = typer.Option(
+        None,
+        "--labels-file",
+        help="Restrict prediction to a concept subset (file with one label per line)",
+    ),
+    output_pairs: str = typer.Option(
+        None,
+        "--output-pairs",
+        help="Write top predicted pairs (ranked by score) to this JSON file",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit JSON metrics"),
 ) -> None:
     """Train/evaluate temporal link prediction on the concept graph."""
@@ -248,10 +264,15 @@ def cg_predict_cmd(
     years = feature_years(feat_cutoff)
     with open_db(cfg) as db:
         # Restrict prediction to the filtered concept set reported by `cg build`
-        # (None when concept_nodes is empty -> no whitelist).
+        # (None when concept_nodes is empty -> no whitelist). A --labels-file
+        # narrows the whitelist to a subfield (e.g. a seed+co-occurrence closure).
         node_labels = {
             r[0] for r in db.conn.execute("SELECT label FROM concept_nodes").fetchall()
         } or None
+        if labels_file:
+            with open(labels_file, encoding="utf-8") as f:
+                subset = {line.strip() for line in f if line.strip()}
+            node_labels = node_labels & subset if node_labels else subset
         train = temporal_pairs(db, feat_cutoff, train_end, neg_ratio=neg_ratio, labels=node_labels)
         # Held-out test set: exclude every training pair and draw a fresh seed so
         # test negatives are disjoint from what the classifier saw during fitting.
@@ -300,7 +321,9 @@ def cg_predict_cmd(
             if not is_available():
                 typer.echo("[cg.predict] GNN needs PyTorch: pip install drbrain[gnn]", err=True)
                 raise typer.Exit(1)
-            gnn = GNNLinkClassifier().fit(db, train_pairs, y_train, years, feat_cutoff)
+            gnn = GNNLinkClassifier().fit(
+                db, train_pairs, y_train, years, feat_cutoff, node_labels=node_labels
+            )
             scores = gnn.predict_proba(test_pairs)
         elif model == "gnn-mixture":
             # Paper's best model: 1:1 weighted average of GNN and Concept
@@ -316,7 +339,9 @@ def cg_predict_cmd(
                     err=True,
                 )
                 raise typer.Exit(1)
-            gnn = GNNLinkClassifier().fit(db, train_pairs, y_train, years, feat_cutoff)
+            gnn = GNNLinkClassifier().fit(
+                db, train_pairs, y_train, years, feat_cutoff, node_labels=node_labels
+            )
             emb_clf = MLPLinkClassifier().fit(_sem_matrix(train_pairs), y_train)
             scores = (
                 0.5 * gnn.predict_proba(test_pairs)
@@ -351,6 +376,25 @@ def cg_predict_cmd(
                 for d, v in stratify_by_dprev(test_pairs, y_test, scores, g_train_end).items()
             },
         }
+
+        if output_pairs:
+            from pathlib import Path
+
+            order = np.argsort(-scores)
+            rows = [
+                {
+                    "u": test_pairs[i][0],
+                    "v": test_pairs[i][1],
+                    "score": round(float(scores[i]), 4),
+                    "observed": int(y_test[i]),
+                }
+                for i in order[: top_k * 2]
+            ]
+            Path(output_pairs).write_text(
+                json.dumps({"model": model, "pairs": rows}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            typer.echo(f"[cg.predict] wrote {output_pairs}")
 
     if json_output:
         typer.echo(json.dumps(metrics, ensure_ascii=False))
