@@ -201,16 +201,22 @@ def build_cliques(
     edge_buf: list[tuple] = []
     for local_id, year in rows:
         if abstract_cache is not None:
-            raw = abstract_cache.get(local_id, [])
-            seen: set[str] = set()
-            concepts: list[str] = []
-            for label in raw:
-                norm = normalize_concept(label)
-                if norm and norm not in seen:
-                    seen.add(norm)
-                    concepts.append(norm)
+            raw = abstract_cache.get(local_id)
+            if raw is None:
+                # Uncached paper: fall back to the cached-then-LLM path so a
+                # build without a prior `cg extract` does not silently skip
+                # every paper and produce an empty graph.
+                concepts = list(concepts_for_paper(db, local_id, source="abstract"))
+            else:
+                seen: set[str] = set()
+                concepts = []
+                for label in raw:
+                    norm = normalize_concept(label)
+                    if norm and norm not in seen:
+                        seen.add(norm)
+                        concepts.append(norm)
         else:
-            concepts = concepts_for_paper(db, local_id, source=source)
+            concepts = list(concepts_for_paper(db, local_id, source=source))
         if len(concepts) < 2:
             continue
         for a, b in combinations(sorted(concepts), 2):

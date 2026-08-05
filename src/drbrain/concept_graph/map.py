@@ -502,17 +502,24 @@ renderer.on('enterNode', ({{ node }}) => {{
   const a = graph.getNodeAttributes(node);
   hovered = a;
   const comm = a.community < 0 ? '噪声' : (a.community < namedCount ? commById[a.community].name : `小簇 #${{a.community}}`);
-  tooltip.innerHTML =
-    `<b>${{a.label}}</b><br>` +
-    `<span class="dim">词频 ${{a.freq.toLocaleString()}} · 密度 ${{(a.density*100).toFixed(0)}}% · 社区: ${{comm}}</span>`;
-  tooltip.style.display = 'block';
-}});
-renderer.on('moveNode', (e) => {{
-  const p = renderer.graphToViewport({{ x: e.node }});
+  // Build via DOM APIs (textContent) so concept labels from arbitrary PDFs
+  // cannot inject HTML into the tooltip.
+  tooltip.textContent = '';
+  const titleEl = document.createElement('b');
+  titleEl.textContent = a.label;
+  tooltip.appendChild(titleEl);
+  tooltip.appendChild(document.createElement('br'));
+  const dim = document.createElement('span');
+  dim.className = 'dim';
+  dim.textContent = `词频 ${{a.freq.toLocaleString()}} · 密度 ${{(a.density*100).toFixed(0)}}% · 社区: ${{comm}}`;
+  tooltip.appendChild(dim);
+  // sigma v2 has no moveNode event; position here from node coords instead.
+  const p = renderer.graphToViewport({{ x: a.x, y: a.y }});
   if (p) {{
     tooltip.style.left = (p.x + 14) + 'px';
     tooltip.style.top = (p.y + 14) + 'px';
   }}
+  tooltip.style.display = 'block';
 }});
 renderer.on('leaveNode', () => {{ tooltip.style.display = 'none'; hovered = null; }});
 renderer.on('clickStage', () => {{ tooltip.style.display = 'none'; }});

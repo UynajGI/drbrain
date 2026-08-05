@@ -113,7 +113,12 @@ def _find_hf_cached_model(model_name: str) -> str | None:
     org, repo = parts
     hf_home = Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser()
     repo_dir = hf_home / "hub" / f"models--{org}--{repo}"
-    for snapshot in sorted((repo_dir / "snapshots").glob("*")) if repo_dir.is_dir() else []:
+    snapshots = (
+        sorted((repo_dir / "snapshots").glob("*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if repo_dir.is_dir()
+        else []
+    )
+    for snapshot in snapshots:
         if _looks_like_sentence_transformer_dir(snapshot):
             return str(snapshot)
     return None

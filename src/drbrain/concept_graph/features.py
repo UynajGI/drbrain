@@ -14,6 +14,9 @@ import numpy as np
 
 from drbrain.storage.database import Database
 
+# Bound-variable threshold for the whitelist SQL pushdown (see yearly_subgraph).
+_SQL_IN_GATE = 5000
+
 
 def yearly_subgraph(db: Database, t: int, *, labels: set[str] | None = None) -> nx.Graph:
     """Build the undirected concept graph accumulated up to year ``t`` (G_t).
@@ -26,9 +29,10 @@ def yearly_subgraph(db: Database, t: int, *, labels: set[str] | None = None) -> 
     Returns:
         A weighted undirected NetworkX graph keyed by concept label.
     """
-    if labels is not None:
-        # Push the whitelist into SQL (uses idx_cooccurrence_src) so only the
-        # subfield's rows are scanned instead of the full 22M-edge table.
+    # SQLite caps bound variables at ~32k (SQLITE_MAX_VARIABLE_NUMBER); a large
+    # whitelist (e.g. the full concept_nodes set) must fall back to the full
+    # scan + Python-side filtering, which is correct at any size.
+    if labels is not None and len(labels) <= _SQL_IN_GATE:
         ph = ",".join("?" * len(labels))
         rows = db.conn.execute(
             "SELECT src_label, dst_label, SUM(weight) FROM concept_cooccurrence "

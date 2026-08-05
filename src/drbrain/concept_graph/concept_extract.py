@@ -90,6 +90,7 @@ async def _extract_one(
             models=models,
             system_prompt=prompt,
             max_tokens=max_tokens,
+            disable_thinking=True,
         )
     if not isinstance(data, dict):
         return [], ""
@@ -164,11 +165,16 @@ def extract_paper_concepts_batch(
             )
             for _, title, abstract in rows
         ]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         ok = 0
         chunk_failed = 0
         batch: list[tuple[str, str, str]] = []
-        for (local_id, _, _), (labels, model_name) in zip(rows, results):
+        for (local_id, _, _), result in zip(rows, results):
+            if not isinstance(result, tuple):
+                logger.warning("[cg.extract] paper {} failed: {}", local_id, result)
+                chunk_failed += 1
+                continue
+            labels, model_name = result
             if labels:
                 batch.append((local_id, json.dumps(labels, ensure_ascii=False), model_name))
                 ok += 1
