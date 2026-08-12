@@ -99,7 +99,7 @@ def test_fetch_arxiv_metadata_success():
 @pytest.mark.integration  # mock path mismatch causes real network call
 def test_fetch_arxiv_metadata_error_returns_none():
     """_fetch_arxiv_metadata returns None on network error."""
-    with unittest.mock.patch("urllib.request.urlopen", side_effect=Exception("network")):
+    with unittest.mock.patch("arxiv.Client", side_effect=Exception("network")):
         title, year = _fetch_arxiv_metadata("bad_id")
         assert title is None
         assert year is None
@@ -380,6 +380,9 @@ def test_parser_full_extract_flow_with_fallback():
                 "drbrain.parser.mineru.metadata._fetch_arxiv_metadata", return_value=(None, None)
             ),
             unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+            unittest.mock.patch(
+                "drbrain.extractor.openalex.search_authors_by_work", return_value=[]
+            ),
             unittest.mock.patch(
                 "drbrain.parser.mineru.parser._resolve_metadata",
                 return_value={

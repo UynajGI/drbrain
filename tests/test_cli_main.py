@@ -139,13 +139,14 @@ def test_app_check_citations_no_input():
 
 
 def test_app_query_no_results():
-    """CLI query handles no results."""
+    """query without an index (or llamaindex disabled) exits 1 with a warning (T9)."""
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         with mock_cfg(str(db_path), str(reports_dir)):
             result = runner.invoke(app, ["query", "nonexistent"])
-            assert result.exit_code == 0
+            assert result.exit_code == 1
+            assert "llamaindex engine unavailable" in result.output
 
 
 def test_app_export_unsupported_format():

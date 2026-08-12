@@ -166,23 +166,6 @@ def test_hybrid_score_missing_in_vector():
     assert merged[1]["id"] == "b"
 
 
-def test_rrf_score():
-    """Reciprocal Rank Fusion combines multiple ranked lists."""
-    from drbrain.query.tree_retrieval import _rrf_score
-
-    list_a = ["x", "y", "z"]
-    list_b = ["y", "z", "x"]
-    list_c = ["z", "x", "y"]
-
-    merged = _rrf_score([list_a, list_b, list_c], k=60)
-    assert len(merged) == 3
-    scores = [s for _, s in merged]
-    assert max(scores) - min(scores) < 0.01
-
-
-# ── LLM-primary hybrid retrieval ────────────────────────────────────────────
-
-
 def test_query_by_structure_hybrid_llm_primary():
     """Hybrid mode: LLM navigation is PRIMARY, vectors augment."""
     import asyncio

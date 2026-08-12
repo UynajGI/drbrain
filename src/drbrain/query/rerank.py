@@ -1,5 +1,12 @@
 """Optional rerank layer with graceful degradation.
 
+DEPRECATED (T9, 终态清理): the LlamaIndex RAG layer
+(``drbrain.rag`` — BM25Retriever / FusionRetriever / CrossEncoderReranker)
+replaces this module for CLI-facing retrieval. The file is RETAINED because
+concept-asset code still depends on it (see the module docstring for the
+specific dependency) — no new call sites should be added. Design doc:
+``docs/llamaindex-integration-design.md`` §1 替换清单.
+
 A reranker reorders ``SearchHit`` results using a query-document relevance
 model (typically a cross-encoder). Rerankers are optional: if the backing
 model or its dependencies are unavailable, the system must fall back to the
