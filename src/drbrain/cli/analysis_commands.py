@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 
@@ -321,9 +321,9 @@ def ask_cmd(
     if isinstance(hyde, typer.models.OptionInfo):
         hyde = hyde.default
     if isinstance(rerank, typer.models.OptionInfo):
-        rerank = rerank.default
+        rerank = cast(bool, rerank.default)
     if isinstance(rrf_k, typer.models.OptionInfo):
-        rrf_k = rrf_k.default
+        rrf_k = cast(int, rrf_k.default)
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]

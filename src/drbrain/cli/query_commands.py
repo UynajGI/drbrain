@@ -814,6 +814,4 @@ def hybrid_cmd(
     typer.echo(f'Hybrid search: "{query}" — {len(hits)} results')
     for hit in hits:
         sources = ", ".join(hit.metadata.get("sources", [hit.source]))
-        typer.echo(
-            f"  {hit.rank}. {hit.paper_id}  (rrf: {hit.score:.4f}, sources: {sources})"
-        )
+        typer.echo(f"  {hit.rank}. {hit.paper_id}  (rrf: {hit.score:.4f}, sources: {sources})")

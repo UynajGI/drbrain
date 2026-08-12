@@ -113,6 +113,7 @@ class CrossEncoderReranker:
             return list(hits)[:top_n]
 
         try:
+            assert self._model is not None  # guarded by _ensure_model() above
             scores = self._model.predict([(query, doc) for _, doc in pairs])
         except Exception as e:  # inference failure mid-flight
             log.warning("[rerank] predict failed (%s); falling back to input order", e)

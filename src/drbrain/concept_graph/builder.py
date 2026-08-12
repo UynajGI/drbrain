@@ -13,23 +13,41 @@ Concept sources (no-fulltext-first):
 
 from __future__ import annotations
 
+import json
 import re
 from itertools import combinations
 
 from loguru import logger
 
+from drbrain.resources.materials import ELEMENTS, EXCEPT, KNOWN_FORMULA, NON_MATERIAL
 from drbrain.storage.database import Database
 
 _FILL_WORDS = {"of", "the", "a", "an", "and", "or", "for", "in", "on", "to", "with"}
 _WS_RE = re.compile(r"\s+")
 _EDGE_PUNCT_RE = re.compile(r"^[\W_]+|[\W_]+$")
+# 2d/3d -> 2D/3D writing unification (materials context, research-validated).
+_DIM_RE = re.compile(r"(?<!\w)([0-9]+)d(?!\w)")
+# Formula tokens: 1-2 lowercase letters + optional count, e.g. "al2", "o3".
+_FORMULA_TOKEN_RE = re.compile(r"[a-z]{1,2}\d*(?:\.\d+)?")
+# Formulas whose tokens fail element-symbol parsing (diatomic gases, H2O...).
+_KNOWN_FORMULA_LOWER = {f.lower() for f in KNOWN_FORMULA} | {"o2", "o3", "n2", "h2"}
+# Trivial-label noise patterns (from research/scripts/cg_concept_clean.py).
+_NOISE_PAT = [
+    re.compile(r"^[a-zA-Z]$"),  # single letter
+    re.compile(r"^[\d\s]+$"),  # digit-only
+    re.compile(r"^[\W_]+$"),  # symbol-only
+    re.compile(r"^\d{4}[\w\s]*$"),  # starts with a year
+]
 
 
 def normalize_concept(text: str) -> str:
     """Normalize a concept label (lowercase, de-fill, singularize, tidy).
 
     Implements the light linguistic normalization illustrated in the paper's
-    Table 1: lowercasing, removal of the fill word ``of``, plural→singular, and
+    Table 1, merged with the research-validated rules from
+    ``research/scripts/cg_concept_normalize.py``: lowercasing, removal of the
+    fill word ``of``, plural→singular (with the uncountable/collective
+    ``EXCEPT`` set kept as-is), 2d/3d→2D/3D writing unification, and
     whitespace/punctuation tidy-up. Returns ``""`` for labels that collapse to
     nothing.
 
@@ -47,12 +65,20 @@ def normalize_concept(text: str) -> str:
     tokens = [_singularize(t) for t in tokens]
     label = " ".join(tokens)
     label = _EDGE_PUNCT_RE.sub("", label).strip()
+    label = _DIM_RE.sub(r"\1D", label)
     return _WS_RE.sub(" ", label)
 
 
 def _singularize(token: str) -> str:
-    """Apply a conservative plural→singular heuristic to a single token."""
+    """Apply a conservative plural→singular heuristic to a single token.
+
+    Tokens in the uncountable/collective ``EXCEPT`` set keep their plural form
+    (e.g. ``series``, ``status``, ``properties``); everything else follows the
+    research-validated ies/ses/s rules with a length guard.
+    """
     if len(token) <= 3:
+        return token
+    if token in EXCEPT:
         return token
     if token.endswith("ies") and len(token) > 4:
         return token[:-3] + "y"
@@ -61,6 +87,60 @@ def _singularize(token: str) -> str:
     if token.endswith("s") and not token.endswith("ss"):
         return token[:-1]
     return token
+
+
+def is_noise(text: str) -> bool:
+    """Heuristic flag for concept labels that are extraction noise.
+
+    Mirrors the research pipeline filter (``research/scripts/cg_concept_clean.py``
+    / ``cg_concept_refine_pipeline.py``): biomedical residue words from the
+    ``NON_MATERIAL`` list, overlong labels (>80 chars), single letters,
+    digit-/symbol-only labels, and year-prefixed labels. Flags rather than
+    drops, so downstream stages decide whether to discard the concept.
+
+    Args:
+        text: Raw concept label (as extracted).
+
+    Returns:
+        ``True`` when the label looks like noise.
+    """
+    if not text:
+        return True
+    if len(text) > 80:
+        return True
+    low = text.lower()
+    if any(p.search(text) for p in _NOISE_PAT):
+        return True
+    return any(w in low for w in NON_MATERIAL)
+
+
+def is_formula(text: str) -> bool:
+    """Heuristic check for chemical-formula-looking labels.
+
+    A label looks like a formula when its flattened text parses into at least
+    two element-symbol tokens (case reconstructed from the lowercase scan) and
+    every token is either a known element symbol or a known formula fragment
+    (e.g. ``o2``). Mirrors the research pipeline's material-type validator
+    (``research/scripts/cg_concept_refine_pipeline.py``).
+
+    Args:
+        text: Raw concept label.
+
+    Returns:
+        ``True`` when the label is plausibly a chemical formula.
+    """
+    flat = text.replace(" ", "").lower()
+    tokens = _FORMULA_TOKEN_RE.findall(flat)
+    if len(tokens) < 2:
+        return False
+    for tok in tokens:
+        symbol = tok[0].upper() + tok[1:2].lower() if len(tok) > 1 else tok[0].upper()
+        if symbol in ELEMENTS:
+            continue
+        if tok in _KNOWN_FORMULA_LOWER:
+            continue
+        return False
+    return True
 
 
 def concepts_for_paper(db: Database, local_id: str, source: str = "terms") -> list[str]:
@@ -163,6 +243,20 @@ def build_cliques(
             f"SELECT local_id, year FROM papers WHERE local_id IN ({placeholders})",
             paper_ids,
         ).fetchall()
+
+    # Bulk-preload the abstract extraction cache once (avoids one query per paper).
+    abstract_cache: dict[str, list[str]] | None = None
+    if source == "abstract":
+        from drbrain.concept_graph.concept_extract import ensure_cache_table
+
+        ensure_cache_table(db)
+        abstract_cache = {}
+        for lid, cj in db.conn.execute("SELECT local_id, concepts_json FROM paper_concepts_cache"):
+            try:
+                abstract_cache[lid] = list(json.loads(cj))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        logger.info("[cg.build] preloaded {} cached abstract extractions", len(abstract_cache))
 
     edge_count = 0
     processed = 0
