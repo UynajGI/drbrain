@@ -1,0 +1,604 @@
+"""Index layer: tree.json/raw.md → LlamaIndex Documents/Nodes; VectorStoreIndex + BM25.
+
+Ticket: T3 (索引层). Depends on T1.
+
+Converts drbrain's PageIndex assets (``tree.json`` + ``raw.md`` per paper) into
+LlamaIndex objects:
+
+* :func:`collect_tree_nodes` — one :class:`~llama_index.core.schema.Document`
+  per tree node (``paper_id:node_id`` unique key, PageIndex metadata).
+* :func:`build_index` — incremental ``VectorStoreIndex`` build (embeds only
+  nodes whose ``content_hash`` changed) + persistent BM25 inverted index,
+  both persisted under ``llamaindex.storage_dir``.
+* :func:`load_index` — restore ``(VectorStoreIndex, BM25Retriever)`` from disk
+  without rebuilding.
+
+Persistence layout under ``storage_dir``::
+
+    storage_dir/
+      manifest.json      # embed_model + {paper_id: {node_key: content_hash}}
+      vector/            # StorageContext.persist (docstore, index_store, SimpleVectorStore)
+      bm25/              # BM25Retriever.persist (bm25s index + corpus)
+
+Everything degrades gracefully when llama-index is not installed: the CLI
+fails with a clear message instead of a traceback, and importing the module
+never raises.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+from loguru import logger
+
+from drbrain.config import Config
+from drbrain.rag.config import get_llamaindex_config
+
+try:  # pragma: no cover - exercised in environments without llama-index
+    from llama_index.core import VectorStoreIndex, load_index_from_storage
+    from llama_index.core.schema import Document, TextNode
+    from llama_index.core.storage import StorageContext
+    from llama_index.core.vector_stores import SimpleVectorStore
+    from llama_index.retrievers.bm25 import BM25Retriever
+
+    _LLAMA_INDEX_AVAILABLE = True
+except ImportError:  # pragma: no cover - envs without llama-index
+    Document = TextNode = VectorStoreIndex = load_index_from_storage = None  # type: ignore[assignment,misc]
+    StorageContext = SimpleVectorStore = BM25Retriever = None  # type: ignore[assignment,misc]
+    _LLAMA_INDEX_AVAILABLE = False
+
+__all__ = [
+    "_LLAMA_INDEX_AVAILABLE",
+    "MANIFEST_NAME",
+    "build_index",
+    "collect_tree_nodes",
+    "load_index",
+]
+
+#: Layer tag stored on PageIndex nodes (mirrors ``tree_vectors.tree_layer``).
+TREE_LAYER_PAGEINDEX = "pageindex"
+#: Filename of the incremental-update manifest under ``storage_dir``.
+MANIFEST_NAME = "manifest.json"
+#: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
+#: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
+#: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
+#: finding). Nodes above the cap are split into paragraph chunks at
+#: ``4 chars/token`` — each chunk inherits the parent node_id + ``#i`` suffix
+#: (T9 decision: split, not truncate — preserves full content).
+#:
+#: 4000, not 8000: the GPU memory profile of the Qwen3-Embedding-0.6B fp32
+#: forward pass is quadratic in sequence length (measured per-sample: 4096
+#: tokens ≈ 3.6GB, 8192 tokens ≈ 12.2GB). On a 16GB V100 (≈2.5GB weights +
+#: ~1GB overhead) a single 8000-token sequence lands at ~15GB and OOMs;
+#: 4000-token chunks leave comfortable headroom (T9 GPU verification).
+DEFAULT_MAX_NODE_TOKENS = 4000
+#: Chars-per-token heuristic used to convert ``max_node_tokens`` → char cap.
+CHARS_PER_TOKEN = 4
+
+
+def _content_hash(text: str) -> str:
+    """Stable content hash for incremental update detection (sha256[:16])."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _node_key(paper_id: str, node_id: str) -> str:
+    """Globally-unique node key (tree ``node_id``s are only unique per paper)."""
+    return f"{paper_id}:{node_id}"
+
+
+def _paragraph_chunks(text: str, max_chars: int) -> list[str]:
+    """Split ``text`` into paragraph-boundary chunks of at most ``max_chars``.
+
+    Greedy accumulation over ``\n\n``-separated paragraphs, preserving the
+    original text verbatim (only boundaries are chosen). A single paragraph
+    longer than the cap is hard-sliced at the cap, so the worst case stays
+    bounded even for ``\n``-only bodies.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    paras = text.split("\n\n")
+    chunks: list[str] = []
+    cur = ""
+    for p in paras:
+        while len(p) > max_chars:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(p[:max_chars])
+            p = p[max_chars:]
+        if not p:
+            continue
+        if cur and len(cur) + len(p) + 2 > max_chars:
+            chunks.append(cur)
+            cur = p
+        else:
+            cur = f"{cur}\n\n{p}" if cur else p
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
+
+
+def _chunk_document(doc: Document, max_node_tokens: int) -> list[Document]:
+    """Split an over-long Document into paragraph chunks (T9 OOM fix).
+
+    A node whose text exceeds ``max_node_tokens`` tokens (≈ 4 chars/token) is
+    split at paragraph boundaries. Every chunk:
+      * keeps the parent's metadata (``paper_id``/``node_id``/``line_*``) so
+        downstream consumers (sources, eval node-level grading) still see the
+        original tree node;
+      * adds ``chunk_index`` / ``chunk_count``;
+      * is re-prefixed with the section title (aids BM25/vector matching);
+      * gets id ``<paper_id:node_id>#<i>`` (distinct from the parent key so
+        fusion dedup and the manifest never collide).
+
+    Sub-cap nodes are returned as-is (one Document, no ``#`` suffix).
+    """
+    max_chars = max(1, int(max_node_tokens)) * CHARS_PER_TOKEN
+    if len(doc.text) <= max_chars:
+        return [doc]
+    title = str(doc.metadata.get("title") or "")
+    body = doc.text
+    if title and body.startswith(title + "\n"):
+        body = body[len(title) + 1 :]
+    parts = _paragraph_chunks(body, max_chars)
+    out: list[Document] = []
+    for i, part in enumerate(parts):
+        md = dict(doc.metadata)
+        md["chunk_index"] = i
+        md["chunk_count"] = len(parts)
+        chunk_text = f"{title}\n{part}".strip() if title else part
+        out.append(
+            Document(
+                text=chunk_text,
+                id_=f"{doc.id_}#{i}",
+                metadata=md,
+            )
+        )
+    return out
+
+
+# ── Document collection ──────────────────────────────────────────────────────
+
+
+def collect_tree_nodes(
+    paper_dir: str | Path,
+    tree_json: str | Path | dict | None = None,
+    max_node_tokens: int | None = None,
+) -> list[Document]:
+    """Collect one :class:`Document` per PageIndex tree node.
+
+    ``tree_json`` may be a path, a raw parsed dict, or ``None`` (defaults to
+    ``<paper_dir>/tree.json``). Each node becomes a Document with
+    ``text = "<title>\\n<body>"`` where the body is loaded from ``raw.md`` by
+    line range, and metadata::
+
+        {paper_id, node_id, title, line_start, line_end, tree_layer: "pageindex"}
+
+    When ``max_node_tokens`` is given (e.g. 8000), nodes above the cap are
+    split into paragraph chunks via :func:`_chunk_document` — each chunk keeps
+    the parent metadata plus ``chunk_index``/``chunk_count`` and an id with a
+    ``#i`` suffix (T9: bounds single-sequence embedding size on GPU). Without
+    the parameter the node↔Document mapping is 1:1 (backward compatible).
+
+    Body resolution order (mirrors ``services.embedding._collect_tree_nodes``
+    semantics, but also handles the actual tree.json format which carries
+    ``line_num`` + inline ``text``):
+
+    1. explicit ``line_start``/``line_end`` → ``raw.md[line_start:line_end]``
+    2. ``line_num`` (1-based header line) → flat range up to the next node's
+       header line in ``raw.md`` (same computation the PageIndex builder used)
+    3. inline node ``text`` → used verbatim (when ``raw.md`` is missing)
+
+    ``raw.md`` is only read when at least one node needs line-based extraction
+    (body loaded on demand). Documents whose text is empty are dropped.
+    """
+    if not _LLAMA_INDEX_AVAILABLE:  # pragma: no cover - envs without llama-index
+        raise RuntimeError("llama-index is not installed; cannot collect Documents")
+
+    paper_dir = Path(paper_dir)
+    paper_id = paper_dir.name
+
+    if tree_json is None or isinstance(tree_json, (str, Path)):
+        tree_path = Path(tree_json) if tree_json else paper_dir / "tree.json"
+        if not tree_path.exists():
+            return []
+        try:
+            tree = json.loads(tree_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("[rag] cannot parse tree.json at %s: %s", tree_path, exc)
+            return []
+    elif isinstance(tree_json, dict):
+        tree = tree_json
+    else:  # pragma: no cover - defensive
+        raise TypeError("tree_json must be a path or parsed dict")
+
+    # Flatten the hierarchy in document order (pre-order) so sibling/aunt
+    # headers bound each node's raw.md line range, exactly like the builder.
+    flat: list[dict[str, Any]] = []
+
+    def _flatten(nodes: list[dict]) -> None:
+        for node in nodes:
+            flat.append(node)
+            children = node.get("nodes")
+            if isinstance(children, list) and children:
+                _flatten(children)
+
+    structure = tree.get("structure")
+    if isinstance(structure, list):
+        _flatten(structure)
+
+    if not flat:
+        return []
+
+    # Load raw.md on demand: only needed when some node wants line extraction.
+    raw_lines: list[str] | None = None
+    if any(
+        node.get("line_num") is not None
+        or (node.get("line_start") is not None and node.get("line_end") is not None)
+        for node in flat
+    ):
+        raw_path = paper_dir / "raw.md"
+        if raw_path.exists():
+            raw_lines = raw_path.read_text(encoding="utf-8").split("\n")
+
+    docs: list[Document] = []
+    for i, node in enumerate(flat):
+        nid = str(node.get("node_id") or "").strip()
+        title = str(node.get("title") or "").strip()
+        if not nid:
+            continue
+
+        body = ""
+        line_start: int | None = None
+        line_end: int | None = None
+
+        ls, le = node.get("line_start"), node.get("line_end")
+        if ls is not None and le is not None and raw_lines is not None:
+            line_start, line_end = int(ls), int(le)
+            body = "\n".join(raw_lines[line_start:line_end])
+        elif node.get("line_num") is not None and raw_lines is not None:
+            start0 = int(node["line_num"]) - 1  # 1-based header line → 0-based
+            end0 = len(raw_lines)
+            nxt = flat[i + 1] if i + 1 < len(flat) else None
+            if nxt is not None and nxt.get("line_num") is not None:
+                end0 = int(nxt["line_num"]) - 1
+            line_start, line_end = start0, max(start0, end0)
+            body = "\n".join(raw_lines[start0:end0])
+        elif node.get("text"):
+            body = str(node["text"])
+
+        text = f"{title}\n{body}".strip()
+        if not text:
+            continue
+
+        docs.append(
+            Document(
+                text=text,
+                id_=_node_key(paper_id, nid),
+                metadata={
+                    "paper_id": paper_id,
+                    "node_id": nid,
+                    "title": title,
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "tree_layer": TREE_LAYER_PAGEINDEX,
+                },
+            )
+        )
+    if max_node_tokens and max_node_tokens > 0:
+        out: list[Document] = []
+        for doc in docs:
+            out.extend(_chunk_document(doc, int(max_node_tokens)))
+        return out
+    return docs
+
+
+# ── Persistence helpers ──────────────────────────────────────────────────────
+
+
+def _storage_dirs(storage_dir: str | Path) -> tuple[Path, Path, Path]:
+    """Return (root, vector_dir, bm25_dir) for a configured storage_dir."""
+    root = Path(storage_dir)
+    return root, root / "vector", root / "bm25"
+
+
+def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
+    root, _, _ = _storage_dirs(storage_dir)
+    manifest_path = root / MANIFEST_NAME
+    if not manifest_path.exists():
+        return {}
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.warning("[rag] ignoring unreadable manifest at %s", manifest_path)
+        return {}
+
+
+def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
+    root, _, _ = _storage_dirs(storage_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / f"{MANIFEST_NAME}.tmp"
+    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", "utf-8")
+    tmp.replace(root / MANIFEST_NAME)
+
+
+def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
+    """Load node_id → embedding from a previously persisted SimpleVectorStore."""
+    if not _LLAMA_INDEX_AVAILABLE or not (vector_dir / "default__vector_store.json").exists():
+        return {}
+    try:
+        store = SimpleVectorStore.from_persist_dir(str(vector_dir))
+        return dict(store._data.embedding_dict)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[rag] could not read previous vector store: %s", exc)
+        return {}
+
+
+def _load_old_index_nodes(vector_dir: Path, embed_model: Any) -> dict[str, TextNode]:
+    """Load all previously indexed nodes (with embeddings) from a persisted index.
+
+    Used to carry non-target papers through a ``--paper`` subset rebuild so the
+    persisted index keeps covering the whole library.
+    """
+    if not _LLAMA_INDEX_AVAILABLE or not (vector_dir / "docstore.json").exists():
+        return {}
+    try:
+        sc = StorageContext.from_defaults(persist_dir=str(vector_dir))
+        idx = load_index_from_storage(sc, embed_model=embed_model)
+        out: dict[str, TextNode] = {}
+        for node in idx.docstore.docs.values():
+            if not isinstance(node, TextNode):
+                continue
+            embedding = node.embedding or idx._vector_store.get(node.node_id)
+            if embedding is None:
+                continue
+            node.embedding = embedding
+            out[node.node_id] = node
+        return out
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("[rag] could not load previous index nodes: %s", exc)
+        return {}
+
+
+def _default_embed_model(cfg: Config) -> Any:
+    """T1 DrbrainEmbedding adapter (lazy; loads the model on first embed call)."""
+    from drbrain.rag.llm import DrbrainEmbedding
+
+    return DrbrainEmbedding(cfg)
+
+
+# ── Build ────────────────────────────────────────────────────────────────────
+
+
+def build_index(
+    cfg: Config,
+    db: Any,
+    paper_ids: Iterable[str] | None = None,
+    force: bool = False,
+    embed_model: Any | None = None,
+    max_node_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Build (or incrementally update) the LlamaIndex vector + BM25 indexes.
+
+    For every target paper (``paper_ids``, or all papers known to ``db`` when
+    ``None``), collects its PageIndex Documents, embeds only the nodes whose
+    ``content_hash`` changed since the last build (``force=True`` re-embeds
+    everything), persists ``VectorStoreIndex`` + ``BM25Retriever`` under
+    ``llamaindex.storage_dir``, and records hashes in ``manifest.json``.
+
+    ``max_node_tokens`` (default :data:`DEFAULT_MAX_NODE_TOKENS` = 8000) caps
+    the size of a single embedded sequence: nodes above the cap are split into
+    paragraph chunks (each chunk = one indexed TextNode carrying the parent's
+    metadata + ``#i`` suffix). Change detection stays per parent node — an
+    unchanged node reuses all its chunk embeddings; only changed nodes (or
+    nodes with missing chunk embeddings) are re-embedded. Pass
+    ``max_node_tokens=None``-equivalent large values (or 0) to disable
+    chunking.
+
+    ``db`` only needs ``get_all_papers() -> list[{"local_id": str}]``. Nodes
+    whose embedding cannot be reused (no persisted store, or the configured
+    embed model changed) are re-embedded automatically.
+
+    Returns a stats dict: ``{"papers", "nodes", "chunked", "embedded",
+    "unchanged", "removed", "bm25_nodes", "storage_dir"}``.
+    """
+    if not _LLAMA_INDEX_AVAILABLE:
+        raise RuntimeError(
+            "llama-index is not installed; run `uv add llama-index-core llama-index-retrievers-bm25`"
+        )
+
+    li = get_llamaindex_config(cfg)
+    storage_root, vector_dir, bm25_dir = _storage_dirs(li.storage_dir)
+    papers_root = Path(cfg.dirs.papers)
+    top_k = cfg.embed.top_k or 10
+    max_node_tokens = max_node_tokens or DEFAULT_MAX_NODE_TOKENS
+
+    target_ids = (
+        list(paper_ids) if paper_ids is not None else [p["local_id"] for p in db.get_all_papers()]
+    )
+
+    # 1. Collect parent documents + split into chunk documents.
+    #    ``docs_by_key`` holds one Document per tree node (parent), keyed by
+    #    ``paper_id:node_id``; ``chunk_docs`` holds the (possibly split) chunk
+    #    Documents keyed by ``paper_id:node_id#i``. Change detection runs on
+    #    parent keys; embedding + indexing run on chunk keys.
+    docs_by_key: dict[str, Document] = {}
+    chunk_docs: dict[str, Document] = {}
+    parent_chunks: dict[str, list[str]] = {}
+    paper_keys: dict[str, list[str]] = {}
+    for pid in sorted(str(p) for p in target_ids):
+        paper_dir = papers_root / pid
+        if not paper_dir.is_dir():
+            logger.warning("[rag] paper dir missing, skipping: %s", paper_dir)
+            continue
+        docs = collect_tree_nodes(paper_dir)
+        if not docs:
+            logger.info("[rag] no PageIndex nodes for %s (missing tree.json?)", pid)
+            continue
+        paper_keys[pid] = [doc.id_ for doc in docs]
+        docs_by_key.update((doc.id_, doc) for doc in docs)
+        for doc in docs:
+            chunks = _chunk_document(doc, max_node_tokens)
+            parent_chunks[doc.id_] = [c.id_ for c in chunks]
+            chunk_docs.update((c.id_, c) for c in chunks)
+
+    hashes = {key: _content_hash(doc.text) for key, doc in docs_by_key.items()}
+
+    # 2. Diff against the previous manifest (per parent node).
+    manifest = _load_manifest(li.storage_dir)
+    old_papers: dict[str, dict[str, str]] = manifest.get("papers", {})
+    old_model = manifest.get("embed_model")
+    new_model = cfg.embed.model
+    model_changed = bool(old_model) and old_model != new_model
+
+    changed: set[str] = set()
+    if force or model_changed:
+        changed = set(hashes)
+    else:
+        for key, h in hashes.items():
+            if old_papers.get(key.split(":", 1)[0], {}).get(key) != h:
+                changed.add(key)
+
+    removed: set[str] = set()
+    for pid, old_keys in old_papers.items():
+        if pid in paper_keys:
+            removed.update(k for k in old_keys if k not in hashes)
+
+    # 3. Embed only what needs fresh embeddings: every changed node's chunks,
+    #    plus any unchanged node whose chunk embeddings are missing from the
+    #    previous store (crash-recovery).
+    old_embeddings = {} if force else _load_old_embeddings(vector_dir)
+    embed = embed_model or _default_embed_model(cfg)
+
+    still_changed = set(changed)
+    for key in hashes:
+        if key in changed:
+            continue
+        if any(ck not in old_embeddings for ck in parent_chunks[key]):
+            still_changed.add(key)
+
+    embed_keys: list[str] = [ck for key in sorted(still_changed) for ck in parent_chunks[key]]
+    embedded_texts = [chunk_docs[k].text for k in embed_keys]
+    new_embeddings: dict[str, list[float]] = {}
+    if embedded_texts:
+        vectors = embed.get_text_embedding_batch(embedded_texts)
+        for key, vec in zip(embed_keys, vectors):
+            if vec:
+                new_embeddings[key] = vec
+
+    # 3b. For a --paper subset rebuild, carry over non-target papers' already
+    #     indexed nodes so the persisted index keeps covering the whole library.
+    carried: dict[str, TextNode] = {}
+    if paper_ids is not None:
+        target_set = {str(p) for p in target_ids}
+        for key, node in _load_old_index_nodes(vector_dir, embed).items():
+            if node.metadata.get("paper_id") not in target_set:
+                carried[key] = node
+
+    # 4. Assemble pre-embedded TextNodes (one per chunk; sub-cap nodes stay
+    #    single). Chunk order follows parent-node order then chunk index.
+    nodes: list[TextNode] = []
+    for key in sorted(hashes):
+        for ck in parent_chunks[key]:
+            doc = chunk_docs[ck]
+            embedding = new_embeddings.get(ck) or old_embeddings.get(ck)
+            if embedding is None:  # pragma: no cover - defensive
+                logger.warning("[rag] node %s has no embedding; skipping", ck)
+                continue
+            nodes.append(
+                TextNode(
+                    text=doc.text,
+                    id_=ck,
+                    metadata=dict(doc.metadata),
+                    embedding=embedding,
+                )
+            )
+    nodes.extend(carried[key] for key in sorted(carried))
+
+    stats: dict[str, Any] = {
+        "papers": len(paper_keys),
+        "nodes": len(nodes),
+        "chunked": sum(1 for ks in parent_chunks.values() if len(ks) > 1),
+        "carried": len(carried),
+        "embedded": len(embed_keys),
+        "unchanged": len(hashes) - len(still_changed),
+        "removed": len(removed),
+        "bm25_nodes": 0,
+        "storage_dir": str(storage_root),
+    }
+    if not nodes:
+        logger.warning("[rag] nothing to index; leaving existing indexes untouched")
+        return stats
+
+    # 5. Persist vector index + BM25.
+    storage_root.mkdir(parents=True, exist_ok=True)
+    index = VectorStoreIndex(nodes=nodes, embed_model=embed)
+    index.storage_context.persist(str(vector_dir))
+    logger.info(
+        "[rag] persisted vector index (%d nodes) to %s",
+        len(nodes),
+        vector_dir,
+    )
+
+    bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
+    bm25.persist(str(bm25_dir))
+    stats["bm25_nodes"] = len(bm25.corpus)
+    logger.info("[rag] persisted BM25 index (%d docs) to %s", len(bm25.corpus), bm25_dir)
+
+    # 6. Update manifest: target papers replaced, others preserved.
+    new_papers: dict[str, dict[str, str]] = {
+        pid: {k: hashes[k] for k in keys if k in hashes} for pid, keys in paper_keys.items()
+    }
+    for pid, old_keys in old_papers.items():
+        if pid not in new_papers:
+            new_papers[pid] = dict(old_keys)
+    _write_manifest(
+        li.storage_dir,
+        {"embed_model": new_model, "vector_store": li.vector_store, "papers": new_papers},
+    )
+    logger.info("[rag] index build done: %s", stats)
+    return stats
+
+
+# ── Load ─────────────────────────────────────────────────────────────────────
+
+
+def load_index(
+    cfg: Config,
+    embed_model: Any | None = None,
+) -> tuple[Any | None, Any | None]:
+    """Load the persisted ``(VectorStoreIndex, BM25Retriever)`` from disk.
+
+    Returns ``(None, None)`` when llama-index is unavailable or no index has
+    been built yet. The embed model defaults to the T1 DrbrainEmbedding
+    adapter (lazy — no model load happens here unless a query embeds).
+    """
+    if not _LLAMA_INDEX_AVAILABLE:
+        return None, None
+
+    li = get_llamaindex_config(cfg)
+    _, vector_dir, bm25_dir = _storage_dirs(li.storage_dir)
+    embed = embed_model or _default_embed_model(cfg)
+    top_k = cfg.embed.top_k or 10
+
+    index = None
+    if (vector_dir / "docstore.json").exists():
+        try:
+            sc = StorageContext.from_defaults(persist_dir=str(vector_dir))
+            index = load_index_from_storage(sc, embed_model=embed)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[rag] failed to load vector index from %s: %s", vector_dir, exc)
+
+    bm25 = None
+    if (bm25_dir / "corpus.jsonl").exists():
+        try:
+            bm25 = BM25Retriever.from_persist_dir(str(bm25_dir))
+            bm25.similarity_top_k = top_k
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("[rag] failed to load BM25 index from %s: %s", bm25_dir, exc)
+
+    return index, bm25

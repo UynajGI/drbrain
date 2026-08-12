@@ -140,58 +140,38 @@ class TestStatsJson:
 
 
 class TestQueryJson:
-    def test_query_json_outputs_valid_json(self):
-        with tempfile.TemporaryDirectory() as td:
-            db = _make_db(td)
-            db.close()
-            _write_config(td, str(Path(td) / "test.db"))
-            old = os.getcwd()
-            os.chdir(td)
-            try:
-                result = runner.invoke(app, ["query", "Transformer", "--json"])
-                assert result.exit_code == 0
-                data = json.loads(result.output)
-                assert isinstance(data, list)
-                assert any("Transformer" in str(r.get("label", "")) for r in data)
-            finally:
-                os.chdir(old)
+    """query_cmd is llamaindex-only since T9 — without an index it exits 1.
 
-    def test_query_json_with_type_filter(self):
-        with tempfile.TemporaryDirectory() as td:
-            db = _make_db(td)
-            db.close()
-            _write_config(td, str(Path(td) / "test.db"))
-            old = os.getcwd()
-            os.chdir(td)
-            try:
-                result = runner.invoke(
-                    app, ["query", "Transformer", "--json", "--type-filter=Method"]
-                )
-                assert result.exit_code == 0
-                data = json.loads(result.output)
-                for item in data:
-                    assert item["type"] == "Method"
-            finally:
-                os.chdir(old)
+    The legacy concept-level JSON output (list of ``{label, type, ...}`` rows)
+    was removed with the legacy engine (design §1 替换清单); the llamaindex
+    JSON shape (``{"query", "engine", "results"}``) requires a built index and
+    is exercised by the rag engine tests.
+    """
 
-    def test_query_jsonl_stream(self):
-        """Query --jsonl outputs newline-delimited JSON."""
+    def _run_query(self, td: str, extra: list[str]):
+        db = _make_db(td)
+        db.close()
+        _write_config(td, str(Path(td) / "test.db"))
+        old = os.getcwd()
+        os.chdir(td)
+        try:
+            return runner.invoke(app, ["query", "Transformer", *extra])
+        finally:
+            os.chdir(old)
+
+    def test_query_json_no_index_exits_with_warning(self):
+        """No index built → exit 1 + llamaindex-availability warning."""
         with tempfile.TemporaryDirectory() as td:
-            db = _make_db(td)
-            db.close()
-            _write_config(td, str(Path(td) / "test.db"))
-            old = os.getcwd()
-            os.chdir(td)
-            try:
-                result = runner.invoke(app, ["query", "Transformer", "--jsonl"])
-                assert result.exit_code == 0
-                lines = result.output.strip().split("\n")
-                assert len(lines) >= 1
-                for line in lines:
-                    data = json.loads(line)
-                    assert "label" in data
-            finally:
-                os.chdir(old)
+            result = self._run_query(td, ["--json"])
+            assert result.exit_code == 1
+            assert "llamaindex engine unavailable" in result.output
+
+    def test_query_jsonl_no_index_exits_with_warning(self):
+        """--jsonl without an index behaves like --json (exit 1 + warning)."""
+        with tempfile.TemporaryDirectory() as td:
+            result = self._run_query(td, ["--jsonl"])
+            assert result.exit_code == 1
+            assert "llamaindex engine unavailable" in result.output
 
 
 class TestSeedJson:

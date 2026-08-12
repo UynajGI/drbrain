@@ -70,6 +70,7 @@ from drbrain.cli.query_commands import (
     show_cmd,
     stats_cmd,
 )
+from drbrain.cli.rag_commands import rag_app
 from drbrain.cli.repair_commands import (
     enrich_cmd,
     import_cmd,
@@ -158,6 +159,7 @@ app.add_typer(session_app, name="session")
 app.add_typer(graph_app, name="graph")
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
+app.add_typer(rag_app, name="rag")
 
 if __name__ == "__main__":
     app()

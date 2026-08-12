@@ -151,6 +151,66 @@ class EmbedConfig(_ConfigBase):
 
 
 @dataclass
+class LlamaIndexEvalConfig(_ConfigBase):
+    """Evaluation settings for the LlamaIndex RAG layer (T1 infra).
+
+    Attributes:
+        golden_set: Path to the golden query set (JSONL) used for eval.
+        split: Dev/val/test split names to prevent leakage during eval.
+    """
+
+    golden_set: str = "data/llamaindex/golden.jsonl"
+    split: list[str] = field(default_factory=lambda: ["dev", "val", "test"])
+
+
+@dataclass
+class LlamaIndexConfig(_ConfigBase):
+    """LlamaIndex RAG layer configuration (T1: infrastructure).
+
+    Attributes:
+        enabled: Master switch. ``False`` falls back to legacy implementations.
+        llm: LLM bridge backend (``"litellm"``); wired up in T2.
+        vector_store: ``"memory"`` | ``"chroma"`` (chromadb is optional).
+        storage_dir: Directory for LlamaIndex index persistence.
+        retrievers: Fusion legs, e.g. ``["bm25", "vector"]``.
+        fusion_mode: ``"reciprocal_rank"`` | ``"relative_score"``.
+        rerank: Enable reranking by default.
+        rerank_model: Reranker model name (Qwen/Qwen3-Reranker-0.6B).
+        rerank_top_k: Candidate count fed to the reranker.
+        similarity_cutoff: SimilarityPostProcessor threshold.
+        streaming: Enable streaming responses.
+        max_node_tokens: Long PageIndex nodes above this size are split into
+            paragraph chunks (each chunk keeps the parent node_id + a
+            ``#index`` suffix) so embedding stays bounded on GPU. Default 4000:
+            measured Qwen3-Embedding-0.6B fp32 per-sample memory is quadratic
+            (4096 tokens ≈ 3.6GB, 8192 ≈ 12.2GB) — 8000-token sequences OOM a
+            16GB V100 (T9 fix for the 39KB-node OOM; 4 chars ≈ 1 token).
+        eval: Evaluation settings (golden set + split).
+    """
+
+    enabled: bool = False
+    llm: str = "litellm"
+    vector_store: str = "memory"
+    storage_dir: str = "data/llamaindex"
+    retrievers: list[str] = field(default_factory=lambda: ["bm25", "vector"])
+    fusion_mode: str = "reciprocal_rank"
+    rerank: bool = True
+    rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
+    rerank_top_k: int = 20
+    similarity_cutoff: float = 0.7
+    streaming: bool = True
+    max_node_tokens: int = 4000
+    eval: LlamaIndexEvalConfig = field(default_factory=LlamaIndexEvalConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> LlamaIndexConfig:
+        """Build from a raw YAML dict, nesting the ``eval`` sub-config."""
+        raw = dict(data or {})
+        eval_raw = raw.pop("eval", None) or {}
+        return cls(eval=LlamaIndexEvalConfig(**eval_raw), **raw)
+
+
+@dataclass
 class BackupTargetConfig(_ConfigBase):
     """Rsync backup target configuration.
 
@@ -200,6 +260,7 @@ class Config(_ConfigBase):
     queue: QueueConfig = field(default_factory=QueueConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
+    llamaindex: LlamaIndexConfig = field(default_factory=LlamaIndexConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
     admin: dict = field(default_factory=dict)
 
@@ -247,6 +308,7 @@ class Config(_ConfigBase):
             queue=QueueConfig(**cfg.get("queue", {})),
             fetch=FetchConfig(**cfg.get("fetch", {})),
             embed=EmbedConfig(**cfg.get("embed", {})),
+            llamaindex=LlamaIndexConfig.from_dict(cfg.get("llamaindex", {})),
             backup=BackupConfig(
                 ssh_bin=backup_raw.get("ssh_bin", "ssh"),
                 rsync_bin=backup_raw.get("rsync_bin", "rsync"),

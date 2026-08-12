@@ -95,6 +95,7 @@ def test_parser_succeeds_on_first_try():
             "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
+        unittest.mock.patch("drbrain.extractor.openalex.search_authors_by_work", return_value=[]),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser._resolve_metadata",
             return_value={
