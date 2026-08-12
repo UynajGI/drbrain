@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     "arxiv>=2.0",
     "httpx[socks]>=0.27",
-    "litellm>=1.50",
+    "litellm>=1.84.0,<1.85",
     "loguru>=0.7.3",
     "networkx>=3.4",
     "pydantic>=2.10",
@@ -129,4 +129,15 @@ markers = [
 # Driver 570.211.01 supports up to CUDA 12.8: torch>=2.11 PyPI wheels are built
 # against cu129/cu130 and cannot initialize CUDA on this host, so pin <2.11.
 [tool.uv]
-constraint-dependencies = ["torch<2.11"]
+constraint-dependencies = [
+    "torch<2.11",
+    # Security floors: transitive deps with known CVEs (pip-audit). Bump
+    # together with the corresponding entries in .github/workflows/ci.yml if any
+    # of these ever becomes un-resolvable.
+    "aiohttp>=3.14.3",
+    "click>=8.3.3",
+    "idna>=3.15",
+    "pillow>=12.3.0",
+    "python-dotenv>=1.2.2",
+    "urllib3>=2.7.0",
+]

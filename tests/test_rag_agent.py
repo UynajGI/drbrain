@@ -579,6 +579,8 @@ def test_reason_cmd_disabled_exits_with_warning(monkeypatch, tmp_path):
 
 
 def test_reason_cmd_help_has_no_engine_option():
+    import re
+
     import typer
 
     from drbrain.cli.analysis_commands import reason_cmd
@@ -592,8 +594,11 @@ def test_reason_cmd_help_has_no_engine_option():
     app.command("test")(reason_cmd)
     r = runner.invoke(app, ["test", "--help"])
     assert r.exit_code == 0
-    assert "--engine" not in r.output  # T9: legacy engine switch removed
-    assert "--json" in r.output
+    # rich may emit ANSI color codes (e.g. FORCE_COLOR in CI) that split option
+    # names across style spans; strip them before substring assertions.
+    output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", r.output)
+    assert "--engine" not in output  # T9: legacy engine switch removed
+    assert "--json" in output
 
 
 # ── integration: real LLM over the test-run corpus ─────────────────────────

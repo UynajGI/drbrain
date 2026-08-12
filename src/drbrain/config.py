@@ -72,6 +72,9 @@ class ApiConfig(_ConfigBase):
     )  # 多账号 token 列表(真并行:每账号独立限流)
     sciverse_base_url: str = "https://api.sciverse.space"
     sciverse_rate_limit: int = 30
+    ref_base_url: str = ""
+    ref_model: str = ""
+    ref_api_key: str = ""
 
 
 @dataclass

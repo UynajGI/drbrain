@@ -175,7 +175,9 @@ def build_query_engine(
 
     if streaming is None:
         streaming = bool(li.streaming)
-    synth = get_response_synthesizer(response_mode="refine", streaming=bool(streaming))
+    from llama_index.core.response_synthesizers.type import ResponseMode
+
+    synth = get_response_synthesizer(response_mode=ResponseMode.REFINE, streaming=bool(streaming))
 
     # T8 postprocessor chain: rerank → cutoff → dedup (order is load-bearing;
     # rerank must run before the cutoff so the cutoff sees reranked order).
@@ -194,12 +196,11 @@ def build_query_engine(
         postprocessors.append(SimilarityCutoffPostprocessor(similarity_cutoff=li.similarity_cutoff))
     if li.rerank:
         postprocessors.append(DeduplicatePostprocessor())
-    postprocessors = postprocessors or None
 
     engine = RetrieverQueryEngine(
         retriever=fusion,
         response_synthesizer=synth,
-        node_postprocessors=postprocessors,
+        node_postprocessors=postprocessors or None,
     )
     return engine
 
@@ -254,7 +255,7 @@ def extract_sources(nodes: list[NodeWithScore] | None) -> list[dict[str, Any]]:
                 "paper_id": str(meta.get("paper_id") or ""),
                 "node_id": str(meta.get("node_id") or getattr(node, "node_id", None) or ""),
                 "title": str(meta.get("title") or ""),
-                "score": float(nws.score) if getattr(nws, "score", None) is not None else None,
+                "score": float(nws.score) if nws.score is not None else None,
                 "sources": list(meta.get("sources") or [])
                 or ([meta["source"]] if meta.get("source") else []),
             }
@@ -288,7 +289,7 @@ def nodes_to_paper_results(
             pid,
             {"paper_id": pid, "title": "", "score": 0.0, "sections": 0, "sources": []},
         )
-        score = float(nws.score) if getattr(nws, "score", None) is not None else 0.0
+        score = float(nws.score) if nws.score is not None else 0.0
         if score > entry["score"]:
             entry["score"] = score
             if not entry["title"]:
@@ -428,7 +429,12 @@ if _LLAMA_INDEX_AVAILABLE:
         similarity_cutoff: float | None = None
 
         def __init__(self, similarity_cutoff: float | None = None) -> None:
-            super().__init__(similarity_cutoff=similarity_cutoff)
+            # ``similarity_cutoff`` is a field declared on *this* class; mypy's
+            # synthesized ``BaseNodePostprocessor.__init__`` (base-class fields
+            # only) does not know it, but pydantic validates it at runtime.
+            super().__init__(  # type: ignore[call-arg]
+                similarity_cutoff=similarity_cutoff
+            )
 
         @classmethod
         def class_name(cls) -> str:

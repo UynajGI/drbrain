@@ -2,7 +2,7 @@
 
 Covers :mod:`drbrain.rag.indexer`:
 
-* :func:`collect_tree_nodes` — real test-run paper + synthetic line-range tree
+* :func:`collect_tree_nodes` — synthetic structured paper + synthetic line-range tree
 * :func:`build_index` — full build, incremental (content_hash), ``--paper``
   subset carry-over, ``--force`` rebuild
 * :func:`load_index` — restore from disk, retrieve, missing-storage fallback
@@ -115,11 +115,64 @@ def _write_synthetic_paper(papers_dir: Path, pid: str) -> None:
     )
 
 
+def _write_structured_paper(papers_dir: Path, pid: str, sections: list[tuple[str, str]]) -> None:
+    """Write tree.json + raw.md for a paper from explicit ``(title, body)`` sections.
+
+    ``body`` is the raw.md content for that section (``\\n\\n`` paragraph breaks
+    are preserved). Each section becomes a tree node ``0000``, ``0001``, ... with
+    ``line_num`` pointing at its ``# title`` header line.
+    """
+    paper_dir = papers_dir / pid
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["cover line"]
+    structure = []
+    for i, (title, body) in enumerate(sections):
+        header_line = len(lines) + 1  # 1-based header line
+        lines.append(f"# {title}")
+        lines.extend(body.split("\n"))
+        structure.append(
+            {"title": title, "node_id": f"{i:04d}", "line_num": header_line, "nodes": []}
+        )
+    (paper_dir / "raw.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (paper_dir / "tree.json").write_text(
+        json.dumps({"doc_name": pid, "line_count": len(lines), "structure": structure}),
+        encoding="utf-8",
+    )
+
+
+# Synthetic stand-ins for the former test-run corpus (CI has no test-run/):
+# PAPER_A has 3 small nodes; PAPER_B has 4 nodes whose Abstract is oversized
+# (3 paragraphs of 12,000 chars → 3 chunks at the 4,000-token ≈ 16,000-char
+# cap), mirroring the real-corpus shape the T3 tests were written against.
+_PAPER_A_SECTIONS = [
+    ("Intro", "polymer drag reduction basics\nturbulent channel flow experiments"),
+    ("Methods", "solvothermal nanoparticle synthesis\ncharacterization via XRD and SEM"),
+    ("Results", "measured drag reduction of 40 percent"),
+]
+_OVERSIZED_ABSTRACT = "\n\n".join("X" * 12000 for _ in range(3))
+_PAPER_B_SECTIONS = [
+    ("Abstract", _OVERSIZED_ABSTRACT),
+    ("Intro", "polymer drag reduction basics"),
+    ("Methods", "solvothermal nanoparticle synthesis"),
+    ("Conclusion", "nanoparticles reduce drag"),
+]
+
+
+def _seed_real_like_papers(papers_dir: Path, pids: list[str] | None = None) -> None:
+    """Write the synthetic PAPER_A + PAPER_B fixtures under ``papers_dir``."""
+    if pids is None or PAPER_A in pids:
+        _write_structured_paper(papers_dir, PAPER_A, _PAPER_A_SECTIONS)
+    if pids is None or PAPER_B in pids:
+        _write_structured_paper(papers_dir, PAPER_B, _PAPER_B_SECTIONS)
+
+
 # ── collect_tree_nodes ───────────────────────────────────────────────────────
 
 
-def test_collect_tree_nodes_real_paper():
-    docs = collect_tree_nodes(REAL_PAPERS / PAPER_A)
+def test_collect_tree_nodes_real_paper(tmp_path):
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_A])
+    docs = collect_tree_nodes(papers_dir / PAPER_A)
     assert len(docs) > 0
     for doc in docs:
         assert doc.id_.startswith(f"{PAPER_A}:")
@@ -193,7 +246,9 @@ def test_collect_tree_nodes_missing_tree_json(tmp_path):
 
 
 def test_build_index_full_and_load_retrieve(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir)
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_A, PAPER_B])
     embed = _CountingEmbed()
 
@@ -230,7 +285,9 @@ def test_build_index_full_and_load_retrieve(tmp_path):
 
 def test_build_index_no_chunking_when_cap_disabled(tmp_path):
     """A huge max_node_tokens keeps the 1:1 node↔Document mapping."""
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_B])
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_B])
     embed = _CountingEmbed()
     stats = build_index(cfg, db, embed_model=embed, max_node_tokens=100_000)
@@ -239,7 +296,9 @@ def test_build_index_no_chunking_when_cap_disabled(tmp_path):
 
 
 def test_build_index_chunk_metadata_and_sizes(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_B])
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_B])
     embed = _CountingEmbed()
     stats = build_index(cfg, db, embed_model=embed)
@@ -380,7 +439,9 @@ def test_build_index_force_reembeds_all(tmp_path):
 
 
 def test_build_index_paper_subset_carries_other_papers(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir)
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_A, PAPER_B])
     embed = _CountingEmbed()
 
@@ -407,7 +468,7 @@ def test_build_index_paper_subset_carries_other_papers(tmp_path):
 
 
 def test_load_index_without_storage_returns_none(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    cfg = _make_cfg(tmp_path, tmp_path / "papers")
     index, bm25 = load_index(cfg, embed_model=_CountingEmbed())
     assert index is None
     assert bm25 is None
@@ -417,7 +478,7 @@ def test_drbrain_embedding_keeps_cfg_reference():
     """T3 regression: pydantic init wiped the mixin's _cfg, breaking _embed."""
     from drbrain.rag.llm import DrbrainEmbedding
 
-    cfg = _make_cfg(Path("."), REAL_PAPERS)
+    cfg = _make_cfg(Path("."), Path("."))
     emb = DrbrainEmbedding(cfg)
     assert emb._cfg is cfg
     assert emb.model_name == cfg.embed.model
@@ -426,7 +487,9 @@ def test_drbrain_embedding_keeps_cfg_reference():
 
 
 def test_build_index_missing_paper_dir_skips(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_A])
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_A])
     stats = build_index(
         cfg, db, paper_ids=["does-not-exist", PAPER_A], embed_model=_CountingEmbed()

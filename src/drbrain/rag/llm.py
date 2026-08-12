@@ -37,12 +37,12 @@ try:
     _LLAMA_INDEX_AVAILABLE = True
 except ImportError:  # pragma: no cover - envs without llama-index
     BaseEmbedding = None  # type: ignore[assignment,misc]
-    ChatMessage = None  # type: ignore[assignment]
-    ChatResponse = None  # type: ignore[assignment]
-    CompletionResponse = None  # type: ignore[assignment]
-    LLMMetadata = None  # type: ignore[assignment]
-    MessageRole = None  # type: ignore[assignment]
-    LLM = None  # type: ignore[assignment]
+    ChatMessage = None  # type: ignore[assignment,misc]
+    ChatResponse = None  # type: ignore[assignment,misc]
+    CompletionResponse = None  # type: ignore[assignment,misc]
+    LLMMetadata = None  # type: ignore[assignment,misc]
+    MessageRole = None  # type: ignore[assignment,misc]
+    LLM = None  # type: ignore[assignment,misc]
     _LLAMA_INDEX_AVAILABLE = False
 
 log = logging.getLogger(__name__)
@@ -73,6 +73,11 @@ class _DrbrainEmbedMixin:
     the first embed call, so constructing the adapter never touches the network
     or GPU (keeps CLI startup and offline smoke tests fast).
     """
+
+    # Declared so the mixin's methods type-check ``self._cfg``; the value is
+    # set via ``object.__setattr__`` (see __init__) to bypass pydantic's
+    # validation of undeclared attributes on ``BaseEmbedding`` subclasses.
+    _cfg: Config
 
     def __init__(self, cfg: Config) -> None:
         # Only call AFTER the pydantic ``super().__init__()`` (see
@@ -161,14 +166,20 @@ if _LLAMA_INDEX_AVAILABLE:
             max_tokens: int = DEFAULT_MAX_TOKENS,
             **kwargs: Any,
         ) -> None:
-            super().__init__(temperature=temperature, max_tokens=max_tokens, **kwargs)
+            # ``temperature``/``max_tokens`` are pydantic fields declared on
+            # *this* class; mypy's synthesized ``LLM.__init__`` (base-class
+            # fields only) does not know them, but pydantic validates them via
+            # the concrete class at runtime.
+            super().__init__(  # type: ignore[call-arg]
+                temperature=temperature, max_tokens=max_tokens, **kwargs
+            )
             # Underscore attrs assigned after pydantic init: pydantic's
             # validate_python(self_instance=...) rebuilds field state and can
             # drop pre-set plain attrs, but setting invalid-field names goes
             # through the plain-setattr path (no error).
             self._cfg = cfg
             self._models = list(cfg.llm.models)
-            self._cache = None  # ApiCache | None, built lazily on first call
+            self._cache: Any = None  # ApiCache | None, built lazily on first call
 
         # ── identity ────────────────────────────────────────────────────
 
@@ -579,8 +590,11 @@ if _LLAMA_INDEX_AVAILABLE:
 
 
 else:  # pragma: no cover - exercised in environments without llama-index
-
-    class DrbrainEmbedding(_DrbrainEmbedMixin):
+    # Duck-typed fallback for environments without llama-index. This class and
+    # the ``DrbrainEmbedding`` above are mutually exclusive at runtime (guarded
+    # by ``_LLAMA_INDEX_AVAILABLE``), which mypy cannot narrow from a runtime
+    # bool — hence the precise ``no-redef`` suppression.
+    class DrbrainEmbedding(_DrbrainEmbedMixin):  # type: ignore[no-redef]
         """Duck-typed embed adapter used when llama-index is not installed."""
 
         def __init__(self, cfg: Config) -> None:

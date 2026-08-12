@@ -103,25 +103,18 @@ def _hf_reachable(timeout: float = 3.0) -> bool:
 def _resolve_rerank_model_path(model_name: str, cfg: Config) -> str:
     """Resolve a configured reranker id to a locally-loadable model path.
 
-    Tries, in order: an existing filesystem path; the HuggingFace hub cache
-    snapshot; the modelscope cache (``embed.cache_dir`` — the production
-    source for Qwen models on this host, since huggingface.co is
-    unreachable). Returns the id unchanged when nothing local matches, letting
-    sentence-transformers/huggingface_hub attempt their normal resolution
-    (gated by the ``_hf_reachable`` download check in
-    :class:`CrossEncoderReranker`).
+    Tries, in order: an existing filesystem path; the modelscope cache
+    (``embed.cache_dir`` — the production source for Qwen models on this
+    host, since huggingface.co is unreachable). Returns the id unchanged when
+    nothing local matches, letting sentence-transformers/huggingface_hub
+    attempt their normal resolution (gated by the ``_hf_reachable`` download
+    check in :class:`CrossEncoderReranker`).
     """
     if "/" not in str(model_name) or Path(str(model_name)).exists():
         return str(model_name)
     try:
-        from drbrain.services.embedding import (
-            _find_hf_cached_model,
-            _find_local_model_path,
-        )
+        from drbrain.services.embedding import _find_local_model_path
 
-        cached = _find_hf_cached_model(str(model_name))
-        if cached:
-            return cached
         embed = getattr(cfg, "embed", None)
         cache_dir = getattr(embed, "cache_dir", None) or "~/.cache/modelscope/hub/models"
         local = _find_local_model_path(str(model_name), str(cache_dir))
@@ -287,7 +280,13 @@ if _LLAMA_INDEX_AVAILABLE:
         reranker: Any = None  # CrossEncoderReranker | mock | None
 
         def __init__(self, top_k: int = 20, reranker=None) -> None:
-            super().__init__(top_k=int(top_k), reranker=reranker)
+            # ``top_k``/``reranker`` are fields declared on *this* class;
+            # mypy's synthesized ``BaseNodePostprocessor.__init__`` (base-class
+            # fields only) does not know them, but pydantic validates them via
+            # the concrete class at runtime.
+            super().__init__(  # type: ignore[call-arg]
+                top_k=int(top_k), reranker=reranker
+            )
 
         @classmethod
         def class_name(cls) -> str:

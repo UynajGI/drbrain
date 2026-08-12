@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,18 +43,20 @@ from drbrain.rag.llm import DrbrainLLM
 
 try:
     from llama_index.core.agent import FunctionAgent
-    from llama_index.core.base.llms.types import ChatMessage, MessageRole
+    from llama_index.core.base.llms.types import ChatMessage, ChatResponse, MessageRole
     from llama_index.core.llms.function_calling import FunctionCallingLLM
     from llama_index.core.llms.llm import ToolSelection
-    from llama_index.core.tools import FunctionTool
+    from llama_index.core.tools import BaseTool, FunctionTool
 
     _LLAMA_INDEX_AVAILABLE = True
 except ImportError:  # pragma: no cover - envs without llama-index
     FunctionAgent = None  # type: ignore[assignment,misc]
-    ChatMessage = None  # type: ignore[assignment]
-    MessageRole = None  # type: ignore[assignment]
+    ChatMessage = None  # type: ignore[assignment,misc]
+    ChatResponse = None  # type: ignore[assignment,misc]
+    MessageRole = None  # type: ignore[assignment,misc]
     FunctionCallingLLM = None  # type: ignore[assignment,misc]
-    ToolSelection = None  # type: ignore[assignment]
+    ToolSelection = None  # type: ignore[assignment,misc]
+    BaseTool = None  # type: ignore[assignment,misc]
     FunctionTool = None  # type: ignore[assignment,misc]
     _LLAMA_INDEX_AVAILABLE = False
 
@@ -187,7 +190,11 @@ def _schema_to_model(name: str, schema: dict) -> Any:
     for pname, pinfo in props.items():
         jt = pinfo.get("type", "string")
         if pinfo.get("enum"):
-            ptype = Literal[tuple(pinfo["enum"])]  # type: ignore[arg-type]
+            # ``Literal`` is parameterized with a runtime tuple of literal
+            # values, which mypy rejects as an invalid type expression
+            # (``valid-type``) — the flattened ``Literal[...]`` is still built
+            # correctly at runtime.
+            ptype = Literal[tuple(pinfo["enum"])]  # type: ignore[valid-type]
         else:
             ptype = _JSON_TYPE_MAP.get(jt, str)
         if pname in required:
@@ -345,6 +352,17 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
     installed ``llama-index-llms-litellm`` ``LiteLLM`` implementation.
     """
 
+    def __init__(
+        self,
+        cfg: Config,
+        temperature: float = AGENT_TEMPERATURE,
+        max_tokens: int = AGENT_MAX_TOKENS,
+        **kwargs: Any,
+    ) -> None:
+        # Explicit so mypy uses this signature instead of synthesizing one from
+        # the (multiple-inheritance) pydantic base's fields.
+        super().__init__(cfg, temperature=temperature, max_tokens=max_tokens, **kwargs)
+
     @property
     def metadata(self) -> Any:
         md = super().metadata
@@ -353,7 +371,7 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
 
     def _prepare_chat_with_tools(
         self,
-        tools: list[Any],
+        tools: Sequence[BaseTool],
         user_msg: str | ChatMessage | None = None,
         chat_history: list[ChatMessage] | None = None,
         verbose: bool = False,
@@ -364,7 +382,7 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
         # Prefer the canonical drbrain OpenAI-format specs (identical to what
         # the legacy ReasonerAgent sent); fall back to the tool's own schema.
         tool_specs = [
-            CANONICAL_TOOL_SPECS.get(tool.metadata.name)
+            CANONICAL_TOOL_SPECS.get(tool.metadata.name or "")
             or tool.metadata.to_openai_tool(skip_length_check=True)
             for tool in tools
         ]
@@ -377,8 +395,9 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
 
     def get_tool_calls_from_response(
         self,
-        response: Any,
+        response: ChatResponse,
         error_on_no_tool_call: bool = True,
+        **kwargs: Any,
     ) -> list[ToolSelection]:
         """Parse ``ChatResponse.message.additional_kwargs["tool_calls"]``."""
         tool_calls = response.message.additional_kwargs.get("tool_calls", [])
@@ -408,7 +427,7 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
             raise ValueError("No valid tool calls found.")
         return selections
 
-    async def achat(self, messages: list[ChatMessage], **kwargs: Any) -> Any:
+    async def achat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> Any:
         """Forward ``tools`` (OpenAI-format) to the drbrain fallback chain."""
         tools = kwargs.pop("tools", None)
         if not tools:
@@ -426,7 +445,7 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
         return self._chat(result)
 
     @staticmethod
-    def _to_litellm_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    def _to_litellm_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
         """litellm dicts preserving tool protocol fields + block content."""
         out: list[dict[str, Any]] = []
         for msg in messages:
@@ -805,13 +824,13 @@ async def _areason_llamaindex(
         name = getattr(tc, "tool_name", None) or ""
         args = getattr(tc, "tool_kwargs", None) or {}
         summary = ""
-        out = getattr(tc, "tool_output", None)
-        if out is not None:
+        tool_out = getattr(tc, "tool_output", None)
+        if tool_out is not None:
             try:
-                summary = out.content or str(out) or ""
+                summary = tool_out.content or str(tool_out) or ""
             except Exception:
                 summary = ""
-            if getattr(out, "is_error", False):
+            if getattr(tool_out, "is_error", False):
                 summary = f"[error] {summary}"
         tool_calls.append(
             {

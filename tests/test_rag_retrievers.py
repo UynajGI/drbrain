@@ -191,6 +191,35 @@ def _write_synthetic_paper(papers_dir: Path, pid: str) -> None:
     )
 
 
+def _write_structured_paper(papers_dir: Path, pid: str, sections: list[tuple[str, str]]) -> None:
+    """Write tree.json + raw.md for a paper from explicit ``(title, body)`` sections."""
+    paper_dir = papers_dir / pid
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["cover line"]
+    structure = []
+    for i, (title, body) in enumerate(sections):
+        header_line = len(lines) + 1  # 1-based header line
+        lines.append(f"# {title}")
+        lines.extend(body.split("\n"))
+        structure.append(
+            {"title": title, "node_id": f"{i:04d}", "line_num": header_line, "nodes": []}
+        )
+    (paper_dir / "raw.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (paper_dir / "tree.json").write_text(
+        json.dumps({"doc_name": pid, "line_count": len(lines), "structure": structure}),
+        encoding="utf-8",
+    )
+
+
+# PAPER_A: 3 small nodes (0000/0001/0002) — the synthetic stand-in for the
+# former test-run paper used by the tree/fusion/retriever tests.
+_PAPER_A_SECTIONS = [
+    ("Intro", "polymer drag reduction basics\nturbulent channel flow experiments"),
+    ("Methods", "solvothermal nanoparticle synthesis\ncharacterization via XRD and SEM"),
+    ("Results", "measured drag reduction of 40 percent"),
+]
+
+
 async def _fake_acall(prompt, models, system_prompt=None, max_tokens=1024, _cache=None):
     """Mock of tree_retrieval.acall_with_fallback: pick nodes 0000+0002."""
     del prompt, models, system_prompt, max_tokens, _cache
@@ -207,7 +236,9 @@ def _fake_search_tree(*args, **kwargs):
 
 
 def test_tree_retriever_llm_primary_and_vector_merge(tmp_path, monkeypatch):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _write_structured_paper(papers_dir, PAPER_A, _PAPER_A_SECTIONS)
+    cfg = _make_cfg(tmp_path, papers_dir)
     monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _fake_acall)
     monkeypatch.setattr("drbrain.services.embedding.search_tree", _fake_search_tree)
 
@@ -526,7 +557,9 @@ def test_fusion_top_k_and_mode_validation():
 
 def test_build_fusion_retriever_real_legs(tmp_path):
     """Real T3-built index legs + one custom (mock tree) leg."""
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _write_structured_paper(papers_dir, PAPER_A, _PAPER_A_SECTIONS)
+    cfg = _make_cfg(tmp_path, papers_dir)
     db = _PaperDB([PAPER_A])
     embed = _CountingEmbed()
     stats = build_index(cfg, db, embed_model=embed)
@@ -565,7 +598,9 @@ def test_build_fusion_retriever_none_without_legs(tmp_path):
 
 
 def test_get_retrievers_config_list(tmp_path):
-    cfg = _make_cfg(tmp_path, REAL_PAPERS)
+    papers_dir = tmp_path / "papers"
+    _write_structured_paper(papers_dir, PAPER_A, _PAPER_A_SECTIONS)
+    cfg = _make_cfg(tmp_path, papers_dir)
     build_index(cfg, _PaperDB([PAPER_A]), embed_model=_CountingEmbed())
 
     retrievers = get_retrievers(cfg)

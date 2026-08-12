@@ -355,7 +355,10 @@ if _LLAMA_INDEX_AVAILABLE:
             node_id = f"{paper_id}:{nid}"
             if layer.startswith("raptor_L"):
                 summary, source_ids = _read_tree_summary(self._db_path, paper_id, nid)
-                return IndexNode(
+                # ``metadata`` is the public alias of IndexNode's (deprecated)
+                # ``extra_info`` field; mypy's synthesized ``__init__`` exposes
+                # only the field name, so the alias is flagged as unexpected.
+                return IndexNode(  # type: ignore[call-arg]
                     text=_truncate_for_llm(summary) if summary else f"[RAPTOR summary: {nid}]",
                     id_=node_id,
                     index_id=node_id,
