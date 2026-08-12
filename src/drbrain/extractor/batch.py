@@ -217,6 +217,7 @@ class BatchLLMProcessor(ABC):
                 for fu in as_completed(futures):
                     succeeded, result = fu.result()
                     if succeeded:
+                        assert result is not None  # succeeded implies a record
                         self._write_record(f, futures[fu], result)
                         ok += 1
                     else:

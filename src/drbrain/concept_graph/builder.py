@@ -13,6 +13,7 @@ Concept sources (no-fulltext-first):
 
 from __future__ import annotations
 
+import json
 import re
 from itertools import combinations
 
@@ -257,15 +258,6 @@ def build_cliques(
                 continue
         logger.info("[cg.build] preloaded {} cached abstract extractions", len(abstract_cache))
 
-    insert_sql = (
-        "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
-        "VALUES (?, ?, ?, ?, 1.0) "
-        "ON CONFLICT(src_label, dst_label, year, paper_id) "
-        "DO UPDATE SET weight = concept_cooccurrence.weight + excluded.weight"
-    )
-    flush_at = 50000
-
- (feat(arch): research 抽象升级进主项目——概念规范化收敛/v10列/断点工具/KeyRotator+llm_json/DuckDB分析层/GlossaryNormalizer/BatchLLMProcessor(7项,106新增测试))
     edge_count = 0
     processed = 0
     for local_id, year in rows:

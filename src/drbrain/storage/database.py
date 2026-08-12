@@ -737,9 +737,7 @@ class Database:
 
     def find_local_id_by_doi(self, doi: str) -> str | None:
         """Return the local_id mapped to a DOI, if any (secondary dedup key)."""
-        row = self.conn.execute(
-            "SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)
-        ).fetchone()
+        row = self.conn.execute("SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)).fetchone()
         return row[0] if row else None
 
     def insert_paper_citation(

@@ -13,6 +13,7 @@ imports are lazy so the rest of the concept-graph layer works without it; call
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from typing import TYPE_CHECKING
 
 import numpy as np

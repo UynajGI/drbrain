@@ -140,9 +140,9 @@ class GlossaryNormalizer:
 
         if self._llm_client is not None:
             new_map = self._llm_map([key])
-            standard = new_map.get(key)
-            if standard:
-                return standard, _LLM
+            std = new_map.get(key)
+            if std:
+                return std, _LLM
 
         return name.strip(), _IDENTITY
 
@@ -243,9 +243,9 @@ class GlossaryNormalizer:
                 by_echo_key[_key(raw_name)] = refined
         new: dict[str, str] = {}
         for name in names:
-            standard = by_echo_key.get(name)
-            if standard is not None:
-                new[name] = standard
+            std = by_echo_key.get(name)
+            if std is not None:
+                new[name] = std
         if new:
             self._cache.update(new)
             self._save_cache()
