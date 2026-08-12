@@ -436,56 +436,32 @@ def test_stats_cmd_with_data():
 # -- query_cmd --
 
 
-def test_query_cmd_no_results():
-    """query_cmd handles no results."""
+def test_query_cmd_llamaindex_disabled_exits_with_warning():
+    """query_cmd is llamaindex-only since T9; disabled config → warning + exit 1."""
     from drbrain.cli.commands import query_cmd
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
         ctx = _make_ctx(cfg)
-        query_cmd(
-            ctx,
-            "nonexistent concept",
-            type_filter=None,
-            arg_type=None,
-            year_start=None,
-            year_end=None,
-            limit=20,
-            neighbors=0,
-            json_output=False,
-            jsonl=False,
-        )
+        with pytest.raises(typer.Exit) as exc:
+            query_cmd(ctx, "nonexistent concept", limit=20, json_output=False, jsonl=False)
+        assert exc.value.exit_code == 1
 
 
-def test_query_cmd_with_results():
-    """query_cmd finds concepts via BM25."""
+def test_query_cmd_llamaindex_enabled_no_index_reports_failure():
+    """Enabled but no index → the fusion retriever error surfaces cleanly."""
     from drbrain.cli.commands import query_cmd
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
-
-        db = Database(str(db_path))
-        db.insert_paper("p1", "A", 2024, "uploaded")
-        db.insert_concept("p1", "Problem", "Transformer attention", 0.9, year=2024)
-        db.commit()
-        db.close()
-
+        cfg["llamaindex"] = {"enabled": True, "storage_dir": str(Path(td) / "li")}
         ctx = _make_ctx(cfg)
-        query_cmd(
-            ctx,
-            "transformer",
-            type_filter=None,
-            arg_type=None,
-            year_start=None,
-            year_end=None,
-            min_confidence=None,
-            limit=20,
-            neighbors=0,
-            json_output=False,
-            jsonl=False,
-        )
+        with mock.patch("typer.echo") as mock_echo, pytest.raises(typer.Exit) as exc:
+            query_cmd(ctx, "transformer", limit=20, json_output=False, jsonl=False)
+        assert exc.value.exit_code == 1
+        assert mock_echo.called
 
 
 # -- export_cmd --
@@ -934,8 +910,8 @@ def test_clean_cmd_empty_dirs():
 # -- query_cmd no results message --
 
 
-def test_query_cmd_no_results_message():
-    """query_cmd prints 'No results for: ...' when no matches found."""
+def test_query_cmd_llamaindex_unavailable_message():
+    """query_cmd prints the llamaindex-availability warning when disabled."""
     from drbrain.cli.commands import query_cmd
 
     with tempfile.TemporaryDirectory() as td:
@@ -943,20 +919,16 @@ def test_query_cmd_no_results_message():
         cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
 
         ctx = _make_ctx(cfg)
-        with mock.patch("typer.echo") as mock_echo:
+        with mock.patch("typer.echo") as mock_echo, pytest.raises(typer.Exit):
             query_cmd(
                 ctx,
                 "xyzzy_nonexistent_concept",
-                type_filter=None,
-                arg_type=None,
-                year_start=None,
-                year_end=None,
                 limit=20,
-                neighbors=0,
                 json_output=False,
                 jsonl=False,
             )
-            mock_echo.assert_any_call("No results for: xyzzy_nonexistent_concept")
+        messages = [c.args[0] for c in mock_echo.call_args_list if c.args]
+        assert any("llamaindex engine unavailable" in str(m) for m in messages)
 
 
 def test_closure_cmd_dry_run_does_not_persist():
@@ -1328,95 +1300,15 @@ def test_audit_cmd_all_severity_levels():
 # -- ask_cmd closure edges --
 
 
-def test_ask_cmd_includes_closure_edges():
-    """ask_cmd prompt includes ``--[inferred: ...]-->`` closure edges for a seeded graph."""
-    from drbrain.cli.analysis_commands import ask_cmd
-
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        reports_dir = Path(td) / "reports"
-        cfg = _make_minimal_config(str(db_path), str(reports_dir))
-
-        db = Database(str(db_path))
-        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
-        db.insert_concept("p1", "Problem", "overfitting", 0.9, year=2024)
-        db.insert_concept("p1", "Conclusion", "deep learning", 0.9, year=2024)
-        db.insert_concept("p1", "Method", "regularization", 0.85, year=2024)
-        # edges that trigger creates_debate closure rule
-        db.insert_edge("overfitting", "deep learning", "challenges", "p1", 1.0)
-        db.insert_edge("regularization", "deep learning", "supports", "p1", 1.0)
-        db.commit()
-        db.close()
-
-        ctx = _make_ctx(cfg)
-
-        captured_prompt: list[str] = []
-
-        async def _fake_llm(prompt, models, max_tokens=1024):
-            captured_prompt.append(prompt)
-            return "Test answer"
-
-        with mock.patch("drbrain.extractor.llm_client.acall_text_with_fallback", _fake_llm):
-            ask_cmd(ctx, ["deep", "learning"])
-
-        assert len(captured_prompt) == 1, "Expected one LLM call"
-        prompt = captured_prompt[0]
-        assert "--[inferred:" in prompt, f"Prompt should contain closure edges, got:\n{prompt}"
-        assert "creates debate" in prompt, f"Prompt should contain creates_debate, got:\n{prompt}"
-        assert "regularization" in prompt
-
-
-def test_ask_cmd_closure_edges_top_k_limit():
-    """ask_cmd limits closure edges in context to top_k (--top/-k)."""
-    from drbrain.cli.analysis_commands import ask_cmd
-
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        reports_dir = Path(td) / "reports"
-        cfg = _make_minimal_config(str(db_path), str(reports_dir))
-
-        db = Database(str(db_path))
-        db.insert_paper("p1", "Test Paper", 2024, "uploaded")
-        db.insert_concept("p1", "Conclusion", "deep learning", 0.9, year=2024)
-
-        # 3 challengers x 3 supporters = 9 creates_debate inferred edges
-        for i in range(3):
-            db.insert_concept("p1", "Problem", f"problem_{i}", 0.9, year=2024)
-            db.insert_edge(f"problem_{i}", "deep learning", "challenges", "p1", 1.0)
-        for i in range(3):
-            db.insert_concept("p1", "Method", f"method_{i}", 0.9, year=2024)
-            db.insert_edge(f"method_{i}", "deep learning", "supports", "p1", 1.0)
-
-        db.commit()
-        db.close()
-
-        ctx = _make_ctx(cfg)
-
-        captured_prompt: list[str] = []
-
-        async def _fake_llm(prompt, models, max_tokens=1024):
-            captured_prompt.append(prompt)
-            return "Test answer"
-
-        with mock.patch("drbrain.extractor.llm_client.acall_text_with_fallback", _fake_llm):
-            ask_cmd(ctx, ["deep", "learning"], top_k=2)
-
-        assert len(captured_prompt) == 1
-        prompt = captured_prompt[0]
-        inferred_count = prompt.count("--[inferred:")
-        assert inferred_count == 2, (
-            f"Expected exactly 2 inferred edges (top_k=2), got {inferred_count}"
-        )
-
-
 def test_reason_cmd_includes_closure_in_graph():
-    """reason_cmd passes closure_context with inferred edges to ReasonerAgent."""
+    """reason_cmd passes closure_context with inferred edges to reason_llamaindex."""
     from drbrain.cli.analysis_commands import reason_cmd
 
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
         cfg = _make_minimal_config(str(db_path), str(reports_dir))
+        cfg["llamaindex"] = {"enabled": True, "storage_dir": str(Path(td) / "li")}
 
         db = Database(str(db_path))
         db.insert_paper("p1", "Test Paper", 2024, "uploaded")
@@ -1429,39 +1321,24 @@ def test_reason_cmd_includes_closure_in_graph():
         db.close()
 
         ctx = _make_ctx(cfg)
+        captured: dict = {}
 
-        with mock.patch("drbrain.extractor.reasoner.ReasonerAgent") as mock_agent:
-            mock_instance = mock.MagicMock()
-            mock_instance.reason = mock.MagicMock()
-            mock_agent.return_value = mock_instance
+        def fake_reason(cfg_, db_, question, max_turns=5, session_id=None, **kw):
+            captured["closure_context"] = kw.get("closure_context", "")
+            return {
+                "answer": "rag answer",
+                "tool_calls": [],
+                "turns": 1,
+                "engine": "llamaindex",
+            }
 
-            with mock.patch(
-                "drbrain.cli.analysis_commands.asyncio.run",
-                return_value="Test reasoning result",
-            ):
-                reason_cmd(ctx, "deep learning", bidirectional=False, max_rounds=3)
+        with mock.patch("drbrain.rag.agent.reason_llamaindex", fake_reason):
+            reason_cmd(ctx, "deep learning", bidirectional=False, max_rounds=3)
 
-            assert mock_agent.called, "ReasonerAgent should have been instantiated"
-            _, kwargs = mock_agent.call_args
-            closure_ctx = kwargs.get("closure_context", "")
-            assert "--[inferred:" in closure_ctx, (
-                f"closure_context should contain inferred edges, got: {closure_ctx!r}"
-            )
-            assert "creates debate" in closure_ctx
-            assert "regularization" in closure_ctx
-
-
-def test_ask_cmd_closure_edges_empty_graph_no_crash():
-    """ask_cmd on empty graph does not crash when computing closure context."""
-    from drbrain.cli.analysis_commands import ask_cmd
-
-    with tempfile.TemporaryDirectory() as td:
-        db_path = Path(td) / "test.db"
-        reports_dir = Path(td) / "reports"
-        cfg = _make_minimal_config(str(db_path), str(reports_dir))
-
-        ctx = _make_ctx(cfg)
-        # Should not raise — exits gracefully with "No relevant concepts" message
-        with mock.patch("typer.echo") as mock_echo:
-            ask_cmd(ctx, ["nonexistent", "concept"])
-            mock_echo.assert_called_with("No relevant concepts found in the knowledge graph.")
+        assert captured, "reason_llamaindex should have been called"
+        closure_ctx = captured["closure_context"]
+        assert "--[inferred:" in closure_ctx, (
+            f"closure_context should contain inferred edges, got: {closure_ctx!r}"
+        )
+        assert "creates debate" in closure_ctx
+        assert "regularization" in closure_ctx
