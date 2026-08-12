@@ -206,13 +206,17 @@ CREATE TABLE IF NOT EXISTS corpus_sources (
 );
 
 -- Concept graph nodes (unique normalized concept labels + aggregated stats).
+-- v10 adds concept type / noise / singleton markers (populated downstream).
 CREATE TABLE IF NOT EXISTS concept_nodes (
     node_id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL UNIQUE,
     doc_freq INTEGER DEFAULT 0,
     word_count INTEGER DEFAULT 0,
     first_year INTEGER,
-    last_year INTEGER
+    last_year INTEGER,
+    type TEXT DEFAULT 'other',
+    is_noise INTEGER DEFAULT 0,
+    is_singleton INTEGER DEFAULT 0
 );
 
 -- Concept co-occurrence edges, timestamped by publication year. Each paper
@@ -290,6 +294,7 @@ class Database:
             (7, "indexes_v2", self._migrate_add_indexes_v2),
             (8, "change_tracking", self._migrate_add_change_tracking),
             (9, "concept_graph", self._migrate_add_concept_graph),
+            (10, "concept_node_columns", self._migrate_add_concept_columns),
         ]
 
         for version, name, fn in migrations:
@@ -452,6 +457,27 @@ class Database:
             );
             """
         )
+
+    def _migrate_add_concept_columns(self) -> None:
+        """Add concept type / noise / singleton flag columns to concept_nodes (v10).
+
+        Mirrors the research-side concept cleanup layer: typed concepts
+        (material / property / method / phenomenon / other) plus is_noise and
+        is_singleton markers. Idempotent: fresh databases already get these
+        columns via SCHEMA_SQL; pre-existing (v9) databases get them via ALTER.
+
+        This migration only creates the columns. The values are populated by
+        downstream logic, not here: is_singleton = doc_freq == 1; is_noise =
+        label-pattern heuristics (e.g. single chars, numeric-only, biomed
+        residue) combined with low doc_freq.
+        """
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concept_nodes)").fetchall()]
+        if "type" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN type TEXT DEFAULT 'other'")
+        if "is_noise" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_noise INTEGER DEFAULT 0")
+        if "is_singleton" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_singleton INTEGER DEFAULT 0")
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
@@ -711,9 +737,7 @@ class Database:
 
     def find_local_id_by_doi(self, doi: str) -> str | None:
         """Return the local_id mapped to a DOI, if any (secondary dedup key)."""
-        row = self.conn.execute(
-            "SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)
-        ).fetchone()
+        row = self.conn.execute("SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)).fetchone()
         return row[0] if row else None
 
     def insert_paper_citation(

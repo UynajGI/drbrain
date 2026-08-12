@@ -52,7 +52,8 @@ dependencies = [
 
 [project.optional-dependencies]
 office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
-gnn = ["torch>=2.0"]
+gnn = ["torch>=2.0,<2.11"]
+analytics = ["duckdb"]
 
 [project.urls]
 Homepage = "https://github.com/UynajGI/DrBrain"
@@ -115,7 +116,7 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-norecursedirs = ["docs/learn/scholaraio/tests"]
+norecursedirs = ["docs/learn/scholaraio/tests", "research", ".qwen"]
 markers = [
     "integration: slow end-to-end tests using real PDFs and API calls",
 ]
