@@ -38,7 +38,7 @@ jobs:
 
   security:
     runs-on: ubuntu-latest
-    continue-on-error: true  # alpha: transitive-dep CVEs (aiohttp/urllib3/litellm) tracked separately
+    continue-on-error: true  # torch/transformers advisories are unfixable here (ignored below)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -48,7 +48,25 @@ jobs:
       - run: uv sync
       - run: uv pip install -e .
       - run: uv pip install pip-audit
-      - run: uv run pip-audit --desc
+      # Ignored advisories — no fix available on this toolchain (see
+      # [tool.uv] constraint-dependencies in pyproject.toml):
+      #   torch 2.10.0   PYSEC-2026-139 (no fix released)
+      #                  PYSEC-2025-194 (fix is 2.13.0; blocked by CUDA 12.8
+      #                                  driver, pinned <2.11)
+      #   transformers 4.57.6
+      #                  PYSEC-2025-217 (no fix released)
+      #                  PYSEC-2026-2288 (fix 5.0.0), PYSEC-2026-2289 (5.3.0),
+      #                  PYSEC-2026-2290 (5.5.0) — all fixed only in
+      #                  transformers 5.x, a breaking bump that would break
+      #                  sentence-transformers 5.6.1
+      - run: >-
+          uv run pip-audit --desc
+          --ignore-vuln PYSEC-2026-139
+          --ignore-vuln PYSEC-2025-194
+          --ignore-vuln PYSEC-2025-217
+          --ignore-vuln PYSEC-2026-2288
+          --ignore-vuln PYSEC-2026-2289
+          --ignore-vuln PYSEC-2026-2290
 
   test:
     runs-on: ubuntu-latest

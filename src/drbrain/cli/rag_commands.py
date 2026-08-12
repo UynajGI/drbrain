@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -120,19 +121,19 @@ def rag_eval_cmd(
     cfg = ctx.obj["config"]
 
     llama_available = True
+    format_eval_report: Any = None
+    run_ragas_eval: Any = None
+    run_retriever_eval: Any = None
     try:
+        from drbrain.rag import eval as _eval_mod
         from drbrain.rag.config import get_llamaindex_config
-        from drbrain.rag.eval import (
-            _LLAMA_INDEX_AVAILABLE,
-            format_eval_report,
-            run_ragas_eval,
-            run_retriever_eval,
-        )
 
-        llama_available = _LLAMA_INDEX_AVAILABLE
+        llama_available = _eval_mod._LLAMA_INDEX_AVAILABLE
+        format_eval_report = _eval_mod.format_eval_report
+        run_ragas_eval = _eval_mod.run_ragas_eval
+        run_retriever_eval = _eval_mod.run_retriever_eval
     except ImportError:  # pragma: no cover - defensive
         llama_available = False
-        format_eval_report = run_ragas_eval = run_retriever_eval = None
 
     if not llama_available or any(fn is None for fn in (run_retriever_eval, run_ragas_eval)):
         typer.echo(
@@ -177,7 +178,7 @@ def rag_eval_cmd(
             ragas_results = run_ragas_eval(cfg, db, split=split, n=n)
 
     if json_output:
-        payload = {"split": split, "metrics": metrics}
+        payload: dict[str, Any] = {"split": split, "metrics": metrics}
         if retriever_results is not None:
             payload["retriever"] = retriever_results
         if ragas_results is not None:

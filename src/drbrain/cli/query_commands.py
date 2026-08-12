@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import typer
 from rich.console import Console
@@ -12,6 +13,7 @@ from drbrain.cli._common import (
     _resolve_workspace_papers,
     open_db,
 )
+from drbrain.config import Config
 from drbrain.graph.engine import GraphEngine
 
 console = Console()
@@ -268,7 +270,7 @@ def query_cmd(
         )
         raise typer.Exit(1)
 
-    _limit = int(limit.default) if isinstance(limit, typer.models.OptionInfo) else limit
+    _limit = int(cast(int, limit.default)) if isinstance(limit, typer.models.OptionInfo) else limit
     _json_output = (
         json_output.default if isinstance(json_output, typer.models.OptionInfo) else json_output
     )
@@ -459,7 +461,7 @@ def hybrid_cmd(
         )
         raise typer.Exit(1)
 
-    _limit = int(limit.default) if isinstance(limit, typer.models.OptionInfo) else limit
+    _limit = int(cast(int, limit.default)) if isinstance(limit, typer.models.OptionInfo) else limit
     _json_output = (
         json_output.default if isinstance(json_output, typer.models.OptionInfo) else json_output
     )
@@ -484,7 +486,7 @@ def _query_llamaindex_cli(
     from drbrain.rag.engine import build_hybrid_retriever, extract_sources
 
     with open_db(cfg) as db:
-        retriever = build_hybrid_retriever(cfg, db, top_k=limit)
+        retriever = build_hybrid_retriever(cast(Config, cfg), db, top_k=limit)
         if retriever is None:
             raise RuntimeError("llamaindex fusion retriever unavailable (no index built yet?)")
         nodes = retriever.retrieve(QueryBundle(query_str=query))
@@ -534,7 +536,7 @@ def _hybrid_llamaindex_cli(cfg: dict, query: str, limit: int, json_output: bool)
     from drbrain.rag.engine import build_hybrid_retriever, nodes_to_paper_results
 
     with open_db(cfg) as db:
-        retriever = build_hybrid_retriever(cfg, db, top_k=limit)
+        retriever = build_hybrid_retriever(cast(Config, cfg), db, top_k=limit)
         if retriever is None:
             raise RuntimeError("llamaindex fusion retriever unavailable (no index built yet?)")
         nodes = retriever.retrieve(QueryBundle(query_str=query))

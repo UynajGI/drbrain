@@ -353,7 +353,12 @@ def _load_old_index_nodes(vector_dir: Path, embed_model: Any) -> dict[str, TextN
         for node in idx.docstore.docs.values():
             if not isinstance(node, TextNode):
                 continue
-            embedding = node.embedding or idx._vector_store.get(node.node_id)
+            # ``.get(node_id)`` is the duck-typed vector-store lookup the
+            # concrete store (e.g. SimpleVectorStore) implements; the base
+            # ``BasePydanticVectorStore`` type does not declare it.
+            embedding = node.embedding or idx._vector_store.get(  # type: ignore[attr-defined]
+                node.node_id
+            )
             if embedding is None:
                 continue
             node.embedding = embedding

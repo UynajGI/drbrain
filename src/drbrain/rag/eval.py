@@ -735,6 +735,34 @@ def _aggregate_rank(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def _coerce_cfg(cfg: Config | dict[str, Any]) -> Config:
+    """Normalize a dict config to a typed :class:`Config`.
+
+    Mirrors T6's dict/Config dual-form support: CLI tests pass plain dicts,
+    while the CLI itself always passes a real :class:`Config`. Only the
+    sections the RAG layer touches are mapped.
+    """
+    if isinstance(cfg, Config) or not isinstance(cfg, dict):
+        return cfg
+    from drbrain.config import (
+        ApiConfig,
+        DBConfig,
+        DirsConfig,
+        EmbedConfig,
+        LlamaIndexConfig,
+        LLMConfig,
+    )
+
+    return Config(
+        llm=LLMConfig(**cfg.get("llm", {})),
+        db=DBConfig(**cfg.get("db", {})),
+        dirs=DirsConfig(**cfg.get("dirs", {})),
+        api=ApiConfig(**cfg.get("api", {})),
+        embed=EmbedConfig(**cfg.get("embed", {})),
+        llamaindex=LlamaIndexConfig.from_dict(cfg.get("llamaindex", {})),
+    )
+
+
 def run_retriever_eval(
     cfg: Config | dict[str, Any],
     db: Any,
@@ -752,6 +780,7 @@ def run_retriever_eval(
     built (no index / llamaindex disabled); ``empty`` when the split has no
     golden queries.
     """
+    cfg = _coerce_cfg(cfg)
     golden = load_golden(cfg, split=split)
     if not golden:
         return {"status": "empty", "split": split, "queries": 0}
@@ -924,6 +953,7 @@ def run_ragas_eval(
     Status ``unavailable`` when llamaindex cannot be used; ``empty`` when the
     split has no golden queries.
     """
+    cfg = _coerce_cfg(cfg)
     golden = load_golden(cfg, split=split)
     if not golden:
         return {"status": "empty", "split": split, "queries": 0}
