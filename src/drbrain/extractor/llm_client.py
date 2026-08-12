@@ -9,6 +9,7 @@ Caching is opt-in via keyword-only ``_cache``; existing callers are unaffected.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import time
 from typing import TYPE_CHECKING
@@ -49,6 +50,68 @@ def _messages_cache_key(
         default=str,
     )
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+class KeyRotator:
+    """Rotate API keys to spread rate-limit load across accounts.
+
+    Independent, additive component — the existing fallback-chain logic
+    (``call_with_fallback`` / ``acall_with_fallback``) is untouched.  Two
+    strategies, both distilled from the research-side batch scripts:
+
+    - ``round_robin``: keys are picked in a cycle via ``next(itertools.count())
+      % n`` — mirrors ``research/scripts/cg_recipe_extract_api.py``
+      ``_next_headers``.  Spreads concurrent batch traffic evenly; single-key
+      429 rate limits are the recurring pain point in those batch jobs.
+    - ``hash``: ``hash(key_hint) % n`` maps the same entity string to the same
+      key deterministically — mirrors ``research/scripts/cg_recipe_conditions_backfill.py``
+      ``hash(material) % len(KEYS)``.  Pair with a per-key connection pool so
+      one entity always reuses the same pool/connection.
+
+    Note: ``hash()`` on strings is salted per process (``PYTHONHASHSEED``), so
+    the ``hash`` strategy guarantees stable mapping within one process, not
+    across process restarts.
+
+    Not thread-safe by itself.  ``round_robin`` is effectively safe under the
+    CPython GIL (``next`` on ``itertools.count`` is a single C-level call);
+    ``hash`` is stateless.  Callers sharing one rotator across threads that
+    need stronger guarantees should guard calls with a lock.
+    """
+
+    def __init__(self, keys: list[str], strategy: str = "round_robin"):
+        """Initialize with the API keys and a rotation strategy.
+
+        Args:
+            keys: Non-empty list of API key strings.
+            strategy: ``"round_robin"`` (default) or ``"hash"``.
+
+        Raises:
+            ValueError: if ``keys`` is empty or ``strategy`` is unknown.
+        """
+        if not keys:
+            raise ValueError("KeyRotator requires at least one key")
+        if strategy not in ("round_robin", "hash"):
+            raise ValueError(f"unknown strategy {strategy!r} (expected 'round_robin' or 'hash')")
+        self._keys = list(keys)
+        self._strategy = strategy
+        self._counter = itertools.count()
+
+    def next(self, key_hint: str | None = None) -> str:
+        """Return the next key to use.
+
+        Args:
+            key_hint: Entity string the key will be used for.  Required for the
+                ``hash`` strategy (determines the stable mapping); ignored for
+                ``round_robin``.
+
+        Raises:
+            ValueError: if the ``hash`` strategy is used without a key_hint.
+        """
+        if self._strategy == "round_robin":
+            return self._keys[next(self._counter) % len(self._keys)]
+        if key_hint is None:
+            raise ValueError("hash strategy requires a non-None key_hint")
+        return self._keys[hash(key_hint) % len(self._keys)]
 
 
 class LLMClient:

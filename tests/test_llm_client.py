@@ -2,6 +2,10 @@
 
 from unittest import mock
 
+import pytest
+
+from drbrain.extractor.llm_client import KeyRotator
+
 
 def test_call_with_fallback_records_metrics():
     """Successful LLM call records metrics."""
@@ -64,3 +68,43 @@ def test_call_with_fallback_all_fail():
             [{"provider": "openai", "model": "broken", "api_key": "x"}],
         )
         assert result is None
+
+
+class TestKeyRotator:
+    """Key rotation strategies: round_robin cycling and hash-bound mapping."""
+
+    def test_round_robin_cycles_in_order(self):
+        rotator = KeyRotator(["k1", "k2", "k3"])
+        assert [rotator.next() for _ in range(6)] == ["k1", "k2", "k3", "k1", "k2", "k3"]
+
+    def test_round_robin_single_key_always_same(self):
+        rotator = KeyRotator(["only"])
+        assert [rotator.next() for _ in range(4)] == ["only"] * 4
+
+    def test_round_robin_ignores_key_hint(self):
+        rotator = KeyRotator(["k1", "k2"])
+        assert rotator.next(key_hint="whatever") == "k1"
+
+    def test_hash_strategy_stable_for_same_hint(self):
+        rotator = KeyRotator(["k1", "k2", "k3"], strategy="hash")
+        first = rotator.next("material-A")
+        for _ in range(5):
+            assert rotator.next("material-A") == first
+
+    def test_hash_strategy_mapping_within_range(self):
+        rotator = KeyRotator(["k1", "k2", "k3"], strategy="hash")
+        for entity in ["a", "bb", "ccc", "dddd"]:
+            assert rotator.next(entity) in {"k1", "k2", "k3"}
+
+    def test_hash_strategy_requires_key_hint(self):
+        rotator = KeyRotator(["k1", "k2"], strategy="hash")
+        with pytest.raises(ValueError):
+            rotator.next()
+
+    def test_empty_keys_raises(self):
+        with pytest.raises(ValueError):
+            KeyRotator([])
+
+    def test_unknown_strategy_raises(self):
+        with pytest.raises(ValueError):
+            KeyRotator(["k1"], strategy="random")

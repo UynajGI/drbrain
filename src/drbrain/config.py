@@ -67,6 +67,7 @@ class ApiConfig(_ConfigBase):
     crossref_email: str = ""
     openalex_token: str = ""
     sciverse_token: str = ""
+    sciverse_tokens: list[str] = field(default_factory=list)  # 多账号 token 列表(真并行:每账号独立限流)
     sciverse_base_url: str = "https://api.sciverse.space"
     sciverse_rate_limit: int = 30
 
