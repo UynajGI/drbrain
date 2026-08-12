@@ -1,5 +1,12 @@
 """HyDE — Hypothetical Document Embeddings query transform.
 
+DEPRECATED (T9, 终态清理): the LlamaIndex RAG layer
+(``drbrain.rag`` — BM25Retriever / FusionRetriever / CrossEncoderReranker)
+replaces this module for CLI-facing retrieval. The file is RETAINED because
+concept-asset code still depends on it (see the module docstring for the
+specific dependency) — no new call sites should be added. Design doc:
+``docs/llamaindex-integration-design.md`` §1 替换清单.
+
 HyDE (Gao et al., 2022, "Precise Zero-Shot Dense Retrieval without Relevance
 Labels") reformulates a retrieval query by first asking an LLM to *answer* the
 question with a short hypothetical paragraph, then using that paragraph as the

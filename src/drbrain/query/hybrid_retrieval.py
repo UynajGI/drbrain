@@ -1,5 +1,12 @@
 """Hybrid retrieval entry point: BM25 + embedding, fused via RRF.
 
+DEPRECATED (T9, 终态清理): the LlamaIndex RAG layer
+(``drbrain.rag`` — BM25Retriever / FusionRetriever / CrossEncoderReranker)
+replaces this module for CLI-facing retrieval. The file is RETAINED because
+concept-asset code still depends on it (see the module docstring for the
+specific dependency) — no new call sites should be added. Design doc:
+``docs/llamaindex-integration-design.md`` §1 替换清单.
+
 Orchestrates the three query modules without modifying them:
 
     BM25 ─┐

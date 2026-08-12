@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from pathlib import Path
+from typing import cast
 
 import typer
 from rich.console import Console
@@ -14,10 +13,8 @@ from drbrain.cli._common import (
     _resolve_workspace_papers,
     open_db,
 )
-from drbrain.extractor.cache import ApiCache
+from drbrain.config import Config
 from drbrain.graph.engine import GraphEngine
-from drbrain.query.tree_retrieval import query_by_structure_hybrid
-from drbrain.storage.paths import tree_json_path
 
 console = Console()
 
@@ -250,350 +247,39 @@ def index_cmd(
 def query_cmd(
     ctx: typer.Context,
     text: str,
-    type_filter: str = typer.Option(
-        None, "--type-filter", help="Filter by concept type (Problem, Method, etc.)"
-    ),
-    arg_type: str = typer.Option(
-        None, "--arg-type", help="Filter by argument claim type (supports, challenges, etc.)"
-    ),
-    year_start: int = typer.Option(None, "--year-start", help="Filter by minimum year"),
-    year_end: int = typer.Option(None, "--year-end", help="Filter by maximum year"),
-    min_confidence: float = typer.Option(
-        None, "--min-confidence", help="Minimum confidence threshold"
-    ),
     limit: int = typer.Option(20, "--limit", help="Maximum results"),
-    neighbors: int = typer.Option(
-        0, "--neighbors", "-n", help="Expand results by N hops of graph traversal"
-    ),
-    relation: str = typer.Option(
-        None,
-        "--relation",
-        "-R",
-        help="Comma-separated relation types to follow (e.g. addresses,extends,challenges)",
-    ),
-    direction: str = typer.Option(
-        "both",
-        "--direction",
-        "-D",
-        help="Traversal direction: forward, backward, or both",
-    ),
-    hybrid: bool = typer.Option(
-        False, "--hybrid", help="Boost results by graph centrality (PageRank)"
-    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON array to stdout"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Output JSONL stream to stdout"),
-    paper: str = typer.Option(
-        None,
-        "--paper",
-        help="Paper local_id for PageIndex tree retrieval (bypasses BM25 when set)",
-    ),
-    workspace: str = typer.Option(None, "--workspace", "-w", help="Limit to workspace"),
 ):
-    """Query concepts and arguments with BM25 + filters, or use PageIndex tree retrieval."""
+    """Query papers/sections via the LlamaIndex fusion retriever (T9: sole engine).
+
+    Section-level hits with paper/node/source back-links. Requires
+    ``llamaindex.enabled: true`` and a built index (``drbrain rag index``).
+    The legacy BM25 + graph-traversal / PageIndex ``--paper`` paths were
+    removed in T9 (终态清理, design §1 替换清单).
+    """
     cfg = ctx.obj["config"]
 
-    # --- Tree retrieval path ---
-    # Normalize: when called directly (not through typer CLI), OptionInfo is still the default
-    _paper = paper if not isinstance(paper, typer.models.OptionInfo) else paper.default
+    from drbrain.rag.engine import resolve_engine
 
-    # Normalize typer defaults for direct-call compatibility
-    _relation = relation if not isinstance(relation, typer.models.OptionInfo) else relation.default
-    _direction = (
-        direction if not isinstance(direction, typer.models.OptionInfo) else direction.default
-    )
-    _hybrid = hybrid if not isinstance(hybrid, typer.models.OptionInfo) else hybrid.default
-
-    if _paper:
-        papers_dir = Path(cfg["dirs"]["papers"])
-        paper_dir = papers_dir / _paper
-        if not paper_dir.exists():
-            typer.echo(f"Paper not found: {_paper}", err=True)
-            raise typer.Exit(1)
-        if not tree_json_path(paper_dir).exists():
-            typer.echo(f"tree.json not found for {_paper}. Run 'drbrain ingest' first.", err=True)
-            raise typer.Exit(1)
-
-        llm_models = cfg.get("llm", {}).get("models", [])
-        db_path_val = cfg.get("db", {}).get("path", "data/drbrain.db")
-        from drbrain.config import EmbedConfig
-
-        embed_cfg_raw = cfg.get("embed", EmbedConfig())
-        embed_cfg = (
-            EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
-        )
-        cache = ApiCache("data/spool/llm_cache")
-        sections = asyncio.run(
-            query_by_structure_hybrid(
-                text, paper_dir, Path(db_path_val), llm_models, embed_cfg, _cache=cache
-            )
-        )
-
-        if sections is None:
-            if json_output:
-                typer.echo(
-                    json.dumps(
-                        {"query": text, "paper": _paper, "mode": "hybrid", "sections": []},
-                        ensure_ascii=False,
-                    )
-                )
-            else:
-                typer.echo(f"No relevant sections found for: {text}")
-            return
-
-        if json_output:
-            typer.echo(
-                json.dumps(
-                    {"query": text, "paper": _paper, "mode": "hybrid", "sections": sections},
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
-            return
-
-        # Rich text output
-        typer.echo(f"Query: {text}")
-        typer.echo(f"  Paper: {_paper}")
-        typer.echo("  Mode: hybrid (LLM + vector)")
-        typer.echo(f"  Sections found: {len(sections)}")
-        typer.echo()
-
-        for i, sec in enumerate(sections):
-            title_tag = (
-                f" [{sec['node_id']}] {sec['title']}"
-                if sec.get("title")
-                else f" [{sec['node_id']}]"
-            )
-            typer.echo(f"  {title_tag}")
-            content = sec["content"]
-            typer.echo(content[:500] + ("..." if len(content) > 500 else ""))
-            if i < len(sections) - 1:
-                typer.echo()
-        return
-
-    with open_db(cfg) as db:
-        # Parse and validate graph traversal flags (only when expansion is active)
-        _relations: set[str] | None = None
-        if neighbors > 0:
-            if _relation is not None:
-                _relations = {r.strip() for r in _relation.split(",") if r.strip()}
-                valid_relations = {
-                    "addresses",
-                    "leaves_open",
-                    "points_to",
-                    "proposes",
-                    "extends",
-                    "replaces",
-                    "solves",
-                    "supports",
-                    "challenges",
-                    "limits",
-                    "constrains",
-                    "affiliated_with",
-                }
-                invalid = _relations - valid_relations
-                if invalid:
-                    typer.echo(f"Invalid relation(s): {', '.join(sorted(invalid))}", err=True)
-                    typer.echo(f"Valid relations: {', '.join(sorted(valid_relations))}", err=True)
-                    raise typer.Exit(1)
-
-            if _direction not in ("forward", "backward", "both"):
-                typer.echo(
-                    f"Invalid direction '{_direction}'. Must be: forward, backward, or both",
-                    err=True,
-                )
-                raise typer.Exit(1)
-
-        from drbrain.query.bm25 import build_bm25_index
-
-        bm25 = build_bm25_index(db)
-        results = bm25.search(
-            text,
-            type_filter=type_filter,
-            arg_type_filter=arg_type,
-            limit=limit,
-            min_confidence=min_confidence,
-        )
-
-        # Post-filter by year range
-        if year_start is not None or year_end is not None:
-            y_start = year_start or 0
-            y_end = year_end or 9999
-            results = [r for r in results if y_start <= r.get("year", y_end) <= y_end]
-
-        # Post-filter by workspace
-        if workspace:
-            ws_paper_ids = _resolve_workspace_papers(workspace)
-            if ws_paper_ids is not None:
-                results = [r for r in results if r["local_id"] in ws_paper_ids]
-
-        # Hybrid ranking: boost by graph centrality (PageRank)
-        if _hybrid and results:
-            graph = GraphEngine()
-            graph.load_from_db(db)
-            if graph.graph.number_of_nodes() > 0:
-                # Minimal PageRank — avoids scipy dependency
-                g = graph.graph
-                n = g.number_of_nodes()
-                damping = 0.85
-                pr = {node: 1.0 / n for node in g.nodes()}
-                for _ in range(100):
-                    new_pr: dict[str, float] = {}
-                    for node in g.nodes():
-                        rank = (1 - damping) / n
-                        for pred in g.predecessors(node):
-                            out_deg = g.out_degree(pred)
-                            if out_deg > 0:
-                                rank += damping * pr[pred] / out_deg
-                        new_pr[node] = rank
-                    # Check convergence
-                    diff = sum(abs(new_pr[node] - pr[node]) for node in g.nodes())
-                    pr = new_pr
-                    if diff < 1e-6:
-                        break
-                # Compute percentile rank for each node
-                sorted_nodes = sorted(pr.items(), key=lambda x: x[1])
-                n = len(sorted_nodes)
-                percentiles: dict[str, float] = {}
-                for rank, (node, _) in enumerate(sorted_nodes):
-                    percentiles[node] = rank / (n - 1) if n > 1 else 0.5
-                # Apply multiplicative boost [1.0, 2.0]
-                for r in results:
-                    node_id = r["local_id"]
-                    boost = 1.0 + percentiles.get(node_id, 0.0)
-                    r["score"] = round(r["score"] * boost, 4)
-                    r["_hybrid_boost"] = round(boost, 3)
-                # Re-sort by boosted score
-                results.sort(key=lambda r: r["score"], reverse=True)
-            graph.graph = None
-
-        # Map BM25 concept results to use labels as local_id for graph traversal
-        concept_types = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
-        for r in results:
-            if r["type"] in concept_types:
-                r["_paper_id"] = r["local_id"]
-                r["local_id"] = r["label"]
-
-        # Expand by graph traversal
-        if neighbors > 0 and results:
-            graph = GraphEngine()
-            graph.load_from_db(db)
-            # Seed from top-scoring BM25 result(s) only, so lower-scored hits
-            # become discoverable via traverse() rather than being pre-seeded
-            max_score = max(r["score"] for r in results)
-            seed_ids = {r["local_id"] for r in results if r["score"] >= max_score}
-
-            traverse_results = graph.traverse(
-                start_nodes=seed_ids,
-                hops=neighbors,
-                relations=_relations,
-                direction=_direction,
-            )
-
-            seen_ids = seed_ids.copy()
-            for tr in traverse_results:
-                if tr.target in seen_ids:
-                    continue
-                seen_ids.add(tr.target)
-
-                # Resolve node type from DB
-                node_type = "Unknown"
-                row = db.conn.execute(
-                    "SELECT type FROM concepts WHERE label = ? LIMIT 1", (tr.target,)
-                ).fetchone()
-                if row:
-                    node_type = row[0]
-                else:
-                    paper = db.get_paper(tr.target)  # type: ignore[assignment]  # pre-existing: see mypy debt
-                    if paper:
-                        node_type = "Paper"
-
-                if node_type == "Paper":
-                    paper = db.get_paper(tr.target)  # type: ignore[assignment]  # pre-existing: see mypy debt
-                    label = paper["title"] if paper else tr.target  # type: ignore[index]  # pre-existing: see mypy debt
-                    text = paper.get("abstract", "") if paper else ""  # type: ignore[attr-defined]  # pre-existing: see mypy debt
-                    year = paper.get("year") if paper else None  # type: ignore[attr-defined]  # pre-existing: see mypy debt
-                else:
-                    label = tr.target
-                    text = ""
-                    year = None
-
-                results.append(
-                    {
-                        "local_id": tr.target,
-                        "type": node_type,
-                        "label": label,
-                        "text": text,
-                        "year": year,
-                        "score": 0.0,
-                        "_via_graph": True,
-                        "_source_seed": tr.source,
-                        "_distance": tr.distance,
-                        "_path": [
-                            {
-                                "src": s.src,
-                                "relation": s.relation,
-                                "dst": s.dst,
-                                "hop": s.hop,
-                            }
-                            for s in tr.path
-                        ],
-                    }
-                )
-
-            graph.graph = None  # Free memory
-
-    # JSON output modes
-    if json_output:
-        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
-        return
-
-    if jsonl:
-        for r in results:
-            typer.echo(json.dumps(r, ensure_ascii=False, default=str))
-        return
-
-    if not results:
-        typer.echo(f"No results for: {text}")
-        return
-
-    typer.echo(f"Query: {text}")
-    filters = []
-    if type_filter:
-        filters.append(f"type={type_filter}")
-    if arg_type:
-        filters.append(f"arg_type={arg_type}")
-    if year_start or year_end:
-        filters.append(f"year={year_start or '...'}-{year_end or '...'}")
-    if min_confidence is not None:
-        filters.append(f"min_confidence={min_confidence}")
-    if neighbors:
-        if _relation:
-            rel_str = ",".join(sorted(_relations))  # type: ignore[arg-type]  # pre-existing: see mypy debt
-            filters.append(f"neighbors={neighbors}, relation={rel_str}")
-        else:
-            filters.append(f"neighbors={neighbors}")
-        if _direction and _direction != "both":
-            filters.append(f"direction={_direction}")
-    if filters:
-        typer.echo(f"  Filters: {', '.join(filters)}")
-    typer.echo(f"  Results: {len(results)}")
-    for i, r in enumerate(results, 1):
-        extra = ""
-        if r["type"] == "Argument":
-            extra = f" [{r.get('arg_type', '')}]"
-        if r.get("_via_graph"):
-            path_parts = [r["_source_seed"]]
-            for step in r.get("_path", []):
-                path_parts.append(step["relation"])
-                path_parts.append(step["dst"])
-            path_str = " -> ".join(path_parts)
-            extra += f" [graph: {path_str}]"
-        boost_str = f", boost: {r['_hybrid_boost']:.1f}x" if "_hybrid_boost" in r else ""
-        year_str = f" ({r.get('year', '?')})" if r.get("year") else ""
-        conf_str = f", confidence: {r['confidence']:.2f}" if "confidence" in r else ""
+    if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
-            f"  {i}. [{r['type']}] {r['label']}{extra} (score: {r['score']:.3f}{boost_str}, paper: {r['local_id']}{year_str}{conf_str})"
+            "[query] llamaindex engine unavailable: set `llamaindex.enabled: true` "
+            "in config.yaml and run `drbrain rag index` to build the index",
+            err=True,
         )
+        raise typer.Exit(1)
+
+    _limit = int(cast(int, limit.default)) if isinstance(limit, typer.models.OptionInfo) else limit
+    _json_output = (
+        json_output.default if isinstance(json_output, typer.models.OptionInfo) else json_output
+    )
+    _jsonl = jsonl.default if isinstance(jsonl, typer.models.OptionInfo) else jsonl
+    try:
+        _query_llamaindex_cli(cfg, text, _limit, _json_output, _jsonl)
+    except Exception as exc:
+        typer.echo(f"[query] llamaindex query failed: {exc}", err=True)
+        raise typer.Exit(1)
 
 
 def fsearch_cmd(
@@ -755,63 +441,124 @@ def hybrid_cmd(
     ctx: typer.Context,
     query: str = typer.Argument(..., help="Natural language query"),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum results"),
-    rerank: bool = typer.Option(
-        False,
-        "--rerank",
-        help="Apply cross-encoder rerank (auto no-op if sentence-transformers missing)",
-    ),
-    rerank_model: str = typer.Option(
-        None, "--rerank-model", help="Cross-encoder model id (default: BAAI/bge-reranker-base)"
-    ),
-    rrf_k: int = typer.Option(60, "--rrf-k", help="RRF damping constant"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
-    """Hybrid retrieval: BM25 + embedding fused via RRF, with optional rerank.
+    """Hybrid retrieval (BM25 + vector fused via RRF) through LlamaIndex (T9: sole engine).
 
-    Distinct from `query --hybrid` (which boosts by graph PageRank): this
-    command fuses BM25 and vector results at the paper level using Reciprocal
-    Rank Fusion, then optionally reranks with a cross-encoder. When embedding
-    is disabled (provider=none), runs in pure-BM25 mode.
+    Paper-level hits with per-leg ``sources``. Requires ``llamaindex.enabled:
+    true`` and a built index; the legacy ``hybrid_search`` path was removed in
+    T9 (终态清理, design §1 替换清单).
     """
-    from drbrain.config import EmbedConfig
-
     cfg = ctx.obj["config"]
-    db_path_val = cfg.get("db", {}).get("path", "data/drbrain.db")
-    embed_cfg_raw = cfg.get("embed", EmbedConfig())
-    embed_cfg = EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
 
-    from drbrain.query.hybrid_retrieval import hybrid_search
+    from drbrain.rag.engine import resolve_engine
+
+    if resolve_engine(cfg, "llamaindex") != "llamaindex":
+        typer.echo(
+            "[hybrid] llamaindex engine unavailable: set `llamaindex.enabled: true` "
+            "in config.yaml and run `drbrain rag index` to build the index",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _limit = int(cast(int, limit.default)) if isinstance(limit, typer.models.OptionInfo) else limit
+    _json_output = (
+        json_output.default if isinstance(json_output, typer.models.OptionInfo) else json_output
+    )
+    try:
+        _hybrid_llamaindex_cli(cfg, query, _limit, _json_output)
+    except Exception as exc:
+        typer.echo(f"[hybrid] llamaindex retrieval failed: {exc}", err=True)
+        raise typer.Exit(1)
+
+
+def _query_llamaindex_cli(
+    cfg: dict, query: str, limit: int, json_output: bool, jsonl: bool
+) -> None:
+    """Run ``query --engine llamaindex``: fusion retrieval, section-level hits.
+
+    Output shape is comparable to the legacy ``query`` command: JSON emits
+    ``{"query", "engine", "results"}`` with ``{paper_id, node_id, title,
+    score, sources}`` rows; plain mode prints the same rows as text.
+    """
+    from llama_index.core.schema import QueryBundle
+
+    from drbrain.rag.engine import build_hybrid_retriever, extract_sources
 
     with open_db(cfg) as db:
-        hits = hybrid_search(
-            query,
-            db,
-            Path(db_path_val),
-            embed_cfg=embed_cfg,
-            top_k=limit,
-            rerank=rerank,
-            rerank_model=rerank_model,
-            rrf_k=rrf_k,
-        )
-
-    if not hits:
-        if json_output:
-            typer.echo(json.dumps({"query": query, "results": []}))
-        else:
-            typer.echo(f"No results for: {query}")
-        return
+        retriever = build_hybrid_retriever(cast(Config, cfg), db, top_k=limit)
+        if retriever is None:
+            raise RuntimeError("llamaindex fusion retriever unavailable (no index built yet?)")
+        nodes = retriever.retrieve(QueryBundle(query_str=query))
+    rows = extract_sources(nodes)[: int(limit)]
 
     if json_output:
         typer.echo(
             json.dumps(
-                {"query": query, "results": [h.to_dict() for h in hits]},
+                {"query": query, "engine": "llamaindex", "results": rows},
                 indent=2,
                 ensure_ascii=False,
             )
         )
         return
+    if jsonl:
+        for r in rows:
+            typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+        return
+    if not rows:
+        typer.echo(f"No results for: {query}")
+        return
 
-    typer.echo(f'Hybrid search: "{query}" — {len(hits)} results')
-    for hit in hits:
-        sources = ", ".join(hit.metadata.get("sources", [hit.source]))
-        typer.echo(f"  {hit.rank}. {hit.paper_id}  (rrf: {hit.score:.4f}, sources: {sources})")
+    typer.echo(f"Query: {query}")
+    typer.echo("  Engine: llamaindex")
+    typer.echo(f"  Results: {len(rows)}")
+    for i, r in enumerate(rows, 1):
+        sources = ", ".join(r.get("sources") or [])
+        title = r.get("title") or r.get("node_id") or ""
+        score = r.get("score")
+        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+        typer.echo(
+            f"  {i}. {title} (score: {score_str}, paper: {r.get('paper_id')}, sources: {sources})"
+        )
+
+
+def _hybrid_llamaindex_cli(cfg: dict, query: str, limit: int, json_output: bool) -> None:
+    """Run ``hybrid --engine llamaindex``: fusion retriever, paper-level hits.
+
+    Output shape is comparable to the legacy ``hybrid`` command: JSON emits
+    ``{"query", "engine", "results"}`` with ``{paper_id, title, score,
+    sections, sources, rank}`` rows (the legacy JSON carries ``{paper_id,
+    score, rank, source, payload, metadata}`` — both are paper-level, so the
+    two engines are directly comparable).
+    """
+    from llama_index.core.schema import QueryBundle
+
+    from drbrain.rag.engine import build_hybrid_retriever, nodes_to_paper_results
+
+    with open_db(cfg) as db:
+        retriever = build_hybrid_retriever(cast(Config, cfg), db, top_k=limit)
+        if retriever is None:
+            raise RuntimeError("llamaindex fusion retriever unavailable (no index built yet?)")
+        nodes = retriever.retrieve(QueryBundle(query_str=query))
+    results = nodes_to_paper_results(nodes, top_k=limit)
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {"query": query, "engine": "llamaindex", "results": results},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return
+    if not results:
+        typer.echo(f"No results for: {query}")
+        return
+
+    typer.echo(f'Hybrid search (llamaindex): "{query}" — {len(results)} papers')
+    for hit in results:
+        sources = ", ".join(hit.get("sources") or [])
+        typer.echo(
+            f"  {hit['rank']}. {hit['paper_id']}  (rrf: {hit['score']:.4f}, "
+            f"sections: {hit['sections']}, sources: {sources})"
+        )

@@ -1,4 +1,7 @@
-"""BM25 full-text search over paper titles, concept labels, and argument claims."""
+"""BM25 full-text search over paper titles, concept labels, and argument claims.
+
+DEPRECATED (T9, 终态清理): superseded by ``drbrain.rag`` BM25Retriever for CLI retrieval, but RETAINED — ``extractor.agent_tools.search_concepts`` (a kept graph tool) and ``query.hybrid_retrieval`` (legacy hybrid) still build on it. No new call sites.
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,12 @@
 """Reciprocal Rank Fusion (RRF).
 
+DEPRECATED (T9, 终态清理): the LlamaIndex RAG layer
+(``drbrain.rag`` — BM25Retriever / FusionRetriever / CrossEncoderReranker)
+replaces this module for CLI-facing retrieval. The file is RETAINED because
+concept-asset code still depends on it (see the module docstring for the
+specific dependency) — no new call sites should be added. Design doc:
+``docs/llamaindex-integration-design.md`` §1 替换清单.
+
 Pure algorithm — knows nothing about BM25 or embeddings. Takes any number of
 ``SearchHit`` ranked lists (each already sorted by descending score, each hit
 carrying a ``paper_id``) and produces a single merged ranked list via RRF::
