@@ -13,7 +13,7 @@ import json
 import sys
 from typing import Any
 
-from drbrain.rag.plugins import Plugin, run_subprocess_json
+from drbrain.plugins import Plugin, run_subprocess_json
 
 
 def _predict(arguments: dict[str, Any]) -> dict[str, Any]:

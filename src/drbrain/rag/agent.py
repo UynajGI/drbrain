@@ -580,7 +580,7 @@ def _load_plugin_tools(plugins_dir: str | Path) -> list:
     ``PluginRegistry.discover``.
     """
     try:
-        from drbrain.rag.plugins.registry import PluginRegistry
+        from drbrain.plugins.registry import PluginRegistry
     except ImportError:
         return []
     try:
