@@ -205,6 +205,7 @@ async def build_raptor_tree(
         _collect_tree_nodes,
         _content_hash,
         _embed_batch,
+        _global_node_id,
     )
     from drbrain.storage.connection import connect_wal
 
@@ -226,9 +227,13 @@ async def build_raptor_tree(
             log.info("Too few PageIndex vectors (%d) for RAPTOR clustering", len(rows))
             return 0
 
-        # Collect node texts from tree.json (needed for LLM summarization)
+        # Collect node texts from tree.json (needed for LLM summarization).
+        # tree_vectors.node_id is now globally unique ("{paper_id}:{local}"),
+        # so key the text map by the same prefixed id to resolve each row.
         nodes = _collect_tree_nodes(paper_dir)
-        node_text_map: dict[str, str] = {n["node_id"]: n["text"] for n in nodes}
+        node_text_map: dict[str, str] = {
+            _global_node_id(paper_id, n["node_id"]): n["text"] for n in nodes
+        }
 
         node_ids: list[str] = []
         node_texts: list[str] = []
@@ -280,6 +285,10 @@ async def build_raptor_tree(
                     )
                     continue
 
+                # Keep the paper_id in the id (existing format) so RAPTOR node
+                # ids are globally unique without relying on the pageindex
+                # prefix; source_node_ids below reference the prefixed
+                # pageindex ids written by build_tree_vectors.
                 raptor_id = f"raptor_{paper_id}_L{layer}_{uuid.uuid4().hex[:8]}"
 
                 # Store summary in tree_summaries

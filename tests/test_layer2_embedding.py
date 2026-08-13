@@ -314,10 +314,11 @@ def test_build_tree_vectors_with_mock_embed():
             rows = db.conn.execute("SELECT COUNT(*) FROM tree_vectors").fetchone()
             assert rows[0] == 5
 
-            # Check one node's embedding
+            # Check one node's embedding (node_id is now paper_id-prefixed to
+            # stay globally unique across papers).
             row = db.conn.execute(
                 "SELECT embedding, content_hash FROM tree_vectors WHERE node_id = ?",
-                ("n1",),
+                ("test-paper:n1",),
             ).fetchone()
             assert row is not None
             recovered = struct.unpack("4f", row[0])

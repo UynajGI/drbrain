@@ -446,6 +446,9 @@ def test_build_paper_tree_with_raptor_integration():
             sources = json.loads(row[0])
             assert isinstance(sources, list)
             assert len(sources) >= 1
-            # Each source should be a valid pageindex node_id
+            # Each source should be a valid pageindex node_id (now
+            # paper_id-prefixed for global uniqueness; strip the prefix to
+            # check the local id keeps the pageindex form).
             for src in sources:
-                assert src.startswith("s"), f"Expected pageindex node_id, got {src}"
+                local = src.split(":", 1)[-1]
+                assert local.startswith("s"), f"Expected pageindex node_id, got {src}"
