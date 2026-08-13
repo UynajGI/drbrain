@@ -348,8 +348,40 @@ class ResearchLoopWorkflow(Workflow):
         state = await self._get_state(ctx)
         state.verified = ev.verified
         state.predictions = ev.predictions
+        self._persist_claims(state)
         await self._set_state(ctx, state)
         return Settled(verified=ev.verified)
+
+    def _persist_claims(self, state: ResearchState) -> None:
+        """闭环沉淀：把核验通过的结论/预测写回 KG（``claims`` 表）。
+
+        Idempotent via ``record_claim`` (stable claim_id hash). Degrades to a
+        no-op when no DB is supplied; a DB write failure must never break the
+        loop, so it is logged and swallowed.
+        """
+        if self._db is None:
+            return
+        try:
+            for statement in state.verified:
+                self._db.record_claim(
+                    state.task or "research-loop",
+                    statement,
+                    claim_type="Conclusion",
+                    authority="research-loop",
+                    provenance="research-loop",
+                    confidence=1.0,
+                )
+            for prediction in state.predictions:
+                self._db.record_claim(
+                    state.task or "research-loop",
+                    prediction,
+                    claim_type="Prediction",
+                    authority="research-loop",
+                    provenance="research-loop",
+                    confidence=1.0,
+                )
+        except Exception as exc:  # noqa: BLE001 — persistence must not break the loop
+            log.warning("[loop] settle persist failed: %s", exc)
 
     # 12. 报告生成
     @step

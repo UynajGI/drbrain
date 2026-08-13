@@ -159,3 +159,68 @@ def test_full_agent_backed_loop(monkeypatch):
     assert "gaps=1" in result
     assert "hypotheses=1" in result
     assert "verified=1" in result
+
+
+def test_settle_persists_claims_to_db(tmp_path):
+    from drbrain.loop.events import ResearchState
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        wf = ResearchLoopWorkflow(db=db)
+        state = ResearchState(task="flat band", verified=["h1 confirmed"], predictions=["p1"])
+        wf._persist_claims(state)
+        rows = db.conn.execute(
+            "SELECT claim_text, claim_type FROM claims ORDER BY claim_text"
+        ).fetchall()
+        assert ("h1 confirmed", "Conclusion") in rows
+        assert ("p1", "Prediction") in rows
+    finally:
+        db.close()
+
+
+def test_settle_no_db_is_noop():
+    from drbrain.loop.events import ResearchState
+
+    wf = ResearchLoopWorkflow()
+    wf._persist_claims(ResearchState(verified=["x"], predictions=["y"]))
+
+
+def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"verified": ["h1"], "predictions": ["p1"]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), db=db)
+    try:
+
+        async def _go() -> str:
+            handler = wf.run(task="flat band")
+            return await handler
+
+        result = asyncio.run(_go())
+        assert "verified=1" in result
+        rows = db.conn.execute("SELECT claim_text FROM claims").fetchall()
+        assert ("h1",) in rows
+    finally:
+        db.close()
