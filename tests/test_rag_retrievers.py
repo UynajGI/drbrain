@@ -29,6 +29,10 @@ from drbrain.rag.retrievers import (
     DrbrainGraphRetriever,
     DrbrainRAPTORRetriever,
     DrbrainTreeRetriever,
+    _full_section_body,
+    _pageindex_section,
+    _parent_and_path,
+    _parent_section,
     _truncate_for_llm,
 )
 from drbrain.storage.database import Database
@@ -211,6 +215,44 @@ def _write_structured_paper(papers_dir: Path, pid: str, sections: list[tuple[str
     )
 
 
+def _write_nested_paper(papers_dir: Path, pid: str) -> None:
+    """tree.json with a 2-level hierarchy + matching raw.md (parent + 2 children)."""
+    paper_dir = papers_dir / pid
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    (paper_dir / "raw.md").write_text(
+        "# Parent Section\n"
+        "intro to the section\n"
+        "## Child A\n"
+        "condition list part 1\n"
+        "## Child B\n"
+        "condition list part 2\n"
+        "# Sibling Section\n"
+        "unrelated content\n",
+        encoding="utf-8",
+    )
+    (paper_dir / "tree.json").write_text(
+        json.dumps(
+            {
+                "doc_name": pid,
+                "line_count": 8,
+                "structure": [
+                    {
+                        "title": "Parent Section",
+                        "node_id": "0000",
+                        "line_num": 1,
+                        "nodes": [
+                            {"title": "Child A", "node_id": "0001", "line_num": 3, "nodes": []},
+                            {"title": "Child B", "node_id": "0002", "line_num": 5, "nodes": []},
+                        ],
+                    },
+                    {"title": "Sibling Section", "node_id": "0003", "line_num": 7, "nodes": []},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 # PAPER_A: 3 small nodes (0000/0001/0002) — the synthetic stand-in for the
 # former test-run paper used by the tree/fusion/retriever tests.
 _PAPER_A_SECTIONS = [
@@ -320,6 +362,83 @@ def test_tree_retriever_paper_without_tree_json(tmp_path, monkeypatch):
     assert retriever.retrieve("q") == []
 
 
+# ── parent-section expansion (retrieval unit ≠ context unit) ─────────────────
+
+
+def test_parent_section_helper(tmp_path):
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper(papers_dir, "pa")
+    tree = json.loads((papers_dir / "pa" / "tree.json").read_text(encoding="utf-8"))
+    structure = tree["structure"]
+
+    # Leaf "0001" resolves its parent via the recursion path (no explicit ptr).
+    parent, path = _parent_and_path(structure, "0001")
+    assert parent is not None
+    assert parent["node_id"] == "0000"
+    assert path == ["0000"]
+
+    # Leaf body stops at its own chunk; parent body spans both children.
+    title, body = _pageindex_section(papers_dir, "pa", "0001")
+    assert title == "Child A"
+    assert "part 1" in body and "part 2" not in body
+
+    ptitle, pbody, pnid = _parent_section(papers_dir, "pa", "0001")
+    assert (ptitle, pnid) == ("Parent Section", "0000")
+    assert "part 1" in pbody and "part 2" in pbody, "parent body must cover the full section"
+    assert "Sibling Section" not in pbody, "parent body must stop before the next sibling"
+
+    # Top-level nodes have no parent → empty expansion.
+    assert _parent_section(papers_dir, "pa", "0000") == ("", "", "")
+    assert _parent_section(papers_dir, "pa", "0003") == ("", "", "")
+
+    # _full_section_body mirrors the parent slice directly from raw.md.
+    assert _full_section_body(papers_dir / "pa" / "raw.md", parent) == pbody
+
+
+async def _pick_leaf_acall(prompt, models, system_prompt=None, max_tokens=1024, _cache=None):
+    """Mock navigator: pick a single leaf node (0001) that has a parent."""
+    del prompt, models, system_prompt, max_tokens, _cache
+    return {"node_ids": ["0001"], "reasoning": "mocked"}
+
+
+def test_tree_retriever_expands_to_parent(tmp_path, monkeypatch):
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper(papers_dir, "pa")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _pick_leaf_acall)
+    monkeypatch.setattr("drbrain.services.embedding.search_tree", lambda *a, **k: [])
+
+    retriever = DrbrainTreeRetriever(cfg, paper_id="pa", top_k=5, db_path=None, models=_MODELS)
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    # text is the PARENT section (both children), not just the matched leaf.
+    assert "part 1" in node.text and "part 2" in node.text
+    assert node.metadata["node_id"] == "0001"  # leaf id kept for provenance
+    assert node.metadata["title"] == "Child A"  # leaf title kept
+    assert node.metadata["parent_node_id"] == "0000"
+    assert node.metadata["parent_title"] == "Parent Section"
+
+
+def test_tree_retriever_expand_to_parent_disabled(tmp_path, monkeypatch):
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper(papers_dir, "pa")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _pick_leaf_acall)
+    monkeypatch.setattr("drbrain.services.embedding.search_tree", lambda *a, **k: [])
+
+    retriever = DrbrainTreeRetriever(
+        cfg, paper_id="pa", top_k=5, db_path=None, models=_MODELS, expand_to_parent=False
+    )
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert "part 1" in node.text and "part 2" not in node.text  # leaf chunk only
+    assert node.metadata["node_id"] == "0001"
+    assert node.metadata["parent_node_id"] == ""
+    assert node.metadata["parent_title"] == ""
+
+
 # ── DrbrainRAPTORRetriever ───────────────────────────────────────────────────
 
 
@@ -417,6 +536,44 @@ def test_raptor_retriever_missing_db(tmp_path):
     cfg = _make_cfg(tmp_path, REAL_PAPERS)
     retriever = DrbrainRAPTORRetriever(cfg, db_path=tmp_path / "nope.db")
     assert retriever.retrieve("q") == []
+
+
+def _seed_pageindex_db(db_path: Path, paper_id: str, node_id: str, vec: list[float]) -> None:
+    """tree_vectors with a single pageindex leaf (no RAPTOR layers)."""
+    db = Database(db_path)
+    arr = np.asarray(vec, dtype="float32")
+    blob = (arr / np.linalg.norm(arr)).astype("float32").tobytes()
+    db.conn.execute(
+        "INSERT INTO tree_vectors (node_id, paper_id, embedding, content_hash, tree_layer) "
+        "VALUES (?,?,?,?,?)",
+        (node_id, paper_id, blob, "hash", "pageindex"),
+    )
+    db.conn.commit()
+    db.close()
+
+
+def test_raptor_retriever_expands_to_parent(tmp_path, monkeypatch):
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper(papers_dir, "pa")
+    db_path = tmp_path / "raptor.db"
+    _seed_pageindex_db(db_path, "pa", "0001", [1.0, 0.0, 0.0])
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr(
+        "drbrain.services.embedding._embed_batch",
+        lambda texts, cfg=None: [[1.0, 0.0, 0.0]],
+    )
+
+    retriever = DrbrainRAPTORRetriever(cfg, top_k=5, min_results=3, db_path=db_path)
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert node.node_id == "pa:0001"
+    # leaf (0001) expanded to its parent section (0000) covering both children.
+    assert "part 1" in node.text and "part 2" in node.text
+    assert node.metadata["node_id"] == "0001"
+    assert node.metadata["title"] == "Child A"
+    assert node.metadata["parent_node_id"] == "0000"
+    assert node.metadata["parent_title"] == "Parent Section"
 
 
 # ── DrbrainGraphRetriever ────────────────────────────────────────────────────
