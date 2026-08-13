@@ -59,7 +59,6 @@ __all__ = [
     "FusionRetriever",
     "build_fusion_retriever",
     "get_retrievers",
-    "with_acl",
 ]
 
 #: RRF damping constant (Cormack et al. 2009), same as ``query/fusion.py``.
@@ -141,44 +140,6 @@ def _annotate_node(node, sources: list[str], contributions: dict) -> Any:
     return node.model_copy(update={"metadata": metadata})
 
 
-def with_acl(nodes: list[Any], acl_filter: dict[str, str] | None) -> list[Any]:
-    """Post-filter fused nodes by an ACL context (default-deny).
-
-    ACL enforcement belongs in the retrieval layer, never in the LLM prompt —
-    "别泄密" is not a security boundary. Each ``(key, value)`` in
-    ``acl_filter`` must be satisfied by the node's metadata:
-
-    * a concrete value must equal ``metadata[key]`` exactly;
-    * ``"*"`` is an explicit wildcard: any value for that key passes, but the
-      key must still be present;
-    * a node *missing* the key is excluded — default-deny is safer than
-      assuming an unclassified node is public.
-
-    A falsy/empty ``acl_filter`` is a passthrough (no filtering).
-    """
-    if not acl_filter:
-        return list(nodes or [])
-    kept: list[Any] = []
-    for nws in nodes or []:
-        node = getattr(nws, "node", None)
-        meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
-        if _acl_allowed(meta, acl_filter):
-            kept.append(nws)
-    return kept
-
-
-def _acl_allowed(meta: dict[str, Any], acl_filter: dict[str, str]) -> bool:
-    """True when ``meta`` satisfies every ACL constraint (default-deny)."""
-    for key, value in acl_filter.items():
-        if key not in meta:
-            return False
-        if value == "*":
-            continue
-        if meta.get(key) != value:
-            return False
-    return True
-
-
 if _LLAMA_INDEX_AVAILABLE:
 
     class FusionRetriever(BaseRetriever):
@@ -197,7 +158,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 ``{"tenant_id": "company_A"}``) enforced as a post-filter on
                 every fused node. ``"*"`` matches any value for a key; a node
                 missing the key is excluded (default-deny). ``None``/empty
-                disables ACL filtering. See :func:`with_acl`.
+                disables ACL filtering. See :meth:`_apply_acl`.
         """
 
         def __init__(
@@ -257,7 +218,45 @@ if _LLAMA_INDEX_AVAILABLE:
                 weights=self.weights if self.mode == "weighted" else None,
                 top_k=self.top_k,
             )
-            return with_acl(fused, self._acl_filter)
+            return self._apply_acl(fused)
+
+        def _apply_acl(self, nodes: list[NodeWithScore]) -> list[NodeWithScore]:
+            """Post-filter *nodes* by the configured ACL context (default-deny).
+
+            ACL enforcement belongs in the retrieval layer, never in the LLM
+            prompt — "别泄密" is not a security boundary. Each ``(key, value)``
+            in ``self._acl_filter`` must be satisfied by a node's metadata:
+
+            * a concrete value must equal ``metadata[key]`` exactly;
+            * ``"*"`` is an explicit wildcard: any value for that key passes,
+              but the key must still be present;
+            * a node *missing* the key is excluded — default-deny is safer
+              than assuming an unclassified node is public.
+
+            A falsy/empty filter is a passthrough (no filtering).
+            """
+            acl_filter = self._acl_filter
+            if not acl_filter:
+                return list(nodes or [])
+            kept: list[NodeWithScore] = []
+            for nws in nodes or []:
+                node = getattr(nws, "node", None)
+                meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
+                if self._acl_allowed(meta, acl_filter):
+                    kept.append(nws)
+            return kept
+
+        @staticmethod
+        def _acl_allowed(meta: dict[str, Any], acl_filter: dict[str, str]) -> bool:
+            """True when ``meta`` satisfies every ACL constraint (default-deny)."""
+            for key, value in acl_filter.items():
+                if key not in meta:
+                    return False
+                if value == "*":
+                    continue
+                if meta.get(key) != value:
+                    return False
+            return True
 
 
 def _iter_custom_retrievers(custom):

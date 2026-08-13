@@ -8,6 +8,7 @@ databases that migrate in place.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -77,6 +78,48 @@ def test_answer_records_round_trip(tmp_db):
     assert row[3] == "Method Y (grounded in evidence)."  # answer
     assert row[4] == '["c1", "e2"]'  # evidence_ids
     assert row[7] == "snap-001"  # snapshot_id
+
+
+def test_record_answer_helper_persists_evidence_as_json(tmp_db):
+    """Database.record_answer (production path) stores evidence as a JSON array."""
+    answer_id = tmp_db.record_answer(
+        "Who discovered X?",
+        "Alice and Bob (grounded).",
+        session_id=None,
+        evidence_ids=["p1:n1", "p2:n3"],
+        provenance="TOOL_RESULT",
+        retriever_version="hybrid-v2",
+    )
+    assert answer_id != 0
+
+    row = tmp_db.conn.execute("SELECT * FROM answer_records").fetchone()
+    assert row is not None
+    assert row[0] == answer_id  # answer_id is returned and matches the PK
+    assert row[1] is None  # session_id default None
+    assert row[2] == "Who discovered X?"
+    assert row[3] == "Alice and Bob (grounded)."
+    # evidence_ids is a JSON array string, round-trippable via json.loads.
+    assert row[4] == '["p1:n1", "p2:n3"]'
+    assert json.loads(row[4]) == ["p1:n1", "p2:n3"]
+    assert row[5] == "TOOL_RESULT"  # provenance
+    assert row[6] == ""  # model_version default
+    assert row[7] == ""  # snapshot_id default
+    assert row[8] == "hybrid-v2"  # retriever_version
+
+
+def test_record_answer_helper_defaults(tmp_db):
+    """record_answer with only question/answer fills the optional columns."""
+    answer_id = tmp_db.record_answer("q?", "a")
+    assert answer_id != 0
+
+    row = tmp_db.conn.execute("SELECT * FROM answer_records").fetchone()
+    assert row is not None
+    assert row[1] is None  # session_id
+    assert row[4] == "[]"  # evidence_ids defaults to empty JSON array
+    assert row[5] == ""  # provenance
+    assert row[6] == ""  # model_version
+    assert row[7] == ""  # snapshot_id
+    assert row[8] == ""  # retriever_version
 
 
 def test_knowledge_snapshots_round_trip(tmp_db):
