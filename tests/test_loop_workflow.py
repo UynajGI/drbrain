@@ -48,3 +48,24 @@ def test_evidence_and_hypothesis_schema():
     h = Hypothesis(statement="s", conditions={"T": 300})
     assert h.status == "proposed"
     assert h.conditions == {"T": 300}
+
+
+def test_load_plugins_discovers_external(tmp_path):
+    (tmp_path / "foo_plugin.py").write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(\n"
+        "        Plugin(name='foo', description='d', input_schema={}),\n"
+        "        lambda args: {},\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    wf = ResearchLoopWorkflow(plugins_dir=str(tmp_path))
+    registry = wf.load_plugins()
+    assert [p.name for p in registry.list_plugins()] == ["foo"]
+
+
+def test_load_plugins_graceful_when_no_dir():
+    wf = ResearchLoopWorkflow()
+    registry = wf.load_plugins()
+    assert registry.list_plugins() == []

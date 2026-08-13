@@ -13,6 +13,7 @@ insufficient candidates) is wired and bounded by ``MAX_RETRIEVE_ATTEMPTS``.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from llama_index.core.workflow import (
     Context,
@@ -49,8 +50,29 @@ class ResearchLoopWorkflow(Workflow):
     """Deterministic research loop (P0 skeleton).
 
     Run with ``await workflow.run(task="…")``; the result is the final report
-    string (``StopEvent.result``).
+    string (``StopEvent.result``). ``plugins_dir`` points at an external plugin
+    directory (data search / DL models / software / CLI) exposed via
+    :meth:`load_plugins` — the bridge an agent-backed node consumes.
     """
+
+    def __init__(self, *, plugins_dir: str | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._plugins_dir = plugins_dir
+        self._plugin_registry: Any = None
+
+    def load_plugins(self) -> Any:
+        """Discover external plugins (data / software) for agent tools.
+
+        Lazy and graceful: returns a :class:`PluginRegistry` even when
+        ``plugins_dir`` is absent; a broken directory never raises.
+        """
+        if self._plugin_registry is None:
+            from drbrain.plugins.registry import PluginRegistry
+
+            self._plugin_registry = PluginRegistry()
+            if self._plugins_dir:
+                self._plugin_registry.discover(self._plugins_dir)
+        return self._plugin_registry
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)
