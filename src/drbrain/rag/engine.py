@@ -46,6 +46,7 @@ from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.status import RetrievalError, RetrievalStatus
 
 try:
     from llama_index.core.base.response.schema import (
@@ -96,6 +97,11 @@ _ENGINE_UNAVAILABLE_MSG = (
     "llama-index missing, or no index built yet)"
 )
 
+#: Abstention message when every fusion leg raised (systemic outage).
+_RETRIEVAL_FAILURE_MSG = "检索失败,无法回答"
+#: Abstention message when retrieval succeeded but matched nothing.
+_NO_RESULTS_MSG = "当前知识库中没有找到相关信息"
+
 
 # ── engine resolution (CLI fallback rule, design §4.6) ──────────────────────
 
@@ -131,6 +137,7 @@ def build_query_engine(
     db: Any,
     streaming: bool | None = None,
     top_k: int | None = None,
+    acl_filter: dict[str, str] | None = None,
 ):
     """Assemble the :class:`RetrieverQueryEngine` over the T4 fusion retriever.
 
@@ -142,6 +149,8 @@ def build_query_engine(
         streaming: Force the synthesizer's streaming flag; ``None`` → the
             configured ``llamaindex.streaming`` value.
         top_k: Fusion top-k (defaults to ``embed.top_k``).
+        acl_filter: Optional ``{key: value}`` context injected into the fusion
+            retriever (see :class:`~drbrain.rag.fusion.FusionRetriever`).
 
     Returns a ``RetrieverQueryEngine``, or ``None`` when llamaindex is
     disabled/unavailable or there is nothing to retrieve against (no index
@@ -169,7 +178,7 @@ def build_query_engine(
     if li.rerank:
         top_k = max(int(top_k or cfg.embed.top_k or 10), int(li.rerank_top_k or 20))
 
-    fusion = _build_fusion(cfg, db, top_k=top_k)
+    fusion = _build_fusion(cfg, db, top_k=top_k, acl_filter=acl_filter)
     if fusion is None:
         return None
 
@@ -205,7 +214,9 @@ def build_query_engine(
     return engine
 
 
-def build_hybrid_retriever(cfg: Config, db: Any, top_k: int | None = None):
+def build_hybrid_retriever(
+    cfg: Config, db: Any, top_k: int | None = None, acl_filter: dict[str, str] | None = None
+):
     """Build the T4 fusion retriever alone (no synthesizer) for hybrid/query.
 
     Returns a :class:`FusionRetriever`, or ``None`` when llamaindex is
@@ -213,10 +224,12 @@ def build_hybrid_retriever(cfg: Config, db: Any, top_k: int | None = None):
     """
     if not _engine_ready(cfg):
         return None
-    return _build_fusion(cfg, db, top_k=top_k)
+    return _build_fusion(cfg, db, top_k=top_k, acl_filter=acl_filter)
 
 
-def _build_fusion(cfg: Config, db: Any, top_k: int | None = None):
+def _build_fusion(
+    cfg: Config, db: Any, top_k: int | None = None, acl_filter: dict[str, str] | None = None
+):
     """Assemble the named legs (T4 ``get_retrievers``) into one FusionRetriever."""
     from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
 
@@ -231,6 +244,7 @@ def _build_fusion(cfg: Config, db: Any, top_k: int | None = None):
         bm25_retriever=bm25,
         custom_retrievers=legs,
         top_k=top_k,
+        acl_filter=acl_filter,
     )
 
 
@@ -318,6 +332,7 @@ def ask_llamaindex(
     question: str,
     top_k: int = 5,
     streaming: bool = True,
+    acl_filter: dict[str, str] | None = None,
 ):
     """Legacy-``ask``-compatible query through the LlamaIndex engine.
 
@@ -331,33 +346,73 @@ def ask_llamaindex(
     result dict. Callers that need a plain dict pass ``streaming=False``
     (the CLI forces this for ``--json`` output).
 
+    Retrieval failure and "no results" are *not* answers: when every fusion
+    leg raises (``RetrievalError``) the result abstains with ``status:
+    "retrieval_failure"``; when retrieval succeeds but returns nothing the
+    result abstains with ``status: "no_results"``. Neither path is handed to
+    the LLM, so a broken vector store can't turn into a hallucinated answer.
+
     Raises :class:`RuntimeError` when the engine cannot be built (disabled,
     llama-index missing, or no index yet) — the CLI catches this and falls
     back to the legacy engine.
     """
     if streaming:
-        return _ask_llamaindex_stream(cfg, db, question, top_k=top_k)
-    engine = build_query_engine(cfg, db, streaming=False, top_k=top_k)
+        return _ask_llamaindex_stream(cfg, db, question, top_k=top_k, acl_filter=acl_filter)
+    engine = _build_ask_engine(cfg, db, streaming=False, top_k=top_k, acl_filter=acl_filter)
     if engine is None:
         raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
-    response = engine.query(question)
-    return _assemble_answer(
-        question,
-        _response_text(response),
-        _response_sources(response),
-    )
+    try:
+        response = engine.query(question)
+    except RetrievalError:
+        return _abstain_answer(question, RetrievalStatus.RETRIEVAL_FAILURE, _RETRIEVAL_FAILURE_MSG)
+    sources = _response_sources(response)
+    if not sources:
+        return _abstain_answer(question, RetrievalStatus.NO_RESULTS, _NO_RESULTS_MSG)
+    answer = _response_text(response)
+    _record_answer(cfg, db, question, answer, sources)
+    return _assemble_answer(question, answer, sources)
 
 
-def _ask_llamaindex_stream(cfg: Config, db: Any, question: str, top_k: int):
+def _build_ask_engine(
+    cfg: Config,
+    db: Any,
+    streaming: bool,
+    top_k: int,
+    acl_filter: dict[str, str] | None = None,
+):
+    """Build the ask engine, passing ``acl_filter`` only when present.
+
+    ``acl_filter`` is passed conditionally so pre-ACL callers (and test mocks)
+    that wrap ``build_query_engine`` with a narrower signature keep working.
+    """
+    if acl_filter:
+        return build_query_engine(cfg, db, streaming=streaming, top_k=top_k, acl_filter=acl_filter)
+    return build_query_engine(cfg, db, streaming=streaming, top_k=top_k)
+
+
+def _ask_llamaindex_stream(
+    cfg: Config,
+    db: Any,
+    question: str,
+    top_k: int,
+    acl_filter: dict[str, str] | None = None,
+):
     """Streaming ask: yields ``{"chunk": str}`` items, then the final dict."""
-    engine = build_query_engine(cfg, db, streaming=True, top_k=top_k)
+    engine = _build_ask_engine(cfg, db, streaming=True, top_k=top_k, acl_filter=acl_filter)
     if engine is None:
         raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
-    response = engine.query(question)
-    yield from _iter_ask_results(question, response)
+    try:
+        response = engine.query(question)
+    except RetrievalError:
+        yield _abstain_answer(question, RetrievalStatus.RETRIEVAL_FAILURE, _RETRIEVAL_FAILURE_MSG)
+        return
+    if not _response_sources(response):
+        yield _abstain_answer(question, RetrievalStatus.NO_RESULTS, _NO_RESULTS_MSG)
+        return
+    yield from _iter_ask_results(cfg, db, question, response)
 
 
-def _iter_ask_results(question: str, response: Any):
+def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any):
     """Consume a (possibly streaming) response into chunk + final dict yields."""
     sources = _response_sources(response)
     if isinstance(response, StreamingResponse):
@@ -371,6 +426,7 @@ def _iter_ask_results(question: str, response: Any):
             answer = _response_text(response)
     else:
         answer = _response_text(response)
+    _record_answer(cfg, db, question, answer, sources)
     yield _assemble_answer(question, answer, sources)
 
 
@@ -382,6 +438,76 @@ def _assemble_answer(question: str, answer: str, sources: list[dict[str, Any]]) 
         "sources": sources,
         "engine": ENGINE_LLAMAINDEX,
     }
+
+
+def _abstain_answer(question: str, status: RetrievalStatus, message: str) -> dict[str, Any]:
+    """Shape a refusal-to-answer dict for a failed or empty retrieval.
+
+    The ``answer`` field carries the abstention text (never a synthesized
+    answer) and ``status`` carries the machine-readable :class:`RetrievalStatus`
+    so callers can distinguish ``retrieval_failure`` from ``no_results``
+    without parsing prose.
+    """
+    return {
+        "question": question,
+        "answer": message,
+        "status": status.value,
+        "message": message,
+        "sources": [],
+        "engine": ENGINE_LLAMAINDEX,
+    }
+
+
+# ── answer-evidence binding (auditability) ──────────────────────────────────
+
+
+def _evidence_ids_from_sources(sources: list[dict[str, Any]]) -> list[str]:
+    """Collapse ``extract_sources`` output into ``paper_id:node_id`` identifiers."""
+    ids: list[str] = []
+    for src in sources or []:
+        pid = str(src.get("paper_id") or "").strip()
+        nid = str(src.get("node_id") or "").strip()
+        if pid or nid:
+            ids.append(f"{pid}:{nid}" if pid and nid else (pid or nid))
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def _llm_model_version(cfg: Config) -> str:
+    """``provider/model`` of the first entry in the LLM fallback chain."""
+    models = getattr(getattr(cfg, "llm", None), "models", None) or []
+    if not models:
+        return "drbrain/unknown"
+    first = models[0] or {}
+    return f"{first.get('provider', 'openai')}/{first.get('model', 'unknown')}"
+
+
+def _record_answer(
+    cfg: Config,
+    db: Any,
+    question: str,
+    answer: str,
+    sources: list[dict[str, Any]],
+) -> None:
+    """Best-effort persist of an answer + its evidence (never raises)."""
+    record = getattr(db, "record_answer", None)
+    if record is None:
+        return
+    try:
+        record(
+            question,
+            answer,
+            evidence_ids=_evidence_ids_from_sources(sources),
+            model_version=_llm_model_version(cfg),
+            retriever_version="llamaindex",
+        )
+    except Exception:  # pragma: no cover - persistence must not break the answer
+        log.warning("[rag] record_answer failed (ask_llamaindex)", exc_info=True)
 
 
 def _chunk_text(chunk: Any) -> str:

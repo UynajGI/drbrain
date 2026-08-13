@@ -52,6 +52,34 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _global_node_id(paper_id: str, node_id: str) -> str:
+    """Compose a globally-unique node id by prefixing ``paper_id``.
+
+    ``tree.json`` node_ids are only unique *within* a paper (the parser
+    numbers them "0000", "0001", ... per paper). ``tree_vectors`` /
+    ``tree_summaries`` use a single-column ``node_id`` primary key, so the
+    per-paper id must be qualified with the paper to stay unique across the
+    whole library.
+
+    Format: ``"{paper_id}:{node_id}"`` (matches the convention already used
+    by :mod:`drbrain.rag.indexer`'s ``_node_key``).
+    """
+    return f"{paper_id}:{node_id}"
+
+
+def _local_node_id(paper_id: str, node_id: str) -> str:
+    """Strip the ``paper_id:`` prefix to recover the per-paper (tree.json) id.
+
+    Inverse of :func:`_global_node_id`. Returns ``node_id`` unchanged when it
+    does not carry the expected prefix (e.g. legacy rows written before the
+    collision fix), so tree.json lookups degrade gracefully rather than crash.
+    """
+    prefix = f"{paper_id}:"
+    if node_id.startswith(prefix):
+        return node_id[len(prefix) :]
+    return node_id
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     import numpy as np
@@ -543,7 +571,14 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
             logger.debug("[embed] GPU adaptive batching unavailable, using fixed batch_size=%d", bs)
 
     embeddings = model.encode(texts, normalize_embeddings=True, batch_size=bs)
-    return [e.tolist() for e in embeddings]
+    out: list[list[float]] = []
+    for e in embeddings:
+        if e is None:
+            continue
+        vec = [float(x) if x is not None else 0.0 for x in e.tolist()]
+        if vec:
+            out.append(vec)
+    return out
 
 
 # ── Build ────────────────────────────────────────────────────────────────────
@@ -634,12 +669,17 @@ def build_tree_vectors(
         to_embed_texts: list[str] = []
         to_embed_nodes: list[dict] = []
         for node in nodes:
+            # Qualify the per-paper node id with paper_id so rows from
+            # different papers can't overwrite each other via the single
+            # node_id primary key.
+            global_nid = _global_node_id(paper_id, node["node_id"])
             nhash = _content_hash(node["text"])
-            if existing_hashes.get(node["node_id"]) == nhash:
+            if existing_hashes.get(global_nid) == nhash:
                 continue  # unchanged, skip
             to_embed_texts.append(node["text"])
             to_embed_nodes.append(node)
             to_embed_nodes[-1]["_hash"] = nhash
+            to_embed_nodes[-1]["_global_node_id"] = global_nid
 
         if not to_embed_texts:
             return 0
@@ -656,7 +696,7 @@ def build_tree_vectors(
                 "INSERT OR REPLACE INTO tree_vectors "
                 "(node_id, paper_id, embedding, content_hash, tree_layer) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (node["node_id"], paper_id, blob, node["_hash"], "pageindex"),
+                (node["_global_node_id"], paper_id, blob, node["_hash"], "pageindex"),
             )
 
         conn.commit()

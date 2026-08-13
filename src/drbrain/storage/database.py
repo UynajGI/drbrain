@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS concepts (
     confidence REAL DEFAULT 1.0,
     section TEXT DEFAULT '',
     node_id TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    valid_from INTEGER,
+    valid_to INTEGER,
     first_seen INTEGER,
     last_seen INTEGER,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -256,6 +260,34 @@ CREATE TABLE IF NOT EXISTS paper_terms (
     kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
     PRIMARY KEY (local_id, term, kind)
 );
+
+-- ── Epistemic layer (v11-v13) ──────────────────────────────────
+-- Knowledge snapshots: versioned, reproducible points-in-time over the graph.
+-- Each snapshot pins the set of entities/claims/evidence an answer was (or
+-- could be) grounded in, so answers can be re-derived against the same state.
+CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    revision_id TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Answer records: bind every generated answer to the evidence it cites, the
+-- knowledge snapshot it was grounded in, and the model/retriever versions that
+-- produced it — so answers are reproducible and auditable rather than
+-- opaque model output.
+CREATE TABLE IF NOT EXISTS answer_records (
+    answer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    evidence_ids TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    model_version TEXT DEFAULT '',
+    snapshot_id TEXT DEFAULT '',
+    retriever_version TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -295,6 +327,9 @@ class Database:
             (8, "change_tracking", self._migrate_add_change_tracking),
             (9, "concept_graph", self._migrate_add_concept_graph),
             (10, "concept_node_columns", self._migrate_add_concept_columns),
+            (11, "concept_epistemic", self._migrate_add_concept_epistemic),
+            (12, "knowledge_snapshots", self._migrate_add_knowledge_snapshots),
+            (13, "answer_records", self._migrate_add_answer_records),
         ]
 
         for version, name, fn in migrations:
@@ -478,6 +513,73 @@ class Database:
             self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_noise INTEGER DEFAULT 0")
         if "is_singleton" not in cols:
             self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_singleton INTEGER DEFAULT 0")
+
+    def _migrate_add_concept_epistemic(self) -> None:
+        """Add epistemic columns to concepts (v11): provenance / authority / validity window.
+
+        Upgrades the flat `concepts` table toward first-class Claim/Evidence
+        objects: `provenance` records where the claim came from (SOURCE /
+        RETRIEVED / TOOL_RESULT / MODEL_INFERRED / USER_STATED), `authority`
+        records the trust tier (official_db / signed_contract / approved_policy /
+        internal_wiki / email / chat, or a paper-domain equivalent), and
+        `valid_from` / `valid_to` bound the claim's temporal validity (NULL =
+        unknown start / still valid).
+
+        Idempotent: fresh databases already get these columns via SCHEMA_SQL;
+        pre-existing (v10 and earlier) databases get them via ALTER. No values
+        are backfilled — they are populated by downstream epistemic ingestion.
+        """
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concepts)").fetchall()]
+        if "provenance" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN provenance TEXT DEFAULT ''")
+        if "authority" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN authority TEXT DEFAULT ''")
+        if "valid_from" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN valid_from INTEGER")
+        if "valid_to" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN valid_to INTEGER")
+
+    def _migrate_add_knowledge_snapshots(self) -> None:
+        """Create knowledge_snapshots table (v12). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v12 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                revision_id TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_answer_records(self) -> None:
+        """Create answer_records table (v13). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v13 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS answer_records (
+                answer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                evidence_ids TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                model_version TEXT DEFAULT '',
+                snapshot_id TEXT DEFAULT '',
+                retriever_version TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
@@ -982,6 +1084,46 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
         )
+
+    def record_answer(
+        self,
+        question: str,
+        answer: str,
+        *,
+        session_id: str | None = None,
+        evidence_ids: list[str] | None = None,
+        provenance: str = "",
+        model_version: str = "",
+        snapshot_id: str = "",
+        retriever_version: str = "",
+    ) -> int:
+        """Persist an answer bound to its supporting evidence (auditability).
+
+        ``evidence_ids`` is serialized to a JSON string (the
+        ``answer_records.evidence_ids`` column is TEXT) so it can be restored
+        with ``json.loads`` later. Returns the new ``answer_id``.
+        """
+        import json
+
+        evidence_json = json.dumps(list(evidence_ids or []), ensure_ascii=False)
+        cur = self.conn.execute(
+            "INSERT INTO answer_records "
+            "(session_id, question, answer, evidence_ids, provenance, "
+            " model_version, snapshot_id, retriever_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                question,
+                answer,
+                evidence_json,
+                provenance,
+                model_version,
+                snapshot_id,
+                retriever_version,
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid or 0
 
     # -- Embeddings --
 

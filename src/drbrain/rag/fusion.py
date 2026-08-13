@@ -38,6 +38,7 @@ from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.status import RetrievalError, RetrievalStatus, classify_failure
 
 try:
     from llama_index.core.retrievers import BaseRetriever
@@ -58,6 +59,7 @@ __all__ = [
     "FusionRetriever",
     "build_fusion_retriever",
     "get_retrievers",
+    "with_acl",
 ]
 
 #: RRF damping constant (Cormack et al. 2009), same as ``query/fusion.py``.
@@ -139,6 +141,44 @@ def _annotate_node(node, sources: list[str], contributions: dict) -> Any:
     return node.model_copy(update={"metadata": metadata})
 
 
+def with_acl(nodes: list[Any], acl_filter: dict[str, str] | None) -> list[Any]:
+    """Post-filter fused nodes by an ACL context (default-deny).
+
+    ACL enforcement belongs in the retrieval layer, never in the LLM prompt —
+    "别泄密" is not a security boundary. Each ``(key, value)`` in
+    ``acl_filter`` must be satisfied by the node's metadata:
+
+    * a concrete value must equal ``metadata[key]`` exactly;
+    * ``"*"`` is an explicit wildcard: any value for that key passes, but the
+      key must still be present;
+    * a node *missing* the key is excluded — default-deny is safer than
+      assuming an unclassified node is public.
+
+    A falsy/empty ``acl_filter`` is a passthrough (no filtering).
+    """
+    if not acl_filter:
+        return list(nodes or [])
+    kept: list[Any] = []
+    for nws in nodes or []:
+        node = getattr(nws, "node", None)
+        meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
+        if _acl_allowed(meta, acl_filter):
+            kept.append(nws)
+    return kept
+
+
+def _acl_allowed(meta: dict[str, Any], acl_filter: dict[str, str]) -> bool:
+    """True when ``meta`` satisfies every ACL constraint (default-deny)."""
+    for key, value in acl_filter.items():
+        if key not in meta:
+            return False
+        if value == "*":
+            continue
+        if meta.get(key) != value:
+            return False
+    return True
+
+
 if _LLAMA_INDEX_AVAILABLE:
 
     class FusionRetriever(BaseRetriever):
@@ -153,6 +193,11 @@ if _LLAMA_INDEX_AVAILABLE:
             weights: Per-source multipliers for ``mode="weighted"``.
             top_k: Number of fused results to return.
             k: RRF damping constant.
+            acl_filter: Optional ``{key: value}`` context (e.g.
+                ``{"tenant_id": "company_A"}``) enforced as a post-filter on
+                every fused node. ``"*"`` matches any value for a key; a node
+                missing the key is excluded (default-deny). ``None``/empty
+                disables ACL filtering. See :func:`with_acl`.
         """
 
         def __init__(
@@ -163,6 +208,7 @@ if _LLAMA_INDEX_AVAILABLE:
             weights: dict[str, float] | None = None,
             top_k: int = 10,
             k: float = DEFAULT_K,
+            acl_filter: dict[str, str] | None = None,
         ) -> None:
             super().__init__()  # sets callback_manager/object_map (IndexNode resolution)
             self._retrievers = list(retrievers)
@@ -177,22 +223,41 @@ if _LLAMA_INDEX_AVAILABLE:
             self.weights = dict(weights) if weights else None
             self.top_k = int(top_k)
             self.k = float(k)
+            self._acl_filter = dict(acl_filter) if acl_filter else None
 
         def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
             ranked: list[tuple[str, list[NodeWithScore]]] = []
+            failures: list[tuple[str, RetrievalStatus]] = []
             for retriever, source in zip(self._retrievers, self._sources):
                 try:
                     nodes = retriever.retrieve(query_bundle)
+                except RetrievalError:
+                    # A nested fusion already declared a total outage; propagate
+                    # it rather than degrading it into a per-leg empty result.
+                    raise
                 except Exception as exc:
-                    log.warning("[rag] fusion leg %r failed (%s); skipping", source, exc)
+                    status = classify_failure(exc)
+                    failures.append((source, status))
+                    log.warning(
+                        "[rag] fusion leg %r failed (%s: %s); skipping",
+                        source,
+                        status.value,
+                        exc,
+                    )
                     nodes = []
                 ranked.append((source, list(nodes or [])))
-            return _rrf_fuse(
+            if self._retrievers and len(failures) == len(self._retrievers):
+                raise RetrievalError(
+                    "all retrieval legs failed; refusing to synthesize",
+                    failures=failures,
+                )
+            fused = _rrf_fuse(
                 ranked,
                 k=self.k,
                 weights=self.weights if self.mode == "weighted" else None,
                 top_k=self.top_k,
             )
+            return with_acl(fused, self._acl_filter)
 
 
 def _iter_custom_retrievers(custom):
@@ -211,6 +276,7 @@ def build_fusion_retriever(
     custom_retrievers=None,
     top_k: int | None = None,
     weights: dict[str, float] | None = None,
+    acl_filter: dict[str, str] | None = None,
 ):
     """Assemble the unified fusion retriever over BM25 + vector + custom legs.
 
@@ -223,6 +289,8 @@ def build_fusion_retriever(
             :func:`get_retrievers`) or a list of ``(source, retriever)``.
         top_k: Fusion top-k (defaults to ``embed.top_k``).
         weights: Per-source weights for ``fusion_mode="weighted"``.
+        acl_filter: Optional ``{key: value}`` context enforced on every fused
+            node (see :class:`FusionRetriever`).
 
     Returns a :class:`FusionRetriever`, or ``None`` when every leg is missing.
     """
@@ -253,6 +321,7 @@ def build_fusion_retriever(
         mode=mode,
         weights=weights,
         top_k=top_k,
+        acl_filter=acl_filter,
     )
 
 
@@ -261,14 +330,19 @@ def get_retrievers(cfg: Config, db=None, graph=None) -> dict[str, Any]:
 
     Legs: ``bm25`` (persisted ``BM25Retriever``), ``vector``
     (``index.as_retriever``), ``tree`` (:class:`DrbrainTreeRetriever`),
-    ``graph`` (:class:`DrbrainGraphRetriever`). Only legs present in the
+    ``raptor`` (:class:`DrbrainRAPTORRetriever`), ``graph``
+    (:class:`DrbrainGraphRetriever`). Only legs present in the
     config list AND available on disk are returned. T5's query engine combines
     the result with :func:`build_fusion_retriever` for fused retrieval.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError("llama-index is not installed; cannot build retrievers")
     from drbrain.rag.indexer import load_index
-    from drbrain.rag.retrievers import DrbrainGraphRetriever, DrbrainTreeRetriever
+    from drbrain.rag.retrievers import (
+        DrbrainGraphRetriever,
+        DrbrainRAPTORRetriever,
+        DrbrainTreeRetriever,
+    )
 
     li = get_llamaindex_config(cfg)
     wanted = [str(x).strip() for x in (li.retrievers or ["bm25", "vector"])]
@@ -286,4 +360,6 @@ def get_retrievers(cfg: Config, db=None, graph=None) -> dict[str, Any]:
         out["tree"] = DrbrainTreeRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
     if "graph" in wanted:
         out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=top_k)
+    if "raptor" in wanted:
+        out["raptor"] = DrbrainRAPTORRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
     return out

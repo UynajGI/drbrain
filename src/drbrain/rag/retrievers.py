@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,102 @@ def _read_tree_summary(db_path, paper_id: str, node_id: str) -> tuple[str, list]
     return row[0] or "", list(source_ids)
 
 
+#: Matches a markdown ATX header (``#`` … ``######``), mirroring the parser's
+#: header detection used to derive the ``line_num`` ranges stored in
+#: ``tree.json``.
+_HEADER_RE = re.compile(r"^(#{1,6})\s")
+
+
+def _parent_and_path(structure: list[dict], node_id: str) -> tuple[dict | None, list[str]]:
+    """Return ``(parent_node, ancestor_ids)`` for ``node_id``.
+
+    ``parent_node`` is the immediate parent dict (or ``None`` when ``node_id``
+    is a top-level node or absent); ``ancestor_ids`` is the chain of ancestor
+    node_ids from the root down to (and including) the parent. ``tree.json``
+    carries no explicit parent pointer — only nested ``nodes`` lists — so the
+    parent is recovered by walking the recursion path.
+    """
+    for node in structure:
+        children = node.get("nodes")
+        if not isinstance(children, list) or not children:
+            continue
+        for child in children:
+            if child.get("node_id") == node_id:
+                return node, [str(node.get("node_id") or "")]
+        for child in children:
+            parent, path = _parent_and_path([child], node_id)
+            if parent is not None:
+                return parent, [str(node.get("node_id") or "")] + path
+    return None, []
+
+
+def _full_section_body(md_path: str | Path, node: dict) -> str:
+    """Return the FULL body of ``node``'s section (header + all children).
+
+    Slices ``raw.md`` from ``node["line_num"]`` to the next header at the same
+    or shallower level — i.e. the whole subtree. Unlike :func:`get_node_content`,
+    which stops at the first child header (so a parent's body would collapse to
+    its heading), this keeps every descendant chunk. A section's complete
+    condition list therefore survives even when the matched leaf was only one
+    chunk of it.
+    """
+    line_num = node.get("line_num")
+    if not line_num:
+        return ""
+    md_path = Path(md_path)
+    if not md_path.exists():
+        return ""
+    lines = md_path.read_text(encoding="utf-8").splitlines()
+    start = int(line_num) - 1
+    if start < 0 or start >= len(lines):
+        return ""
+    m = _HEADER_RE.match(lines[start].lstrip())
+    level = len(m.group(1)) if m else 1
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        hm = _HEADER_RE.match(lines[i].lstrip())
+        if hm and len(hm.group(1)) <= level:
+            end = i
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
+def _parent_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, str]:
+    """Return ``(parent_title, full_parent_body, parent_node_id)``.
+
+    Resolves the PARENT of ``node_id`` (the "context unit" surrounding a
+    matched leaf) from the paper's ``tree.json`` + ``raw.md`` and returns the
+    parent's title together with its FULL section body (header + all children).
+    Returns ``("", "", "")`` when ``node_id`` is a top-level node (no parent)
+    or the files cannot be resolved.
+
+    ``node_id`` must be the bare per-paper id (no ``paper_id:`` prefix) — the
+    form ``tree.json`` is keyed by.
+    """
+    if not papers_dir:
+        return "", "", ""
+    paper_dir = Path(papers_dir) / paper_id
+    try:
+        from drbrain.storage.paths import raw_md_path, tree_json_path
+    except ImportError:  # pragma: no cover - defensive
+        return "", "", ""
+    tree_path = tree_json_path(paper_dir)
+    md_path = raw_md_path(paper_dir)
+    if not tree_path.exists() or not md_path.exists():
+        return "", "", ""
+    try:
+        tree = json.loads(tree_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return "", "", ""
+    structure = tree.get("structure", [])
+    parent, _ancestors = _parent_and_path(structure, node_id)
+    if parent is None:
+        return "", "", ""
+    parent_id = str(parent.get("node_id") or "")
+    parent_title = str(parent.get("title") or "")
+    return parent_title, _full_section_body(md_path, parent), parent_id
+
+
 if _LLAMA_INDEX_AVAILABLE:
 
     class DrbrainTreeRetriever(BaseRetriever):
@@ -164,6 +261,12 @@ if _LLAMA_INDEX_AVAILABLE:
         ``{paper_id, node_id, title, source: "tree", pick, tree_layer}`` —
         ``pick`` records which sub-path selected the node (``llm``/``vector``/
         ``llm+vector``), kept separate from the fusion-level ``source``.
+
+        With ``expand_to_parent`` (default on) each matched leaf's text is
+        replaced by its PARENT section's full body (header + all children), so
+        a section split across sibling chunks reaches the LLM whole. Metadata
+        keeps the leaf ``node_id``/``title`` and adds ``parent_node_id``/
+        ``parent_title`` for provenance.
         """
 
         def __init__(
@@ -176,6 +279,7 @@ if _LLAMA_INDEX_AVAILABLE:
             papers_dir=None,
             embed_cfg=None,
             cache=None,
+            expand_to_parent: bool = True,
         ) -> None:
             super().__init__()  # sets callback_manager/object_map (IndexNode resolution)
             self.paper_id = paper_id
@@ -187,6 +291,8 @@ if _LLAMA_INDEX_AVAILABLE:
             self._db_path = Path(db_path) if db_path else None
             self._embed_cfg = embed_cfg if embed_cfg is not None else cfg.embed
             self._cache = cache  # ApiCache | None, built lazily on first call
+            #: Expand a matched leaf to its parent section's full body (T4).
+            self._expand_to_parent = bool(expand_to_parent)
 
         # ── internals ──────────────────────────────────────────────────
 
@@ -249,6 +355,20 @@ if _LLAMA_INDEX_AVAILABLE:
                     body = str(sec.get("content") or "").strip()
                     if not nid or not body:
                         continue
+                    parent_node_id = ""
+                    parent_title = ""
+                    if self._expand_to_parent:
+                        # Retrieval unit (leaf) ≠ context unit (parent section):
+                        # swap the leaf chunk for its parent's full body so a
+                        # section split across siblings reaches the LLM whole.
+                        parent_title, parent_body, parent_node_id = _parent_section(
+                            self._papers_dir, paper_id, nid
+                        )
+                        if parent_node_id and parent_body:
+                            body = parent_body
+                        else:
+                            parent_node_id = ""
+                            parent_title = ""
                     node = TextNode(
                         text=_truncate_for_llm(body),
                         id_=f"{paper_id}:{nid}",
@@ -256,6 +376,8 @@ if _LLAMA_INDEX_AVAILABLE:
                             "paper_id": paper_id,
                             "node_id": nid,
                             "title": str(sec.get("title") or ""),
+                            "parent_node_id": parent_node_id,
+                            "parent_title": parent_title,
                             "source": "tree",
                             "pick": str(sec.get("source") or "llm"),
                             "tree_layer": TREE_LAYER_PAGEINDEX,
@@ -299,6 +421,11 @@ if _LLAMA_INDEX_AVAILABLE:
           ``tree.json`` + ``raw.md``)
 
         Node ids are ``<paper_id>:<node_id>``; metadata carries ``tree_layer``.
+
+        With ``expand_to_parent`` (default on) a pageindex leaf's text is
+        replaced by its PARENT section's full body (header + all children);
+        metadata keeps the leaf ``node_id``/``title`` and adds
+        ``parent_node_id``/``parent_title``.
         """
 
         def __init__(
@@ -310,6 +437,7 @@ if _LLAMA_INDEX_AVAILABLE:
             db_path=None,
             papers_dir=None,
             embed_cfg=None,
+            expand_to_parent: bool = True,
         ) -> None:
             super().__init__()  # sets callback_manager/object_map (IndexNode resolution)
             self.paper_id = paper_id
@@ -318,6 +446,8 @@ if _LLAMA_INDEX_AVAILABLE:
             self._db_path = Path(db_path) if db_path else None
             self._papers_dir = Path(papers_dir) if papers_dir else Path(cfg.dirs.papers)
             self._embed_cfg = embed_cfg if embed_cfg is not None else cfg.embed
+            #: Expand a matched leaf to its parent section's full body (T4).
+            self._expand_to_parent = bool(expand_to_parent)
 
         def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
             from drbrain.query.tree_retrieval import tree_traversal_search
@@ -352,19 +482,28 @@ if _LLAMA_INDEX_AVAILABLE:
             layer = str(row.get("tree_layer") or "")
             if not paper_id or not nid:
                 return None
-            node_id = f"{paper_id}:{nid}"
+            # tree_vectors.node_id is globally unique ("{paper_id}:{local}").
+            # The LlamaIndex node id keeps that global form; the per-paper
+            # local id (what tree.json / raw.md are keyed by) is stored in
+            # metadata and used for on-demand body/title lookups.
+            from drbrain.services.embedding import _local_node_id
+
+            local_nid = _local_node_id(paper_id, nid)
+            node_id = f"{paper_id}:{local_nid}"
             if layer.startswith("raptor_L"):
                 summary, source_ids = _read_tree_summary(self._db_path, paper_id, nid)
                 # ``metadata`` is the public alias of IndexNode's (deprecated)
                 # ``extra_info`` field; mypy's synthesized ``__init__`` exposes
                 # only the field name, so the alias is flagged as unexpected.
                 return IndexNode(  # type: ignore[call-arg]
-                    text=_truncate_for_llm(summary) if summary else f"[RAPTOR summary: {nid}]",
+                    text=_truncate_for_llm(summary)
+                    if summary
+                    else f"[RAPTOR summary: {local_nid}]",
                     id_=node_id,
                     index_id=node_id,
                     metadata={
                         "paper_id": paper_id,
-                        "node_id": nid,
+                        "node_id": local_nid,
                         "title": "",
                         "source": "raptor",
                         "tree_layer": layer,
@@ -372,14 +511,30 @@ if _LLAMA_INDEX_AVAILABLE:
                     },
                 )
             # pageindex leaf: body loaded on demand from raw.md.
-            title, body = _pageindex_section(self._papers_dir, paper_id, nid)
+            title, body = _pageindex_section(self._papers_dir, paper_id, local_nid)
+            parent_node_id = ""
+            parent_title = ""
+            if self._expand_to_parent:
+                # Retrieval unit (leaf) ≠ context unit (parent section): swap
+                # the leaf chunk for its parent's full body so a section split
+                # across siblings reaches the LLM whole.
+                parent_title, parent_body, parent_node_id = _parent_section(
+                    self._papers_dir, paper_id, local_nid
+                )
+                if parent_node_id and parent_body:
+                    body = parent_body
+                else:
+                    parent_node_id = ""
+                    parent_title = ""
             return TextNode(
-                text=_truncate_for_llm(body) if body else f"[section: {nid}]",
+                text=_truncate_for_llm(body) if body else f"[section: {local_nid}]",
                 id_=node_id,
                 metadata={
                     "paper_id": paper_id,
-                    "node_id": nid,
+                    "node_id": local_nid,
                     "title": title,
+                    "parent_node_id": parent_node_id,
+                    "parent_title": parent_title,
                     "source": "raptor",
                     "tree_layer": layer or TREE_LAYER_PAGEINDEX,
                 },
