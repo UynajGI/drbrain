@@ -74,3 +74,16 @@ def test_run_agent_none_returns_none():
     wf = ResearchLoopWorkflow()
     answer = asyncio.run(wf.run_agent(None, "hi"))
     assert answer is None
+
+
+def test_retrieve_node_uses_agent(monkeypatch):
+    """The retrieve node runs the agent and its answer becomes candidates."""
+    _scripted_llm(monkeypatch, [{"text": "Paper A\nPaper B", "tool_calls": None, "usage": None}])
+    wf = ResearchLoopWorkflow(cfg=_cfg())
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "candidates=2" in result

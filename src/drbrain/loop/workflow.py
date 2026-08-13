@@ -151,8 +151,21 @@ class ResearchLoopWorkflow(Workflow):
     async def retrieve(self, ctx: Context, ev: TaskPlanned | RetrieveAgain) -> Retrieved:
         state = await self._get_state(ctx)
         attempt = ev.attempt if isinstance(ev, RetrieveAgain) else 1
-        # P0 stub: no real retrieval — candidates stay empty, driving the loop.
-        return Retrieved(candidates=list(state.candidates), attempt=attempt)
+        candidates = list(state.candidates)
+        # agent-backed search (first attempt only): use the loop's agent to find
+        # papers; fall back to the prior/empty candidates when no agent is present.
+        if attempt == 1 and state.task:
+            agent = self.build_node_agent()
+            if agent is not None:
+                answer = await self.run_agent(
+                    agent,
+                    f"检索关于「{state.task}」的学术文献，返回相关论文标题（每行一个，最多 10 个）。",
+                )
+                if answer and answer != "No answer generated.":
+                    candidates = [ln.strip() for ln in answer.splitlines() if ln.strip()]
+        state.candidates = candidates
+        await self._set_state(ctx, state)
+        return Retrieved(candidates=candidates, attempt=attempt)
 
     # 3. 文献筛选（不足则回检索，超次则放行）
     @step
