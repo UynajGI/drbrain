@@ -123,3 +123,39 @@ def test_parse_json_lenient():
     assert _parse_json_lenient('```json\n{"a": 1}\n```') == {"a": 1}
     assert _parse_json_lenient('Here is the result: {"a": 1}') == {"a": 1}
     assert _parse_json_lenient("no json here") is None
+
+
+def test_full_agent_backed_loop(monkeypatch):
+    """End-to-end: retrieve → identify_gaps → critique → verify all run the agent."""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"verified": ["h1"], "predictions": ["p1"]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg())
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "candidates=2" in result
+    assert "gaps=1" in result
+    assert "hypotheses=1" in result
+    assert "verified=1" in result

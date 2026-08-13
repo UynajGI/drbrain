@@ -284,21 +284,58 @@ class ResearchLoopWorkflow(Workflow):
     @step
     async def critique(self, ctx: Context, ev: GapsIdentified) -> Critiqued:
         state = await self._get_state(ctx)
-        hypotheses: list[Hypothesis] = []
-        for h in ev.hypotheses:
-            # P0 stub: no scoring — just advance the status.
-            hypotheses.append(h.model_copy(update={"status": "critiqued"}))
+        hypotheses = [h.model_copy(update={"status": "critiqued"}) for h in ev.hypotheses]
+        # agent-backed: the agent scores each hypothesis before compute is spent.
+        agent = self.build_node_agent()
+        if agent is not None and ev.hypotheses:
+            data = await self.run_agent_json(
+                agent,
+                "互评以下假设，给每个假设打分(0~1)并判断是否值得验证，只返回 JSON："
+                '{"hypotheses": [{"statement": "...", "score": 0.8}]}。'
+                f"假设：{[h.statement for h in ev.hypotheses]}",
+            )
+            if isinstance(data, dict):
+                scored = {
+                    str(h.get("statement", "")): h
+                    for h in data.get("hypotheses", [])
+                    if isinstance(h, dict)
+                }
+                hypotheses = [
+                    h.model_copy(
+                        update={
+                            "status": "critiqued",
+                            "score": float(scored.get(h.statement, {}).get("score", 0.0) or 0.0),
+                        }
+                    )
+                    for h in ev.hypotheses
+                ]
         state.hypotheses = hypotheses
         await self._set_state(ctx, state)
         return Critiqued(hypotheses=hypotheses)
 
-    # 10. 证据核验（双路：RAG 推理 + 插件计算 —— P0 为 stub）
+    # 10. 证据核验（双路：RAG 推理 + 插件计算）
     @step
     async def verify(self, ctx: Context, ev: Critiqued) -> Verified:
         state = await self._get_state(ctx)
         verified = [h.statement for h in ev.hypotheses if h.status == "critiqued"]
         predictions = list(state.predictions)
+        # agent-backed dual-path: the agent searches evidence (RAG) and calls
+        # compute plugins (DL/software) to verify each hypothesis.
+        agent = self.build_node_agent()
+        if agent is not None and ev.hypotheses:
+            data = await self.run_agent_json(
+                agent,
+                "核验以下假设：用可用的检索工具找文献证据，用可用的计算插件做数值验证，"
+                "只返回 JSON：{'verified': ['...', ...], 'predictions': ['...', ...]}。"
+                f"假设：{[h.statement for h in ev.hypotheses]}",
+            )
+            if isinstance(data, dict):
+                if data.get("verified"):
+                    verified = [str(v) for v in data["verified"]]
+                if data.get("predictions"):
+                    predictions = [str(p) for p in data["predictions"]]
         state.verified = verified
+        state.predictions = predictions
         await self._set_state(ctx, state)
         return Verified(verified=verified, predictions=predictions)
 
