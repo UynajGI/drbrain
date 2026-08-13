@@ -87,3 +87,39 @@ def test_retrieve_node_uses_agent(monkeypatch):
 
     result = asyncio.run(_go())
     assert "candidates=2" in result
+
+
+def test_identify_gaps_node_proposes_hypotheses(monkeypatch):
+    """identify_gaps runs the agent, parsing structured JSON into gaps + hypotheses."""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {
+                "text": (
+                    '{"gaps": ["gap1", "gap2"], '
+                    '"hypotheses": [{"statement": "h1", "conditions": {}}, '
+                    '{"statement": "h2", "conditions": {}}]}'
+                ),
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg())
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "gaps=2" in result
+    assert "hypotheses=2" in result
+
+
+def test_parse_json_lenient():
+    from drbrain.loop.workflow import _parse_json_lenient
+
+    assert _parse_json_lenient('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _parse_json_lenient('Here is the result: {"a": 1}') == {"a": 1}
+    assert _parse_json_lenient("no json here") is None

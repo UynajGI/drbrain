@@ -12,7 +12,9 @@ insufficient candidates) is wired and bounded by ``MAX_RETRIEVE_ATTEMPTS``.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any
 
 from llama_index.core.workflow import (
@@ -44,6 +46,26 @@ log = logging.getLogger(__name__)
 
 _STATE_KEY = "research_state"
 MAX_RETRIEVE_ATTEMPTS = 3
+
+
+def _parse_json_lenient(text: str) -> Any:
+    """Extract a JSON object from an agent's free-text answer (lenient).
+
+    Handles markdown fences and leading/trailing prose; returns ``None`` when
+    no valid JSON object is present.
+    """
+    text = text.strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    else:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            text = match.group(0)
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 class ResearchLoopWorkflow(Workflow):
@@ -126,6 +148,23 @@ class ResearchLoopWorkflow(Workflow):
         if response is not None:
             answer = response.content or ""
         return answer or "No answer generated."
+
+    async def run_agent_json(
+        self,
+        agent: Any,
+        user_msg: str,
+        *,
+        max_iterations: int = 5,
+    ) -> Any:
+        """Run ``agent`` and parse its answer as a JSON object (lenient).
+
+        Returns the parsed dict/list, or ``None`` when the agent is missing or
+        its answer carries no valid JSON.
+        """
+        answer = await self.run_agent(agent, user_msg, max_iterations=max_iterations)
+        if not answer or answer == "No answer generated.":
+            return None
+        return _parse_json_lenient(answer)
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)
@@ -215,9 +254,27 @@ class ResearchLoopWorkflow(Workflow):
     @step
     async def identify_gaps(self, ctx: Context, ev: Fused) -> GapsIdentified:
         state = await self._get_state(ctx)
-        # P0 stub: no gap detection — no hypotheses proposed yet.
         gaps = list(state.gaps)
         hypotheses = list(state.hypotheses)
+        # agent-backed: the loop's agent proposes gaps + hypotheses (structured JSON).
+        agent = self.build_node_agent()
+        if agent is not None:
+            data = await self.run_agent_json(
+                agent,
+                "基于以下实体，识别研究 gap 并提出可验证假设，只返回 JSON："
+                '{"gaps": ["...", ...], "hypotheses": [{"statement": "...", "conditions": {}}]}。'
+                f"实体：{state.entities}",
+            )
+            if isinstance(data, dict):
+                gaps = [str(g) for g in data.get("gaps", [])]
+                hypotheses = [
+                    Hypothesis(
+                        statement=str(h.get("statement", "")).strip(),
+                        conditions=h.get("conditions") or {},
+                    )
+                    for h in data.get("hypotheses", [])
+                    if isinstance(h, dict) and str(h.get("statement", "")).strip()
+                ]
         state.gaps = gaps
         state.hypotheses = hypotheses
         await self._set_state(ctx, state)
