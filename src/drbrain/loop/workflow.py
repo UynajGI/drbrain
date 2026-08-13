@@ -55,9 +55,20 @@ class ResearchLoopWorkflow(Workflow):
     :meth:`load_plugins` — the bridge an agent-backed node consumes.
     """
 
-    def __init__(self, *, plugins_dir: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        plugins_dir: str | None = None,
+        cfg: Any = None,
+        db: Any = None,
+        graph: Any = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._plugins_dir = plugins_dir
+        self._cfg = cfg
+        self._db = db
+        self._graph = graph
         self._plugin_registry: Any = None
 
     def load_plugins(self) -> Any:
@@ -73,6 +84,48 @@ class ResearchLoopWorkflow(Workflow):
             if self._plugins_dir:
                 self._plugin_registry.discover(self._plugins_dir)
         return self._plugin_registry
+
+    def build_node_agent(self, *, plugins_dir: str | None = None) -> Any:
+        """Assemble the loop's :class:`FunctionAgent` with the full tool surface.
+
+        Reuses :func:`drbrain.rag.agent.build_agent` (7 graph tools + fused
+        retrieval + external plugins). Returns ``None`` when no config is
+        supplied or llama-index is unavailable — callers must not assume an
+        agent is always present.
+        """
+        if self._cfg is None:
+            return None
+        from drbrain.rag.agent import build_agent
+
+        return build_agent(
+            self._cfg,
+            self._db,
+            graph=self._graph,
+            plugins_dir=plugins_dir if plugins_dir is not None else self._plugins_dir,
+        )
+
+    async def run_agent(
+        self,
+        agent: Any,
+        user_msg: str,
+        *,
+        max_iterations: int = 5,
+    ) -> str | None:
+        """Run ``agent`` with ``user_msg`` and return its text answer.
+
+        The answer is extracted from the agent result's ``response.content``
+        (mirrors :func:`reason_llamaindex`). Returns ``None`` for a missing
+        agent so a node can fall back to its deterministic path.
+        """
+        if agent is None:
+            return None
+        handler = agent.run(user_msg=user_msg, max_iterations=max(1, int(max_iterations)))
+        result = await handler
+        response = getattr(result, "response", None)
+        answer = ""
+        if response is not None:
+            answer = response.content or ""
+        return answer or "No answer generated."
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)
