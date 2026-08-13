@@ -74,10 +74,12 @@ Evidence { paper_id, page, snippet, value, unit, conditions, provenance, authori
 
 核验通过 → `record_claim`/`record_evidence`（schema 现役）→ 增量重训模型 → 下次研究用更全知识 + 更准模型。
 
-## 九、实施顺序
+## 九、实施状态（2026-08-13 已全部完成）
 
-| 阶段 | 内容 | 验收 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| P0 | `Workflow` 骨架 + 10→12 节点 + `ResearchState` + 条件循环 | loop 可跑通（端到端空跑） |
-| P1 | `Evidence` 贯穿全图 + 假设互评（AutoScientists 语义） | 满足「文献溯源」评审 |
-| P2 | 双路召回（插件接入模型+软件）+ 闭环沉淀 | 验证结果写回 KG/模型 |
+| P0 | `Workflow` 骨架 + 12 节点 + `ResearchState` + 条件循环 | ✅ |
+| P1 | 假设互评（AutoScientists 语义）+ 结构化 JSON 输出 | ✅ |
+| P2 | 双路召回（插件）+ 闭环沉淀（settle → claims 表） | ✅ |
+
+实现相对设计的增量：4 个自由节点（retrieve / gap / 互评 / 核验）是 **agent-backed**（内部跑 `build_node_agent` + `run_agent` 的 FunctionAgent，非手写 stub）；agent 经 `run_agent_json` 返回结构化 JSON；新增 **通用 MCP 接入**（`rag/mcp_tools.py`，`build_agent(mcp_servers=...)` 连任意 stdio MCP server）；闭环沉淀落 `settle` 节点写回 KG `claims` 表。
