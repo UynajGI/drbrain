@@ -147,6 +147,107 @@ def _cfg_models(cfg: Any) -> list[dict]:
     return list(models) if models is not None else []
 
 
+def _model_version(cfg: Any) -> str:
+    """``provider/model`` of the first entry in the LLM fallback chain.
+
+    Matches :attr:`DrbrainLLM.model_name` (and thus the agent loop's
+    ``AgentFunctionLLM``), so the recorded version lines up with the model that
+    actually produced the answer.
+    """
+    models = _cfg_models(cfg)
+    if not models:
+        return "drbrain/unknown"
+    first = models[0] or {}
+    return f"{first.get('provider', 'openai')}/{first.get('model', 'unknown')}"
+
+
+def _parse_tool_result(summary: str) -> list[dict[str, Any]]:
+    """Parse a tool ``result_summary`` (JSON string) back into rows.
+
+    Retrieval tools return ``json.dumps([{paper_id, node_id, ...}])``. Handles
+    a truncated tail (``result_summary`` is capped to
+    :data:`MAX_RESULT_SUMMARY_CHARS`) by falling back to a regex scan.
+    """
+    if not summary:
+        return []
+    try:
+        data = json.loads(summary)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        data = None
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict):
+        return [data]
+
+    # Truncated JSON: pull paper_id/node_id pairs out of the raw text.
+    import re
+
+    paper_ids = re.findall(r'"paper_id"\s*:\s*"([^"]*)"', summary)
+    node_ids = re.findall(r'"node_id"\s*:\s*"([^"]*)"', summary)
+    rows: list[dict[str, Any]] = []
+    for i in range(max(len(paper_ids), len(node_ids))):
+        row: dict[str, Any] = {}
+        if i < len(paper_ids):
+            row["paper_id"] = paper_ids[i]
+        if i < len(node_ids):
+            row["node_id"] = node_ids[i]
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _evidence_ids_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]:
+    """Extract ``paper_id:node_id`` evidence identifiers from retrieval calls.
+
+    Only ``search_documents`` (fused LlamaIndex retrieval) and ``search_tree``
+    (cross-paper collapsed tree) contribute evidence; graph tools
+    (``search_concepts``, ``get_neighbors``, …) are reasoning steps, not
+    answer evidence.
+    """
+    ids: list[str] = []
+    for tc in tool_calls or []:
+        name = str(tc.get("name") or "").strip()
+        if name not in ("search_documents", "search_tree"):
+            continue
+        for row in _parse_tool_result(str(tc.get("result_summary") or "")):
+            pid = str(row.get("paper_id") or "").strip()
+            nid = str(row.get("node_id") or "").strip()
+            if pid or nid:
+                ids.append(f"{pid}:{nid}" if pid and nid else (pid or nid))
+    seen: set[str] = set()
+    out: list[str] = []
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
+def _record_answer(
+    cfg: Any,
+    db: Any,
+    question: str,
+    answer: str,
+    tool_calls: list[dict[str, Any]],
+    session_id: str | None,
+) -> None:
+    """Best-effort persist of an answer + its evidence (never raises)."""
+    record = getattr(db, "record_answer", None)
+    if record is None:
+        return
+    try:
+        record(
+            question,
+            answer,
+            session_id=session_id,
+            evidence_ids=_evidence_ids_from_tool_calls(tool_calls),
+            model_version=_model_version(cfg),
+            retriever_version="llamaindex-agent",
+        )
+    except Exception:  # pragma: no cover - persistence must not break the answer
+        log.warning("[rag] record_answer failed (reason_llamaindex)", exc_info=True)
+
+
 def _resolve_papers_dir(cfg: Any, db: Any) -> Path | None:
     """Resolve the papers data directory.
 
@@ -853,8 +954,9 @@ async def _areason_llamaindex(
         "engine": "llamaindex",
     }
 
+    resolved_session_id: str | None = None
     if session_id:
-        persisted = _persist_reason_session(
+        resolved_session_id = _persist_reason_session(
             cfg,
             db,
             session_id,
@@ -870,5 +972,8 @@ async def _areason_llamaindex(
             tool_calls,
             _cfg_models(cfg),
         )
-        out["session_id"] = persisted
+        out["session_id"] = resolved_session_id
+
+    # Bind the answer to its evidence (best-effort; never affects the result).
+    _record_answer(cfg, db, question, answer, tool_calls, resolved_session_id)
     return out

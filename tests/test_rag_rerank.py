@@ -393,6 +393,7 @@ def test_rerank_true_bumps_fusion_top_k(monkeypatch):
         custom_retrievers=None,
         top_k=None,
         weights=None,
+        acl_filter=None,
     ):
         captured["top_k"] = top_k
         return _FakeRetriever()
@@ -415,6 +416,7 @@ def test_rerank_false_keeps_caller_top_k(monkeypatch):
         custom_retrievers=None,
         top_k=None,
         weights=None,
+        acl_filter=None,
     ):
         captured["top_k"] = top_k
         return _FakeRetriever()
