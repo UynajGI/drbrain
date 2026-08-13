@@ -55,7 +55,10 @@ def _input_schema_to_model(plugin: Plugin) -> type | None:
     fields: dict[str, Any] = {}
     for key, prop in properties.items():
         ptype = _JSON_TO_PY.get(prop.get("type"), Any)
-        fields[key] = (ptype, ... if key in required else None)
+        if key in required:
+            fields[key] = (ptype, ...)
+        else:
+            fields[key] = (ptype | None, None)
     return create_model(f"{plugin.name}_Input", **fields)
 
 
@@ -70,6 +73,13 @@ class PluginRegistry:
     def __init__(self) -> None:
         self._plugins: dict[str, Plugin] = {}
         self._handlers: dict[str, Callable[[dict[str, Any]], Any]] = {}
+        self._executor: ThreadPoolExecutor | None = None
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Return the shared executor, created lazily and reused across calls."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="drbrain-plugin")
+        return self._executor
 
     def register(self, plugin: Plugin, handler: Callable[[dict[str, Any]], Any]) -> None:
         """Register a plugin and its handler (idempotent: re-register replaces)."""
@@ -143,9 +153,8 @@ class PluginRegistry:
         handler = self._handlers[name]
         evidence = make_evidence(plugin, arguments)
 
-        pool = ThreadPoolExecutor(max_workers=1)
+        future = self._get_executor().submit(handler, arguments)
         try:
-            future = pool.submit(handler, arguments)
             data = future.result(timeout=plugin.timeout_s)
         except (FutureTimeout, TimeoutError):
             return PluginResult(
@@ -165,8 +174,6 @@ class PluginRegistry:
                 evidence=evidence,
                 error=str(exc),
             )
-        finally:
-            pool.shutdown(wait=False)
 
         if data is None:
             return PluginResult(ResultStatus.NO_RESULT, evidence=evidence, error="插件无输出")
@@ -188,13 +195,16 @@ class PluginRegistry:
         tools = []
         for plugin in self._plugins.values():
 
-            def _fn(**kwargs: Any) -> str:
-                result = self.call(plugin.name, dict(kwargs))
-                return result.to_llm_message(plugin)
+            def _make_fn(p: Plugin) -> Any:
+                def _fn(**kwargs: Any) -> str:
+                    result = self.call(p.name, dict(kwargs))
+                    return result.to_llm_message(p)
+
+                return _fn
 
             tools.append(
                 FunctionTool.from_defaults(
-                    fn=_fn,
+                    fn=_make_fn(plugin),
                     name=plugin.name,
                     description=plugin.description,
                     fn_schema=_input_schema_to_model(plugin),

@@ -27,8 +27,15 @@ def run_subprocess(
     software handler is expected to write its own input files, run the binary,
     and parse its own output. ``stdout`` / ``stderr`` are captured as text on
     the returned :class:`subprocess.CompletedProcess`.
+
+    Security: ``cmd`` must be a caller-controlled *static* command (e.g.
+    ``["lmp", "-in", "input.in"]``); never interpolate untrusted input into
+    ``cmd`` — untrusted data belongs in input files/stdin, not on the command
+    line. ``shell`` is left ``False`` (no shell interpolation).
     """
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, shell=False
+    )
 
 
 def run_subprocess_json(cmd: list[str], *, timeout: float = 60.0) -> Any:
