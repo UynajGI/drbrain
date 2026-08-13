@@ -258,7 +258,7 @@ def check_citations_cmd(
     """Verify in-text citations against local library."""
     # Normalize typer params when called directly (not through CLI)
     if isinstance(text, typer.models.ArgumentInfo):
-        text = str(text.default)
+        text = text.default or ""
     if isinstance(file, typer.models.OptionInfo):
         file = file.default
     if isinstance(json_output, typer.models.OptionInfo):
