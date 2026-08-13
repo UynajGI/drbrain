@@ -57,7 +57,8 @@ new relationships through rule-based graph closure.
 | `src/drbrain/cli/` | Typer CLI (main.py registration, *_commands.py modules, _common.py helpers, setup.py) |
 | `src/drbrain/extractor/` | LLM extraction, reasoning, API clients (openalex, crossref) |
 | `src/drbrain/graph/` | Graph engine, TransE embeddings (learn/predict/similar, incremental train), rule closure, query embeddings |
-| `src/drbrain/storage/` | SQLite database (schema v8, centralized writes), BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, OKF v0.1 markdown export, workspace, paths, proceedings, explore silos, backup |
+| `src/drbrain/storage/` | SQLite database (schema v13, centralized writes), BibTeX/RIS export, GraphML/JSON-LD/Cypher graph export, OKF v0.1 markdown export, workspace, paths, proceedings, explore silos, backup |
+| `src/drbrain/rag/` | LlamaIndex RAG layer — BM25/vector/tree/graph/raptor fusion retrieval, FunctionAgent, rerank, eval, plus Epistemic Layer (RAGState / authority / status) |
 | `src/drbrain/services/` | Embedding, audit, repair, enrich, translate, zotero import, citation_styles, document, fsearch, pipeline, metrics_panel, parser_benchmark |
 | `src/drbrain/providers/` | Web extraction (qt-web-extractor), USPTO ODP + PPUBS patent search |
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |
