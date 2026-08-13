@@ -81,6 +81,7 @@ class ResearchLoopWorkflow(Workflow):
         self,
         *,
         plugins_dir: str | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
         cfg: Any = None,
         db: Any = None,
         graph: Any = None,
@@ -88,6 +89,7 @@ class ResearchLoopWorkflow(Workflow):
     ) -> None:
         super().__init__(**kwargs)
         self._plugins_dir = plugins_dir
+        self._mcp_servers = mcp_servers
         self._cfg = cfg
         self._db = db
         self._graph = graph
@@ -124,6 +126,7 @@ class ResearchLoopWorkflow(Workflow):
             self._db,
             graph=self._graph,
             plugins_dir=plugins_dir if plugins_dir is not None else self._plugins_dir,
+            mcp_servers=self._mcp_servers,
         )
 
     async def run_agent(

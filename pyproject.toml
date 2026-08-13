@@ -53,6 +53,7 @@ dependencies = [
     "llama-index-core>=0.14.23",
     "llama-index-llms-litellm>=0.7.1",
     "llama-index-retrievers-bm25>=0.7.1",
+    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
