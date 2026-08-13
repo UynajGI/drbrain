@@ -288,7 +288,59 @@ CREATE TABLE IF NOT EXISTS answer_records (
     retriever_version TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Evidence objects (v14): first-class groundings — the paper / page / verbatim
+-- snippet / numeric value / unit / experimental conditions a claim rests on,
+-- plus provenance and authority. One row per distinct ``paper:node`` grounding.
+CREATE TABLE IF NOT EXISTS evidence (
+    evidence_id TEXT PRIMARY KEY,
+    paper_id TEXT DEFAULT '',
+    node_id TEXT DEFAULT '',
+    page TEXT DEFAULT '',
+    snippet TEXT DEFAULT '',
+    value TEXT DEFAULT '',
+    unit TEXT DEFAULT '',
+    conditions TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_paper ON evidence(paper_id);
+
+-- Claims (v15): first-class assertions with a TBox type (Problem / Method /
+-- Conclusion / Gap / Debate / Actor — or '' when unknown), authority,
+-- provenance, confidence, and a validity window.
+CREATE TABLE IF NOT EXISTS claims (
+    claim_id TEXT PRIMARY KEY,
+    label TEXT DEFAULT '',
+    claim_text TEXT NOT NULL,
+    claim_type TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    confidence REAL DEFAULT 1.0,
+    valid_from INTEGER,
+    valid_to INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
 """
+
+
+def _split_evidence_id(identifier: str) -> tuple[str, str]:
+    """Split a ``paper_id:node_id`` evidence identifier into its parts.
+
+    ``paper_id`` is a local_id (sanitized, never contains ':') while ``node_id``
+    may be a hierarchical tree node containing colons, so we split on the
+    *first* colon. A bare identifier with no colon is treated as a paper-only
+    grounding (empty node). Returns ``(paper_id, node_id)``.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return "", ""
+    if ":" in identifier:
+        paper_id, node_id = identifier.split(":", 1)
+        return paper_id, node_id
+    return identifier, ""
 
 
 class Database:
@@ -330,6 +382,8 @@ class Database:
             (11, "concept_epistemic", self._migrate_add_concept_epistemic),
             (12, "knowledge_snapshots", self._migrate_add_knowledge_snapshots),
             (13, "answer_records", self._migrate_add_answer_records),
+            (14, "evidence", self._migrate_add_evidence),
+            (15, "claims", self._migrate_add_claims),
         ]
 
         for version, name, fn in migrations:
@@ -576,6 +630,55 @@ class Database:
                 model_version TEXT DEFAULT '',
                 snapshot_id TEXT DEFAULT '',
                 retriever_version TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_evidence(self) -> None:
+        """Create evidence table (v14). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v14 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id TEXT PRIMARY KEY,
+                paper_id TEXT DEFAULT '',
+                node_id TEXT DEFAULT '',
+                page TEXT DEFAULT '',
+                snippet TEXT DEFAULT '',
+                value TEXT DEFAULT '',
+                unit TEXT DEFAULT '',
+                conditions TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                authority TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_claims(self) -> None:
+        """Create claims table (v15). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v15 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS claims (
+                claim_id TEXT PRIMARY KEY,
+                label TEXT DEFAULT '',
+                claim_text TEXT NOT NULL,
+                claim_type TEXT DEFAULT '',
+                authority TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                valid_from INTEGER,
+                valid_to INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -1123,7 +1226,112 @@ class Database:
             ),
         )
         self.conn.commit()
+
+        # Materialize first-class evidence rows: each ``paper:node`` identifier
+        # becomes an ``evidence`` row. At answer time we only have the grounding
+        # id and provenance — page/snippet/value are left blank rather than
+        # fabricated.
+        for identifier in list(evidence_ids or []):
+            paper_id, node_id = _split_evidence_id(identifier)
+            if paper_id or node_id:
+                self.record_evidence(paper_id, node_id, provenance=provenance)
+
+        # Materialize the answer itself as a first-class claim. The TBox type
+        # (Problem/Method/Conclusion/…) is not known at answer time, so it is
+        # left blank rather than guessed.
+        self.record_claim(question, answer, provenance=provenance)
+
         return cur.lastrowid or 0
+
+    def record_evidence(
+        self,
+        paper_id: str,
+        node_id: str = "",
+        *,
+        page: str = "",
+        snippet: str = "",
+        value: str = "",
+        unit: str = "",
+        conditions: str = "",
+        provenance: str = "",
+        authority: str = "",
+        evidence_id: str | None = None,
+    ) -> str:
+        """Insert (or replace) a first-class evidence row. Returns ``evidence_id``.
+
+        ``evidence_id`` defaults to ``paper_id:node_id`` (or whichever part is
+        present), so re-recording the same grounding is idempotent. A later
+        record with the same id replaces the row, letting richer fields (page /
+        snippet / value) overwrite the sparse answer-time grounding.
+        """
+        if evidence_id is None:
+            evidence_id = (
+                f"{paper_id}:{node_id}" if (paper_id and node_id) else (paper_id or node_id)
+            )
+        self.conn.execute(
+            "INSERT OR REPLACE INTO evidence "
+            "(evidence_id, paper_id, node_id, page, snippet, value, unit, "
+            " conditions, provenance, authority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                evidence_id,
+                paper_id,
+                node_id,
+                page,
+                snippet,
+                value,
+                unit,
+                conditions,
+                provenance,
+                authority,
+            ),
+        )
+        self.conn.commit()
+        return evidence_id
+
+    def record_claim(
+        self,
+        label: str,
+        claim_text: str,
+        *,
+        claim_type: str = "",
+        authority: str = "",
+        provenance: str = "",
+        confidence: float = 1.0,
+        valid_from: int | None = None,
+        valid_to: int | None = None,
+        claim_id: str | None = None,
+    ) -> str:
+        """Insert (or replace) a first-class claim row. Returns ``claim_id``.
+
+        ``claim_id`` defaults to a stable hash of ``label`` + ``claim_text`` so
+        re-recording the same assertion is idempotent (INSERT OR REPLACE keys
+        on the same id).
+        """
+        import hashlib
+
+        if claim_id is None:
+            digest = hashlib.sha1(f"{label}\x00{claim_text}".encode()).hexdigest()
+            claim_id = f"claim_{digest[:16]}"
+        self.conn.execute(
+            "INSERT OR REPLACE INTO claims "
+            "(claim_id, label, claim_text, claim_type, authority, provenance, "
+            " confidence, valid_from, valid_to) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                claim_id,
+                label,
+                claim_text,
+                claim_type,
+                authority,
+                provenance,
+                confidence,
+                valid_from,
+                valid_to,
+            ),
+        )
+        self.conn.commit()
+        return claim_id
 
     # -- Embeddings --
 

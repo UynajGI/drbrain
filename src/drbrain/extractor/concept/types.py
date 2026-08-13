@@ -8,11 +8,32 @@ from typing import TYPE_CHECKING
 
 from drbrain.extractor.argument import ExtractedArgument, parse_arguments
 from drbrain.extractor.llm_client import acall_with_fallback
+from drbrain.validator.schema import (
+    COMPOSITION,
+    PROPERTY,
+    SIMULATION_METHOD,
+    STRUCTURE,
+    SYNTHESIS_CONDITION,
+)
 
 if TYPE_CHECKING:
     pass
 
 log = logging.getLogger(__name__)
+
+# Domain switch value: when an extraction is done under this domain, the
+# material-science fields (composition/structure/property/simulation_method/
+# synthesis_condition) are produced in addition to the generic six categories.
+MATERIAL_DOMAIN = "material"
+
+# Material type name -> plural extraction field name.
+MATERIAL_TYPE_FIELDS = {
+    COMPOSITION: "compositions",
+    STRUCTURE: "structures",
+    PROPERTY: "properties",
+    SIMULATION_METHOD: "simulation_methods",
+    SYNTHESIS_CONDITION: "synthesis_conditions",
+}
 
 PROMPT_TEMPLATE = (
     Path(__file__).parent.parent.parent.parent.parent / "prompts" / "extract_concepts.txt"
@@ -29,18 +50,30 @@ REFINE_PROMPT = Path(__file__).parent.parent.parent.parent.parent / "prompts" / 
 class ExtractedConcepts:
     """Structured extraction result from a paper."""
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, domain: str | None = None):
+        self.domain = domain
         self.problems: list[dict] = data.get("problems", [])
         self.methods: list[dict] = data.get("methods", [])
         self.conclusions: list[dict] = data.get("conclusions", [])
         self.debates: list[dict] = data.get("debates", [])
         self.gaps: list[dict] = data.get("gaps", [])
         self.actors: list[dict] = data.get("actors", [])
+        # Material-domain fields (additive; populated when the material schema
+        # is enabled via domain=MATERIAL_DOMAIN).
+        self.compositions: list[dict] = data.get("compositions", [])
+        self.structures: list[dict] = data.get("structures", [])
+        self.properties: list[dict] = data.get("properties", [])
+        self.simulation_methods: list[dict] = data.get("simulation_methods", [])
+        self.synthesis_conditions: list[dict] = data.get("synthesis_conditions", [])
         self.relations: list[dict] = data.get("relations", [])
         self.arguments: list[ExtractedArgument] = parse_arguments(data.get("arguments", []))
 
+    def material_fields(self) -> dict:
+        """Return the five material-domain fields as a dict."""
+        return {field: getattr(self, field) for field in MATERIAL_TYPE_FIELDS.values()}
+
     def to_dict(self) -> dict:
-        return {
+        result = {
             "problems": self.problems,
             "methods": self.methods,
             "conclusions": self.conclusions,
@@ -50,6 +83,9 @@ class ExtractedConcepts:
             "relations": self.relations,
             "arguments": [a.to_dict() for a in self.arguments],
         }
+        if self.domain == MATERIAL_DOMAIN:
+            result.update(self.material_fields())
+        return result
 
 
 async def extract_concepts(
