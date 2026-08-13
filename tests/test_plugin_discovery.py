@@ -1,6 +1,6 @@
 """External plugin discovery tests — prove the externalization architecture.
 
-The protocol layer (``src/drbrain/rag/plugins/``) is generic and never imports
+The protocol layer (``src/drbrain/plugins/``) is generic and never imports
 a concrete plugin. Concrete plugins live in an external directory
 (``tests/fixtures/plugins/``) and are loaded at runtime by
 :meth:`PluginRegistry.discover`, which calls each module's ``register(registry)``.
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from drbrain.rag.plugins import PluginRegistry, ResultStatus
+from drbrain.plugins import PluginRegistry, ResultStatus
 
 PLUGIN_DIR = Path(__file__).parent / "fixtures" / "plugins"
-PROTOCOL_DIR = Path(__file__).resolve().parents[1] / "src" / "drbrain" / "rag" / "plugins"
+PROTOCOL_DIR = Path(__file__).resolve().parents[1] / "src" / "drbrain" / "plugins"
 
 
 def _loaded_registry() -> PluginRegistry:
