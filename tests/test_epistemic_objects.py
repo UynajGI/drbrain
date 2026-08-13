@@ -189,8 +189,7 @@ def test_record_answer_materializes_evidence_and_claim(tmp_db):
 
     # Evidence rows: each ``paper:node`` (or bare ``paper``) became a row.
     rows = tmp_db.conn.execute(
-        "SELECT evidence_id, paper_id, node_id, provenance FROM evidence "
-        "ORDER BY evidence_id"
+        "SELECT evidence_id, paper_id, node_id, provenance FROM evidence ORDER BY evidence_id"
     ).fetchall()
     assert rows == [
         ("10.1002_adma.202308655:0000", "10.1002_adma.202308655", "0000", "TOOL_RESULT"),
