@@ -4,27 +4,24 @@ Covers :mod:`drbrain.rag.status` and the ACL/failure hooks in
 :mod:`drbrain.rag.fusion` (plus the engine's abstain path):
 
 * ``RetrievalStatus`` / ``classify_failure`` — failure taxonomy
-* ``RetrievalOutcome`` — ``is_usable`` / ``should_abstain``
 * ``RetrievalError`` — the "every leg failed" signal
-* ``with_acl`` — default-deny post-filter (match kept, missing key excluded,
-  explicit wildcard)
+* ``FusionRetriever._apply_acl`` — default-deny post-filter (match kept,
+  missing key excluded, explicit wildcard)
 * ``FusionRetriever`` — all-legs-fail raises ``RetrievalError``, single-leg
   failure still degrades, ``acl_filter`` enforced on the fused result
 * ``ask_llamaindex`` — abstains (no LLM call) on retrieval failure vs no
   results
 
-Pure tests (status/outcome/with_acl/engine-abstain) run without llama-index;
-the fusion integration tests skip when it is missing.
+The status/RetrievalError/engine-abstain tests run without llama-index; the
+ACL and fusion integration tests skip when it is missing.
 """
 
 from types import SimpleNamespace
 
 import pytest
 
-from drbrain.rag.fusion import with_acl
 from drbrain.rag.status import (
     RetrievalError,
-    RetrievalOutcome,
     RetrievalStatus,
     classify_failure,
 )
@@ -47,30 +44,6 @@ def test_classify_failure_timeout_vs_generic():
     assert classify_failure(ValueError("bad query")) is RetrievalStatus.RETRIEVAL_FAILURE
 
 
-# ── RetrievalOutcome ────────────────────────────────────────────────────────
-
-
-def test_outcome_usable_only_on_ok_with_nodes():
-    assert RetrievalOutcome(RetrievalStatus.OK, nodes=["x"]).is_usable() is True
-    # OK with zero nodes is semantically NO_RESULTS — not usable.
-    assert RetrievalOutcome(RetrievalStatus.OK, nodes=[]).is_usable() is False
-
-
-def test_outcome_should_abstain_on_failure_and_empty():
-    assert RetrievalOutcome(RetrievalStatus.OK, nodes=["x"]).should_abstain() is False
-    assert RetrievalOutcome(RetrievalStatus.OK, nodes=[]).should_abstain() is True
-    assert RetrievalOutcome(RetrievalStatus.NO_RESULTS).should_abstain() is True
-    assert RetrievalOutcome(RetrievalStatus.RETRIEVAL_FAILURE).should_abstain() is True
-    assert RetrievalOutcome(RetrievalStatus.TIMEOUT).should_abstain() is True
-
-
-def test_outcome_fields_and_defaults():
-    outcome = RetrievalOutcome(RetrievalStatus.NO_RESULTS, message="检索成功但无结果")
-    assert outcome.status is RetrievalStatus.NO_RESULTS
-    assert outcome.nodes == []
-    assert outcome.message == "检索成功但无结果"
-
-
 # ── RetrievalError ──────────────────────────────────────────────────────────
 
 
@@ -86,55 +59,6 @@ def test_retrieval_error_carries_failures():
     err = RetrievalError("all legs failed", failures=failures)
     assert err.failures == failures
     assert "all legs failed" in str(err)
-
-
-# ── with_acl (default-deny post-filter) ────────────────────────────────────
-
-
-def _nws(**meta):
-    """Duck-typed ``NodeWithScore`` stand-in: a node with ``.metadata``."""
-    return SimpleNamespace(node=SimpleNamespace(metadata=dict(meta)))
-
-
-def test_with_acl_matching_key_kept():
-    nodes = [_nws(tenant_id="company_A"), _nws(tenant_id="company_B")]
-    kept = with_acl(nodes, {"tenant_id": "company_A"})
-    assert len(kept) == 1
-    assert kept[0].node.metadata["tenant_id"] == "company_A"
-
-
-def test_with_acl_missing_key_excluded():
-    # A node without the key is denied even though it "could be public" —
-    # default-deny is safer than assuming an unclassified node is readable.
-    nodes = [_nws(tenant_id="company_A"), _nws(title="no tenant metadata")]
-    kept = with_acl(nodes, {"tenant_id": "company_A"})
-    assert len(kept) == 1
-    assert kept[0].node.metadata["tenant_id"] == "company_A"
-
-
-def test_with_acl_explicit_wildcard_matches_any_value_but_requires_key():
-    nodes = [_nws(tenant_id="company_B"), _nws(title="no tenant metadata")]
-    kept = with_acl(nodes, {"tenant_id": "*"})
-    # wildcard relaxes the value, not the presence: missing key still denied.
-    assert len(kept) == 1
-    assert kept[0].node.metadata["tenant_id"] == "company_B"
-
-
-def test_with_acl_empty_filter_is_passthrough():
-    nodes = [_nws(tenant_id="company_A")]
-    assert with_acl(nodes, None) == nodes
-    assert with_acl(nodes, {}) == nodes
-
-
-def test_with_acl_multiple_keys_all_must_match():
-    nodes = [
-        _nws(tenant_id="company_A", user_id="u1"),
-        _nws(tenant_id="company_A"),  # missing user_id → denied
-        _nws(tenant_id="company_B", user_id="u1"),
-    ]
-    kept = with_acl(nodes, {"tenant_id": "company_A", "user_id": "u1"})
-    assert len(kept) == 1
-    assert kept[0].node.metadata == {"tenant_id": "company_A", "user_id": "u1"}
 
 
 # ── FusionRetriever failure distinction + ACL (llama-index required) ───────
@@ -210,6 +134,67 @@ def test_fusion_acl_filter_enforced_on_fused_result():
     )
     out = fused.retrieve("q")
     assert [n.node.node_id for n in out] == ["a"]
+
+
+# ── FusionRetriever._apply_acl (default-deny post-filter) ───────────────────
+
+
+def _nws(**meta):
+    """Duck-typed ``NodeWithScore`` stand-in: a node with ``.metadata``."""
+    return SimpleNamespace(node=SimpleNamespace(metadata=dict(meta)))
+
+
+def _apply_acl(acl_filter, nodes):
+    """Run ``FusionRetriever._apply_acl`` with the given filter on *nodes*."""
+    from drbrain.rag.fusion import FusionRetriever
+
+    return FusionRetriever([_make_retriever()], acl_filter=acl_filter)._apply_acl(nodes)
+
+
+def test_apply_acl_matching_key_kept():
+    pytest.importorskip("llama_index")
+    nodes = [_nws(tenant_id="company_A"), _nws(tenant_id="company_B")]
+    kept = _apply_acl({"tenant_id": "company_A"}, nodes)
+    assert len(kept) == 1
+    assert kept[0].node.metadata["tenant_id"] == "company_A"
+
+
+def test_apply_acl_missing_key_excluded():
+    pytest.importorskip("llama_index")
+    # A node without the key is denied even though it "could be public" —
+    # default-deny is safer than assuming an unclassified node is readable.
+    nodes = [_nws(tenant_id="company_A"), _nws(title="no tenant metadata")]
+    kept = _apply_acl({"tenant_id": "company_A"}, nodes)
+    assert len(kept) == 1
+    assert kept[0].node.metadata["tenant_id"] == "company_A"
+
+
+def test_apply_acl_explicit_wildcard_matches_any_value_but_requires_key():
+    pytest.importorskip("llama_index")
+    nodes = [_nws(tenant_id="company_B"), _nws(title="no tenant metadata")]
+    kept = _apply_acl({"tenant_id": "*"}, nodes)
+    # wildcard relaxes the value, not the presence: missing key still denied.
+    assert len(kept) == 1
+    assert kept[0].node.metadata["tenant_id"] == "company_B"
+
+
+def test_apply_acl_empty_filter_is_passthrough():
+    pytest.importorskip("llama_index")
+    nodes = [_nws(tenant_id="company_A")]
+    assert _apply_acl(None, nodes) == nodes
+    assert _apply_acl({}, nodes) == nodes
+
+
+def test_apply_acl_multiple_keys_all_must_match():
+    pytest.importorskip("llama_index")
+    nodes = [
+        _nws(tenant_id="company_A", user_id="u1"),
+        _nws(tenant_id="company_A"),  # missing user_id → denied
+        _nws(tenant_id="company_B", user_id="u1"),
+    ]
+    kept = _apply_acl({"tenant_id": "company_A", "user_id": "u1"}, nodes)
+    assert len(kept) == 1
+    assert kept[0].node.metadata == {"tenant_id": "company_A", "user_id": "u1"}
 
 
 # ── engine abstain behavior (no llama-index needed: engine is mocked) ───────

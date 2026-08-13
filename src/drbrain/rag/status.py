@@ -12,14 +12,13 @@
 * ``SOURCE_UNAVAILABLE`` — 数据源不可用(如索引未构建/文件缺失)。
 
 与 ACL 的配合见 :mod:`drbrain.rag.fusion`:权限过滤在 retrieval 层强制注入
-(``FusionRetriever.acl_filter`` + ``with_acl``),绝不交给 LLM 事后"别泄密"。
+(``FusionRetriever.acl_filter`` + 私有方法 ``_apply_acl``),绝不交给 LLM 事后
+"别泄密"。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
 
 
 class RetrievalStatus(StrEnum):
@@ -31,29 +30,6 @@ class RetrievalStatus(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     TIMEOUT = "timeout"
     SOURCE_UNAVAILABLE = "source_unavailable"
-
-
-@dataclass
-class RetrievalOutcome:
-    """A retrieval pass packaged with its status and a human-readable reason.
-
-    ``status`` is the single source of truth for whether the caller may
-    synthesize an answer; ``nodes`` is only meaningful when ``status`` is
-    ``OK``. ``message`` explains the outcome for humans (e.g. "检索成功但无结果"
-    vs "向量库连接超时").
-    """
-
-    status: RetrievalStatus
-    nodes: list[Any] = field(default_factory=list)
-    message: str = ""
-
-    def is_usable(self) -> bool:
-        """True only for a successful retrieval that actually hit something."""
-        return self.status is RetrievalStatus.OK and bool(self.nodes)
-
-    def should_abstain(self) -> bool:
-        """True when the caller must refuse to answer rather than guess."""
-        return not self.is_usable()
 
 
 class RetrievalError(Exception):

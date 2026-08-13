@@ -87,6 +87,42 @@ def test_resolve_reference_without_context_is_identity():
     assert RAGState().resolve_reference("那负责人呢?") == "那负责人呢?"
 
 
+def test_resolve_reference_bare_pronouns_rewritten():
+    # Bare pronouns ("它"/"他"/"她") are references even without a "呢" marker.
+    state = RAGState(entity_ids=["proj-1"], attribute="owner")
+    for prompt in ("它呢", "他们呢?", "他呢", "她呢？"):
+        rewritten = state.resolve_reference(prompt)
+        assert rewritten != prompt
+        assert "proj-1" in rewritten
+        assert prompt in rewritten  # original prompt is carried into the rewrite
+
+
+def test_resolve_reference_bare_pronoun_without_marker():
+    state = RAGState(entity_ids=["proj-1"], attribute="owner")
+    for prompt in ("它", "他", "她", "这个", "那个"):
+        rewritten = state.resolve_reference(prompt)
+        assert rewritten != prompt
+        assert "proj-1" in rewritten
+
+
+def test_resolve_reference_strips_trailing_whitespace():
+    # Trailing whitespace is normalized away before the reference check.
+    state = RAGState(entity_ids=["proj-1"], attribute="owner")
+    rewritten = state.resolve_reference("它呢  ")
+    assert rewritten != "它呢  "
+    assert rewritten.endswith("它呢")
+    assert "proj-1" in rewritten
+
+
+def test_resolve_reference_mixed_punctuation_markers():
+    # "X呢?" / "X呢？" / "X呢" are all elliptical-follow-up markers.
+    state = RAGState(entity_ids=["proj-1"], attribute="owner")
+    for prompt in ("那负责人呢?", "那负责人呢？", "那负责人呢"):
+        rewritten = state.resolve_reference(prompt)
+        assert "proj-1" in rewritten
+        assert "owner" in rewritten
+
+
 def test_extra_roundtrips():
     state = RAGState(extra={"confidence": 0.9, "nested": {"a": 1}})
     assert state.to_dict()["extra"] == {"confidence": 0.9, "nested": {"a": 1}}

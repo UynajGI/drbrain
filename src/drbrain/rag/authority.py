@@ -141,9 +141,22 @@ def resolve_claims(claims: list[dict], *, now: int | None = None) -> list[Resolv
 # ── Internal helpers ──
 
 
+def _partition_stale(group: list[dict], now: int) -> tuple[list[dict], list[dict]]:
+    """Split *group* into ``(fresh, stale)`` in a single validity-window pass.
+
+    Each claim is checked against :func:`is_stale` exactly once (rather than
+    two list comprehensions calling it twice); lapsed claims go to ``stale``,
+    still-valid ones to ``fresh``. Order is preserved within each partition.
+    """
+    fresh: list[dict] = []
+    stale: list[dict] = []
+    for c in group:
+        (stale if is_stale(c, now) else fresh).append(c)
+    return fresh, stale
+
+
 def _resolve_group(label: str, group: list[dict], now: int) -> ResolvedClaim:
-    fresh = [c for c in group if not is_stale(c, now)]
-    stale = [c for c in group if is_stale(c, now)]
+    fresh, stale = _partition_stale(group, now)
 
     # Every candidate has lapsed: there is a fact, it just expired. Report the
     # best historical value rather than nothing — the caller decides whether a

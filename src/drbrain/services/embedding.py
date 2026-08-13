@@ -571,13 +571,31 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
             logger.debug("[embed] GPU adaptive batching unavailable, using fixed batch_size=%d", bs)
 
     embeddings = model.encode(texts, normalize_embeddings=True, batch_size=bs)
-    out: list[list[float]] = []
+    # Preserve 1:1 text→vector alignment: callers (build_tree_vectors) rely on
+    # positional correspondence, so a None/empty vector must be replaced by a
+    # deterministic zero vector at the SAME position — never dropped, never
+    # appended out of order.
+    dim = 0
     for e in embeddings:
         if e is None:
             continue
         vec = [float(x) if x is not None else 0.0 for x in e.tolist()]
-        if vec:
-            out.append(vec)
+        if vec and not dim:
+            dim = len(vec)
+    if texts and not dim:
+        # Every embedding came back unusable — the model itself is failing, not
+        # a single-node blip. Surface it instead of emitting zero-length vectors
+        # that would break downstream similarity math in a confusing way.
+        raise RuntimeError("embedding model returned no usable vectors")
+    out: list[list[float]] = []
+    for i, e in enumerate(embeddings):
+        if e is None:
+            out.append([0.0] * dim if dim else [])
+            continue
+        vec = [float(x) if x is not None else 0.0 for x in e.tolist()]
+        out.append(vec if vec else ([0.0] * dim if dim else []))
+    while len(out) < len(texts):
+        out.append([0.0] * dim if dim else [])
     return out
 
 

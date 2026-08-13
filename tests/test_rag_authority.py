@@ -139,6 +139,74 @@ def test_equal_authority_same_value_merges_to_single():
     assert r.value == "X"
 
 
+# ── metadata propagation + tie-breaking ─────────────────────────────────────
+
+
+def test_confidence_breaks_tie_within_same_authority_and_value():
+    # Two corroborating claims (same authority, same value) differ only in
+    # confidence: the higher-confidence claim is the representative and its
+    # confidence is carried into the resolved claim.
+    claims = [
+        _claim("method", "X", authority="peer_reviewed", confidence=0.5, provenance="paper-a"),
+        _claim("method", "X", authority="peer_reviewed", confidence=0.95, provenance="paper-b"),
+    ]
+    out = resolve_claims(claims, now=1_000_000)
+
+    r = out[0]
+    assert r.value == "X"
+    assert r.confidence == 0.95  # higher confidence wins the tie
+
+
+def test_provenance_propagates_on_authoritative_resolution():
+    # The single top-tier claim wins; its provenance is preserved.
+    claims = [
+        _claim("deadline", "Aug 10", authority="chat", provenance="chat-log"),
+        _claim("deadline", "Aug 20", authority="official_db", provenance="registry"),
+    ]
+    out = resolve_claims(claims, now=1_000_000)
+
+    r = out[0]
+    assert r.resolution == "authoritative"
+    assert r.value == "Aug 20"
+    assert r.provenance == "registry"
+
+
+def test_provenance_propagates_on_conflict_resolution():
+    # Among tied conflicting claims the freshest/most-confident is chosen as
+    # the representative; its provenance is the one surfaced.
+    claims = [
+        _claim("deadline", "Aug 10", authority="email", provenance="email-a", confidence=0.6),
+        _claim("deadline", "Aug 15", authority="email", provenance="email-b", confidence=0.9),
+    ]
+    out = resolve_claims(claims, now=1_000_000)
+
+    r = out[0]
+    assert r.resolution == "conflict"
+    assert r.provenance == "email-b"
+
+
+def test_conflict_reason_enumerates_values_in_input_order():
+    # The conflict reason is deterministic: it lists each divergent value in
+    # input order, each with its authority and provenance.
+    claims = [
+        _claim("deadline", "Aug 10", authority="email", provenance="email-a"),
+        _claim("deadline", "Aug 15", authority="email", provenance="email-b"),
+        _claim("deadline", "Aug 20", authority="email", provenance="email-c"),
+    ]
+    out = resolve_claims(claims, now=1_000_000)
+
+    r = out[0]
+    assert r.resolution == "conflict"
+    assert r.reason.startswith("equal-authority conflict: ")
+    # values appear in deterministic (input) order
+    assert r.reason.index("'Aug 10'") < r.reason.index("'Aug 15'") < r.reason.index("'Aug 20'")
+    # each value is annotated with its authority and provenance
+    assert "authority=email" in r.reason
+    assert "provenance=email-a" in r.reason
+    assert "provenance=email-b" in r.reason
+    assert "provenance=email-c" in r.reason
+
+
 # ── extras: stale excluded when fresh exists; multiple labels ──
 
 

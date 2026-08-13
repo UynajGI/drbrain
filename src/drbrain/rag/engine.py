@@ -358,7 +358,12 @@ def ask_llamaindex(
     """
     if streaming:
         return _ask_llamaindex_stream(cfg, db, question, top_k=top_k, acl_filter=acl_filter)
-    engine = _build_ask_engine(cfg, db, streaming=False, top_k=top_k, acl_filter=acl_filter)
+    # Pass ``acl_filter`` only when present so pre-ACL callers (and test mocks)
+    # that wrap ``build_query_engine`` with a narrower signature keep working.
+    if acl_filter:
+        engine = build_query_engine(cfg, db, streaming=False, top_k=top_k, acl_filter=acl_filter)
+    else:
+        engine = build_query_engine(cfg, db, streaming=False, top_k=top_k)
     if engine is None:
         raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
     try:
@@ -373,23 +378,6 @@ def ask_llamaindex(
     return _assemble_answer(question, answer, sources)
 
 
-def _build_ask_engine(
-    cfg: Config,
-    db: Any,
-    streaming: bool,
-    top_k: int,
-    acl_filter: dict[str, str] | None = None,
-):
-    """Build the ask engine, passing ``acl_filter`` only when present.
-
-    ``acl_filter`` is passed conditionally so pre-ACL callers (and test mocks)
-    that wrap ``build_query_engine`` with a narrower signature keep working.
-    """
-    if acl_filter:
-        return build_query_engine(cfg, db, streaming=streaming, top_k=top_k, acl_filter=acl_filter)
-    return build_query_engine(cfg, db, streaming=streaming, top_k=top_k)
-
-
 def _ask_llamaindex_stream(
     cfg: Config,
     db: Any,
@@ -398,7 +386,10 @@ def _ask_llamaindex_stream(
     acl_filter: dict[str, str] | None = None,
 ):
     """Streaming ask: yields ``{"chunk": str}`` items, then the final dict."""
-    engine = _build_ask_engine(cfg, db, streaming=True, top_k=top_k, acl_filter=acl_filter)
+    if acl_filter:
+        engine = build_query_engine(cfg, db, streaming=True, top_k=top_k, acl_filter=acl_filter)
+    else:
+        engine = build_query_engine(cfg, db, streaming=True, top_k=top_k)
     if engine is None:
         raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
     try:
