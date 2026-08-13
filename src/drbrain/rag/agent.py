@@ -571,6 +571,29 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
 # ── agent assembly ──────────────────────────────────────────────────────────
 
 
+def _load_plugin_tools(plugins_dir: str | Path) -> list:
+    """Discover plugins from ``plugins_dir`` and bridge them to LlamaIndex tools.
+
+    Graceful by design: any discovery/bridge failure returns ``[]`` so the
+    agent still assembles with the built-in graph tools. drbrain never imports
+    a concrete plugin here — external plugins register themselves via
+    ``PluginRegistry.discover``.
+    """
+    try:
+        from drbrain.rag.plugins.registry import PluginRegistry
+    except ImportError:
+        return []
+    try:
+        registry = PluginRegistry()
+        n = registry.discover(plugins_dir)
+        tools = registry.to_llamaindex_tools()
+        log.info("[rag] loaded %d plugin(s) from %s → %d tool(s)", n, plugins_dir, len(tools))
+        return tools
+    except Exception as exc:  # noqa: BLE001 — plugin failure must not break assembly
+        log.warning("[rag] plugin discovery failed for %s: %s", plugins_dir, exc)
+        return []
+
+
 def build_agent(
     cfg: Config,
     db: Any = None,
@@ -581,6 +604,7 @@ def build_agent(
     temperature: float = AGENT_TEMPERATURE,
     max_tokens: int = AGENT_MAX_TOKENS,
     include_retrieval: bool = True,
+    plugins_dir: str | Path | None = None,
 ) -> Any | None:
     """Assemble the LlamaIndex :class:`FunctionAgent`.
 
@@ -607,6 +631,8 @@ def build_agent(
         rt = _build_retrieval_tool(cfg, db, graph)
         if rt is not None:
             tools.append(rt)
+    if plugins_dir:
+        tools.extend(_load_plugin_tools(plugins_dir))
 
     system_prompt = BASE_SYSTEM_PROMPT
     if closure_context:
