@@ -727,6 +727,7 @@ def test_eval_cmd_validation_errors(tmp_path, capsys):
 
 
 @pytest.mark.integration
+@pytest.mark.timeout(600)
 def test_integration_eval_real_corpus(tmp_path, monkeypatch):
     """End-to-end: small golden subset → real index → retriever + ragas evals.
 

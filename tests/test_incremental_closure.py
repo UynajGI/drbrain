@@ -136,7 +136,21 @@ def test_ingest_single_paper_succeeds():
             raw_md="# Test\n\nContent.",
         )
 
-        with mock.patch("drbrain.cli._helpers.db_ingest.extract_pdf", return_value=parsed):
+        # Tree structuring (Stage 3) calls md_to_tree → LLM summaries; mock it to
+        # keep this pipeline test offline (no real LLM). DOI enrichment (Stage 7)
+        # is skipped because the parsed paper has no DOI and the config carries no
+        # crossref_email/openalex_token.
+        tree_stub = mock.Mock()
+        tree_stub.to_json.return_value = '{"structure": []}'
+        tree_stub.structure = []
+
+        with (
+            mock.patch("drbrain.cli._helpers.db_ingest.extract_pdf", return_value=parsed),
+            mock.patch(
+                "drbrain.parser.pageindex_parser.md_to_tree",
+                new=mock.AsyncMock(return_value=tree_stub),
+            ),
+        ):
             result = _ingest_single_paper(pdf_path, cfg, db, dedup, json_mode=True)
 
         # Verify paper was inserted
