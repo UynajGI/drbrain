@@ -4,6 +4,64 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# --- Material-science domain schema (pluggable, coexists with generic TBOX) ---
+#
+# These five types capture structured materials information for the materials
+# literature survey agent: composition / structure / property / simulation
+# method / synthesis condition. They are additive — the generic academic
+# six-category TBOX above is unchanged.
+
+COMPOSITION = "Composition"
+STRUCTURE = "Structure"
+PROPERTY = "Property"
+SIMULATION_METHOD = "SimulationMethod"
+SYNTHESIS_CONDITION = "SynthesisCondition"
+
+MATERIAL_TYPES = frozenset(
+    {COMPOSITION, STRUCTURE, PROPERTY, SIMULATION_METHOD, SYNTHESIS_CONDITION}
+)
+
+MATERIAL_TBOX = {
+    COMPOSITION: {
+        "has_structure",
+        "exhibits",
+        "measured_by",
+        "synthesized_under",
+        "cross_section_support",
+        "cross_section_challenge",
+    },
+    STRUCTURE: {
+        "has_composition",
+        "determines",
+        "exhibits",
+        "measured_by",
+        "cross_section_support",
+        "cross_section_challenge",
+    },
+    PROPERTY: {
+        "depends_on",
+        "measured_by",
+        "predicted_by",
+        "optimized_under",
+        "cross_section_support",
+        "cross_section_challenge",
+    },
+    SIMULATION_METHOD: {
+        "predicts",
+        "simulates",
+        "validates",
+        "cross_section_support",
+        "cross_section_challenge",
+    },
+    SYNTHESIS_CONDITION: {
+        "produces",
+        "controls",
+        "determines",
+        "cross_section_support",
+        "cross_section_challenge",
+    },
+}
+
 TBOX = {
     "Problem": {
         "addresses",
@@ -61,8 +119,14 @@ class ValidationResult:
 
 
 def validate_tbox(concept_type: str, relation: str) -> ValidationResult:
-    """Check if a relation is valid for a given concept type."""
+    """Check if a relation is valid for a given concept type.
+
+    Resolves the generic academic TBOX first, then falls back to the
+    material-science MATERIAL_TBOX so material types are validatable too.
+    """
     allowed = TBOX.get(concept_type)
+    if allowed is None:
+        allowed = MATERIAL_TBOX.get(concept_type)
     if allowed is None:
         return ValidationResult(False, f"Unknown concept type: {concept_type}")
     if relation not in allowed:

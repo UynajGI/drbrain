@@ -872,3 +872,55 @@ def frontier_cmd(
                 typer.echo(f"  [{s['type']}] {s['description'][:120]}")
 
     db.close()
+
+
+def survey_cmd(
+    ctx: typer.Context,
+    topic: str = typer.Argument(
+        None, help="Topic to survey (optional; defaults to the whole library)"
+    ),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Write markdown to FILE instead of stdout"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output structured JSON instead of markdown"
+    ),
+    top_n: int = typer.Option(10, "--top-n", help="Max items per section"),
+):
+    """Generate a one-shot markdown literature survey.
+
+    Produces a three-section 综述: Gap 清单 (研究空白 + 争论 + 前沿信号),
+    文献交叉引用 (谁引谁 + 共享引用), and 证据链 (每条 Gap/结论追溯到来源).
+    """
+    # Normalize typer OptionInfo objects when called directly (not via CLI)
+    if isinstance(topic, typer.models.OptionInfo):
+        topic = topic.default
+    if isinstance(output, typer.models.OptionInfo):
+        output = output.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+    if isinstance(top_n, typer.models.OptionInfo):
+        top_n = int(top_n.default or 10)
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.report.survey import generate_survey, generate_survey_data
+
+    try:
+        if json_output:
+            data = generate_survey_data(db, topic, graph=graph, top_n=top_n)
+            typer.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+        else:
+            md = generate_survey(db, topic, graph=graph, top_n=top_n)
+            if output:
+                from pathlib import Path
+
+                Path(output).write_text(md, encoding="utf-8")
+                typer.echo(f"Survey written to {output}")
+            else:
+                typer.echo(md)
+    finally:
+        db.close()
