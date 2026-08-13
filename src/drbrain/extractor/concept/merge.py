@@ -11,7 +11,11 @@ from drbrain.extractor.concept.tree_helpers import (
     _collect_leaf_nodes,
     _is_quality_content,
 )
-from drbrain.extractor.concept.types import ExtractedConcepts
+from drbrain.extractor.concept.types import (
+    MATERIAL_DOMAIN,
+    MATERIAL_TYPE_FIELDS,
+    ExtractedConcepts,
+)
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
 
@@ -42,18 +46,19 @@ def _merge_concepts(
         results: List of ExtractedConcepts from each section.
         sections: Optional list of section titles parallel to results.
     """
-    merged: dict = {
-        "problems": [],
-        "methods": [],
-        "conclusions": [],
-        "debates": [],
-        "gaps": [],
-        "actors": [],
-        "relations": [],
-        "arguments": [],
-    }
+    categories = (
+        "problems",
+        "methods",
+        "conclusions",
+        "debates",
+        "gaps",
+        "actors",
+    ) + tuple(MATERIAL_TYPE_FIELDS.values())
+    merged: dict = {cat: [] for cat in categories}
+    merged["relations"] = []
+    merged["arguments"] = []
 
-    for category in ("problems", "methods", "conclusions", "debates", "gaps", "actors"):
+    for category in categories:
         seen: dict[str, float] = {}
         items: list[dict] = []
         for idx, result in enumerate(results):
@@ -99,7 +104,11 @@ def _merge_concepts(
                 raw_args.append(arg.to_dict())
     merged["arguments"] = raw_args
 
-    return ExtractedConcepts(merged)
+    domain = next(
+        (r.domain for r in results if getattr(r, "domain", None) == MATERIAL_DOMAIN),
+        None,
+    )
+    return ExtractedConcepts(merged, domain=domain)
 
 
 async def extract_section_concepts(

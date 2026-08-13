@@ -17,6 +17,7 @@ from drbrain.cli.analysis_commands import (
     landscape_cmd,
     paradigm_cmd,
     reason_cmd,
+    survey_cmd,
     transfers_cmd,
 )
 from drbrain.cli.build_commands import (
@@ -152,6 +153,7 @@ app.command("transfers")(transfers_cmd)
 app.command("isomorphism")(isomorphism_cmd)
 app.command("difficulty")(difficulty_cmd)
 app.command("frontier")(frontier_cmd)
+app.command("survey")(survey_cmd)
 app.command("reason")(reason_cmd)
 
 # Sub-apps
