@@ -5,6 +5,7 @@
 > 决策(用户 2026-08-12 定案):**直接引入 LlamaIndex 依赖,替换同质实现;保留 drbrain 独有设计(树/图),LlamaIndex 已有的(agent/评估/召回/重排)直接用他的**
 > 前置调研:`llamaindex-tutorial-survey.md`(教程能力)、`drbrain-rag-current-state.md`(现状基线 10 薄弱点)、`llamaindex-upgrade-feasibility.md`(早期"不引框架"方案,已被本决策取代)
 > 环境基线:Python 3.12.3 · pydantic 2.12.5 · numpy 2.2.6 · torch 2.10.0 · sentence-transformers 5.6.1 · umap-learn 0.5.12(已具备,llama-index 零依赖)
+> **后续演进**:PR #8 已合并;PR #9(2026-08-13)叠加 Epistemic Layer,SQLite schema 已从 v10 推到 **v13**(concepts provenance/authority/validity、knowledge_snapshots、answer_records)。本文的 "schema v10" 是设计时快照。
 
 ---
 
