@@ -1,7 +1,7 @@
 """Plugin interface abstraction: protocol + registry + discovery + backend helpers."""
 
-from drbrain.rag.plugins.backends import load_joblib, run_subprocess, run_subprocess_json
-from drbrain.rag.plugins.protocol import (
+from drbrain.plugins.backends import load_joblib, run_subprocess, run_subprocess_json
+from drbrain.plugins.protocol import (
     Backend,
     OnFailure,
     Plugin,
@@ -10,7 +10,7 @@ from drbrain.rag.plugins.protocol import (
     ResultStatus,
     make_evidence,
 )
-from drbrain.rag.plugins.registry import PluginRegistry
+from drbrain.plugins.registry import PluginRegistry
 
 __all__ = [
     "Backend",

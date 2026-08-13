@@ -102,7 +102,7 @@ def test_build_agent_assembles_graph_tools():
 def test_build_agent_loads_plugins(tmp_path):
     """plugins_dir → discover external plugins → their tools join the agent."""
     (tmp_path / "foo_plugin.py").write_text(
-        "from drbrain.rag.plugins import Plugin\n"
+        "from drbrain.plugins import Plugin\n"
         "def register(registry):\n"
         "    registry.register(\n"
         "        Plugin(name='foo', description='a foo plugin', input_schema={}),\n"

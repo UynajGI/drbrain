@@ -19,7 +19,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any
 
-from drbrain.rag.plugins.protocol import (
+from drbrain.plugins.protocol import (
     Plugin,
     PluginResult,
     ResultStatus,

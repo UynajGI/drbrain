@@ -23,7 +23,7 @@ import sys
 import tempfile
 from typing import Any
 
-from drbrain.rag.plugins import Plugin, run_subprocess
+from drbrain.plugins import Plugin, run_subprocess
 
 
 def _run(arguments: dict[str, Any]) -> dict[str, Any]:

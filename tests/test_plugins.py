@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from drbrain.rag.plugins import Plugin, PluginRegistry, ResultStatus
+from drbrain.plugins import Plugin, PluginRegistry, ResultStatus
 
 
 def _flatband_plugin(**overrides) -> Plugin:
@@ -120,7 +120,7 @@ def test_to_llamaindex_tools_does_not_crash():
 def test_discover_loads_plugins(tmp_path):
     """discover imports a module whose register() adds a Plugin; returns count."""
     (tmp_path / "foo_plugin.py").write_text(
-        "from drbrain.rag.plugins import Plugin\n"
+        "from drbrain.plugins import Plugin\n"
         "def register(registry):\n"
         "    registry.register(\n"
         "        Plugin(name='foo', description='a foo plugin', input_schema={}),\n"
@@ -145,7 +145,7 @@ def test_discover_skips_broken_module(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "good_plugin.py").write_text(
-        "from drbrain.rag.plugins import Plugin\n"
+        "from drbrain.plugins import Plugin\n"
         "def register(registry):\n"
         "    registry.register(\n"
         "        Plugin(name='good', description='ok', input_schema={}),\n"
