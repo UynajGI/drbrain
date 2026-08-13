@@ -99,6 +99,32 @@ def test_build_agent_assembles_graph_tools():
         assert schema.get("type") == "object"
 
 
+def test_build_agent_loads_plugins(tmp_path):
+    """plugins_dir → discover external plugins → their tools join the agent."""
+    (tmp_path / "foo_plugin.py").write_text(
+        "from drbrain.rag.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(\n"
+        "        Plugin(name='foo', description='a foo plugin', input_schema={}),\n"
+        "        lambda args: {'ok': True},\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    agent = build_agent(_cfg(), db=None, graph=None, plugins_dir=tmp_path)
+    assert agent is not None
+    names = [t.metadata.name for t in agent.tools]
+    assert "foo" in names
+
+
+def test_build_agent_plugin_dir_empty_is_graceful(tmp_path):
+    """An empty (or failing) plugins_dir must not break assembly."""
+    agent = build_agent(_cfg(), db=None, graph=None, plugins_dir=tmp_path)
+    assert agent is not None
+    names = [t.metadata.name for t in agent.tools]
+    expected = [fn["name"] for fn in (d["function"] for d in TOOL_DEFINITIONS)]
+    assert names == expected  # no plugin tools, just the 7 graph tools
+
+
 def test_build_agent_llm_is_function_calling_glue():
     agent = build_agent(_cfg(), db=None, graph=None)
     assert isinstance(agent.llm, AgentFunctionLLM)
