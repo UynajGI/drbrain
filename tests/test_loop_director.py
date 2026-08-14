@@ -291,6 +291,160 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     assert verifier_text.count("[cycle") == 1
 
 
+# ── T8: proposal board + critic reviews（Discussion-Before-Queuing 落盘） ───────
+
+_DISCUSSION_SCRIPT = [
+    {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
+     "tool_calls": None, "usage": None},
+    {"text": "cycle report", "tool_calls": None, "usage": None},
+]
+
+
+def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
+    """T8: each cycle's hypotheses land in knowledge/proposals.md (propose role)
+    and the critic's score+verdict land in knowledge/reviews.md (non-author role)."""
+    _cyclic_llm(monkeypatch, _DISCUSSION_SCRIPT)
+    d = ResearchDirector(
+        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+    )
+
+    async def _go():
+        return await d.run(
+            "a research question", max_cycles=2, stagnation_cycles=2, max_adaptations=1
+        )
+
+    state = asyncio.run(_go())
+    assert state["cycles"] == 2  # bounded by max_cycles, no pivot needed
+
+    knowledge = tmp_path / "runs" / "a-research-question" / "knowledge"
+    proposals = knowledge / "proposals.md"
+    reviews = knowledge / "reviews.md"
+    assert proposals.exists()
+    assert reviews.exists()
+    p_text = proposals.read_text(encoding="utf-8")
+    r_text = reviews.read_text(encoding="utf-8")
+    # cycle 1: the scripted proposal + its critic review (KEEP, high score).
+    # The reviewer is explicitly the critic role — the non-author reviewer
+    # independent of the propose role that authored the proposal.
+    assert "- [cycle 1] h1" in p_text
+    assert "- [cycle 1] h1（reviewer=critic, score=0.90, verdict=KEEP）" in r_text
+    assert "reviewer=critic" in r_text
+    # cycle 2: h1 is a duplicate of the champion (T6) → fallback hypothesis,
+    # which the scripted critic does not score → 0.00 → DISCARD review
+    assert "- [cycle 2] 假设：gap1" in p_text
+    assert "[cycle 2]" in r_text
+    assert "verdict=DISCARD" in r_text
+
+
+# ── T8: endorsement — Phase 4 adapt needs the critic's independent veto ────────
+
+
+def test_critic_vetoes_direction_unit():
+    """T8 unit: the endorsement gate reads the critic's latest review round."""
+    from drbrain.loop.events import Hypothesis
+
+    def _rs(*hypotheses):
+        from drbrain.loop.events import ResearchState
+
+        return ResearchState(hypotheses=list(hypotheses))
+
+    def _h(statement, score, status):
+        return Hypothesis(statement=statement, score=score, status=status)
+
+    # critic endorses: high mean, nothing discarded → NO veto → no pivot
+    assert ResearchDirector._critic_vetoes_direction(_rs(_h("h1", 0.9, "critiqued"))) is False
+    assert (
+        ResearchDirector._critic_vetoes_direction(
+            _rs(_h("h1", 0.5, "critiqued"), _h("h2", 0.6, "critiqued"))
+        )
+        is False
+    )
+    # critic vetoes: mean score below the endorsement bar → veto
+    assert ResearchDirector._critic_vetoes_direction(_rs(_h("h1", 0.2, "critiqued"))) is True
+    # critic vetoes: every hypothesis of the round was DISCARDed → veto
+    assert ResearchDirector._critic_vetoes_direction(_rs(_h("h1", 0.9, "discarded"))) is True
+    # no critic opinion → not a veto (a structural change needs an explicit
+    # independent objection)
+    assert ResearchDirector._critic_vetoes_direction(_rs()) is False
+    assert ResearchDirector._critic_vetoes_direction(None) is False
+
+
+# Script: h1 is always proposed and survives the critic with score 0.9 (KEEP),
+# but verification always yields a prediction (supports=0) — never a champion,
+# so no-gain climbs while the critic keeps endorsing the direction.
+_ENDORSE_SCRIPT = [
+    {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"verifications": [{"statement": "h1", "supports": 0, "refutes": 0, "orthogonal": 1}]}',
+     "tool_calls": None, "usage": None},
+    {"text": "cycle report", "tool_calls": None, "usage": None},
+]
+
+
+def test_director_keeps_cycling_when_critic_endorses_direction(monkeypatch, tmp_path):
+    """T8: no-gain alone is not a structural change — with the critic endorsing
+    (high mean score, nothing discarded) the director keeps cycling, no pivot."""
+    _cyclic_llm(monkeypatch, _ENDORSE_SCRIPT)
+    d = ResearchDirector(
+        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+    )
+
+    async def _go():
+        return await d.run(
+            "a research question", max_cycles=5, stagnation_cycles=2, max_adaptations=1
+        )
+
+    state = asyncio.run(_go())
+    # no-gain climbs past the stagnation bar every cycle, but the critic scores
+    # h1 at 0.9 → direction endorsed → no pivot; the loop only stops at max_cycles
+    assert state["cycles"] == 5
+    assert state["adaptations"] == 0
+    assert not any(r.startswith("[stagnation]") for r in state["rejected"])
+
+
+# Script: h1 is always proposed and the critic scores it 0.1 → DISCARD, so every
+# cycle contributes no gain AND carries the critic's veto of the direction.
+_VETO_SCRIPT = [
+    {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.1}]}',
+     "tool_calls": None, "usage": None},
+    {"text": "cycle report", "tool_calls": None, "usage": None},
+]
+
+
+def test_director_pivots_when_critic_vetoes_direction(monkeypatch, tmp_path):
+    """T8: stagnation + critic veto (score below the endorsement bar) → pivot."""
+    _cyclic_llm(monkeypatch, _VETO_SCRIPT)
+    d = ResearchDirector(
+        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+    )
+
+    async def _go():
+        return await d.run(
+            "a research question", max_cycles=10, stagnation_cycles=2, max_adaptations=1
+        )
+
+    state = asyncio.run(_go())
+    # cycle 1: h1 score 0.1 → DISCARD (never verified) → no_gain=1
+    # cycle 2: same → no_gain=2 → critic veto (all discarded) → pivot → stop
+    assert state["cycles"] == 2
+    assert state["adaptations"] == 1
+    assert any(r.startswith("[stagnation]") for r in state["rejected"])
+
+
 # ── T-janitor: stale async-job re-claim ───────────────────────────────────────
 
 

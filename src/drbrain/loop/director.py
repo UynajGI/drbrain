@@ -25,7 +25,11 @@ from typing import Any
 from loguru import logger
 
 from drbrain.loop.events import ResearchState
-from drbrain.loop.workflow import ResearchLoopWorkflow, _job_log_has_number
+from drbrain.loop.workflow import (
+    CRITIQUE_DISCARD_SCORE,
+    ResearchLoopWorkflow,
+    _job_log_has_number,
+)
 
 
 def _slug(topic: str) -> str:
@@ -38,6 +42,12 @@ def _slug(topic: str) -> str:
 # this many seconds is flagged stale (AutoScientists' monitor re-claim, simplified:
 # the director scans once per cycle instead of running a monitor process).
 JANITOR_STALE_SECONDS = 1800  # 30 minutes
+
+# T8/endorsement: a structural change (Phase 4 pivot) needs the critic's
+# independent veto on top of stagnation. Same bar as the T5 review gate
+# (CRITIQUE_DISCARD_SCORE) — a mean score below it means the critic no longer
+# backs the current hypothesis direction.
+CRITIC_ENDORSEMENT_SCORE = CRITIQUE_DISCARD_SCORE
 
 
 def _default_state(topic: str) -> dict[str, Any]:
@@ -99,6 +109,9 @@ class ResearchDirector:
     - ``champion.md`` — confirmed conclusions (frontmatter ``count``)
     - ``dead_ends.md`` — rejected hypotheses (frontmatter ``count``)
     - ``knowledge/patterns.md`` — winning patterns + dead ends + exhausted axes
+    - ``knowledge/role-{critic|verifier}.md`` — per-role cross-cycle memory (T7)
+    - ``knowledge/proposals.md`` — proposal board, one post per hypothesis (T8)
+    - ``knowledge/reviews.md`` — the critic's non-author reviews of proposals (T8)
     - ``results/cycle-NNN.md`` — per-cycle evidence (verified/predictions/hypotheses/report)
     - ``run.json`` — runtime-only resume state (cycles, no-gain counter, timestamps)
     """
@@ -337,6 +350,46 @@ class ResearchDirector:
             except OSError:
                 logger.warning("[director] role-verifier memory write failed")
 
+    # ── T8: proposal board + critic reviews (Discussion-Before-Queuing) ─────────
+
+    def _save_discussion(self, topic: str, cycle_no: int, rs: ResearchState | None) -> None:
+        """Persist this cycle's proposals and their critic reviews to ``knowledge/``.
+
+        Discussion-Before-Queuing in file-workspace form (AutoScientists' message
+        board, without the Node service): every hypothesis the proposing role
+        (identify_gaps) raised this cycle is a ``[PROPOSAL]`` post appended to
+        ``knowledge/proposals.md``; the critic — a *separate role* from the
+        proposer (T1 role differentiation, driven by ``CRITIC_SYSTEM_PROMPT``),
+        i.e. the non-author reviewer — appends one review per proposal to
+        ``knowledge/reviews.md``, linked to its proposal by the verbatim
+        statement. The critic's counter-argument is structurally encoded in
+        ``score`` + ``verdict`` (its JSON contract carries no free-text reason);
+        DISCARDed proposals never enter verification (T5 gate — unchanged, this
+        only persists the discussion). Append-only, one line per object; the
+        director is the single writer, the nodes only read.
+        """
+        if rs is None:
+            return
+        knowledge = self._topic_dir(topic) / "knowledge"
+        knowledge.mkdir(parents=True, exist_ok=True)
+        proposal_lines = [f"- [cycle {cycle_no}] {h.statement}" for h in rs.hypotheses]
+        review_lines = []
+        for h in rs.hypotheses:
+            verdict = "DISCARD" if h.status == "discarded" else "KEEP"
+            review_lines.append(
+                f"- [cycle {cycle_no}] {h.statement}（reviewer=critic, "
+                f"score={h.score:.2f}, verdict={verdict}）"
+            )
+        try:
+            if proposal_lines:
+                with open(knowledge / "proposals.md", "a", encoding="utf-8") as f:
+                    f.write("\n".join(proposal_lines) + "\n")
+            if review_lines:
+                with open(knowledge / "reviews.md", "a", encoding="utf-8") as f:
+                    f.write("\n".join(review_lines) + "\n")
+        except OSError:
+            logger.warning("[director] discussion write failed")
+
     # ── logging (AutoScientists: single canonical JSONL log, orchestrator writes) ─
 
     def _logs_dir(self, topic: str) -> Path:
@@ -481,6 +534,24 @@ class ResearchDirector:
         if state.get("rejected"):
             parts.append("已否定假设（不要重复提出）：" + "；".join(state["rejected"]))
         return "\n".join(parts)
+
+    @staticmethod
+    def _critic_vetoes_direction(rs: ResearchState | None) -> bool:
+        """T8: does the critic independently veto the current hypothesis direction?
+
+        Endorsement gate for structural change (Phase 4 adapt). The critic — a
+        separate role from the proposer (T1, ``CRITIC_SYSTEM_PROMPT``) — vetoes
+        the direction when its latest review round shows the direction is below
+        the bar: mean ``score < CRITIC_ENDORSEMENT_SCORE`` or every hypothesis
+        of the round was DISCARDed. An absent critic opinion (no hypotheses / no
+        state) is NOT a veto — a structural change needs an explicit independent
+        objection, so the loop keeps cycling instead of pivoting.
+        """
+        if rs is None or not rs.hypotheses:
+            return False
+        mean_score = sum(h.score for h in rs.hypotheses) / len(rs.hypotheses)
+        all_discarded = all(h.status == "discarded" for h in rs.hypotheses)
+        return all_discarded or mean_score < CRITIC_ENDORSEMENT_SCORE
 
     # ── one cycle ─────────────────────────────────────────────────────────────
 
@@ -628,6 +699,8 @@ class ResearchDirector:
             self._log_experiment(topic, cycle_result)
             # T7: append this cycle's critic/verifier history to per-role memory files.
             self._save_role_memories(topic, state["cycles"], rs)
+            # T8: proposal board + critic reviews (Discussion-Before-Queuing, file form).
+            self._save_discussion(topic, state["cycles"], rs)
             # T-janitor: flag async jobs that claimed compute but produced no result.
             self._janitor_scan(topic, state)
             logger.info(
@@ -638,6 +711,16 @@ class ResearchDirector:
                 state["consecutive_no_gain"],
             )
             if state["consecutive_no_gain"] >= stagnation_cycles:
+                if not self._critic_vetoes_direction(rs):
+                    # T8/endorsement: stagnation alone does not make a structural
+                    # change — the critic (an independent role from the proposer)
+                    # must also veto the current direction. It still endorses →
+                    # keep cycling instead of pivoting.
+                    logger.info(
+                        "[director] no-gain=%d but critic endorses direction — keep cycling",
+                        state["consecutive_no_gain"],
+                    )
+                    continue
                 # Phase 4: adapt — record the exhausted direction, then pivot.
                 state["adaptations"] = state.get("adaptations", 0) + 1
                 state["rejected"].append(
