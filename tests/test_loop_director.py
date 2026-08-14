@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 
 import pytest
 
@@ -54,6 +55,34 @@ _CYCLE_SCRIPT = [
      "tool_calls": None, "usage": None},                                          # verify
     {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
 ]
+
+# Same cycle, but the verify stub carries the job_id of a real (pre-written)
+# async job — the T4 evidence gate must accept it.
+_CYCLE_SCRIPT_COMPUTE = [
+    {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0, "job_id": "job-1"}]}',
+     "tool_calls": None, "usage": None},
+    {"text": "cycle report", "tool_calls": None, "usage": None},
+]
+
+
+def _write_compute_plugin(tmp_path) -> str:
+    """Drop a mock ``run_python`` plugin so ``_has_compute_tools()`` turns on."""
+    (tmp_path / "run_python.py").write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(Plugin(name='run_python', description='d',\n"
+        "        input_schema={'type':'object','properties':{'code':{'type':'string'},\n"
+        "        'mode':{'type':'string'}}}),\n"
+        "        lambda a: {'job_id': 'stub', 'mode': 'async'})\n",
+        encoding="utf-8",
+    )
+    return str(tmp_path)
 
 
 def _write_search_plugin(tmp_path) -> str:
@@ -173,3 +202,39 @@ def test_director_runs_cycles_to_stagnation(monkeypatch, tmp_path):
     exp_lines = [json.loads(ln) for ln in (run_dir / "logs" / "experiments.jsonl").read_text().splitlines()]
     assert len(exp_lines) == 3
     assert {e["outcome"] for e in exp_lines} == {"KEEP", "NO_GAIN"}
+
+
+def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
+    """T4: the director's DRBRAIN_RUN_DIR wiring feeds the verify job-evidence gate.
+
+    Compute plugin present (run_python) + job_id pointing at real on-disk job
+    artifacts → the verifier's claim passes the gate and h1 is KEEP (champion).
+    Without the artifacts the same stub would be downgraded to prediction.
+    """
+    _cyclic_llm(monkeypatch, _CYCLE_SCRIPT_COMPUTE)
+    d = ResearchDirector(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+    )
+    _write_compute_plugin(tmp_path)
+    # The director points DRBRAIN_RUN_DIR at <run_dir>/<topic>/jobs before the
+    # cycle starts; pre-write the job artifacts there so the gate finds them.
+    jobs_dir = tmp_path / "runs" / "topological-flat-band" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    (jobs_dir / "job-1.log").write_text("computed 1.0", encoding="utf-8")
+    (jobs_dir / "job-1.json").write_text(
+        json.dumps({"job_id": "job-1", "pid": 1, "log_path": str(jobs_dir / "job-1.log")}),
+        encoding="utf-8",
+    )
+
+    async def _go():
+        return await d.run(
+            "topological flat band", max_cycles=10, stagnation_cycles=2, max_adaptations=1
+        )
+
+    state = asyncio.run(_go())
+
+    assert [c["statement"] for c in state["champion"]] == ["h1"]
+    assert state["cycles"] == 3
+    assert state["adaptations"] == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from drbrain.loop import ResearchLoopWorkflow, ResearchState
 from drbrain.loop.events import Evidence, Hypothesis
@@ -70,3 +71,72 @@ def test_load_plugins_graceful_when_no_dir():
     wf = ResearchLoopWorkflow()
     registry = wf.load_plugins()
     assert registry.list_plugins() == []
+
+
+# ── T4: 实算证据门单元测试 ────────────────────────────────────────────────────
+
+
+def test_job_log_has_number_gate(tmp_path):
+    from drbrain.loop.workflow import _job_log_has_number
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    run_dir = str(jobs)
+
+    # empty run_dir / job_id → no evidence
+    assert _job_log_has_number(None, "j1") is False
+    assert _job_log_has_number(run_dir, "") is False
+    # meta json missing
+    assert _job_log_has_number(run_dir, "j1") is False
+    # meta present but log file missing
+    (jobs / "j1.json").write_text('{"job_id": "j1", "pid": 1}', encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is False
+    # log present but no parseable number
+    (jobs / "j1.log").write_text("all done, nothing numeric", encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is False
+    # number appears in the log → evidence
+    (jobs / "j1.log").write_text("result = 1.0", encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is True
+    # log_path from meta is honored (not just <job_id>.log)
+    elsewhere = tmp_path / "elsewhere.log"
+    elsewhere.write_text("computed 42", encoding="utf-8")
+    (jobs / "j2.json").write_text(
+        json.dumps({"job_id": "j2", "pid": 2, "log_path": str(elsewhere)}), encoding="utf-8"
+    )
+    assert _job_log_has_number(run_dir, "j2") is True
+    # malformed meta json → no evidence
+    (jobs / "j3.json").write_text("{broken", encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j3") is False
+
+
+def test_classify_verification_t4_job_gate(tmp_path):
+    from drbrain.loop.events import Verification
+    from drbrain.loop.workflow import _classify_verification
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    run_dir = str(jobs)
+
+    # 无计算工具：computed 为空也 verified（保持现状路径）
+    assert (
+        _classify_verification(Verification(statement="h1", supports=1, refutes=0), 0.9, False)
+        == "verified"
+    )
+    # 计算工具在场但无 job 证据：computed/value 都填了数值也降级 prediction（防编造核心）
+    ver = Verification(statement="h1", supports=1, refutes=0, computed="1.0", value=1.0)
+    assert _classify_verification(ver, 0.9, True, run_dir) == "prediction"
+    # job_id 指向真实作业文件且日志含数值 → verified
+    (jobs / "j1.log").write_text("value 2.5", encoding="utf-8")
+    (jobs / "j1.json").write_text(
+        json.dumps({"job_id": "j1", "pid": 1, "log_path": str(jobs / "j1.log")}),
+        encoding="utf-8",
+    )
+    ver = Verification(statement="h1", supports=1, refutes=0, computed="2.5", value=2.5, job_id="j1")
+    assert _classify_verification(ver, 0.9, True, run_dir) == "verified"
+    # falsified 不受计算门影响
+    assert (
+        _classify_verification(
+            Verification(statement="h2", supports=0, refutes=2), 0.9, True, run_dir
+        )
+        == "falsified"
+    )

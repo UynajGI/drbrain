@@ -13,7 +13,9 @@ insufficient candidates) is wired and bounded by ``MAX_RETRIEVE_ATTEMPTS``.
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from llama_index.core.workflow import (
@@ -116,24 +118,49 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _has_numeric_compute(ver: Verification) -> bool:
-    """T4: does the verification carry an actual numeric computed result?"""
-    if ver.value is not None:
-        try:
-            float(ver.value)
-            return True
-        except (TypeError, ValueError):
-            pass
-    return re.search(r"-?\d+\.?\d*", ver.computed or "") is not None
+def _job_log_has_number(run_dir: str | None, job_id: str) -> bool:
+    """T4 evidence gate: an async job's on-disk artifacts prove a real computation.
+
+    The agent's ``computed`` / ``value`` strings are human-readable summaries and
+    are NOT trusted — the only evidence that a computation actually ran is the
+    job directory: ``<job_id>.json`` (meta carrying pid / log_path) must exist
+    and the ``<job_id>.log`` it points at (the job's captured stdout) must
+    contain a parseable number. Domain-neutral: any numeric stdout qualifies.
+    """
+    if not run_dir or not job_id:
+        return False
+    jobs = Path(run_dir)
+    meta_path = jobs / f"{job_id}.json"
+    if not meta_path.is_file():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(meta, dict):
+        return False
+    log_path = meta.get("log_path")
+    log_file = Path(log_path) if log_path else jobs / f"{job_id}.log"
+    if not log_file.is_file():
+        return False
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(r"-?\d+\.?\d*", text) is not None
 
 
-def _classify_verification(ver: Verification, score: float, has_compute: bool) -> str:
+def _classify_verification(
+    ver: Verification, score: float, has_compute: bool, run_dir: str | None = None
+) -> str:
     """Code-based verdict from the evidence counts (T3), with T2/T4 gates.
 
     - ``refutes >= FALSIFY_REFUTES and supports == 0`` → falsified
     - ``supports >= 1 and refutes == 0`` → verified, unless
       - T2: ``score < VERIFY_LOW_SCORE`` requires ``supports >= STRONG_SUPPORTS``;
-      - T4: compute tools exist but the verification has no numeric result.
+      - T4: compute tools exist but the verification carries no on-disk job
+        evidence (``job_id`` empty, ``<job_id>.json``/``<job_id>.log`` missing,
+        or the log contains no parseable number).
     - anything else → prediction (evidence insufficient / mixed)
     """
     if ver.refutes >= FALSIFY_REFUTES and ver.supports == 0:
@@ -141,7 +168,7 @@ def _classify_verification(ver: Verification, score: float, has_compute: bool) -
     if ver.supports >= 1 and ver.refutes == 0:
         if score < VERIFY_LOW_SCORE and ver.supports < STRONG_SUPPORTS:
             return "prediction"
-        if has_compute and not _has_numeric_compute(ver):
+        if has_compute and not _job_log_has_number(run_dir, ver.job_id):
             return "prediction"
         return "verified"
     return "prediction"
@@ -672,6 +699,9 @@ class ResearchLoopWorkflow(Workflow):
                 if isinstance(raw_vs, list):
                     handled = True
                     vs_by_stmt = {h.statement: h for h in candidates}
+                    # T4: evidence lives in the on-disk job directory the
+                    # director points DRBRAIN_RUN_DIR at (run_python async).
+                    run_dir = os.environ.get("DRBRAIN_RUN_DIR") or None
                     for raw in raw_vs:
                         if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
                             continue
@@ -688,8 +718,9 @@ class ResearchLoopWorkflow(Workflow):
                             computed=str(raw.get("computed") or ""),
                             value=_to_float(raw.get("value")),
                             unit=str(raw.get("unit") or ""),
+                            job_id=str(raw.get("job_id") or ""),
                         )
-                        ver.status = _classify_verification(ver, h.score, has_compute)
+                        ver.status = _classify_verification(ver, h.score, has_compute, run_dir)
                         verifications.append(ver)
                         if ver.status == "verified":
                             verified.append(stmt)
@@ -724,9 +755,11 @@ class ResearchLoopWorkflow(Workflow):
         """
         compute_line = (
             "\n环境提供计算类工具（run_python / check_job / 数值计算插件）。"
-            "对每个假设，你必须实际运行一次计算，产出一份可核验的数值结果"
-            "（写入 computed / value）。只有定性描述而没有实际数值的，"
-            "不会被判定为 verified。"
+            "对每个假设，你必须用 run_python(mode=\"async\") 实际启动一次计算，"
+            "用 check_job 轮询到作业跑完，并把返回的 job_id 填进该字段；"
+            "computed/value 只是给人看的摘要，代码只认 job_id 对应的作业文件"
+            "（$DRBRAIN_RUN_DIR/<job_id>.json 与 <job_id>.log，且日志含数值）。"
+            "没有真实作业文件支撑的 computed 一律不认。"
             if has_compute
             else "\n环境无计算类工具：可只做文献证据核验，computed 留空即可。"
         )
@@ -737,7 +770,9 @@ class ResearchLoopWorkflow(Workflow):
             f"{compute_line}"
             "不要自行下结论，只报证据计数与数值；判定由下游代码完成。只返回 JSON："
             '{"verifications": [{"statement": "...", "supports": N, "refutes": N, '
-            '"orthogonal": N, "evidence": "...", "computed": "实际数值结果或空", '
+            '"orthogonal": N, "evidence": "...", '
+            '"job_id": "run_python(async) 返回的作业 id，无实算则为空", '
+            '"computed": "实际数值结果或空", '
             '"value": 数值或 null, "unit": "单位"}]}。'
             f"假设：{[h.statement for h in candidates]}"
         )

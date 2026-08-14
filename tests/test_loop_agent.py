@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+from pathlib import Path
 
 import pytest
 
@@ -54,6 +56,60 @@ def _write_search_plugin(tmp_path) -> str:
         encoding="utf-8",
     )
     return str(tmp_path)
+
+
+def _write_compute_plugin(tmp_path) -> str:
+    """Drop a mock ``run_python`` plugin so ``_has_compute_tools()`` turns on.
+
+    The T4 gate only inspects the on-disk job artifacts a real async run would
+    leave behind — the plugin handler itself is never called by these tests.
+    """
+    (tmp_path / "run_python.py").write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(Plugin(name='run_python', description='d',\n"
+        "        input_schema={'type':'object','properties':{'code':{'type':'string'},\n"
+        "        'mode':{'type':'string'}}}),\n"
+        "        lambda a: {'job_id': 'stub', 'mode': 'async'})\n",
+        encoding="utf-8",
+    )
+    return str(tmp_path)
+
+
+def _write_job(run_dir, job_id: str, log_text: str = "result = 1.0") -> Path:
+    """Pre-write a fake async job's on-disk artifacts (``<job_id>.json`` + ``<job_id>.log``).
+
+    Mirrors what ``run_python(mode=async)`` leaves in ``$DRBRAIN_RUN_DIR``: a
+    meta json (pid / log_path) plus the captured stdout log.
+    """
+    jobs = Path(run_dir)
+    jobs.mkdir(parents=True, exist_ok=True)
+    log_file = jobs / f"{job_id}.log"
+    log_file.write_text(log_text, encoding="utf-8")
+    (jobs / f"{job_id}.json").write_text(
+        json.dumps(
+            {"job_id": job_id, "pid": 12345, "log_path": str(log_file)},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return jobs
+
+
+def _compute_loop_script(verify_text: str) -> list[dict]:
+    """Full agent-backed loop script with compute tools present (run_python)."""
+    return [
+        {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+        {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+        {
+            "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
+        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+         "tool_calls": None, "usage": None},
+        {"text": verify_text, "tool_calls": None, "usage": None},
+    ]
 
 
 def test_build_node_agent_assembles_full_tool_surface(tmp_path):
@@ -251,3 +307,150 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
         assert ("h1",) in rows
     finally:
         db.close()
+
+
+# ── T4: 实算证据门（结果文件硬产出，杜绝编造数值） ─────────────────────────────
+
+
+def test_verify_requires_real_job_files(monkeypatch, tmp_path):
+    """正路径：compute 工具在场 + job_id 指向真实作业文件（json+log 含数值）→ verified。"""
+    jobs = _write_job(tmp_path / "jobs", "job-ok", log_text="converged energy -12.34")
+    monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
+    _scripted_llm(
+        monkeypatch,
+        _compute_loop_script(
+            '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+            '"orthogonal": 0, "computed": "-12.34", "value": -12.34, "job_id": "job-ok"}]}'
+        ),
+    )
+    plugins_dir = _write_search_plugin(tmp_path)
+    _write_compute_plugin(tmp_path)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert "verified=1" in result
+    assert state.verifications[0].status == "verified"
+    assert state.verifications[0].job_id == "job-ok"
+
+
+def test_verify_downgrades_without_job_evidence(monkeypatch, tmp_path):
+    """负路径：computed/value 填了数值但没有 job_id → 降级 prediction（防编造核心）。"""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
+    _scripted_llm(
+        monkeypatch,
+        _compute_loop_script(
+            '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+            '"orthogonal": 0, "computed": "1.0", "value": 1.0}]}'
+        ),
+    )
+    plugins_dir = _write_search_plugin(tmp_path)
+    _write_compute_plugin(tmp_path)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    # hypotheses=1 且 supports=1/refutes=0 —— 唯一被拦的理由就是 T4 实算证据门
+    assert "hypotheses=1" in result
+    assert "verified=0" in result
+    assert state.verifications[0].status == "prediction"
+    assert state.verifications[0].job_id == ""
+
+
+def test_verify_downgrades_when_job_files_missing(monkeypatch, tmp_path):
+    """负路径：job_id 非空但作业文件不存在 → 降级 prediction。"""
+    jobs = tmp_path / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
+    _scripted_llm(
+        monkeypatch,
+        _compute_loop_script(
+            '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+            '"orthogonal": 0, "computed": "9.9", "value": 9.9, "job_id": "ghost"}]}'
+        ),
+    )
+    plugins_dir = _write_search_plugin(tmp_path)
+    _write_compute_plugin(tmp_path)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert "verified=0" in result
+    assert state.verifications[0].status == "prediction"
+    assert state.verifications[0].job_id == "ghost"
+
+
+def test_verify_downgrades_when_job_log_has_no_number(monkeypatch, tmp_path):
+    """负路径：作业文件在，但日志里没有任何可 parse 的数值 → 降级 prediction。"""
+    jobs = _write_job(tmp_path / "jobs", "job-text", log_text="finished without a numeric output")
+    monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
+    _scripted_llm(
+        monkeypatch,
+        _compute_loop_script(
+            '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+            '"orthogonal": 0, "computed": "9.9", "value": 9.9, "job_id": "job-text"}]}'
+        ),
+    )
+    plugins_dir = _write_search_plugin(tmp_path)
+    _write_compute_plugin(tmp_path)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert "verified=0" in result
+    assert state.verifications[0].status == "prediction"
+    assert state.verifications[0].job_id == "job-text"
+
+
+def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
+    """无计算工具时保持现状：没有 run_python 插件 → 老 stub（无 job_id）仍可 verified。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+             "tool_calls": None, "usage": None},
+            {
+                "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+                '"orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "verified=1" in result

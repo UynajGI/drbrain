@@ -52,6 +52,12 @@ class Verification(BaseModel):
     ``orthogonal``) plus optional numeric evidence; downstream code derives the
     verdict from the counts — never from an LLM sentence. ``status`` is
     code-derived: ``verified`` | ``falsified`` | ``prediction``.
+
+    T4 compute gate: when compute tools exist, ``computed`` / ``value`` are
+    **human-readable summaries only** — the code-level evidence that a real
+    computation ran is ``job_id`` (returned by ``run_python(mode="async")``):
+    the corresponding on-disk job artifacts (``<job_id>.json`` + ``<job_id>.log``
+    with a parseable number) must exist for the entry to be ``verified``.
     """
 
     statement: str
@@ -59,9 +65,10 @@ class Verification(BaseModel):
     refutes: int = 0  # 反驳的证据条数
     orthogonal: int = 0  # 无关 / 无法判定的证据条数
     evidence: str = ""  # 证据摘要（来源 / 要点）
-    computed: str = ""  # 实际计算结果（数值证据）；无实算则为空
-    value: float | None = None  # 结构化数值（可选）
+    computed: str = ""  # 实际计算结果（给人看的摘要）；无实算则为空
+    value: float | None = None  # 结构化数值（可选，摘要用）
     unit: str = ""  # 数值单位（可选）
+    job_id: str = ""  # T4: run_python(mode=async) 返回的后台作业 id（证据是落盘文件）
     status: str = "prediction"  # code-derived: verified | falsified | prediction
 
 
