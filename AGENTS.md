@@ -63,7 +63,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/providers/` | Web extraction (qt-web-extractor), USPTO ODP + PPUBS patent search |
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |
 | `src/drbrain/plugins/` | Model-as-Tool plugin interface — Plugin/PluginResult/PluginRegistry/discover (generic abstraction, concrete plugins load externally at runtime) |
-| `src/drbrain/loop/` | Research loop — LlamaIndex Workflow 编排闭环 (12 节点 + agent-backed 节点 + 条件循环 + 闭环沉淀) |
+| `src/drbrain/loop/` | Research loop — LlamaIndex Workflow 编排闭环 (12 节点 + agent-backed + 角色分化 critic/verifier + 互验/实算门 + 闭环沉淀) |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
 | `tests/` | pytest test suite |

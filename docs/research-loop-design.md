@@ -98,4 +98,6 @@ Evidence { paper_id, page, snippet, value, unit, conditions, provenance, authori
 - **自扩展（agent 自写代码）**：`run_python` 插件——agent 遇到没有现成工具的缺口时**自己写 Python 现算**，泛化到任意方向（预置插件只是种子，不是全集）。
 - **域无关原则**：loop 节点的 prompt **不写死任何领域工具名/领域术语**，领域知识经 **task（运行时）+ skill（`read_skill` 读 `skills/*/SKILL.md`）** 注入——换研究方向不改源码。材料学依赖（ase/gpaw）在 `[dependency-groups] materials` 独立隔离，不进主依赖。
 
+**T1-T6 对齐 AutoScientists（2026-08-14）**：在「持续研究内核」之上，按 `docs/autoscientists-gap-report.md`（源码取证差距）与 `docs/autoscientists-alignment-plan.md`（原子书）补齐了**角色分化与互验闭环**——T1 critic/verifier 独立 role prompt（`loop/roles.py`）；T2 verify 消费 critique 分数；T3 Supports/Refutes/Orthogonal 计数代码化（证伪不再 LLM 自由裁量）；T4 实算门（`run_python(mode=async)` 落盘 + `job_id` 作业文件校验，杜绝编造数值）；T5 proposal 评审门（低分 DISCARD）；T6 查重门；T7 per-agent 记忆（critic/verifier 跨轮记忆文件 + 注入）+ janitor 复核（实算作业超时标记）。现状以 `docs/loop-current-state.md` 为准。
+
 
