@@ -48,8 +48,13 @@ def _cyclic_llm(monkeypatch, script):
 _CYCLE_SCRIPT = [
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},       # retrieve distill
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},  # extract
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},                                          # identify_gaps
+    # identify_gaps: h1 gets verified in cycle 1 (champion); h2 is always
+    # proposed (never a dup) and always DISCARDed by the critic, keeping the
+    # no-gain → critic-veto → Phase 4 adapt path alive in later cycles.
+    {"text": '{"gaps": ["gap1"], "hypotheses": ['
+     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},                                          # critique
     {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
@@ -62,7 +67,9 @@ _CYCLE_SCRIPT = [
 _CYCLE_SCRIPT_COMPUTE = [
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+    {"text": '{"gaps": ["gap1"], "hypotheses": ['
+     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
      "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},
@@ -249,7 +256,9 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     script = [
         {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
         {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-        {"text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+        {"text": '{"gaps": ["g1"], "hypotheses": ['
+         '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+         '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
          "tool_calls": None, "usage": None},
         {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
          "tool_calls": None, "usage": None},
@@ -283,11 +292,11 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     assert "[cycle 1] h1" in verifier_text
     assert "supports=1" in verifier_text
     assert "→ verified" in verifier_text
-    # three cycles → one appended critic line per cycle (T6 dedup blocks the
-    # scripted hypothesis from being re-proposed, so cycles 2-3 run the fallback
-    # hypothesis which never matches the scripted verify response → the verifier
-    # records real evidence only in cycle 1)
-    assert critic_text.count("[cycle") == 3
+    # h1 is a champion dup from cycle 2 on (T6) → only h2 gets re-proposed and
+    # DISCARDed; the verifier records real evidence only in cycle 1 (h1).
+    # cycle 1: h1 (KEEP 0.90) + h2 (DISCARD 0.00) → 2 critic lines; cycles 2-3:
+    # h2 DISCARD → 1 critic line each → 4 total; verifier stays at 1.
+    assert critic_text.count("[cycle") == 4
     assert verifier_text.count("[cycle") == 1
 
 
@@ -296,7 +305,9 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
 _DISCUSSION_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+    {"text": '{"gaps": ["gap1"], "hypotheses": ['
+     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
      "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},
@@ -335,9 +346,9 @@ def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
     assert "- [cycle 1] h1" in p_text
     assert "- [cycle 1] h1（reviewer=critic, score=0.90, verdict=KEEP）" in r_text
     assert "reviewer=critic" in r_text
-    # cycle 2: h1 is a duplicate of the champion (T6) → fallback hypothesis,
+    # cycle 2: h1 is a duplicate of the champion (T6) → only h2 is re-proposed,
     # which the scripted critic does not score → 0.00 → DISCARD review
-    assert "- [cycle 2] 假设：gap1" in p_text
+    assert "- [cycle 2] h2" in p_text
     assert "[cycle 2]" in r_text
     assert "verdict=DISCARD" in r_text
 
@@ -381,7 +392,7 @@ def test_critic_vetoes_direction_unit():
 _ENDORSE_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
      "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},
@@ -417,7 +428,7 @@ def test_director_keeps_cycling_when_critic_endorses_direction(monkeypatch, tmp_
 _VETO_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
      "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.1}]}',
      "tool_calls": None, "usage": None},

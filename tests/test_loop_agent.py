@@ -102,7 +102,7 @@ def _compute_loop_script(verify_text: str) -> list[dict]:
         {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
         {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
         {
-            "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+            "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
             "tool_calls": None,
             "usage": None,
         },
@@ -171,8 +171,10 @@ def test_identify_gaps_node_proposes_hypotheses(monkeypatch, tmp_path):
             {
                 "text": (
                     '{"gaps": ["gap1", "gap2"], '
-                    '"hypotheses": [{"statement": "h1", "conditions": {}}, '
-                    '{"statement": "h2", "conditions": {}}]}'
+                    '"hypotheses": [{"statement": "h1", "prediction": "p1", '
+                    '"falsification": "f1", "conditions": {}}, '
+                    '{"statement": "h2", "prediction": "p2", '
+                    '"falsification": "f2", "conditions": {}}]}'
                 ),
                 "tool_calls": None,
                 "usage": None,
@@ -188,6 +190,70 @@ def test_identify_gaps_node_proposes_hypotheses(monkeypatch, tmp_path):
     result = asyncio.run(_go())
     assert "gaps=2" in result
     assert "hypotheses=2" in result
+
+
+def test_identify_gaps_no_filler_when_agent_empty(monkeypatch, tmp_path):
+    """Agent 提不出假设 → 空轮次，绝不塞占位（ROLE-ANALYST Rule 2）。
+
+    The old fallback fabricated a "缺少关于X的机制" gap + placeholder hypothesis,
+    which the critic then DISCARDed at ~0 score — pure NO_GAIN churn. Now an
+    empty agent answer stays empty: the cycle goes NO_GAIN with zero filler.
+    """
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {"text": '{"gaps": [], "hypotheses": []}', "tool_calls": None, "usage": None},
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "gaps=0" in result
+    assert "hypotheses=0" in result
+    assert "verified=0" in result
+    assert "缺少" not in result  # no placeholder ever entered the report
+
+
+def test_identify_gaps_drops_hypothesis_without_prediction(monkeypatch, tmp_path):
+    """Analyst gate（ROLE-ANALYST Step 0.3）：缺 prediction 的「假设」不是假设，代码直接过滤。
+
+    A hypothesis without a falsifiable prediction is dropped in code — only the
+    well-formed one survives to the critic.
+    """
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": (
+                    '{"gaps": [], "hypotheses": ['
+                    '{"statement": "h-no-prediction", "conditions": {}}, '
+                    '{"statement": "h-ok", "prediction": "p", '
+                    '"falsification": "f", "conditions": {}}]}'
+                ),
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": '{"hypotheses": []}', "tool_calls": None, "usage": None},
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    result = asyncio.run(_go())
+    assert "hypotheses=1" in result
 
 
 def test_parse_json_lenient():
@@ -210,7 +276,7 @@ def test_full_agent_backed_loop(monkeypatch, tmp_path):
                 "usage": None,
             },
             {
-                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
                 "tool_calls": None,
                 "usage": None,
             },
@@ -278,7 +344,7 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
                 "usage": None,
             },
             {
-                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
                 "tool_calls": None,
                 "usage": None,
             },
@@ -432,7 +498,7 @@ def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
             {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
             {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
             {
-                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
                 "tool_calls": None,
                 "usage": None,
             },
@@ -484,7 +550,7 @@ def test_role_memory_injected_into_node_prompts(monkeypatch, tmp_path):
         {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
         {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
         {
-            "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+            "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
             "tool_calls": None,
             "usage": None,
         },

@@ -383,9 +383,9 @@ class ResearchLoopWorkflow(Workflow):
         supplied or llama-index is unavailable — callers must not assume an
         agent is always present.
 
-        ``role`` (T1) swaps in a role-differentiated system prompt (critic /
-        verifier) instead of the generic assistant template; ``None`` keeps the
-        default prompt for the neutral nodes (retrieve / extract / gaps /
+        ``role`` (T1) swaps in a role-differentiated system prompt (analyst /
+        critic / verifier) instead of the generic assistant template; ``None``
+        keeps the default prompt for the neutral nodes (retrieve / extract /
         report).
         """
         if self._cfg is None:
@@ -594,7 +594,7 @@ class ResearchLoopWorkflow(Workflow):
         await self._set_state(ctx, state)
         return Fused(entities=ev.entities)
 
-    # 8. Gap 识别 → 假设提出（AutoScientists：从 gap 生成候选假设）
+    # 8. Gap 识别 → 假设提出（AutoScientists：ANALYST 角色从证据归纳可证伪假设）
     @step
     async def identify_gaps(self, ctx: Context, ev: Fused) -> GapsIdentified:
         state = await self._get_state(ctx)
@@ -607,8 +607,10 @@ class ResearchLoopWorkflow(Workflow):
         if not prior_statements:
             prior_statements = _parse_prior_context(state.prior_context)
 
-        # agent-backed: the loop's agent proposes gaps + hypotheses (structured JSON).
-        agent = self.build_node_agent()
+        # agent-backed: the ANALYST role (T1) derives falsifiable hypotheses from
+        # the retrieved candidates, the extracted entities and the prior context —
+        # never in the abstract (ROLE-ANALYST Step 1: audit results, then induct).
+        agent = self.build_node_agent(role="analyst")
         if agent is not None:
             prior = state.prior_context
             context_line = (
@@ -618,13 +620,17 @@ class ResearchLoopWorkflow(Workflow):
             )
             data = await self.run_agent_json(
                 agent,
-                "基于以下实体，识别研究 gap 并提出**可证伪**假设。"
+                "基于以下候选文献、实体与 prior_context，识别研究 gap 并提出**可证伪**假设。"
+                "每个假设必须三字段齐全：statement（机制陈述）、prediction（什么证据会支持它）、"
+                "falsification（什么证据会证伪它）；缺 prediction/falsification 的不算假设，"
+                "提不出就少提，绝不用「缺少机制/证据不足/需要进一步研究」之类占位充数。"
+                "多个假设必须有不同的证伪方向，不得把同一机制换个说法当新假设。"
                 "提案前必须对照 prior_context：已确认结论与已否定假设一律不得重复提出。"
-                "不要调用任何检索工具，直接基于给定实体推理，只返回 JSON："
+                "不要调用任何检索工具，直接基于给定材料归纳推理，只返回 JSON："
                 '{"gaps": ["...", ...], "hypotheses": [{"statement": "...", '
                 '"prediction": "什么证据会支持它", "falsification": "什么证据会证伪它", '
                 '"conditions": {}}]}。'
-                f"实体：{state.entities}{context_line}",
+                f"候选文献：{state.candidates}\n\n实体：{state.entities}{context_line}",
             )
             if isinstance(data, dict):
                 gaps = [str(g) for g in data.get("gaps", [])]
@@ -638,29 +644,30 @@ class ResearchLoopWorkflow(Workflow):
                     for h in data.get("hypotheses", [])
                     if isinstance(h, dict) and str(h.get("statement", "")).strip()
                 ]
-        # T6: drop proposals that duplicate prior champion/dead-ends (code gate).
-        if prior_statements:
-            kept = [
-                h for h in hypotheses if not _is_duplicate_proposal(h.statement, prior_statements)
-            ]
-            dropped = len(hypotheses) - len(kept)
-            if dropped:
-                logger.info("[loop] identify_gaps: dropped %d duplicate hypothesis(es)", dropped)
-            hypotheses = kept
-        # deterministic fallback: never let a cycle go empty — if the agent
-        # yields nothing, derive a default gap + hypothesis from the entities so
-        # critique/verify/settle still have input (AutoScientists: no dead cycle).
-        if not gaps and state.entities:
-            gaps = [f"缺少关于「{state.entities[0]}」的机制与候选验证"]
-        if not hypotheses and gaps:
-            hypotheses = [
-                Hypothesis(
-                    statement=f"假设：{gaps[0]} 可通过进一步检索与数值验证来确认或证伪",
-                    conditions={},
-                    prediction="检索到支持性证据或数值验证通过",
-                    falsification="检索与数值验证均无法支持",
-                )
-            ]
+        # Analyst gate (ROLE-ANALYST Step 0.3 + T6): a hypothesis without a falsifiable
+        # prediction is not a hypothesis, and statements/predictions repeating prior
+        # champion/dead-ends are re-proposals — drop both in code instead of sending
+        # filler downstream.
+        kept: list[Hypothesis] = []
+        for h in hypotheses:
+            if not h.statement or not h.prediction:
+                continue
+            if prior_statements and _is_duplicate_proposal(h.statement, prior_statements):
+                continue
+            if prior_statements and _is_duplicate_proposal(h.prediction, prior_statements):
+                continue
+            kept.append(h)
+        dropped = len(hypotheses) - len(kept)
+        if dropped:
+            logger.info(
+                "[loop] identify_gaps: dropped %d hypothesis(es) (no prediction / duplicate)",
+                dropped,
+            )
+        hypotheses = kept
+        # No deterministic filler: when the agent proposes nothing, the cycle stays
+        # empty and goes NO_GAIN downstream. A placeholder hypothesis ("缺少关于X的机
+        # 制…") is worse than none — it only buys a critique DISCARD (ROLE-ANALYST
+        # Rule 2: documentation is not work).
         state.gaps = gaps
         state.hypotheses = hypotheses
         await self._set_state(ctx, state)

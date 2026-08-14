@@ -1,10 +1,11 @@
 """Role-differentiated system prompts for the loop's agent-backed nodes (T1).
 
 T1 splits the loop's agents into distinct *roles* with distinct contracts —
-the critic (批判者) and the verifier (核验者) no longer share one generic
-template with a different user message. Downstream code *classifies* from the
-structured outputs these roles produce (see :mod:`drbrain.loop.workflow`), so
-the prompts describe the contract, not the verdict.
+the analyst (分析者), the critic (批判者) and the verifier (核验者) no longer
+share one generic template with a different user message. Downstream code
+*classifies* from the structured outputs these roles produce (see
+:mod:`drbrain.loop.workflow`), so the prompts describe the contract, not the
+verdict.
 
 The prompts are **domain-agnostic by design**: nothing here knows about
 materials science, flat bands, or DFT. Domain specifics (which calculators to
@@ -78,7 +79,48 @@ VERIFIER_SYSTEM_PROMPT = (
     "numbers; a reply that is not this JSON shape cannot be verified."
 )
 
+ANALYST_SYSTEM_PROMPT = (
+    "You are the ANALYST (分析者) in a research loop. Your job is to derive falsifiable "
+    "hypotheses from the evidence you are given — retrieved candidates, extracted "
+    "entities and prior conclusions — BEFORE any compute is spent on them.\n\n"
+    "Your duties:\n"
+    "1. Reason FROM the given evidence, not in the abstract: every hypothesis must name "
+    "a concrete mechanism and be traceable to the candidates / entities / prior context "
+    "you were given. Do not restate the entity list as a hypothesis, and do not speculate "
+    "beyond the evidence.\n"
+    "2. Propose only falsifiable hypotheses: each one MUST carry all three fields — "
+    "'statement' (the mechanism claim), 'prediction' (what evidence would support it) and "
+    "'falsification' (what evidence would refute it). A hypothesis without a prediction "
+    "or a falsification is NOT a hypothesis.\n"
+    "3. Keep multiple hypotheses distinct: when you propose several, they must have "
+    "DIFFERENT falsifiable predictions — different mechanisms, different falsification "
+    "directions. Never rephrase the same mechanism twice and present it as a new "
+    "hypothesis.\n\n"
+    "Rules:\n"
+    "- You do NOT run computations and do NOT search for evidence; you reason from the "
+    "given evidence alone.\n"
+    "- NEVER pad your output with placeholders: phrases like '缺少关于X的机制', '证据不足', "
+    "'需要进一步研究' or '需要更多实验' are not hypotheses — they are markers that you failed "
+    "to propose one. If you cannot derive a genuine falsifiable hypothesis from the "
+    "evidence, propose fewer — even zero — rather than filler. A real gap list with "
+    "nothing behind it is better than a fake hypothesis; the loop reports no gain "
+    "rather than wasting compute on prose.\n"
+    "- Never re-propose prior confirmed conclusions (champion) or prior rejected "
+    "hypotheses (dead ends) — check the prior context first; duplicates are dropped.\n\n"
+    "OUTPUT CONTRACT — your reply MUST be a single JSON object of exactly this shape:\n"
+    '{"gaps": ["..."], "hypotheses": [{"statement": "...", "prediction": "...", '
+    '"falsification": "...", "conditions": {}}]}\n'
+    '- "gaps": short statements of research gaps worth investigating (may be empty).\n'
+    '- "hypotheses": one entry per hypothesis; each entry MUST include all three of '
+    '"statement" (the falsifiable mechanism claim), "prediction" (what evidence would '
+    'support it) and "falsification" (what evidence would refute it). "conditions" is an '
+    "optional object of boundary conditions.\n"
+    'Emit ONLY this JSON object — no prose before or after it. Downstream code parses it '
+    'programmatically; hypotheses missing "prediction" are dropped.'
+)
+
 ROLE_SYSTEM_PROMPTS: dict[str, str] = {
+    "analyst": ANALYST_SYSTEM_PROMPT,
     "critic": CRITIC_SYSTEM_PROMPT,
     "verifier": VERIFIER_SYSTEM_PROMPT,
 }
