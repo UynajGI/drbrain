@@ -50,3 +50,6 @@ docs/learn/
 .trellis/
 .qoder/
 docs/superpowers/specs/
+
+# All research artifacts (scripts/reports/data/plugins) live here and are local-only
+research/
