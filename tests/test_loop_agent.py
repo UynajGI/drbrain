@@ -164,7 +164,7 @@ def test_full_agent_backed_loop(monkeypatch, tmp_path):
                 "usage": None,
             },
             {
-                "text": '{"verified": ["h1"], "predictions": ["p1"]}',
+                "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
                 "tool_calls": None,
                 "usage": None,
             },
@@ -232,7 +232,7 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
                 "usage": None,
             },
             {
-                "text": '{"verified": ["h1"], "predictions": ["p1"]}',
+                "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
                 "tool_calls": None,
                 "usage": None,
             },

@@ -33,7 +33,8 @@ class Hypothesis(BaseModel):
     AutoScientists semantics: a hypothesis is **falsifiable** — it carries a
     ``prediction`` (what observation would support it) and a ``falsification``
     (the bar at which it is abandoned). ``status`` walks
-    ``proposed → critiqued → confirmed | falsified``.
+    ``proposed → critiqued → confirmed | falsified`` (plus ``discarded`` for
+    hypotheses the critic filtered out at T5 — they never reach verification).
     """
 
     statement: str
@@ -44,11 +45,33 @@ class Hypothesis(BaseModel):
     status: str = "proposed"
 
 
+class Verification(BaseModel):
+    """Structured per-hypothesis verification result (T3).
+
+    The verifier agent reports evidence counts (``supports`` / ``refutes`` /
+    ``orthogonal``) plus optional numeric evidence; downstream code derives the
+    verdict from the counts — never from an LLM sentence. ``status`` is
+    code-derived: ``verified`` | ``falsified`` | ``prediction``.
+    """
+
+    statement: str
+    supports: int = 0  # 支持 prediction 的证据条数
+    refutes: int = 0  # 反驳的证据条数
+    orthogonal: int = 0  # 无关 / 无法判定的证据条数
+    evidence: str = ""  # 证据摘要（来源 / 要点）
+    computed: str = ""  # 实际计算结果（数值证据）；无实算则为空
+    value: float | None = None  # 结构化数值（可选）
+    unit: str = ""  # 数值单位（可选）
+    status: str = "prediction"  # code-derived: verified | falsified | prediction
+
+
 class ResearchState(BaseModel):
     """Shared structured state carried through every node via ``Context.store``."""
 
     task: str = ""
     prior_context: str = ""  # champion + dead-ends from prior cycles (director injects)
+    prior_champion: list[str] = Field(default_factory=list)  # T6: structured champion list
+    prior_rejected: list[str] = Field(default_factory=list)  # T6: structured dead-ends list
     candidates: list[str] = Field(default_factory=list)
     retrieve_candidates: list[str] | None = None  # 检索中间产物（未筛选候选）
     parsed: list[str] = Field(default_factory=list)
@@ -57,6 +80,7 @@ class ResearchState(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     scores: Any = None  # 假设互评分数（list 或 dict）
+    verifications: list[Verification] = Field(default_factory=list)  # T3: 三角验证计数
     verified: list[str] = Field(default_factory=list)
     falsified: list[str] = Field(default_factory=list)  # 证伪的假设（dead ends）
     predictions: list[str] = Field(default_factory=list)
@@ -115,6 +139,7 @@ class Verified(Event):
     verified: list[str] = Field(default_factory=list)
     falsified: list[str] = Field(default_factory=list)
     predictions: list[str] = Field(default_factory=list)
+    verifications: list[Verification] = Field(default_factory=list)  # T3 三角验证计数
 
 
 class Settled(Event):

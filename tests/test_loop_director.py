@@ -50,7 +50,7 @@ _CYCLE_SCRIPT = [
      "tool_calls": None, "usage": None},                                          # identify_gaps
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},                                          # critique
-    {"text": '{"verified": ["h1"], "predictions": ["p1"]}',
+    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
      "tool_calls": None, "usage": None},                                          # verify
     {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
 ]

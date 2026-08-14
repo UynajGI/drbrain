@@ -140,8 +140,12 @@ class ResearchDirector:
 
     def _load_state(self, topic: str) -> dict[str, Any]:
         """Reconstruct the in-memory state from the workspace files."""
-        run: dict[str, Any] = {"cycles": 0, "consecutive_no_gain": 0,
-                               "started_at": time.time(), "updated_at": time.time()}
+        run: dict[str, Any] = {
+            "cycles": 0,
+            "consecutive_no_gain": 0,
+            "started_at": time.time(),
+            "updated_at": time.time(),
+        }
         if self._run_json(topic).exists():
             try:
                 run.update(json.loads(self._run_json(topic).read_text(encoding="utf-8")))
@@ -154,7 +158,9 @@ class ResearchDirector:
             for ln in body.splitlines():
                 m = re.match(r"^- \[cycle (\d+)\] (.*)$", ln.strip())
                 if m:
-                    champion.append({"statement": m.group(2), "cycle": int(m.group(1)), "confidence": 1.0})
+                    champion.append(
+                        {"statement": m.group(2), "cycle": int(m.group(1)), "confidence": 1.0}
+                    )
 
         rejected: list[str] = []
         if self._dead_ends_md(topic).exists():
@@ -200,9 +206,13 @@ class ResearchDirector:
         self._patterns_md(topic).parent.mkdir(parents=True, exist_ok=True)
         lines = ["# 知识 / 模式", ""]
         lines.append("## 已验证结论（winning patterns）")
-        lines.extend(f"- {c['statement']}" for c in state["champion"]) if state["champion"] else lines.append("（尚无）")
+        lines.extend(f"- {c['statement']}" for c in state["champion"]) if state[
+            "champion"
+        ] else lines.append("（尚无）")
         lines.append("\n## 已否定假设（dead ends）")
-        lines.extend(f"- {h}" for h in state["rejected"]) if state["rejected"] else lines.append("（尚无）")
+        lines.extend(f"- {h}" for h in state["rejected"]) if state["rejected"] else lines.append(
+            "（尚无）"
+        )
         lines.append("\n## 已耗尽方向（exhausted axes）")
         lines.append(f"- 连续无进展轮次：{state['consecutive_no_gain']}")
         lines.append(f"- 已转向次数：{state.get('adaptations', 0)}")
@@ -233,6 +243,16 @@ class ResearchDirector:
         lines.append(f"- 证伪假设（DISCARD）：{result.get('falsified') or '（无）'}")
         lines.append(f"- 预测：{result.get('predictions') or '（无）'}")
         lines.append(f"- 假设：{result.get('hypotheses') or '（无）'}")
+        verifs = result.get("verifications") or []
+        if verifs:
+            lines.append("\n## 核验计数（Supports/Refutes/Orthogonal）\n")
+            for v in verifs:
+                lines.append(
+                    f"- {v.get('statement')}：supports={v.get('supports')}, "
+                    f"refutes={v.get('refutes')}, orthogonal={v.get('orthogonal')} "
+                    f"→ {v.get('status')}"
+                    + (f"，实算={v.get('computed')}" if v.get("computed") else "")
+                )
         rep = (result.get("report") or "").strip()
         if rep:
             lines.append("\n## 本轮报告\n")
@@ -287,6 +307,7 @@ class ResearchDirector:
             "falsified": result.get("falsified", []),
             "predictions": result.get("predictions", []),
             "hypotheses": result.get("hypotheses", []),
+            "verifications": result.get("verifications", []),
             "started_at": result.get("started_at"),
             "completed_at": result.get("completed_at"),
             "duration_seconds": result.get("duration_seconds"),
@@ -294,7 +315,9 @@ class ResearchDirector:
         with open(self._logs_dir(topic) / "experiments.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def _log_session(self, topic: str, state: dict[str, Any], status: str, started_at: float) -> None:
+    def _log_session(
+        self, topic: str, state: dict[str, Any], status: str, started_at: float
+    ) -> None:
         """Append one line to ``logs/sessions.jsonl`` — one per director run."""
         entry = {
             "session_id": str(int(started_at)),
@@ -324,7 +347,13 @@ class ResearchDirector:
 
     # ── one cycle ─────────────────────────────────────────────────────────────
 
-    async def _run_cycle(self, topic: str, prior_context: str) -> tuple[str, ResearchState | None]:
+    async def _run_cycle(
+        self,
+        topic: str,
+        prior_context: str,
+        prior_champion: list[str] | None = None,
+        prior_rejected: list[str] | None = None,
+    ) -> tuple[str, ResearchState | None]:
         wf = ResearchLoopWorkflow(
             cfg=self._cfg,
             db=self._db,
@@ -332,31 +361,52 @@ class ResearchDirector:
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
         )
-        handler = wf.run(task=topic, prior_context=prior_context)
+        # T6: pass structured prior champion/dead-ends so the proposal gate can
+        # reject duplicates in code (not just via prompt text).
+        handler = wf.run(
+            task=topic,
+            prior_context=prior_context,
+            prior_champion=prior_champion or [],
+            prior_rejected=prior_rejected or [],
+        )
         report = await handler
         rs = await handler.ctx.store.get("research_state", default=None)
         return report, rs
 
-    def _absorb(self, state: dict[str, Any], report: str, rs: ResearchState | None) -> dict[str, Any]:
+    def _absorb(
+        self, state: dict[str, Any], report: str, rs: ResearchState | None
+    ) -> dict[str, Any]:
         """Classify one cycle's outcome into champion vs dead-ends (KEEP/DISCARD).
 
         AutoScientists three-way: ``verified`` → champion (KEEP), ``falsified``
         → dead-ends (DISCARD). Hypotheses that were neither verified nor
         falsified stay *unresolved* (not a dead end — the evidence just wasn't
         conclusive), so the next cycle can re-attempt them with prior context.
+
+        T3: when the verifier produced structured ``Verification`` records
+        (Supports/Refutes/Orthogonal counts), the three-way classification is
+        re-derived here from those counts — the same code rule that the verify
+        node used — instead of trusting whatever strings landed in
+        ``rs.verified`` / ``rs.falsified``. Legacy states without verification
+        records keep the list-based path.
         """
         verified = list(rs.verified) if rs else []
         falsified = list(rs.falsified) if rs else []
         predictions = list(rs.predictions) if rs else []
         hypotheses = [h.statement for h in (rs.hypotheses if rs else [])]
+        verifications = list(rs.verifications) if rs else []
+
+        # T3: count-driven classification is the source of truth when present.
+        if verifications:
+            verified = [v.statement for v in verifications if v.status == "verified"]
+            falsified = [v.statement for v in verifications if v.status == "falsified"]
+            predictions = [v.statement for v in verifications if v.status == "prediction"]
 
         champion_statements = {c["statement"] for c in state["champion"]}
         rejected = set(state["rejected"])
 
         new_champion = [v for v in verified if v not in champion_statements]
-        new_rejected = [
-            f for f in falsified if f not in rejected and f not in champion_statements
-        ]
+        new_rejected = [f for f in falsified if f not in rejected and f not in champion_statements]
 
         cycle_no = state["cycles"] + 1
         for v in new_champion:
@@ -370,6 +420,7 @@ class ResearchDirector:
             "falsified": falsified,
             "predictions": predictions,
             "hypotheses": hypotheses,
+            "verifications": [v.model_dump() for v in verifications],
             "report": report,
         }
         state["results"].append(cycle_result)
@@ -399,14 +450,24 @@ class ResearchDirector:
         # Agent 自写的后台作业（run_python mode=async）落进本课题工作区，check_job
         # 从同一目录轮询——长 DFT/计算因此随课题一起沉淀、可审计、可续跑。
         os.environ["DRBRAIN_RUN_DIR"] = str(self._topic_dir(topic) / "jobs")
-        logger.info("[director] resume: topic=%r cycles=%d champion=%d rejected=%d",
-                 topic, state["cycles"], len(state["champion"]), len(state["rejected"]))
+        logger.info(
+            "[director] resume: topic=%r cycles=%d champion=%d rejected=%d",
+            topic,
+            state["cycles"],
+            len(state["champion"]),
+            len(state["rejected"]),
+        )
 
         stop_status = "max_cycles"
         while state["cycles"] < max_cycles:
             prior = self._build_prior_context(state)
             cycle_started = time.time()
-            report, rs = await self._run_cycle(topic, prior)
+            report, rs = await self._run_cycle(
+                topic,
+                prior,
+                prior_champion=[c["statement"] for c in state["champion"]],
+                prior_rejected=list(state["rejected"]),
+            )
             champion_before = len(state["champion"])
             cycle_result = self._absorb(state, report, rs)
             self._save_cycle_trace(topic, state["cycles"], rs)
@@ -427,7 +488,9 @@ class ResearchDirector:
             self._log_experiment(topic, cycle_result)
             logger.info(
                 "[director] cycle=%d champion=%d rejected=%d no_gain=%d",
-                state["cycles"], len(state["champion"]), len(state["rejected"]),
+                state["cycles"],
+                len(state["champion"]),
+                len(state["rejected"]),
                 state["consecutive_no_gain"],
             )
             if state["consecutive_no_gain"] >= stagnation_cycles:

@@ -39,11 +39,112 @@ from drbrain.loop.events import (
     Retrieved,
     Settled,
     TaskPlanned,
+    Verification,
     Verified,
 )
 
 _STATE_KEY = "research_state"
 MAX_RETRIEVE_ATTEMPTS = 3
+
+# ── T2 / T3 / T5 thresholds (code-level gates, domain-agnostic) ──────────────
+VERIFY_LOW_SCORE = 0.5  # T2: below this a hypothesis needs stronger evidence to be verified
+STRONG_SUPPORTS = 2  # T2: low-score verified bar (supports >= 2 and refutes == 0)
+CRITIQUE_DISCARD_SCORE = 0.4  # T5: at/below this the critic DISCARDs (never enters verify)
+FALSIFY_REFUTES = 2  # T3: refutes >= 2 and supports == 0 → falsified
+
+# T4: tool names that mark the environment as having compute capability.
+_COMPUTE_TOOL_NAMES = ("run_python", "check_job")
+
+
+def _normalize_statement(s: str) -> str:
+    """Lowercase + strip punctuation/whitespace for duplicate detection (T6)."""
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", (s or "").lower())
+
+
+def _parse_prior_context(text: str) -> list[str]:
+    """Best-effort parse of the director's ``prior_context`` text blob (T6).
+
+    ``_build_prior_context`` renders ``已确认结论：A；B`` / ``已否定假设（不要重复提
+    出）：X；Y`` — split on separators and strip the section labels. Only used as
+    a fallback when no structured prior lists were passed to the workflow.
+    """
+    out: list[str] = []
+    for chunk in re.split(r"[；;\n]", text or ""):
+        chunk = chunk.strip()
+        if not chunk or re.search(r"已确认结论|已否定假设|不要重复", chunk):
+            continue
+        if "：" in chunk or ":" in chunk:
+            chunk = re.split(r"[:：]", chunk, maxsplit=1)[-1].strip()
+        if chunk:
+            out.append(chunk)
+    return out
+
+
+def _is_duplicate_proposal(statement: str, prior_statements: list[str]) -> bool:
+    """T6 dedup gate: does ``statement`` repeat a prior champion/dead-end?
+
+    Exact match after normalization, or containment either way (guarded by a
+    minimum length so short strings don't false-positive).
+    """
+    norm = _normalize_statement(statement)
+    if not norm:
+        return False
+    for prior in prior_statements:
+        pn = _normalize_statement(prior)
+        if not pn:
+            continue
+        if norm == pn:
+            return True
+        if len(norm) >= 8 and len(pn) >= 8 and (norm in pn or pn in norm):
+            return True
+    return False
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_numeric_compute(ver: Verification) -> bool:
+    """T4: does the verification carry an actual numeric computed result?"""
+    if ver.value is not None:
+        try:
+            float(ver.value)
+            return True
+        except (TypeError, ValueError):
+            pass
+    return re.search(r"-?\d+\.?\d*", ver.computed or "") is not None
+
+
+def _classify_verification(ver: Verification, score: float, has_compute: bool) -> str:
+    """Code-based verdict from the evidence counts (T3), with T2/T4 gates.
+
+    - ``refutes >= FALSIFY_REFUTES and supports == 0`` → falsified
+    - ``supports >= 1 and refutes == 0`` → verified, unless
+      - T2: ``score < VERIFY_LOW_SCORE`` requires ``supports >= STRONG_SUPPORTS``;
+      - T4: compute tools exist but the verification has no numeric result.
+    - anything else → prediction (evidence insufficient / mixed)
+    """
+    if ver.refutes >= FALSIFY_REFUTES and ver.supports == 0:
+        return "falsified"
+    if ver.supports >= 1 and ver.refutes == 0:
+        if score < VERIFY_LOW_SCORE and ver.supports < STRONG_SUPPORTS:
+            return "prediction"
+        if has_compute and not _has_numeric_compute(ver):
+            return "prediction"
+        return "verified"
+    return "prediction"
 
 
 def _parse_json_lenient(text: str) -> Any:
@@ -195,6 +296,17 @@ class ResearchLoopWorkflow(Workflow):
         else:
             lines.append("（无）")
 
+        lines.append("\n## 核验计数（Supports/Refutes/Orthogonal，代码判定）")
+        if state.verifications:
+            for v in state.verifications:
+                computed = f"，实算={v.computed}" if v.computed else ""
+                lines.append(
+                    f"- {v.statement}：supports={v.supports}, refutes={v.refutes}, "
+                    f"orthogonal={v.orthogonal} → {v.status}{computed}"
+                )
+        else:
+            lines.append("（无）")
+
         lines.append("\n## 预测 / 后续验证建议")
         if state.predictions:
             lines.extend(f"- {p}" for p in state.predictions)
@@ -203,25 +315,59 @@ class ResearchLoopWorkflow(Workflow):
 
         return "\n".join(lines)
 
-    def build_node_agent(self, *, plugins_dir: str | None = None) -> Any:
+    def build_node_agent(self, *, plugins_dir: str | None = None, role: str | None = None) -> Any:
         """Assemble the loop's :class:`FunctionAgent` with the full tool surface.
 
         Reuses :func:`drbrain.rag.agent.build_agent` (7 graph tools + fused
         retrieval + external plugins). Returns ``None`` when no config is
         supplied or llama-index is unavailable — callers must not assume an
         agent is always present.
+
+        ``role`` (T1) swaps in a role-differentiated system prompt (critic /
+        verifier) instead of the generic assistant template; ``None`` keeps the
+        default prompt for the neutral nodes (retrieve / extract / gaps /
+        report).
         """
         if self._cfg is None:
             return None
         from drbrain.rag.agent import build_agent
 
-        return build_agent(
+        agent = build_agent(
             self._cfg,
             self._db,
             graph=self._graph,
             plugins_dir=plugins_dir if plugins_dir is not None else self._plugins_dir,
             mcp_servers=self._mcp_servers,
         )
+        if agent is not None and role:
+            from drbrain.loop.roles import ROLE_SYSTEM_PROMPTS
+
+            prompt = ROLE_SYSTEM_PROMPTS.get(role)
+            if prompt:
+                # FunctionAgent reads system_prompt at call time (workflow step),
+                # so mutating it after build_agent is sufficient for the role swap.
+                agent.system_prompt = prompt
+        return agent
+
+    def _has_compute_tools(self, agent: Any | None = None) -> bool:
+        """T4: does the environment expose compute tools (run_python / check_job)?
+
+        Checks plugin registry names plus (when an agent was built) the agent's
+        tool surface — which also covers MCP-served tools. Best-effort: a plugin
+        that fails to list must not raise.
+        """
+        names: list[str] = []
+        try:
+            names += [p.name for p in self.load_plugins().list_plugins()]
+        except Exception:  # noqa: BLE001 — capability probe must never break a node
+            pass
+        if agent is not None:
+            try:
+                names += [t.metadata.name for t in agent.tools]
+            except Exception:  # noqa: BLE001
+                pass
+        lowered = [n.lower() for n in names]
+        return any(n in _COMPUTE_TOOL_NAMES or "materials" in n or "compute" in n for n in lowered)
 
     async def run_agent(
         self,
@@ -268,7 +414,9 @@ class ResearchLoopWorkflow(Workflow):
                 if data is not None:
                     return data
             if attempt < retries:
-                user_msg += "\n\n（上次没返回合法 JSON，这次务必只输出一个 JSON 对象，不要任何其他文字。）"
+                user_msg += (
+                    "\n\n（上次没返回合法 JSON，这次务必只输出一个 JSON 对象，不要任何其他文字。）"
+                )
         return None
 
     async def _get_state(self, ctx: Context) -> ResearchState:
@@ -287,6 +435,10 @@ class ResearchLoopWorkflow(Workflow):
         state = await self._get_state(ctx)
         state.task = getattr(ev, "task", "") or ""
         state.prior_context = getattr(ev, "prior_context", "") or ""
+        # T6: structured prior champion/dead-ends (director passes them explicitly;
+        # direct ``wf.run`` callers fall back to parsing ``prior_context`` text).
+        state.prior_champion = list(getattr(ev, "prior_champion", None) or [])
+        state.prior_rejected = list(getattr(ev, "prior_rejected", None) or [])
         await self._set_state(ctx, state)
         logger.info("[loop] plan_task: %r", state.task)
         return TaskPlanned(task=state.task)
@@ -386,18 +538,26 @@ class ResearchLoopWorkflow(Workflow):
         state = await self._get_state(ctx)
         gaps = list(state.gaps)
         hypotheses = list(state.hypotheses)
+        # T6: dedup gate — every proposed hypothesis is checked against prior
+        # champion/dead-ends before it is allowed in; already confirmed or
+        # already falsified hypotheses are not re-proposed.
+        prior_statements = list(state.prior_champion) + list(state.prior_rejected)
+        if not prior_statements:
+            prior_statements = _parse_prior_context(state.prior_context)
+
         # agent-backed: the loop's agent proposes gaps + hypotheses (structured JSON).
         agent = self.build_node_agent()
         if agent is not None:
             prior = state.prior_context
             context_line = (
-                f"\n\n此前已确认结论与已否定假设（不要重复，基于此推进，提出新假设）：{prior}"
+                f"\n\n此前已确认结论与已否定假设（禁止重复提出，先对照再提案）：{prior}"
                 if prior
                 else ""
             )
             data = await self.run_agent_json(
                 agent,
                 "基于以下实体，识别研究 gap 并提出**可证伪**假设。"
+                "提案前必须对照 prior_context：已确认结论与已否定假设一律不得重复提出。"
                 "不要调用任何检索工具，直接基于给定实体推理，只返回 JSON："
                 '{"gaps": ["...", ...], "hypotheses": [{"statement": "...", '
                 '"prediction": "什么证据会支持它", "falsification": "什么证据会证伪它", '
@@ -416,6 +576,15 @@ class ResearchLoopWorkflow(Workflow):
                     for h in data.get("hypotheses", [])
                     if isinstance(h, dict) and str(h.get("statement", "")).strip()
                 ]
+        # T6: drop proposals that duplicate prior champion/dead-ends (code gate).
+        if prior_statements:
+            kept = [
+                h for h in hypotheses if not _is_duplicate_proposal(h.statement, prior_statements)
+            ]
+            dropped = len(hypotheses) - len(kept)
+            if dropped:
+                logger.info("[loop] identify_gaps: dropped %d duplicate hypothesis(es)", dropped)
+            hypotheses = kept
         # deterministic fallback: never let a cycle go empty — if the agent
         # yields nothing, derive a default gap + hypothesis from the entities so
         # critique/verify/settle still have input (AutoScientists: no dead cycle).
@@ -436,19 +605,25 @@ class ResearchLoopWorkflow(Workflow):
         logger.info("[loop] identify_gaps: %d gaps, %d hypotheses", len(gaps), len(hypotheses))
         return GapsIdentified(gaps=gaps, hypotheses=hypotheses)
 
-    # 9. 假设互评（AutoScientists：critique-before-compute）
+    # 9. 假设互评（AutoScientists：critique-before-compute；T1 批判者角色 + T5 评审门）
     @step
     async def critique(self, ctx: Context, ev: GapsIdentified) -> Critiqued:
         state = await self._get_state(ctx)
+        # T5: default status critiqued (KEEP); the critic may DISCARD weak ones.
         hypotheses = [h.model_copy(update={"status": "critiqued"}) for h in ev.hypotheses]
-        # agent-backed: the agent scores each hypothesis before compute is spent.
-        agent = self.build_node_agent()
+        # agent-backed: the critic (独立批判者 role, T1) scores each hypothesis
+        # and finds flaws BEFORE any compute is spent. Low scores are DISCARDed
+        # right here — they never enter verification (T5 proposal review gate).
+        agent = self.build_node_agent(role="critic")
         if agent is not None and ev.hypotheses:
             data = await self.run_agent_json(
                 agent,
-                "互评以下假设，给每个假设打分(0~1)并判断是否值得验证。"
-                "不要调用任何检索工具，直接打分，只返回 JSON："
-                '{"hypotheses": [{"statement": "...", "score": 0.8}]}。'
+                "作为批判者独立评审以下假设：给每个假设打分(0~1)并找漏洞/反驳。"
+                '同时裁决是否值得进入核验阶段：值得验证 → "KEEP"；'
+                '分数过低或明显不成立 → "DISCARD"（DISCARD 的假设将被直接过滤，'
+                "不消耗任何计算资源）。"
+                "不要调用任何检索/计算工具，直接基于假设本身推理，只返回 JSON："
+                '{"hypotheses": [{"statement": "...", "score": 0.8, "verdict": "KEEP"}]}。'
                 f"假设：{[h.statement for h in ev.hypotheses]}",
             )
             if isinstance(data, dict):
@@ -457,55 +632,115 @@ class ResearchLoopWorkflow(Workflow):
                     for h in data.get("hypotheses", [])
                     if isinstance(h, dict)
                 }
-                hypotheses = [
-                    h.model_copy(
-                        update={
-                            "status": "critiqued",
-                            "score": float(scored.get(h.statement, {}).get("score", 0.0) or 0.0),
-                        }
-                    )
-                    for h in ev.hypotheses
-                ]
+                hypotheses = []
+                for h in ev.hypotheses:
+                    entry = scored.get(h.statement, {})
+                    score = float(entry.get("score", 0.0) or 0.0)
+                    verdict = str(entry.get("verdict", "") or "KEEP").upper()
+                    # T5: code gate — low score or explicit DISCARD → filtered out.
+                    if score < CRITIQUE_DISCARD_SCORE or verdict == "DISCARD":
+                        status = "discarded"
+                    else:
+                        status = "critiqued"
+                    hypotheses.append(h.model_copy(update={"status": status, "score": score}))
         state.hypotheses = hypotheses
         state.scores = [h.score for h in hypotheses]
         await self._set_state(ctx, state)
         return Critiqued(hypotheses=hypotheses)
 
-    # 10. 证据核验（双路：RAG 推理 + 插件计算）
+    # 10. 证据核验（T1 核验者角色 + T2 分数消费 + T3 三角验证代码化 + T4 实算门）
     @step
     async def verify(self, ctx: Context, ev: Critiqued) -> Verified:
         state = await self._get_state(ctx)
-        verified = [h.statement for h in ev.hypotheses if h.status == "critiqued"]
+        # T5: only hypotheses that survived the critic enter verification.
+        candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
+        verified: list[str] = []
         falsified = list(state.falsified)
         predictions = list(state.predictions)
-        # agent-backed dual-path: the agent searches evidence (RAG), calls the
-        # tools it discovers (model/software plugins), and — when no ready tool
-        # fits — writes its own code (self-extension). Each hypothesis is judged
-        # verified (evidence supports the prediction) or falsified (evidence
-        # refutes it). Domain specifics come from the task + skills.
-        agent = self.build_node_agent()
-        if agent is not None and ev.hypotheses:
-            data = await self.run_agent_json(
-                agent,
-                "核验以下假设：用你手上的检索工具找文献证据，用计算/模型工具或"
-                "自写代码做数值验证。对每个假设判定：verified（证据支持其 prediction）、"
-                "falsified（证据证伪）、或无法判定则不入两类。"
-                "只返回 JSON："
-                "{'verified': ['...', ...], 'falsified': ['...', ...], 'predictions': ['...', ...]}。"
-                f"假设：{[h.statement for h in ev.hypotheses]}",
-            )
+        verifications = list(state.verifications)
+        agent = self.build_node_agent(role="verifier")
+        handled = False
+        if agent is not None and candidates:
+            has_compute = self._has_compute_tools(agent)
+            # agent-backed dual-path: the agent searches evidence (RAG), calls
+            # the tools it discovers (model/software plugins), and — when no
+            # ready tool fits — writes its own code. T3: it reports structured
+            # Supports/Refutes/Orthogonal counts; verdicts are derived in code.
+            data = await self.run_agent_json(agent, self._verify_prompt(candidates, has_compute))
             if isinstance(data, dict):
-                if data.get("verified"):
-                    verified = [str(v) for v in data["verified"]]
-                if data.get("falsified"):
-                    falsified = [str(f) for f in data["falsified"]]
-                if data.get("predictions"):
-                    predictions = [str(p) for p in data["predictions"]]
+                raw_vs = data.get("verifications")
+                if isinstance(raw_vs, list):
+                    handled = True
+                    vs_by_stmt = {h.statement: h for h in candidates}
+                    for raw in raw_vs:
+                        if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
+                            continue
+                        stmt = str(raw["statement"]).strip()
+                        h = vs_by_stmt.get(stmt)
+                        if h is None:
+                            continue  # not one of the proposed hypotheses — ignore
+                        ver = Verification(
+                            statement=stmt,
+                            supports=_to_int(raw.get("supports")),
+                            refutes=_to_int(raw.get("refutes")),
+                            orthogonal=_to_int(raw.get("orthogonal")),
+                            evidence=str(raw.get("evidence") or ""),
+                            computed=str(raw.get("computed") or ""),
+                            value=_to_float(raw.get("value")),
+                            unit=str(raw.get("unit") or ""),
+                        )
+                        ver.status = _classify_verification(ver, h.score, has_compute)
+                        verifications.append(ver)
+                        if ver.status == "verified":
+                            verified.append(stmt)
+                        elif ver.status == "falsified":
+                            falsified.append(stmt)
+                        else:
+                            predictions.append(stmt)
+        if not handled:
+            # T3/T4: without structured verification counts there is no evidence —
+            # nothing may be verified. Every candidate becomes a prediction. The
+            # legacy {"verified": [...]} path is removed so a real agent cannot
+            # bypass the evidence/compute gate by returning the old format.
+            predictions = [h.statement for h in candidates] + predictions
         state.verified = verified
         state.falsified = falsified
         state.predictions = predictions
+        state.verifications = verifications
         await self._set_state(ctx, state)
-        return Verified(verified=verified, falsified=falsified, predictions=predictions)
+        return Verified(
+            verified=verified,
+            falsified=falsified,
+            predictions=predictions,
+            verifications=verifications,
+        )
+
+    def _verify_prompt(self, candidates: list[Hypothesis], has_compute: bool) -> str:
+        """The verifier's user message (T3 structured counts + T4 compute gate).
+
+        Domain-neutral: requires a real computed numeric result when compute
+        tools exist, without naming any domain (materials/DFT specifics come
+        from the task + skills, never from this prompt).
+        """
+        compute_line = (
+            "\n环境提供计算类工具（run_python / check_job / 数值计算插件）。"
+            "对每个假设，你必须实际运行一次计算，产出一份可核验的数值结果"
+            "（写入 computed / value）。只有定性描述而没有实际数值的，"
+            "不会被判定为 verified。"
+            if has_compute
+            else "\n环境无计算类工具：可只做文献证据核验，computed 留空即可。"
+        )
+        return (
+            "核验以下假设：用检索/证据工具收集文献证据，对每个假设统计证据计数："
+            "supports（支持其 prediction 的证据条数）、refutes（反驳的证据条数）、"
+            "orthogonal（与假设无关/无法判定的证据条数），并写 evidence 摘要。"
+            f"{compute_line}"
+            "不要自行下结论，只报证据计数与数值；判定由下游代码完成。只返回 JSON："
+            '{"verifications": [{"statement": "...", "supports": N, "refutes": N, '
+            '"orthogonal": N, "evidence": "...", "computed": "实际数值结果或空", '
+            '"value": 数值或 null, "unit": "单位"}]}。'
+            f"假设：{[h.statement for h in candidates]}"
+        )
 
     # 11. 沉淀（AutoScientists：共享成败 → 写回共享记忆）
     @step
@@ -514,6 +749,7 @@ class ResearchLoopWorkflow(Workflow):
         state.verified = ev.verified
         state.falsified = ev.falsified
         state.predictions = ev.predictions
+        state.verifications = ev.verifications
         self._persist_claims(state)
         await self._set_state(ctx, state)
         return Settled(verified=ev.verified, falsified=ev.falsified)
