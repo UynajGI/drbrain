@@ -75,6 +75,10 @@ dev = [
     "pytest-timeout>=0.5",
     "ruff>=0.8",
 ]
+materials = [
+    "ase>=3.22",
+    "gpaw>=24.6",
+]
 
 [project.scripts]
 drbrain = "drbrain.cli.main:app"

@@ -178,7 +178,12 @@ if _LLAMA_INDEX_AVAILABLE:
             # drop pre-set plain attrs, but setting invalid-field names goes
             # through the plain-setattr path (no error).
             self._cfg = cfg
-            self._models = list(cfg.llm.models)
+            # One agent (this LLM instance) pins one fixed api_key for its whole
+            # multi-turn conversation so upstream per-key caches stay warm;
+            # different agents pick different keys round-robin.
+            from drbrain.extractor.llm_client import resolve_agent_key
+
+            self._models = [resolve_agent_key(m) for m in cfg.llm.models]
             self._cache: Any = None  # ApiCache | None, built lazily on first call
 
         # ── identity ────────────────────────────────────────────────────

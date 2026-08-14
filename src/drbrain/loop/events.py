@@ -30,11 +30,16 @@ class Evidence(BaseModel):
 class Hypothesis(BaseModel):
     """A candidate hypothesis derived from a gap, tracked through the loop.
 
-    ``status`` walks ``proposed → critiqued → confirmed | rejected``.
+    AutoScientists semantics: a hypothesis is **falsifiable** — it carries a
+    ``prediction`` (what observation would support it) and a ``falsification``
+    (the bar at which it is abandoned). ``status`` walks
+    ``proposed → critiqued → confirmed | falsified``.
     """
 
     statement: str
     conditions: dict[str, Any] = Field(default_factory=dict)
+    prediction: str = ""  # 可观察预测：什么证据会支持该假设
+    falsification: str = ""  # 证伪标准：什么证据会放弃该假设
     score: float = 0.0
     status: str = "proposed"
 
@@ -43,13 +48,17 @@ class ResearchState(BaseModel):
     """Shared structured state carried through every node via ``Context.store``."""
 
     task: str = ""
+    prior_context: str = ""  # champion + dead-ends from prior cycles (director injects)
     candidates: list[str] = Field(default_factory=list)
+    retrieve_candidates: list[str] | None = None  # 检索中间产物（未筛选候选）
     parsed: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
+    scores: Any = None  # 假设互评分数（list 或 dict）
     verified: list[str] = Field(default_factory=list)
+    falsified: list[str] = Field(default_factory=list)  # 证伪的假设（dead ends）
     predictions: list[str] = Field(default_factory=list)
     report: str = ""
 
@@ -104,8 +113,10 @@ class Critiqued(Event):
 
 class Verified(Event):
     verified: list[str] = Field(default_factory=list)
+    falsified: list[str] = Field(default_factory=list)
     predictions: list[str] = Field(default_factory=list)
 
 
 class Settled(Event):
     verified: list[str] = Field(default_factory=list)
+    falsified: list[str] = Field(default_factory=list)

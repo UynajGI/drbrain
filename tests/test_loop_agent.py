@@ -42,6 +42,20 @@ def _scripted_llm(monkeypatch, script):
     return fake
 
 
+def _write_search_plugin(tmp_path) -> str:
+    """Drop a mock ``search_papers`` plugin returning two fixed paper titles."""
+    (tmp_path / "search_papers.py").write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(Plugin(name='search_papers', description='d',\n"
+        "        input_schema={'type':'object','properties':{'query':{'type':'string'},\n"
+        "        'limit':{'type':'integer'}}}),\n"
+        "        lambda a: {'papers': [{'title': 'Paper A'}, {'title': 'Paper B'}]})\n",
+        encoding="utf-8",
+    )
+    return str(tmp_path)
+
+
 def test_build_node_agent_assembles_full_tool_surface(tmp_path):
     (tmp_path / "foo_plugin.py").write_text(
         "from drbrain.plugins import Plugin\n"
@@ -76,10 +90,12 @@ def test_run_agent_none_returns_none():
     assert answer is None
 
 
-def test_retrieve_node_uses_agent(monkeypatch):
-    """The retrieve node runs the agent and its answer becomes candidates."""
-    _scripted_llm(monkeypatch, [{"text": "Paper A\nPaper B", "tool_calls": None, "usage": None}])
-    wf = ResearchLoopWorkflow(cfg=_cfg())
+def test_retrieve_node_uses_agent(monkeypatch, tmp_path):
+    """The retrieve node distills the task and fetches candidates via the plugin."""
+    _scripted_llm(
+        monkeypatch, [{"text": '{"query": "flat band"}', "tool_calls": None, "usage": None}]
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
 
     async def _go() -> str:
         handler = wf.run(task="flat band")
@@ -89,12 +105,13 @@ def test_retrieve_node_uses_agent(monkeypatch):
     assert "candidates=2" in result
 
 
-def test_identify_gaps_node_proposes_hypotheses(monkeypatch):
+def test_identify_gaps_node_proposes_hypotheses(monkeypatch, tmp_path):
     """identify_gaps runs the agent, parsing structured JSON into gaps + hypotheses."""
     _scripted_llm(
         monkeypatch,
         [
-            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
             {
                 "text": (
                     '{"gaps": ["gap1", "gap2"], '
@@ -106,7 +123,7 @@ def test_identify_gaps_node_proposes_hypotheses(monkeypatch):
             },
         ],
     )
-    wf = ResearchLoopWorkflow(cfg=_cfg())
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
 
     async def _go() -> str:
         handler = wf.run(task="flat band")
@@ -125,12 +142,17 @@ def test_parse_json_lenient():
     assert _parse_json_lenient("no json here") is None
 
 
-def test_full_agent_backed_loop(monkeypatch):
-    """End-to-end: retrieve → identify_gaps → critique → verify all run the agent."""
+def test_full_agent_backed_loop(monkeypatch, tmp_path):
+    """End-to-end: retrieve → extract → identify_gaps → critique → verify all run the agent."""
     _scripted_llm(
         monkeypatch,
         [
-            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"entities": ["flat band", "kagome"]}',
+                "tool_calls": None,
+                "usage": None,
+            },
             {
                 "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
                 "tool_calls": None,
@@ -148,7 +170,7 @@ def test_full_agent_backed_loop(monkeypatch):
             },
         ],
     )
-    wf = ResearchLoopWorkflow(cfg=_cfg())
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
 
     async def _go() -> str:
         handler = wf.run(task="flat band")
@@ -193,7 +215,12 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
     _scripted_llm(
         monkeypatch,
         [
-            {"text": "Paper A\nPaper B", "tool_calls": None, "usage": None},
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"entities": ["flat band", "kagome"]}',
+                "tool_calls": None,
+                "usage": None,
+            },
             {
                 "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
                 "tool_calls": None,
@@ -211,7 +238,7 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
             },
         ],
     )
-    wf = ResearchLoopWorkflow(cfg=_cfg(), db=db)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), db=db, plugins_dir=_write_search_plugin(tmp_path))
     try:
 
         async def _go() -> str:

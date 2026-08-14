@@ -5,6 +5,7 @@ DEPRECATED (T9, 终态清理): superseded by ``drbrain.rag`` BM25Retriever for C
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -94,8 +95,24 @@ class BM25Search:
         return results[:limit]
 
 
+_bm25_cache: dict[str, BM25Search] = {}
+
+
 def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
-    """Build a BM25 index from database papers, concepts, and arguments."""
+    """Build a BM25 index from database papers, concepts, and arguments.
+
+    Cached per database path: building the index reads every paper + concept
+    into memory (hundreds of thousands of rows), so re-building it on every
+    ``search_concepts`` call would stall an agent loop. In-memory databases
+    (no ``path``) are never cached.
+    """
+    db_path = str(getattr(db, "path", "") or "")
+    # Only cache on-disk databases: in-memory DBs (``:memory:``) share the same
+    # ``path`` string across tests and would otherwise collide in the cache.
+    cacheable = bool(db_path) and os.path.isfile(db_path)
+    if cacheable and db_path in _bm25_cache:
+        return _bm25_cache[db_path]
+
     index = BM25Search()
 
     # Add paper titles + abstracts
@@ -135,4 +152,6 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
         )
 
     index.build(k1=k1, b=b)
+    if cacheable:
+        _bm25_cache[db_path] = index
     return index

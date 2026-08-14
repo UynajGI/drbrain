@@ -28,9 +28,10 @@ def test_loop_runs_end_to_end():
 
 def test_loop_terminates_on_empty_candidates():
     # Empty candidates drive the bounded retrieve-again loop; the pipeline must
-    # still complete (no hang) and produce a report.
+    # still complete (no hang) and produce a report with the machine-readable
+    # summary line.
     result = _run("unretrievable topic")
-    assert result.endswith("verified=0")
+    assert "verified=0" in result
 
 
 def test_state_schema_defaults():

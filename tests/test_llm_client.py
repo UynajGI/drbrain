@@ -108,3 +108,63 @@ class TestKeyRotator:
     def test_unknown_strategy_raises(self):
         with pytest.raises(ValueError):
             KeyRotator(["k1"], strategy="random")
+
+
+class TestResolveApiKey:
+    """``_resolve_api_key``: ``api_keys`` (list) rotates, bare ``api_key`` passes through."""
+
+    def test_api_keys_round_robin(self):
+        from drbrain.extractor.llm_client import _resolve_api_key
+
+        cfg = {"provider": "openai", "model": "m", "api_keys": ["k1", "k2", "k3"]}
+        picks = [_resolve_api_key(cfg) for _ in range(6)]
+        assert picks == ["k1", "k2", "k3", "k1", "k2", "k3"]
+
+    def test_bare_api_key_passes_through(self):
+        from drbrain.extractor.llm_client import _resolve_api_key
+
+        assert _resolve_api_key({"api_key": "sk-x"}) == "sk-x"
+
+    def test_no_key_returns_none(self):
+        from drbrain.extractor.llm_client import _resolve_api_key
+
+        assert _resolve_api_key({}) is None
+
+    def test_api_keys_with_empties_skipped(self):
+        from drbrain.extractor.llm_client import _resolve_api_key
+
+        cfg = {"api_keys": ["k1", "", None, "k2"]}
+        picks = [_resolve_api_key(cfg) for _ in range(4)]
+        assert picks == ["k1", "k2", "k1", "k2"]
+
+
+class TestResolveAgentKey:
+    """``resolve_agent_key``: one agent = one fixed key; different agents rotate."""
+
+    def test_pins_single_key_and_drops_api_keys(self):
+        from drbrain.extractor.llm_client import resolve_agent_key
+
+        cfg = {"provider": "openai", "model": "m", "api_keys": ["k1", "k2", "k3"]}
+        out = resolve_agent_key(cfg)
+        assert out["api_key"] in {"k1", "k2", "k3"}
+        assert "api_keys" not in out
+
+    def test_agents_rotate_across_instances(self):
+        from drbrain.extractor.llm_client import resolve_agent_key
+
+        cfg = {"api_keys": ["k1", "k2", "k3"]}
+        picked = [resolve_agent_key(cfg)["api_key"] for _ in range(6)]
+        # round-robin across agents: k1,k2,k3,k1,k2,k3 (modulo starting counter)
+        assert picked == picked[:3] * 2
+
+    def test_does_not_mutate_input_dict(self):
+        from drbrain.extractor.llm_client import resolve_agent_key
+
+        cfg = {"api_keys": ["k1", "k2"]}
+        resolve_agent_key(cfg)
+        assert cfg == {"api_keys": ["k1", "k2"]}  # original untouched
+
+    def test_bare_api_key_passthrough(self):
+        from drbrain.extractor.llm_client import resolve_agent_key
+
+        assert resolve_agent_key({"api_key": "sk-x"}) == {"api_key": "sk-x"}

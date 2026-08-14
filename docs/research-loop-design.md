@@ -83,3 +83,19 @@ Evidence { paper_id, page, snippet, value, unit, conditions, provenance, authori
 | P2 | 双路召回（插件）+ 闭环沉淀（settle → claims 表） | ✅ |
 
 实现相对设计的增量：4 个自由节点（retrieve / gap / 互评 / 核验）是 **agent-backed**（内部跑 `build_node_agent` + `run_agent` 的 FunctionAgent，非手写 stub）；agent 经 `run_agent_json` 返回结构化 JSON；新增 **通用 MCP 接入**（`rag/mcp_tools.py`，`build_agent(mcp_servers=...)` 连任意 stdio MCP server）；闭环沉淀落 `settle` 节点写回 KG `claims` 表。
+
+**autoresearch 集成测试增量（2026-08-13，`tests/integration/` + `run_flatband.py`）**：为让三层体系脱离人工辅助自主运转，`retrieve` 改为**确定性路径**（agent 蒸馏关键词 → 本地 KG 插件 `search_papers` 直接检索，不再解析 agent 自由文本）；`report` 增加**确定性模板回退**（agent 报告优先，空则落结构化模板）；新增**本地 KG data 插件**（`research/plugins/local_kg_search.py`，读真实 schema `papers`/`fulltext`/`concept_nodes`/`concept_cooccurrence`/`paper_citations`）；`search_papers` 用**逐步短语匹配**（多词 query 逐词退让命中）；`build_bm25_index` 加**按库路径缓存**；loop 每步超时 45s→600s（agent 节点多轮 LLM）。
+
+## 十、持续研究内核（AutoScientists 语义，2026-08-13 补齐）
+
+对齐 AutoScientists 的「24 小时持续研究一个课题」内核，而非一次性流水线：
+
+- **`ResearchDirector`（`loop/director.py`）**：把 12 节点 Workflow 当作**一轮 cycle**，反复运行直到停滞。工作区用**文件分离**（镜像 AutoScientists，非单一 JSON）：`champion.md`（冠军结论）/ `dead_ends.md`（已否定）/ `knowledge/patterns.md`（winning patterns + dead ends + exhausted axes）/ `results/cycle-NNN.md`（逐轮证据）/ `run.json`（仅运行态：cycles/no-gain/adaptations，可续跑）。
+- **可证伪假设（falsifiable）**：`Hypothesis` 带 `prediction`（什么证据支持）+ `falsification`（什么证据证伪），`identify_gaps` 提出、`verify` 判定。
+- **三态分类（KEEP/DISCARD）**：`verify` 返回 `verified`（证据支持→champion）+ `falsified`（证据证伪→dead ends）+ `predictions`；未判定者**留作 unresolved**（下轮带 prior_context 重试），不误判为死路。`settle` 落 `claims`：verified→`Conclusion`、falsified→`Rejected`（负结论也是知识）、prediction→`Prediction`，并各写 `evidence` 行。
+- **Phase 4 停滞转向（adapt）**：连续 N 轮无新结论 → 记录耗尽方向为 dead end、重置 no-gain 计数、**转向继续**（非直接停），直到 `max_adaptations` 次转向才停。
+- **共享记忆跨轮注入**：每轮把「已确认结论 + 已否定假设」作为 `prior_context` 注入 `identify_gaps`。
+- **自扩展（agent 自写代码）**：`run_python` 插件——agent 遇到没有现成工具的缺口时**自己写 Python 现算**，泛化到任意方向（预置插件只是种子，不是全集）。
+- **域无关原则**：loop 节点的 prompt **不写死任何领域工具名/领域术语**，领域知识经 **task（运行时）+ skill（`read_skill` 读 `skills/*/SKILL.md`）** 注入——换研究方向不改源码。材料学依赖（ase/gpaw）在 `[dependency-groups] materials` 独立隔离，不进主依赖。
+
+
