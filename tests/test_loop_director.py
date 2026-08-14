@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import time
 
 import pytest
 
@@ -238,3 +239,114 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     assert [c["statement"] for c in state["champion"]] == ["h1"]
     assert state["cycles"] == 3
     assert state["adaptations"] == 1
+
+
+# ── T7: per-role cross-cycle memory (critic / verifier) ───────────────────────
+
+
+def test_director_writes_role_memory_files(monkeypatch, tmp_path):
+    """T7: after each cycle the director appends critic/verifier history to knowledge/."""
+    script = [
+        {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
+        {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+        {"text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+         "tool_calls": None, "usage": None},
+        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+         "tool_calls": None, "usage": None},
+        {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
+         "tool_calls": None, "usage": None},
+        {"text": "cycle report", "tool_calls": None, "usage": None},
+    ]
+    _cyclic_llm(monkeypatch, script)
+    d = ResearchDirector(
+        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+    )
+
+    async def _go():
+        return await d.run(
+            "a general research question", max_cycles=10, stagnation_cycles=2, max_adaptations=1
+        )
+
+    asyncio.run(_go())
+
+    run_dir = tmp_path / "runs" / "a-general-research-question"
+    critic = run_dir / "knowledge" / "role-critic.md"
+    verifier = run_dir / "knowledge" / "role-verifier.md"
+    assert critic.exists()
+    assert verifier.exists()
+    critic_text = critic.read_text(encoding="utf-8")
+    verifier_text = verifier.read_text(encoding="utf-8")
+    # critic history: hypotheses + score + verdict; verifier history: counts + status
+    assert "[cycle 1] h1" in critic_text
+    assert "score=0.90" in critic_text
+    assert "verdict=KEEP" in critic_text
+    assert "[cycle 1] h1" in verifier_text
+    assert "supports=1" in verifier_text
+    assert "→ verified" in verifier_text
+    # three cycles → one appended critic line per cycle (T6 dedup blocks the
+    # scripted hypothesis from being re-proposed, so cycles 2-3 run the fallback
+    # hypothesis which never matches the scripted verify response → the verifier
+    # records real evidence only in cycle 1)
+    assert critic_text.count("[cycle") == 3
+    assert verifier_text.count("[cycle") == 1
+
+
+# ── T-janitor: stale async-job re-claim ───────────────────────────────────────
+
+
+def test_janitor_flags_stale_jobs(monkeypatch, tmp_path):
+    """T-janitor: jobs older than the threshold without a numeric log are flagged."""
+    d = ResearchDirector(cfg=_cfg(), run_dir=str(tmp_path / "runs"))
+    jobs = tmp_path / "runs" / "a-general-research-question" / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    # started 1h ago, log has no number → stale
+    (jobs / "job-stale.json").write_text(
+        json.dumps({"job_id": "job-stale", "pid": 1, "started_at": time.time() - 3600}),
+        encoding="utf-8",
+    )
+    (jobs / "job-stale.log").write_text("still computing, no number yet", encoding="utf-8")
+    # started 1min ago, no number → not stale yet
+    (jobs / "job-fresh.json").write_text(
+        json.dumps({"job_id": "job-fresh", "pid": 2, "started_at": time.time() - 60}),
+        encoding="utf-8",
+    )
+    (jobs / "job-fresh.log").write_text("no number either", encoding="utf-8")
+    # started 2h ago but log has a number → completed, not stale
+    (jobs / "job-done.json").write_text(
+        json.dumps({"job_id": "job-done", "pid": 3, "started_at": time.time() - 7200}),
+        encoding="utf-8",
+    )
+    (jobs / "job-done.log").write_text("computed 42.0", encoding="utf-8")
+
+    state = _default_state("a general research question")
+    state["cycles"] = 1
+    # the stale job's hypothesis was recorded verified (no real value) → distrust
+    state["results"] = [
+        {
+            "cycle": 1,
+            "verifications": [
+                {
+                    "statement": "h1",
+                    "supports": 1,
+                    "refutes": 0,
+                    "orthogonal": 0,
+                    "status": "verified",
+                    "job_id": "job-stale",
+                }
+            ],
+        }
+    ]
+    d._janitor_scan("a general research question", state)
+
+    log_path = tmp_path / "runs" / "a-general-research-question" / "logs" / "janitor.jsonl"
+    assert log_path.exists()
+    entries = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines()]
+    events = [e["event"] for e in entries]
+    assert "[janitor] job job-stale stale" in events
+    assert "job-fresh" not in events
+    assert "job-done" not in events
+    # stale + recorded-verified → explicit distrust warning for the next cycle
+    distrust = [e for e in entries if e["event"] == "[janitor] stale job trusted"]
+    assert len(distrust) == 1
+    assert distrust[0]["job_id"] == "job-stale"
+    assert distrust[0]["statement"] == "h1"

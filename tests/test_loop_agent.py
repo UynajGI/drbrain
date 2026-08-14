@@ -454,3 +454,85 @@ def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
 
     result = asyncio.run(_go())
     assert "verified=1" in result
+
+
+# ── T7: per-role cross-cycle memory injection ─────────────────────────────────
+
+
+def test_role_memory_injected_into_node_prompts(monkeypatch, tmp_path):
+    """T7: critique/verify user messages include recent per-role history.
+
+    The director writes ``knowledge/role-{critic|verifier}.md``; when the
+    workflow is pointed at that dir, the critic and verifier nodes inject the
+    recent tail of their own history into the prompt (avoiding repeated
+    identical judgments across cycles).
+    """
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    (knowledge / "role-critic.md").write_text(
+        "- [cycle 1] h1（score=0.90, verdict=KEEP）\n"
+        "- [cycle 2] h2（score=0.10, verdict=DISCARD）\n",
+        encoding="utf-8",
+    )
+    (knowledge / "role-verifier.md").write_text(
+        "- [cycle 1] h1：supports=1, refutes=0, orthogonal=0 → verified\n",
+        encoding="utf-8",
+    )
+    seen: list = []
+    calls = [0]
+    script = [
+        {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
+        {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+        {
+            "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", "conditions": {}}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
+        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+         "tool_calls": None, "usage": None},
+        {
+            "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
+            '"orthogonal": 0}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
+    ]
+
+    async def fake(messages, models, tools=None, **kw):
+        seen.append(list(messages))
+        step = script[min(calls[0], len(script) - 1)]
+        calls[0] += 1
+        return dict(step)
+
+    monkeypatch.setattr("drbrain.extractor.llm_client.acall_with_messages", fake)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go() -> str:
+        handler = wf.run(task="some research question", role_memory_dir=str(knowledge))
+        return await handler
+
+    asyncio.run(_go())
+
+    def _user_text(messages) -> str:
+        parts: list[str] = []
+        for m in messages:
+            content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for blk in content:
+                    if isinstance(blk, dict):
+                        parts.append(str(blk.get("text", "")))
+                    else:
+                        parts.append(str(getattr(blk, "text", "")))
+        return "\n".join(parts)
+
+    # agent calls: 0 retrieve, 1 extract, 2 identify_gaps, 3 critique, 4 verify,
+    # 5 report (report is also agent-backed)
+    assert len(seen) == 6
+    critic_text = _user_text(seen[3])
+    verify_text = _user_text(seen[4])
+    assert "以往轮次评审过的假设" in critic_text
+    assert "h2（score=0.10, verdict=DISCARD）" in critic_text
+    assert "以往轮次核验过的假设" in verify_text
+    assert "supports=1, refutes=0" in verify_text

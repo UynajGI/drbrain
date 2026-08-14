@@ -57,6 +57,39 @@ FALSIFY_REFUTES = 2  # T3: refutes >= 2 and supports == 0 → falsified
 # T4: tool names that mark the environment as having compute capability.
 _COMPUTE_TOOL_NAMES = ("run_python", "check_job")
 
+# T7: per-role cross-cycle memory. The director appends one line per judgment to
+# ``knowledge/role-{critic|verifier}.md`` after each cycle (single writer); the
+# role nodes inject only the *tail* so the prompt stays small and the most recent
+# judgments dominate (AutoScientists keeps per-agent ``memory/`` files; here the
+# file workspace replaces the agent sessions).
+_ROLE_MEMORY_LIMIT = 5  # how many recent history entries a node may see
+_ROLE_MEMORY_KEY = "role_memory_dir"  # ctx.store key holding the knowledge/ dir
+
+
+def _read_role_history(
+    knowledge_dir: str | None, role: str, max_entries: int = _ROLE_MEMORY_LIMIT
+) -> str:
+    """T7: the most recent ``max_entries`` lines of a per-role memory file.
+
+    Returns ``""`` when the dir/file is absent or unreadable, so a node without
+    role memory behaves exactly as before. Each appended line is one judgment,
+    so the tail is a compact summary of the latest ones.
+    """
+    if not knowledge_dir:
+        return ""
+    path = Path(knowledge_dir) / f"role-{role}.md"
+    if not path.is_file():
+        return ""
+    try:
+        lines = [
+            ln.strip()
+            for ln in path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if ln.strip()
+        ]
+    except OSError:
+        return ""
+    return "\n".join(lines[-max_entries:])
+
 
 def _normalize_statement(s: str) -> str:
     """Lowercase + strip punctuation/whitespace for duplicate detection (T6)."""
@@ -466,6 +499,8 @@ class ResearchLoopWorkflow(Workflow):
         # direct ``wf.run`` callers fall back to parsing ``prior_context`` text).
         state.prior_champion = list(getattr(ev, "prior_champion", None) or [])
         state.prior_rejected = list(getattr(ev, "prior_rejected", None) or [])
+        # T7: the director passes the knowledge/ dir; role nodes read its tail.
+        await ctx.store.set(_ROLE_MEMORY_KEY, str(getattr(ev, "role_memory_dir", "") or ""))
         await self._set_state(ctx, state)
         logger.info("[loop] plan_task: %r", state.task)
         return TaskPlanned(task=state.task)
@@ -643,6 +678,17 @@ class ResearchLoopWorkflow(Workflow):
         # right here — they never enter verification (T5 proposal review gate).
         agent = self.build_node_agent(role="critic")
         if agent is not None and ev.hypotheses:
+            # T7: inject the critic's own past judgments (recent tail only) so it
+            # does not repeat identical conclusions across cycles.
+            critic_history = _read_role_history(
+                await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "critic"
+            )
+            history_note = (
+                f"\n\n以下是你以往轮次评审过的假设与裁决（最近 {_ROLE_MEMORY_LIMIT} 条，"
+                f"供参考，避免重复给出相同结论）：\n{critic_history}"
+                if critic_history
+                else ""
+            )
             data = await self.run_agent_json(
                 agent,
                 "作为批判者独立评审以下假设：给每个假设打分(0~1)并找漏洞/反驳。"
@@ -651,7 +697,7 @@ class ResearchLoopWorkflow(Workflow):
                 "不消耗任何计算资源）。"
                 "不要调用任何检索/计算工具，直接基于假设本身推理，只返回 JSON："
                 '{"hypotheses": [{"statement": "...", "score": 0.8, "verdict": "KEEP"}]}。'
-                f"假设：{[h.statement for h in ev.hypotheses]}",
+                f"假设：{[h.statement for h in ev.hypotheses]}{history_note}",
             )
             if isinstance(data, dict):
                 scored = {
@@ -693,7 +739,13 @@ class ResearchLoopWorkflow(Workflow):
             # the tools it discovers (model/software plugins), and — when no
             # ready tool fits — writes its own code. T3: it reports structured
             # Supports/Refutes/Orthogonal counts; verdicts are derived in code.
-            data = await self.run_agent_json(agent, self._verify_prompt(candidates, has_compute))
+            # T7: inject the verifier's own past judgments (recent tail only).
+            verifier_history = _read_role_history(
+                await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "verifier"
+            )
+            data = await self.run_agent_json(
+                agent, self._verify_prompt(candidates, has_compute, verifier_history)
+            )
             if isinstance(data, dict):
                 raw_vs = data.get("verifications")
                 if isinstance(raw_vs, list):
@@ -746,12 +798,17 @@ class ResearchLoopWorkflow(Workflow):
             verifications=verifications,
         )
 
-    def _verify_prompt(self, candidates: list[Hypothesis], has_compute: bool) -> str:
+    def _verify_prompt(
+        self, candidates: list[Hypothesis], has_compute: bool, history: str = ""
+    ) -> str:
         """The verifier's user message (T3 structured counts + T4 compute gate).
 
         Domain-neutral: requires a real computed numeric result when compute
         tools exist, without naming any domain (materials/DFT specifics come
         from the task + skills, never from this prompt).
+
+        ``history`` (T7): the verifier's own past judgments, injected as a
+        compact tail so it does not repeat identical verdicts across cycles.
         """
         compute_line = (
             "\n环境提供计算类工具（run_python / check_job / 数值计算插件）。"
@@ -762,6 +819,12 @@ class ResearchLoopWorkflow(Workflow):
             "没有真实作业文件支撑的 computed 一律不认。"
             if has_compute
             else "\n环境无计算类工具：可只做文献证据核验，computed 留空即可。"
+        )
+        history_note = (
+            f"\n\n以下是你以往轮次核验过的假设与证据计数（最近 {_ROLE_MEMORY_LIMIT} 条，"
+            f"供参考，避免重复核验并给出相同计数）：\n{history}"
+            if history
+            else ""
         )
         return (
             "核验以下假设：用检索/证据工具收集文献证据，对每个假设统计证据计数："
@@ -774,7 +837,7 @@ class ResearchLoopWorkflow(Workflow):
             '"job_id": "run_python(async) 返回的作业 id，无实算则为空", '
             '"computed": "实际数值结果或空", '
             '"value": 数值或 null, "unit": "单位"}]}。'
-            f"假设：{[h.statement for h in candidates]}"
+            f"假设：{[h.statement for h in candidates]}{history_note}"
         )
 
     # 11. 沉淀（AutoScientists：共享成败 → 写回共享记忆）

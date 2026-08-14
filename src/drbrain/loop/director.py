@@ -25,13 +25,19 @@ from typing import Any
 from loguru import logger
 
 from drbrain.loop.events import ResearchState
-from drbrain.loop.workflow import ResearchLoopWorkflow
+from drbrain.loop.workflow import ResearchLoopWorkflow, _job_log_has_number
 
 
 def _slug(topic: str) -> str:
     """Filesystem-safe slug for a topic (run dir name)."""
     s = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "-", topic.strip()).strip("-")
     return (s or "research")[:80]
+
+
+# T-janitor: an async job that claimed compute but produced no numeric log within
+# this many seconds is flagged stale (AutoScientists' monitor re-claim, simplified:
+# the director scans once per cycle instead of running a monitor process).
+JANITOR_STALE_SECONDS = 1800  # 30 minutes
 
 
 def _default_state(topic: str) -> dict[str, Any]:
@@ -132,6 +138,10 @@ class ResearchDirector:
 
     def _patterns_md(self, topic: str) -> Path:
         return self._topic_dir(topic) / "knowledge" / "patterns.md"
+
+    def _role_memory_md(self, topic: str, role: str) -> Path:
+        """T7: per-role cross-cycle memory file (``knowledge/role-{critic|verifier}.md``)."""
+        return self._topic_dir(topic) / "knowledge" / f"role-{role}.md"
 
     def _result_md(self, topic: str, cycle: int) -> Path:
         return self._topic_dir(topic) / "results" / f"cycle-{cycle:03d}.md"
@@ -283,6 +293,50 @@ class ResearchDirector:
         except OSError:
             logger.warning("[director] trace write failed for cycle %d", cycle_no)
 
+    # ── T7: per-role cross-cycle memory (director is the single writer) ─────────
+
+    def _save_role_memories(self, topic: str, cycle_no: int, rs: ResearchState | None) -> None:
+        """Append this cycle's critic/verifier history to ``knowledge/role-*.md``.
+
+        AutoScientists gives every agent its own ``memory/MEMORY.md`` so each
+        session remembers its own judgments. Here the two role-bearing nodes —
+        the critic and the verifier — keep their own cross-cycle history, and a
+        later cycle injects the recent tail into the node prompt (see
+        :func:`drbrain.loop.workflow._read_role_history`). The director is the
+        single writer; the nodes only read. Append-only, one judgment per line.
+        """
+        if rs is None:
+            return
+        critic_lines = []
+        for h in rs.hypotheses:
+            verdict = "DISCARD" if h.status == "discarded" else "KEEP"
+            critic_lines.append(
+                f"- [cycle {cycle_no}] {h.statement}（score={h.score:.2f}, verdict={verdict}）"
+            )
+        if critic_lines:
+            path = self._role_memory_md(topic, "critic")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(critic_lines) + "\n")
+            except OSError:
+                logger.warning("[director] role-critic memory write failed")
+
+        verifier_lines = []
+        for v in rs.verifications:
+            verifier_lines.append(
+                f"- [cycle {cycle_no}] {v.statement}：supports={v.supports}, "
+                f"refutes={v.refutes}, orthogonal={v.orthogonal} → {v.status}"
+            )
+        if verifier_lines:
+            path = self._role_memory_md(topic, "verifier")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write("\n".join(verifier_lines) + "\n")
+            except OSError:
+                logger.warning("[director] role-verifier memory write failed")
+
     # ── logging (AutoScientists: single canonical JSONL log, orchestrator writes) ─
 
     def _logs_dir(self, topic: str) -> Path:
@@ -334,6 +388,89 @@ class ResearchDirector:
         with open(self._logs_dir(topic) / "sessions.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def _append_janitor_log(self, topic: str, entry: dict[str, Any]) -> None:
+        """Append one line to ``logs/janitor.jsonl`` (stale-job audit trail)."""
+        with open(self._logs_dir(topic) / "janitor.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # ── T-janitor: stale async-job re-claim (simplified monitor) ───────────────
+
+    def _janitor_scan(self, topic: str, state: dict[str, Any]) -> None:
+        """Flag async jobs that claimed compute but never produced a result.
+
+        Mirrors AutoScientists' monitor re-claim: a job whose metadata says it
+        started more than ``JANITOR_STALE_SECONDS`` ago but whose log still
+        carries no numeric output is *stale* — the claim is released and its
+        evidence is not trusted. Simplified: no monitor process; the director
+        scans the ``jobs/`` directory once per cycle.
+
+        When a stale job's hypothesis was recorded as verified anywhere in the
+        run (a contradiction — verified without real values), a warning is
+        logged so the next cycle does not trust that job's evidence.
+        """
+        jobs_dir = self._topic_dir(topic) / "jobs"
+        if not jobs_dir.is_dir():
+            return
+        now = time.time()
+        stale: list[tuple[str, float]] = []
+        for meta_path in sorted(jobs_dir.glob("*.json")):
+            job_id = meta_path.stem
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(meta, dict):
+                continue
+            if _job_log_has_number(str(jobs_dir), job_id):
+                continue  # log carries a numeric result → completed, not stale
+            try:
+                started = float(meta.get("started_at"))
+            except (TypeError, ValueError):
+                started = meta_path.stat().st_mtime  # fall back to meta file mtime
+            if now - started > JANITOR_STALE_SECONDS:
+                stale.append((job_id, started))
+        if not stale:
+            return
+        # Map stale jobs back to hypotheses that were ever recorded as verified
+        # (verifications are accumulated per cycle in state["results"]).
+        verified_by_job: dict[str, list[str]] = {}
+        for res in state.get("results", []):
+            for v in res.get("verifications", []):
+                if isinstance(v, dict) and v.get("status") == "verified" and v.get("job_id"):
+                    verified_by_job.setdefault(str(v["job_id"]), []).append(
+                        str(v.get("statement", ""))
+                    )
+        for job_id, started in stale:
+            logger.warning(
+                "[janitor] job %s stale (started %.0fs ago, no result)", job_id, now - started
+            )
+            self._append_janitor_log(
+                topic,
+                {
+                    "event": f"[janitor] job {job_id} stale",
+                    "job_id": job_id,
+                    "started_at": started,
+                    "stale_seconds": round(now - started, 1),
+                    "cycle": state["cycles"],
+                },
+            )
+            for statement in verified_by_job.get(job_id, []):
+                logger.warning(
+                    "[janitor] job %s has no real result but its hypothesis %r was "
+                    "recorded verified — do not trust this job's evidence next cycle",
+                    job_id,
+                    statement,
+                )
+                self._append_janitor_log(
+                    topic,
+                    {
+                        "event": "[janitor] stale job trusted",
+                        "job_id": job_id,
+                        "statement": statement,
+                        "cycle": state["cycles"],
+                    },
+                )
+
     # ── prior-context (shared memory across cycles) ───────────────────────────
 
     @staticmethod
@@ -363,11 +500,14 @@ class ResearchDirector:
         )
         # T6: pass structured prior champion/dead-ends so the proposal gate can
         # reject duplicates in code (not just via prompt text).
+        # T7: pass the knowledge/ dir so the critic/verifier nodes can inject
+        # their own cross-cycle history into the prompt.
         handler = wf.run(
             task=topic,
             prior_context=prior_context,
             prior_champion=prior_champion or [],
             prior_rejected=prior_rejected or [],
+            role_memory_dir=str(self._topic_dir(topic) / "knowledge"),
         )
         report = await handler
         rs = await handler.ctx.store.get("research_state", default=None)
@@ -486,6 +626,10 @@ class ResearchDirector:
             self._save_state(topic, state)
             self._save_cycle_result(topic, cycle_result)
             self._log_experiment(topic, cycle_result)
+            # T7: append this cycle's critic/verifier history to per-role memory files.
+            self._save_role_memories(topic, state["cycles"], rs)
+            # T-janitor: flag async jobs that claimed compute but produced no result.
+            self._janitor_scan(topic, state)
             logger.info(
                 "[director] cycle=%d champion=%d rejected=%d no_gain=%d",
                 state["cycles"],
