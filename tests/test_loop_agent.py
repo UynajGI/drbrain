@@ -96,8 +96,14 @@ def _write_job(run_dir, job_id: str, log_text: str = "result = 1.0") -> Path:
     return jobs
 
 
-def _compute_loop_script(verify_text: str) -> list[dict]:
-    """Full agent-backed loop script with compute tools present (run_python)."""
+def _compute_loop_script(verify_text: str, compute_text: str) -> list[dict]:
+    """Full agent-backed loop script with compute tools present (run_python).
+
+    Node order is retrieve → extract → identify_gaps → critique → **compute** →
+    verify → report. The compute node (ROLE-GPU) reports per-hypothesis
+    ``job_id``s before verify; verify consumes those for its T4 gate, so the
+    verify stub only carries evidence counts.
+    """
     return [
         {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
         {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
@@ -108,6 +114,7 @@ def _compute_loop_script(verify_text: str) -> list[dict]:
         },
         {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
          "tool_calls": None, "usage": None},
+        {"text": compute_text, "tool_calls": None, "usage": None},
         {"text": verify_text, "tool_calls": None, "usage": None},
     ]
 
@@ -379,14 +386,15 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
 
 
 def test_verify_requires_real_job_files(monkeypatch, tmp_path):
-    """正路径：compute 工具在场 + job_id 指向真实作业文件（json+log 含数值）→ verified。"""
+    """正路径：compute 节点产出的 job_id 指向真实作业文件（json+log 含数值）→ verified。"""
     jobs = _write_job(tmp_path / "jobs", "job-ok", log_text="converged energy -12.34")
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
     _scripted_llm(
         monkeypatch,
         _compute_loop_script(
             '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
-            '"orthogonal": 0, "computed": "-12.34", "value": -12.34, "job_id": "job-ok"}]}'
+            '"orthogonal": 0}]}',
+            '{"results": [{"statement": "h1", "job_id": "job-ok", "computed": "-12.34"}]}',
         ),
     )
     plugins_dir = _write_search_plugin(tmp_path)
@@ -403,10 +411,12 @@ def test_verify_requires_real_job_files(monkeypatch, tmp_path):
     assert "verified=1" in result
     assert state.verifications[0].status == "verified"
     assert state.verifications[0].job_id == "job-ok"
+    # the compute node's summary rides into the verification's computed field
+    assert state.verifications[0].computed == "-12.34"
 
 
 def test_verify_downgrades_without_job_evidence(monkeypatch, tmp_path):
-    """负路径：computed/value 填了数值但没有 job_id → 降级 prediction（防编造核心）。"""
+    """负路径：compute 节点没产出任何 job_id → 降级 prediction（防编造核心）。"""
     jobs = tmp_path / "jobs"
     jobs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
@@ -414,7 +424,8 @@ def test_verify_downgrades_without_job_evidence(monkeypatch, tmp_path):
         monkeypatch,
         _compute_loop_script(
             '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
-            '"orthogonal": 0, "computed": "1.0", "value": 1.0}]}'
+            '"orthogonal": 0}]}',
+            '{"results": []}',
         ),
     )
     plugins_dir = _write_search_plugin(tmp_path)
@@ -436,7 +447,7 @@ def test_verify_downgrades_without_job_evidence(monkeypatch, tmp_path):
 
 
 def test_verify_downgrades_when_job_files_missing(monkeypatch, tmp_path):
-    """负路径：job_id 非空但作业文件不存在 → 降级 prediction。"""
+    """负路径：compute 节点报了 job_id 但作业文件不存在 → 降级 prediction。"""
     jobs = tmp_path / "jobs"
     jobs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
@@ -444,7 +455,8 @@ def test_verify_downgrades_when_job_files_missing(monkeypatch, tmp_path):
         monkeypatch,
         _compute_loop_script(
             '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
-            '"orthogonal": 0, "computed": "9.9", "value": 9.9, "job_id": "ghost"}]}'
+            '"orthogonal": 0}]}',
+            '{"results": [{"statement": "h1", "job_id": "ghost"}]}',
         ),
     )
     plugins_dir = _write_search_plugin(tmp_path)
@@ -464,14 +476,15 @@ def test_verify_downgrades_when_job_files_missing(monkeypatch, tmp_path):
 
 
 def test_verify_downgrades_when_job_log_has_no_number(monkeypatch, tmp_path):
-    """负路径：作业文件在，但日志里没有任何可 parse 的数值 → 降级 prediction。"""
+    """负路径：compute 的作业文件在，但日志里没有任何可 parse 的数值 → 降级 prediction。"""
     jobs = _write_job(tmp_path / "jobs", "job-text", log_text="finished without a numeric output")
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
     _scripted_llm(
         monkeypatch,
         _compute_loop_script(
             '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
-            '"orthogonal": 0, "computed": "9.9", "value": 9.9, "job_id": "job-text"}]}'
+            '"orthogonal": 0}]}',
+            '{"results": [{"statement": "h1", "job_id": "job-text"}]}',
         ),
     )
     plugins_dir = _write_search_plugin(tmp_path)

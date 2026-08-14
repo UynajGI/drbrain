@@ -53,10 +53,11 @@ class Verification(BaseModel):
     verdict from the counts — never from an LLM sentence. ``status`` is
     code-derived: ``verified`` | ``falsified`` | ``prediction``.
 
-    T4 compute gate: when compute tools exist, ``computed`` / ``value`` are
-    **human-readable summaries only** — the code-level evidence that a real
-    computation ran is ``job_id`` (returned by ``run_python(mode="async")``):
-    the corresponding on-disk job artifacts (``<job_id>.json`` + ``<job_id>.log``
+    T4 compute gate: ``computed`` / ``value`` are **human-readable summaries
+    only** — the code-level evidence that a real computation ran is ``job_id``,
+    produced by the dedicated **compute node** (``run_python(mode="async")``,
+    AutoScientists ROLE-GPU) — never by the verifier, which only counts evidence.
+    The corresponding on-disk job artifacts (``<job_id>.json`` + ``<job_id>.log``
     with a parseable number) must exist for the entry to be ``verified``.
     """
 
@@ -65,10 +66,10 @@ class Verification(BaseModel):
     refutes: int = 0  # 反驳的证据条数
     orthogonal: int = 0  # 无关 / 无法判定的证据条数
     evidence: str = ""  # 证据摘要（来源 / 要点）
-    computed: str = ""  # 实际计算结果（给人看的摘要）；无实算则为空
+    computed: str = ""  # 实际计算结果（给人看的摘要，来自 compute 节点）；无实算则为空
     value: float | None = None  # 结构化数值（可选，摘要用）
     unit: str = ""  # 数值单位（可选）
-    job_id: str = ""  # T4: run_python(mode=async) 返回的后台作业 id（证据是落盘文件）
+    job_id: str = ""  # T4: compute 节点 run_python(mode=async) 返回的后台作业 id（证据是落盘文件）
     status: str = "prediction"  # code-derived: verified | falsified | prediction
 
 
@@ -140,6 +141,23 @@ class GapsIdentified(Event):
 
 class Critiqued(Event):
     hypotheses: list[Hypothesis] = Field(default_factory=list)
+
+
+class Computed(Event):
+    """Compute-node results: per-hypothesis async job ids (T4 evidence).
+
+    The compute node (AutoScientists ROLE-GPU: run experiments, record results)
+    runs a real computation for each critiqued hypothesis BEFORE verification.
+    ``job_ids`` maps each statement to the ``run_python(mode="async")`` job id
+    whose on-disk artifacts carry the numeric result — the only evidence the
+    verify node's T4 gate trusts. ``summaries`` are optional human-readable
+    compute summaries. ``hypotheses`` carries the critiqued hypotheses through
+    so verify keeps operating on the same event payload it always did.
+    """
+
+    hypotheses: list[Hypothesis] = Field(default_factory=list)  # critiqued (KEEP) hypotheses
+    job_ids: dict[str, str] = Field(default_factory=dict)  # statement → run_python(async) job_id
+    summaries: dict[str, str] = Field(default_factory=dict)  # statement → 实算摘要（可选）
 
 
 class Verified(Event):

@@ -62,9 +62,17 @@ _CYCLE_SCRIPT = [
     {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
 ]
 
-# Same cycle, but the verify stub carries the job_id of a real (pre-written)
-# async job — the T4 evidence gate must accept it.
+# Same cycle, but the compute node stub carries the job_id of a real (pre-written)
+# async job — the T4 evidence gate (fed from the Computed event) must accept it.
+#
+# The stub is LINEAR per cycle on purpose: with compute tools present the cycle
+# makes 7 agent calls in cycle 1 (… critique → compute → verify → report) and 5
+# in later cycles (compute/verify skip once the critic DISCARDs h2). A cyclic
+# stub (script[calls % len]) would drift out of alignment, so the script below
+# spells out the exact per-cycle call sequence; the run stops at cycle 3, i.e.
+# exactly 7 + 5 + 5 = 17 calls, so no wrap-around ever happens.
 _CYCLE_SCRIPT_COMPUTE = [
+    # cycle 1: retrieve → extract → identify_gaps → critique → compute → verify → report
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
     {"text": '{"gaps": ["gap1"], "hypotheses": ['
@@ -73,7 +81,32 @@ _CYCLE_SCRIPT_COMPUTE = [
      "tool_calls": None, "usage": None},
     {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},
-    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0, "job_id": "job-1"}]}',
+    {"text": '{"results": [{"statement": "h1", "job_id": "job-1"}]}',
+     "tool_calls": None, "usage": None},                                          # compute
+    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
+     "tool_calls": None, "usage": None},                                          # verify
+    {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
+    # cycle 2: retrieve → extract → identify_gaps → critique → report (h1 is a
+    # champion dup → dropped; h2 is proposed and DISCARDed by the critic → no
+    # compute/verify calls)
+    {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": ['
+     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+     "tool_calls": None, "usage": None},
+    {"text": "cycle report", "tool_calls": None, "usage": None},
+    # cycle 3: same shape as cycle 2 — no_gain hits the stagnation bar and the
+    # critic's all-DISCARD round vetoes the direction → Phase 4 adapt → stop
+    {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+    {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+    {"text": '{"gaps": ["gap1"], "hypotheses": ['
+     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+     "tool_calls": None, "usage": None},
+    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
      "tool_calls": None, "usage": None},
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]

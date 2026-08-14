@@ -1,7 +1,7 @@
 """Research loop orchestration — deterministic pipeline + AutoScientists semantics.
 
 The third layer of the three-in-one architecture. A LlamaIndex ``Workflow``
-runs a **deterministic 12-node pipeline** (task → retrieve → … → report); the
+runs a **deterministic 13-node pipeline** (task → retrieve → … → report); the
 AutoScientists loop semantics (hypothesis proposal, critique-before-compute,
 shared success/failure) are folded into specific nodes, not free-form chat.
 
@@ -28,6 +28,7 @@ from llama_index.core.workflow import (
 from loguru import logger
 
 from drbrain.loop.events import (
+    Computed,
     Critiqued,
     Extracted,
     Filtered,
@@ -728,11 +729,61 @@ class ResearchLoopWorkflow(Workflow):
         await self._set_state(ctx, state)
         return Critiqued(hypotheses=hypotheses)
 
-    # 10. 证据核验（T1 核验者角色 + T2 分数消费 + T3 三角验证代码化 + T4 实算门）
+    # 10. 实算（AutoScientists：ROLE-GPU —— 先跑实验、结果落盘；实算是唯一职责）
     @step
-    async def verify(self, ctx: Context, ev: Critiqued) -> Verified:
+    async def compute(self, ctx: Context, ev: Critiqued) -> Computed:
+        """Run a real computation per critiqued hypothesis BEFORE verification.
+
+        Single responsibility (AutoScientists ROLE-GPU: "you run experiments,
+        record results"): for each hypothesis that survived the critic (T5), the
+        compute agent reads the hypothesis's ``prediction`` (which describes the
+        numeric quantity to compute and what outcome would support it), writes
+        code, starts it with ``run_python(mode="async")`` and polls ``check_job``
+        until it finishes. The on-disk job artifacts (``jobs/<job_id>.json`` +
+        ``<job_id>.log``) are the only evidence the verify node's T4 gate trusts.
+
+        Domain-neutral: the prompt never names any domain — only that the
+        quantity described in ``prediction`` must be computed. When no compute
+        tools exist (``_has_compute_tools`` False) the node skips the agent and
+        every ``job_id`` stays empty; verify then takes its pre-existing
+        no-computation path.
+        """
+        # T5: only hypotheses that survived the critic get a computation.
+        candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
+        job_ids: dict[str, str] = {}
+        summaries: dict[str, str] = {}
+        agent = self.build_node_agent(role="compute")
+        if agent is not None and candidates and self._has_compute_tools(agent):
+            data = await self.run_agent_json(
+                agent,
+                "对以下每个 hypothesis：读取它的 prediction 字段（其中描述了要计算的数值量，"
+                "以及什么样的结果算支持该假设），用 run_python(mode=\"async\") 写代码实算该量，"
+                "用 check_job 轮询到作业完成，把返回的 job_id 填进对应条目；"
+                "computed 是给人看的摘要，可留空；不要统计任何文献证据（那是核验者的职责）。"
+                "只返回 JSON："
+                '{"results": [{"statement": "...", "job_id": "...", "computed": "..."}]}。'
+                f"假设：{[{'statement': h.statement, 'prediction': h.prediction} for h in candidates]}",
+            )
+            if isinstance(data, dict):
+                valid = {h.statement for h in candidates}
+                for raw in data.get("results", []):
+                    if not isinstance(raw, dict):
+                        continue
+                    stmt = str(raw.get("statement", "")).strip()
+                    if stmt in valid:  # only results for proposed hypotheses count
+                        job_ids[stmt] = str(raw.get("job_id") or "")
+                        summaries[stmt] = str(raw.get("computed") or "")
+        logger.info(
+            "[loop] compute: %d computation(s) for %d hypothesis(es)", len(job_ids), len(candidates)
+        )
+        return Computed(hypotheses=candidates, job_ids=job_ids, summaries=summaries)
+
+    # 11. 证据核验（T1 核验者角色 + T2 分数消费 + T3 三角验证代码化 + T4 实算门）
+    @step
+    async def verify(self, ctx: Context, ev: Computed) -> Verified:
         state = await self._get_state(ctx)
-        # T5: only hypotheses that survived the critic enter verification.
+        # T5: only hypotheses that survived the critic enter verification (the
+        # compute node already ran for exactly these — ev carries them through).
         candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
         verified: list[str] = []
         falsified = list(state.falsified)
@@ -742,24 +793,24 @@ class ResearchLoopWorkflow(Workflow):
         handled = False
         if agent is not None and candidates:
             has_compute = self._has_compute_tools(agent)
-            # agent-backed dual-path: the agent searches evidence (RAG), calls
-            # the tools it discovers (model/software plugins), and — when no
-            # ready tool fits — writes its own code. T3: it reports structured
-            # Supports/Refutes/Orthogonal counts; verdicts are derived in code.
-            # T7: inject the verifier's own past judgments (recent tail only).
+            # agent-backed: the agent only searches evidence and counts
+            # Supports/Refutes/Orthogonal — verdicts are derived in code. The
+            # numeric computation was the compute node's job (its job_id rides
+            # this event into the T4 gate below). T7: inject the verifier's own
+            # past judgments (recent tail only).
             verifier_history = _read_role_history(
                 await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "verifier"
             )
             data = await self.run_agent_json(
-                agent, self._verify_prompt(candidates, has_compute, verifier_history)
+                agent, self._verify_prompt(candidates, verifier_history)
             )
             if isinstance(data, dict):
                 raw_vs = data.get("verifications")
                 if isinstance(raw_vs, list):
                     handled = True
                     vs_by_stmt = {h.statement: h for h in candidates}
-                    # T4: evidence lives in the on-disk job directory the
-                    # director points DRBRAIN_RUN_DIR at (run_python async).
+                    # T4: the compute node's job evidence lives in the on-disk
+                    # job directory the director points DRBRAIN_RUN_DIR at.
                     run_dir = os.environ.get("DRBRAIN_RUN_DIR") or None
                     for raw in raw_vs:
                         if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
@@ -774,10 +825,12 @@ class ResearchLoopWorkflow(Workflow):
                             refutes=_to_int(raw.get("refutes")),
                             orthogonal=_to_int(raw.get("orthogonal")),
                             evidence=str(raw.get("evidence") or ""),
-                            computed=str(raw.get("computed") or ""),
+                            # T4: computed summary + job_id come from the compute
+                            # node (Computed event), never from the verifier.
+                            computed=str(ev.summaries.get(stmt) or ""),
                             value=_to_float(raw.get("value")),
                             unit=str(raw.get("unit") or ""),
-                            job_id=str(raw.get("job_id") or ""),
+                            job_id=str(ev.job_ids.get(stmt) or ""),
                         )
                         ver.status = _classify_verification(ver, h.score, has_compute, run_dir)
                         verifications.append(ver)
@@ -805,28 +858,17 @@ class ResearchLoopWorkflow(Workflow):
             verifications=verifications,
         )
 
-    def _verify_prompt(
-        self, candidates: list[Hypothesis], has_compute: bool, history: str = ""
-    ) -> str:
-        """The verifier's user message (T3 structured counts + T4 compute gate).
+    def _verify_prompt(self, candidates: list[Hypothesis], history: str = "") -> str:
+        """The verifier's user message (T3 structured evidence counts only).
 
-        Domain-neutral: requires a real computed numeric result when compute
-        tools exist, without naming any domain (materials/DFT specifics come
-        from the task + skills, never from this prompt).
+        Domain-neutral: the verifier collects evidence counts for the hypotheses
+        — it never computes. The numeric computation was the compute node's job
+        (AutoScientists ROLE-GPU) and its job_id rides the ``Computed`` event
+        into this node's T4 gate, so this prompt must not mention compute tools.
 
         ``history`` (T7): the verifier's own past judgments, injected as a
         compact tail so it does not repeat identical verdicts across cycles.
         """
-        compute_line = (
-            "\n环境提供计算类工具（run_python / check_job / 数值计算插件）。"
-            "对每个假设，你必须用 run_python(mode=\"async\") 实际启动一次计算，"
-            "用 check_job 轮询到作业跑完，并把返回的 job_id 填进该字段；"
-            "computed/value 只是给人看的摘要，代码只认 job_id 对应的作业文件"
-            "（$DRBRAIN_RUN_DIR/<job_id>.json 与 <job_id>.log，且日志含数值）。"
-            "没有真实作业文件支撑的 computed 一律不认。"
-            if has_compute
-            else "\n环境无计算类工具：可只做文献证据核验，computed 留空即可。"
-        )
         history_note = (
             f"\n\n以下是你以往轮次核验过的假设与证据计数（最近 {_ROLE_MEMORY_LIMIT} 条，"
             f"供参考，避免重复核验并给出相同计数）：\n{history}"
@@ -837,17 +879,13 @@ class ResearchLoopWorkflow(Workflow):
             "核验以下假设：用检索/证据工具收集文献证据，对每个假设统计证据计数："
             "supports（支持其 prediction 的证据条数）、refutes（反驳的证据条数）、"
             "orthogonal（与假设无关/无法判定的证据条数），并写 evidence 摘要。"
-            f"{compute_line}"
-            "不要自行下结论，只报证据计数与数值；判定由下游代码完成。只返回 JSON："
+            "不要自行下结论，只报证据计数；判定由下游代码完成。只返回 JSON："
             '{"verifications": [{"statement": "...", "supports": N, "refutes": N, '
-            '"orthogonal": N, "evidence": "...", '
-            '"job_id": "run_python(async) 返回的作业 id，无实算则为空", '
-            '"computed": "实际数值结果或空", '
-            '"value": 数值或 null, "unit": "单位"}]}。'
+            '"orthogonal": N, "evidence": "..."}]}。'
             f"假设：{[h.statement for h in candidates]}{history_note}"
         )
 
-    # 11. 沉淀（AutoScientists：共享成败 → 写回共享记忆）
+    # 12. 沉淀（AutoScientists：共享成败 → 写回共享记忆）
     @step
     async def settle(self, ctx: Context, ev: Verified) -> Settled:
         state = await self._get_state(ctx)
@@ -921,7 +959,7 @@ class ResearchLoopWorkflow(Workflow):
             evidence_id=eid,
         )
 
-    # 12. 报告生成（agent-backed：把整条链路的累积状态写成结构化报告）
+    # 13. 报告生成（agent-backed：把整条链路的累积状态写成结构化报告）
     @step
     async def report(self, ctx: Context, ev: Settled) -> StopEvent:
         state = await self._get_state(ctx)
