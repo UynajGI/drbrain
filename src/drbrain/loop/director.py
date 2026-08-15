@@ -125,6 +125,7 @@ class ResearchDirector:
         plugins_dir: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         run_dir: str | Path = "workspace/autoresearch",
+        n_critics: int = 3,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -132,6 +133,7 @@ class ResearchDirector:
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
         self._run_dir = Path(run_dir)
+        self._n_critics = max(1, int(n_critics))
 
     # ── workspace paths ───────────────────────────────────────────────────────
 
@@ -158,6 +160,10 @@ class ResearchDirector:
 
     def _result_md(self, topic: str, cycle: int) -> Path:
         return self._topic_dir(topic) / "results" / f"cycle-{cycle:03d}.md"
+
+    def _roster_md(self, topic: str) -> Path:
+        """Team roster file (AutoScientists ``teams/roster.md``)."""
+        return self._topic_dir(topic) / "teams" / "roster.md"
 
     # ── load / save (derived from the files, not a JSON blob) ─────────────────
 
@@ -198,6 +204,8 @@ class ResearchDirector:
             "results": [],  # reconstructed lazily from results/*.md (kept for report)
             "consecutive_no_gain": run.get("consecutive_no_gain", 0),
             "adaptations": run.get("adaptations", 0),
+            "pending": run.get("pending", []),
+            "mode": run.get("mode", "execute"),
             "started_at": run.get("started_at", time.time()),
             "updated_at": run.get("updated_at", time.time()),
         }
@@ -248,6 +256,8 @@ class ResearchDirector:
                     "cycles": state["cycles"],
                     "consecutive_no_gain": state["consecutive_no_gain"],
                     "adaptations": state.get("adaptations", 0),
+                    "pending": state.get("pending", []),
+                    "mode": state.get("mode", "execute"),
                     "started_at": state["started_at"],
                     "updated_at": state["updated_at"],
                 },
@@ -375,6 +385,10 @@ class ResearchDirector:
         proposal_lines = [f"- [cycle {cycle_no}] {h.statement}" for h in rs.hypotheses]
         review_lines = []
         for h in rs.hypotheses:
+            if h.status == "proposed":
+                # discussion_pending：未获非作者评论 → 没有 review 可落盘（它还没
+                # 被 critic 评审过，等下一轮补评论）。写一行 KEEP 会误导成"已评审"。
+                continue
             verdict = "DISCARD" if h.status == "discarded" else "KEEP"
             review_lines.append(
                 f"- [cycle {cycle_no}] {h.statement}（reviewer=critic, "
@@ -389,6 +403,25 @@ class ResearchDirector:
                     f.write("\n".join(review_lines) + "\n")
         except OSError:
             logger.warning("[director] discussion write failed")
+
+    def _save_roster(self, topic: str) -> None:
+        """Write the fixed team roster (AutoScientists ``teams/roster.md``).
+
+        The discussion layer's agent identities — the proposer (``analyst``)
+        and the ``n_critics`` independent reviewers (``critic-1..N``) — come
+        from here; the compute/verifier roles round out the team. In-process,
+        so the roster is a fixed team (no cold-start self-organization yet), but
+        the file is the same single source of truth agents read.
+        """
+        path = self._roster_md(topic)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["# 团队名单（roster）", ""]
+        lines.append("- analyst（identify_gaps：提案者）")
+        for i in range(1, self._n_critics + 1):
+            lines.append(f"- critic-{i}（critique：独立评审者）")
+        lines.append("- compute（compute：实算）")
+        lines.append("- verifier（verify：证据核验）")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ── logging (AutoScientists: single canonical JSONL log, orchestrator writes) ─
 
@@ -533,6 +566,11 @@ class ResearchDirector:
             parts.append("已确认结论：" + "；".join(c["statement"] for c in state["champion"]))
         if state.get("rejected"):
             parts.append("已否定假设（不要重复提出）：" + "；".join(state["rejected"]))
+        if state.get("pending"):
+            parts.append(
+                "上轮提出但未讨论完的假设（本轮 critic 需重新独立评审）："
+                + "；".join(state["pending"])
+            )
         return "\n".join(parts)
 
     @staticmethod
@@ -568,6 +606,7 @@ class ResearchDirector:
             graph=self._graph,
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
+            n_critics=self._n_critics,
         )
         # T6: pass structured prior champion/dead-ends so the proposal gate can
         # reject duplicates in code (not just via prompt text).
@@ -661,6 +700,9 @@ class ResearchDirector:
         # Agent 自写的后台作业（run_python mode=async）落进本课题工作区，check_job
         # 从同一目录轮询——长 DFT/计算因此随课题一起沉淀、可审计、可续跑。
         os.environ["DRBRAIN_RUN_DIR"] = str(self._topic_dir(topic) / "jobs")
+        # Team roster (AutoScientists teams/roster.md) — written once per run so
+        # the discussion layer's agent identities are visible & auditable.
+        self._save_roster(topic)
         logger.info(
             "[director] resume: topic=%r cycles=%d champion=%d rejected=%d",
             topic,
@@ -681,6 +723,14 @@ class ResearchDirector:
             )
             champion_before = len(state["champion"])
             cycle_result = self._absorb(state, report, rs)
+            # Mode Selector: hypotheses the critic left undiscussed
+            # (status == "proposed" == discussion_pending) are carried into the
+            # next cycle's prior context so a later critic re-reviews them
+            # instead of dropping them silently (AutoScientists keeps pending
+            # proposals on the board until a non-author comment lands).
+            pending = [h.statement for h in (rs.hypotheses if rs else []) if h.status == "proposed"]
+            state["pending"] = pending
+            state["mode"] = "discussion" if pending else "execute"
             self._save_cycle_trace(topic, state["cycles"], rs)
             champion_after = len(state["champion"])
             cycle_result.update(

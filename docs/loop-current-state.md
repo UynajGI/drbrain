@@ -1,5 +1,7 @@
 # DrBrain Research Loop — 现状总结（2026-08-14，以磁盘当前内容为准）
 
+> ⚠️ **已过时（2026-08-15）**：本文写于讨论层（`loop/discussion.py` 消息板 MessageBoard + 非作者门 + queue claim）实现之前。所述「12 节点 + 同一个 system prompt 换 user_msg」已被「13 节点 + 4 角色（analyst/critic/compute/verifier 各自独立 system prompt）+ 多 critic 并发讨论层」取代。**现役权威见 [docs/drbrain-architecture.md](drbrain-architecture.md) 第 5 章。**
+
 > 本文只描述**代码现状**，不评判目标状态、不美化。所有结论带 `文件:行号` 证据。
 > 涉及四个文件：
 > - `src/drbrain/loop/director.py`（ResearchDirector 连续循环）

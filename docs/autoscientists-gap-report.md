@@ -1,5 +1,7 @@
 # AutoScientists vs drbrain loop 差距报告
 
+> ⚠️ **差距已大部分补齐（2026-08-15）**：本文写于讨论层实现之前。所记差距「无独立角色、无 per-agent 记忆、无消息板、互验形同虚设」已通过 `loop/discussion.py`（消息板 MessageBoard + 队列 ResearchQueue + 非作者门 + queue claim）+ 4 角色（analyst/critic/compute/verifier）+ per-agent 记忆（role-*.md）+ roster 补齐。**现役权威见 [docs/drbrain-architecture.md](drbrain-architecture.md) 第 5 章。**
+
 > 基于两份源码级调研产出：
 > - `docs/autoscientists-architecture.md`（AutoScientists commit c71a923 逐文件取证）
 > - `docs/loop-current-state.md`（drbrain loop 现状，文件:行号取证）

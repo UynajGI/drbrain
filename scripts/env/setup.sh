@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Setup DrBrain: install dependencies and mineru-open-api CLI
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 echo "=== Installing Python dependencies ==="
 uv sync

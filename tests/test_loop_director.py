@@ -46,20 +46,29 @@ def _cyclic_llm(monkeypatch, script):
 
 
 _CYCLE_SCRIPT = [
-    {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},       # retrieve distill
+    {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},  # retrieve distill
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},  # extract
     # identify_gaps: h1 gets verified in cycle 1 (champion); h2 is always
     # proposed (never a dup) and always DISCARDed by the critic, keeping the
     # no-gain → critic-veto → Phase 4 adapt path alive in later cycles.
-    {"text": '{"gaps": ["gap1"], "hypotheses": ['
-     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},                                          # critique
-    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
-     "tool_calls": None, "usage": None},                                          # verify
-    {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # critique
+    {
+        "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # verify
+    {"text": "cycle report", "tool_calls": None, "usage": None},  # report
 ]
 
 # Same cycle, but the compute node stub carries the job_id of a real (pre-written)
@@ -75,39 +84,63 @@ _CYCLE_SCRIPT_COMPUTE = [
     # cycle 1: retrieve → extract → identify_gaps → critique → compute → verify → report
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": ['
-     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"results": [{"statement": "h1", "job_id": "job-1"}]}',
-     "tool_calls": None, "usage": None},                                          # compute
-    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
-     "tool_calls": None, "usage": None},                                          # verify
-    {"text": "cycle report", "tool_calls": None, "usage": None},                  # report
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"results": [{"statement": "h1", "job_id": "job-1"}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # compute
+    {
+        "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # verify
+    {"text": "cycle report", "tool_calls": None, "usage": None},  # report
     # cycle 2: retrieve → extract → identify_gaps → critique → report (h1 is a
     # champion dup → dropped; h2 is proposed and DISCARDed by the critic → no
     # compute/verify calls)
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": ['
-     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
     {"text": "cycle report", "tool_calls": None, "usage": None},
     # cycle 3: same shape as cycle 2 — no_gain hits the stagnation bar and the
     # critic's all-DISCARD round vetoes the direction → Phase 4 adapt → stop
     {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": ['
-     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]
 
@@ -148,7 +181,9 @@ def test_absorb_classifies_champion_and_rejected():
     d = ResearchDirector(cfg=_cfg())
     state = _default_state("t")
     rs = ResearchState(
-        verified=["h1"], falsified=["h2"], predictions=["p1"],
+        verified=["h1"],
+        falsified=["h2"],
+        predictions=["p1"],
         hypotheses=[_h("h1"), _h("h2"), _h("h3 unresolved")],
     )
     d._absorb(state, "report", rs)
@@ -212,7 +247,10 @@ def test_checkpoint_roundtrip(tmp_path):
 def test_director_runs_cycles_to_stagnation(monkeypatch, tmp_path):
     _cyclic_llm(monkeypatch, _CYCLE_SCRIPT)
     d = ResearchDirector(
-        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
 
     async def _go():
@@ -240,7 +278,9 @@ def test_director_runs_cycles_to_stagnation(monkeypatch, tmp_path):
     assert (run_dir / "logs" / "sessions.jsonl").exists()
     import json
 
-    exp_lines = [json.loads(ln) for ln in (run_dir / "logs" / "experiments.jsonl").read_text().splitlines()]
+    exp_lines = [
+        json.loads(ln) for ln in (run_dir / "logs" / "experiments.jsonl").read_text().splitlines()
+    ]
     assert len(exp_lines) == 3
     assert {e["outcome"] for e in exp_lines} == {"KEEP", "NO_GAIN"}
 
@@ -257,6 +297,7 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
         cfg=_cfg(),
         plugins_dir=_write_search_plugin(tmp_path),
         run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
     _write_compute_plugin(tmp_path)
     # The director points DRBRAIN_RUN_DIR at <run_dir>/<topic>/jobs before the
@@ -289,19 +330,31 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     script = [
         {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
         {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-        {"text": '{"gaps": ["g1"], "hypotheses": ['
-         '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-         '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-         "tool_calls": None, "usage": None},
-        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-         "tool_calls": None, "usage": None},
-        {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
-         "tool_calls": None, "usage": None},
+        {
+            "text": '{"gaps": ["g1"], "hypotheses": ['
+            '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+            '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
+        {
+            "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
+        {
+            "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
         {"text": "cycle report", "tool_calls": None, "usage": None},
     ]
     _cyclic_llm(monkeypatch, script)
     d = ResearchDirector(
-        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
 
     async def _go():
@@ -338,14 +391,23 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
 _DISCUSSION_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": ['
-     '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
-     '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
-     "tool_calls": None, "usage": None},
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]
 
@@ -355,7 +417,10 @@ def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
     and the critic's score+verdict land in knowledge/reviews.md (non-author role)."""
     _cyclic_llm(monkeypatch, _DISCUSSION_SCRIPT)
     d = ResearchDirector(
-        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
 
     async def _go():
@@ -379,11 +444,10 @@ def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
     assert "- [cycle 1] h1" in p_text
     assert "- [cycle 1] h1（reviewer=critic, score=0.90, verdict=KEEP）" in r_text
     assert "reviewer=critic" in r_text
-    # cycle 2: h1 is a duplicate of the champion (T6) → only h2 is re-proposed,
-    # which the scripted critic does not score → 0.00 → DISCARD review
+    # cycle 2: h1 是 champion dup（T6）→ 只重新提 h2；critic 没评 h2 →
+    # discussion_pending（未获非作者评论）→ 只落盘 proposals.md，不落 reviews.md。
     assert "- [cycle 2] h2" in p_text
-    assert "[cycle 2]" in r_text
-    assert "verdict=DISCARD" in r_text
+    assert "h2" not in r_text  # pending 的 h2 没有 review
 
 
 # ── T8: endorsement — Phase 4 adapt needs the critic's independent veto ────────
@@ -425,12 +489,21 @@ def test_critic_vetoes_direction_unit():
 _ENDORSE_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"verifications": [{"statement": "h1", "supports": 0, "refutes": 0, "orthogonal": 1}]}',
-     "tool_calls": None, "usage": None},
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"verifications": [{"statement": "h1", "supports": 0, "refutes": 0, "orthogonal": 1}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]
 
@@ -440,7 +513,10 @@ def test_director_keeps_cycling_when_critic_endorses_direction(monkeypatch, tmp_
     (high mean score, nothing discarded) the director keeps cycling, no pivot."""
     _cyclic_llm(monkeypatch, _ENDORSE_SCRIPT)
     d = ResearchDirector(
-        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
 
     async def _go():
@@ -461,10 +537,16 @@ def test_director_keeps_cycling_when_critic_endorses_direction(monkeypatch, tmp_
 _VETO_SCRIPT = [
     {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},
     {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
-    {"text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
-     "tool_calls": None, "usage": None},
-    {"text": '{"hypotheses": [{"statement": "h1", "score": 0.1}]}',
-     "tool_calls": None, "usage": None},
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
+    {
+        "text": '{"hypotheses": [{"statement": "h1", "score": 0.1}]}',
+        "tool_calls": None,
+        "usage": None,
+    },
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]
 
@@ -473,7 +555,10 @@ def test_director_pivots_when_critic_vetoes_direction(monkeypatch, tmp_path):
     """T8: stagnation + critic veto (score below the endorsement bar) → pivot."""
     _cyclic_llm(monkeypatch, _VETO_SCRIPT)
     d = ResearchDirector(
-        cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), run_dir=str(tmp_path / "runs")
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
     )
 
     async def _go():

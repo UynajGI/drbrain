@@ -12,6 +12,7 @@ insufficient candidates) is wired and bounded by ``MAX_RETRIEVE_ATTEMPTS``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -27,6 +28,12 @@ from llama_index.core.workflow import (
 )
 from loguru import logger
 
+from drbrain.loop.discussion import (
+    POST_PROPOSAL,
+    MessageBoard,
+    QueueItem,
+    ResearchQueue,
+)
 from drbrain.loop.events import (
     Computed,
     Critiqued,
@@ -48,6 +55,10 @@ from drbrain.loop.events import (
 
 _STATE_KEY = "research_state"
 MAX_RETRIEVE_ATTEMPTS = 3
+
+# Discussion layer (AutoScientists workshop/queue in-process): how many
+# independent critic agents review each proposal before it may be queued.
+DEFAULT_N_CRITICS = 3
 
 # ── T2 / T3 / T5 thresholds (code-level gates, domain-agnostic) ──────────────
 VERIFY_LOW_SCORE = 0.5  # T2: below this a hypothesis needs stronger evidence to be verified
@@ -246,6 +257,7 @@ class ResearchLoopWorkflow(Workflow):
         db: Any = None,
         graph: Any = None,
         timeout: float | None = 600.0,
+        n_critics: int = DEFAULT_N_CRITICS,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -258,6 +270,11 @@ class ResearchLoopWorkflow(Workflow):
         self._db = db
         self._graph = graph
         self._plugin_registry: Any = None
+        # Discussion layer: an in-process message board + research queue shared
+        # by the analyst/critic/compute nodes within this single run.
+        self._board = MessageBoard()
+        self._queue = ResearchQueue()
+        self._n_critics = max(1, int(n_critics))
 
     def load_plugins(self) -> Any:
         """Discover external plugins (data / software) for agent tools.
@@ -675,58 +692,136 @@ class ResearchLoopWorkflow(Workflow):
         logger.info("[loop] identify_gaps: %d gaps, %d hypotheses", len(gaps), len(hypotheses))
         return GapsIdentified(gaps=gaps, hypotheses=hypotheses)
 
-    # 9. 假设互评（AutoScientists：critique-before-compute；T1 批判者角色 + T5 评审门）
+    async def _run_critic(
+        self, agent: Any, name: str, hypotheses: list[Hypothesis], history: str = ""
+    ) -> Any:
+        """Run one critic agent as an independent reviewer tagged ``name``.
+
+        Returns the parsed JSON (``{"hypotheses": [{"statement", "score", "flaw"}]}``)
+        or ``None`` when the agent produces no valid JSON. ``flaw`` is the
+        counter-argument (the comment content); the KEEP/DISCARD verdict is
+        derived in code from ``score`` — never from an LLM sentence.
+        """
+        history_note = (
+            f"\n\n以下是你以往轮次评审过的假设与裁决（最近 {_ROLE_MEMORY_LIMIT} 条，"
+            f"供参考，避免重复给出相同结论）：\n{history}"
+            if history
+            else ""
+        )
+        return await self.run_agent_json(
+            agent,
+            f"你是 {name}，一名独立批判者（与提案者 analyst 非同一人）。"
+            "作为批判者独立评审以下假设：给每个假设打分(0~1)并在 flaw 字段写具体的"
+            "反驳理由/漏洞。不要调用任何检索/计算工具，直接基于假设本身推理，只返回 JSON："
+            '{"hypotheses": [{"statement": "...", "score": 0.8, "flaw": "..."}]}。'
+            f"假设：{[h.statement for h in hypotheses]}{history_note}",
+        )
+
+    # 9. 假设互评（AutoScientists：Discussion-Before-Queuing —— 多 critic 异步评论，
+    #    非作者评论门之后才入队；T1 批判者角色 + T5 评审门）
     @step
     async def critique(self, ctx: Context, ev: GapsIdentified) -> Critiqued:
         state = await self._get_state(ctx)
-        # T5: default status critiqued (KEEP); the critic may DISCARD weak ones.
-        hypotheses = [h.model_copy(update={"status": "critiqued"}) for h in ev.hypotheses]
-        # agent-backed: the critic (独立批判者 role, T1) scores each hypothesis
-        # and finds flaws BEFORE any compute is spent. Low scores are DISCARDed
-        # right here — they never enter verification (T5 proposal review gate).
-        agent = self.build_node_agent(role="critic")
-        if agent is not None and ev.hypotheses:
-            # T7: inject the critic's own past judgments (recent tail only) so it
-            # does not repeat identical conclusions across cycles.
-            critic_history = _read_role_history(
-                await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "critic"
+        board = self._board
+        queue = self._queue
+
+        # 1. 分析师（proposer）把每个假设作为 [PROPOSAL] 发到消息板。
+        post_ids: dict[str, str] = {}
+        for h in ev.hypotheses:
+            post_ids[h.statement] = board.post(POST_PROPOSAL, author="analyst", content=h.statement)
+
+        # 2. 并发 N 个独立 critic agent（非作者 reviewer）对同一批假设评论。
+        critic_history = _read_role_history(
+            await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "critic"
+        )
+        critic_names = [f"critic-{i + 1}" for i in range(self._n_critics)]
+        agents = [self.build_node_agent(role="critic") for _ in critic_names]
+        pairs = [(name, agent) for name, agent in zip(critic_names, agents) if agent is not None]
+        if pairs and ev.hypotheses:
+            results = await asyncio.gather(
+                *[
+                    self._run_critic(agent, name, ev.hypotheses, critic_history)
+                    for name, agent in pairs
+                ]
             )
-            history_note = (
-                f"\n\n以下是你以往轮次评审过的假设与裁决（最近 {_ROLE_MEMORY_LIMIT} 条，"
-                f"供参考，避免重复给出相同结论）：\n{critic_history}"
-                if critic_history
-                else ""
-            )
-            data = await self.run_agent_json(
-                agent,
-                "作为批判者独立评审以下假设：给每个假设打分(0~1)并找漏洞/反驳。"
-                '同时裁决是否值得进入核验阶段：值得验证 → "KEEP"；'
-                '分数过低或明显不成立 → "DISCARD"（DISCARD 的假设将被直接过滤，'
-                "不消耗任何计算资源）。"
-                "不要调用任何检索/计算工具，直接基于假设本身推理，只返回 JSON："
-                '{"hypotheses": [{"statement": "...", "score": 0.8, "verdict": "KEEP"}]}。'
-                f"假设：{[h.statement for h in ev.hypotheses]}{history_note}",
-            )
-            if isinstance(data, dict):
-                scored = {
-                    str(h.get("statement", "")): h
-                    for h in data.get("hypotheses", [])
-                    if isinstance(h, dict)
-                }
-                hypotheses = []
-                for h in ev.hypotheses:
-                    entry = scored.get(h.statement, {})
-                    score = float(entry.get("score", 0.0) or 0.0)
-                    verdict = str(entry.get("verdict", "") or "KEEP").upper()
-                    # T5: code gate — low score or explicit DISCARD → filtered out.
-                    if score < CRITIQUE_DISCARD_SCORE or verdict == "DISCARD":
-                        status = "discarded"
-                    else:
-                        status = "critiqued"
-                    hypotheses.append(h.model_copy(update={"status": status, "score": score}))
+        else:
+            results = []
+
+        # 3. 把每个 critic 的评论归到对应 proposal（author=critic-N）。
+        for (name, _agent), data in zip(pairs, results):
+            if not isinstance(data, dict):
+                continue
+            for raw in data.get("hypotheses", []):
+                if not isinstance(raw, dict):
+                    continue
+                stmt = str(raw.get("statement", "")).strip()
+                if stmt not in post_ids:
+                    continue
+                score = float(raw.get("score", 0.0) or 0.0)
+                flaw = str(raw.get("flaw", "") or "").strip()
+                verdict = "DISCARD" if score < CRITIQUE_DISCARD_SCORE else "KEEP"
+                board.comment(
+                    post_ids[stmt], author=name, content=flaw, score=score, verdict=verdict
+                )
+
+        # 4. 讨论门：收到 ≥1 非作者评论才入队（可被 compute claim），否则标
+        #    discussion_pending（compute 拒绝 claim，对齐 ROLE-GPU Step 3）。
+        hypotheses: list[Hypothesis] = []
+        discussed = 0
+        for h in ev.hypotheses:
+            non_author = board.non_author_comments(post_ids[h.statement], author="analyst")
+            scores = [c.score for c in non_author if c.score is not None]
+            if non_author:
+                discussed += 1
+                mean_score = sum(scores) / len(scores) if scores else 0.0
+                all_discard = bool(scores) and all(
+                    c.verdict == "DISCARD" for c in non_author if c.verdict is not None
+                )
+                # T5 code gate: mean below bar, or every non-author reviewer
+                # DISCARDed → filtered out before compute.
+                status = (
+                    "discarded"
+                    if (mean_score < CRITIQUE_DISCARD_SCORE or all_discard)
+                    else "critiqued"
+                )
+                h_new = h.model_copy(update={"status": status, "score": round(mean_score, 4)})
+                if status == "critiqued":
+                    # 讨论门通过 → 入队（可被 compute claim）。
+                    queue.add(
+                        QueueItem(
+                            id=post_ids[h.statement],
+                            statement=h.statement,
+                            proposed_by="analyst",
+                            discussion_pending=False,
+                            score=round(mean_score, 4),
+                            hypothesis=h_new,
+                        )
+                    )
+                # discarded → 不入队（讨论门已过滤，不消耗 compute）。
+            else:
+                # 无评论（无 agent / critic 全失败）→ 不满足门，保持 proposed 并标 pending。
+                h_new = h.model_copy(update={"status": "proposed", "score": 0.0})
+                queue.add(
+                    QueueItem(
+                        id=post_ids[h.statement],
+                        statement=h.statement,
+                        proposed_by="analyst",
+                        discussion_pending=True,
+                        score=0.0,
+                        hypothesis=h_new,
+                    )
+                )
+            hypotheses.append(h_new)
+
         state.hypotheses = hypotheses
         state.scores = [h.score for h in hypotheses]
         await self._set_state(ctx, state)
+        logger.info(
+            "[loop] critique: %d proposal(s), %d discussed (non-author), %d pending",
+            len(hypotheses),
+            discussed,
+            len(hypotheses) - discussed,
+        )
         return Critiqued(hypotheses=hypotheses)
 
     # 10. 实算（AutoScientists：ROLE-GPU —— 先跑实验、结果落盘；实算是唯一职责）
@@ -747,17 +842,32 @@ class ResearchLoopWorkflow(Workflow):
         tools exist (``_has_compute_tools`` False) the node skips the agent and
         every ``job_id`` stays empty; verify then takes its pre-existing
         no-computation path.
+
+        Discussion-Before-Queuing: candidates are *claimed* from the queue (the
+        ``critique`` node only enqueues hypotheses that passed the non-author
+        comment gate). ``discussion_pending`` items are never claimable —
+        mirroring ROLE-GPU Step 3's refusal to run an undiscussed proposal.
         """
-        # T5: only hypotheses that survived the critic get a computation.
+        agent = self.build_node_agent(role="compute")
         candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
+        if agent is not None and self._has_compute_tools(agent):
+            # Claim every queued, discussed hypothesis. Each claim is atomic
+            # under the queue's lock (single-process If-Match equivalent).
+            claimed: list[Hypothesis] = []
+            while True:
+                item = self._queue.claim("compute")
+                if item is None:
+                    break
+                if item.hypothesis is not None and item.hypothesis.status == "critiqued":
+                    claimed.append(item.hypothesis)
+            candidates = claimed
         job_ids: dict[str, str] = {}
         summaries: dict[str, str] = {}
-        agent = self.build_node_agent(role="compute")
         if agent is not None and candidates and self._has_compute_tools(agent):
             data = await self.run_agent_json(
                 agent,
                 "对以下每个 hypothesis：读取它的 prediction 字段（其中描述了要计算的数值量，"
-                "以及什么样的结果算支持该假设），用 run_python(mode=\"async\") 写代码实算该量，"
+                '以及什么样的结果算支持该假设），用 run_python(mode="async") 写代码实算该量，'
                 "用 check_job 轮询到作业完成，把返回的 job_id 填进对应条目；"
                 "computed 是给人看的摘要，可留空；不要统计任何文献证据（那是核验者的职责）。"
                 "只返回 JSON："

@@ -112,8 +112,11 @@ def _compute_loop_script(verify_text: str, compute_text: str) -> list[dict]:
             "tool_calls": None,
             "usage": None,
         },
-        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-         "tool_calls": None, "usage": None},
+        {
+            "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
         {"text": compute_text, "tool_calls": None, "usage": None},
         {"text": verify_text, "tool_calls": None, "usage": None},
     ]
@@ -399,7 +402,7 @@ def test_verify_requires_real_job_files(monkeypatch, tmp_path):
     )
     plugins_dir = _write_search_plugin(tmp_path)
     _write_compute_plugin(tmp_path)
-    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir, n_critics=1)
 
     async def _go():
         handler = wf.run(task="flat band")
@@ -430,7 +433,7 @@ def test_verify_downgrades_without_job_evidence(monkeypatch, tmp_path):
     )
     plugins_dir = _write_search_plugin(tmp_path)
     _write_compute_plugin(tmp_path)
-    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir, n_critics=1)
 
     async def _go():
         handler = wf.run(task="flat band")
@@ -461,7 +464,7 @@ def test_verify_downgrades_when_job_files_missing(monkeypatch, tmp_path):
     )
     plugins_dir = _write_search_plugin(tmp_path)
     _write_compute_plugin(tmp_path)
-    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir, n_critics=1)
 
     async def _go():
         handler = wf.run(task="flat band")
@@ -489,7 +492,7 @@ def test_verify_downgrades_when_job_log_has_no_number(monkeypatch, tmp_path):
     )
     plugins_dir = _write_search_plugin(tmp_path)
     _write_compute_plugin(tmp_path)
-    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir)
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=plugins_dir, n_critics=1)
 
     async def _go():
         handler = wf.run(task="flat band")
@@ -515,8 +518,11 @@ def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
                 "tool_calls": None,
                 "usage": None,
             },
-            {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-             "tool_calls": None, "usage": None},
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
             {
                 "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
                 '"orthogonal": 0, "computed": "1.0", "value": 1.0}]}',
@@ -567,8 +573,11 @@ def test_role_memory_injected_into_node_prompts(monkeypatch, tmp_path):
             "tool_calls": None,
             "usage": None,
         },
-        {"text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
-         "tool_calls": None, "usage": None},
+        {
+            "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+            "tool_calls": None,
+            "usage": None,
+        },
         {
             "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, '
             '"orthogonal": 0}]}',
@@ -606,12 +615,164 @@ def test_role_memory_injected_into_node_prompts(monkeypatch, tmp_path):
                         parts.append(str(getattr(blk, "text", "")))
         return "\n".join(parts)
 
-    # agent calls: 0 retrieve, 1 extract, 2 identify_gaps, 3 critique, 4 verify,
-    # 5 report (report is also agent-backed)
-    assert len(seen) == 6
+    # agent calls: 0 retrieve, 1 extract, 2 identify_gaps, 3 critic-1, 4 critic-2,
+    # 5 critic-3, 6 verify, 7 report (report is also agent-backed)
+    assert len(seen) == 8
     critic_text = _user_text(seen[3])
-    verify_text = _user_text(seen[4])
+    verify_text = _user_text(seen[6])
     assert "以往轮次评审过的假设" in critic_text
     assert "h2（score=0.10, verdict=DISCARD）" in critic_text
     assert "以往轮次核验过的假设" in verify_text
     assert "supports=1, refutes=0" in verify_text
+
+
+# ── Discussion-Before-Queuing 门（多 critic 异步评论 + 非作者门 + 入队） ───────
+
+
+def test_critique_discussion_gate_multiple_critics(monkeypatch, tmp_path):
+    """讨论门正路径：多个 critic 并发评论，非作者评论满足门 → 入队（可 claim）。"""
+    from drbrain.loop.discussion import POST_PROPOSAL
+
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9, "flaw": "minor"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.8, "flaw": "ok"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.7, "flaw": "fine"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"verifications": [{"statement": "h1", "supports": 1, '
+                '"refutes": 0, "orthogonal": 0}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        return await handler
+
+    asyncio.run(_go())
+
+    # 讨论门：h1 收到 3 条非作者评论（critic-1/2/3）。
+    proposals = wf._board.list_posts(POST_PROPOSAL)
+    assert len(proposals) == 1
+    non_author = wf._board.non_author_comments(proposals[0].id, author="analyst")
+    assert len(non_author) == 3
+
+    # 入队且 discussion_pending=False（可被 compute claim）。
+    pending = wf._queue.list_pending()
+    claimed = wf._queue.list_claimed()
+    queued = pending + claimed
+    assert len(queued) == 1
+    assert all(not i.discussion_pending for i in queued)
+    # 3 个 critic 打分均值 (0.9+0.8+0.7)/3 = 0.8 → critiqued。
+    assert queued[0].hypothesis.status == "critiqued"
+
+
+def test_critique_discards_low_scored_proposal(monkeypatch, tmp_path):
+    """讨论门负路径：所有非作者 reviewer 打低分 → DISCARD，不入队。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.1, "flaw": "weak"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.2, "flaw": "vague"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.3, "flaw": "thin"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"verifications": []}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    _, state = asyncio.run(_go())
+    # mean (0.1+0.2+0.3)/3 = 0.2 < 0.4 → 全体 DISCARD → 不入队。
+    assert len(wf._queue.list_pending()) + len(wf._queue.list_claimed()) == 0
+    assert all(h.status == "discarded" for h in state.hypotheses)
+
+
+def test_critique_pending_when_no_non_author_comment(monkeypatch, tmp_path):
+    """讨论门负路径：critic 无有效评论 → 不满足门 → discussion_pending=True。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": "not json", "tool_calls": None, "usage": None},
+            {"text": "not json", "tool_calls": None, "usage": None},
+            {
+                "text": '{"verifications": []}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), n_critics=1)
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    _, state = asyncio.run(_go())
+    # critic 唯一一次评审返回非 JSON（retry 后仍失败）→ 无非作者评论 → pending。
+    queued = wf._queue.list_pending() + wf._queue.list_claimed()
+    assert len(queued) == 1
+    assert queued[0].discussion_pending is True
+    assert all(h.status == "proposed" for h in state.hypotheses)

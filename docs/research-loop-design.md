@@ -3,6 +3,7 @@
 > 三合一架构第三层：**RAG（读文献）+ 插件（跑模型/软件）+ loop（编排闭环）**。
 > 定调（2026-08-13）：**确定性骨架 + 借 AutoScientists 闭环语义**。
 > 参考：mims-harvard/AutoScientists（自组织 agent 团队 + 提案互评 + 共享成败）。
+> **实现演进（2026-08-15）**：本文的「12 节点骨架 + T1-T6 对齐」之上，讨论层已落地（`loop/discussion.py` 多 critic 并发 + 非作者门 + queue claim + roster + Mode Selector），现役 13 节点 + 4 角色。**完整现役架构见 [docs/drbrain-architecture.md](drbrain-architecture.md)。**
 
 ## 一、定位
 
