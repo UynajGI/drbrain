@@ -58,7 +58,7 @@ dependencies = [
 
 [project.optional-dependencies]
 office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
-gnn = ["torch>=2.0,<2.11"]
+gnn = ["torch>=2.0,<2.14"]
 analytics = ["duckdb"]
 
 [project.urls]
