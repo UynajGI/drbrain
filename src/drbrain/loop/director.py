@@ -15,6 +15,7 @@ imports a domain plugin.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -138,7 +139,18 @@ class ResearchDirector:
     # ── workspace paths ───────────────────────────────────────────────────────
 
     def _topic_dir(self, topic: str) -> Path:
-        d = self._run_dir / _slug(topic)
+        base = _slug(topic)
+        d = self._run_dir / base
+        # Distinct topics that sanitize to the same slug (e.g. "a/b" vs "a b")
+        # must not share a workspace — disambiguate with a short hash.
+        run_json = d / "run.json"
+        if d.exists() and run_json.exists():
+            try:
+                other = json.loads(run_json.read_text(encoding="utf-8")).get("topic")
+            except (json.JSONDecodeError, OSError):
+                other = None
+            if other is not None and other != topic:
+                d = self._run_dir / f"{base}-{hashlib.sha1(topic.encode()).hexdigest()[:8]}"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -608,6 +620,9 @@ class ResearchDirector:
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
             n_critics=self._n_critics,
+            # Per-run job dir (not process-global env): concurrent directors on
+            # different topics keep their own compute evidence (review P1).
+            jobs_dir=str(self._topic_dir(topic) / "jobs"),
         )
         # T6: pass structured prior champion/dead-ends so the proposal gate can
         # reject duplicates in code (not just via prompt text).
@@ -649,19 +664,25 @@ class ResearchDirector:
 
         # T3: count-driven classification is the source of truth when present.
         if verifications:
-            verified = [v.statement for v in verifications if v.status == "verified"]
-            falsified = [v.statement for v in verifications if v.status == "falsified"]
-            predictions = [v.statement for v in verifications if v.status == "prediction"]
+            # Reconcile repeated records: one statement may carry conflicting
+            # statuses across records — first-wins per statement keeps a claim
+            # out of both champion and dead-ends (review P1).
+            verdicts: dict[str, str] = {}
+            for v in verifications:
+                verdicts.setdefault(v.statement, v.status)
+            verified = [s for s, st in verdicts.items() if st == "verified"]
+            falsified = [s for s, st in verdicts.items() if st == "falsified"]
+            predictions = [s for s, st in verdicts.items() if st == "prediction"]
 
         champion_statements = {c["statement"] for c in state["champion"]}
         rejected = set(state["rejected"])
 
-        new_champion = [v for v in verified if v not in champion_statements]
+        new_champion = list(dict.fromkeys(v for v in verified if v not in champion_statements))
         new_rejected = [f for f in falsified if f not in rejected and f not in champion_statements]
 
         cycle_no = state["cycles"] + 1
-        for v in new_champion:
-            state["champion"].append({"statement": v, "cycle": cycle_no, "confidence": 1.0})
+        for stmt in new_champion:
+            state["champion"].append({"statement": stmt, "cycle": cycle_no, "confidence": 1.0})
         state["rejected"].extend(new_rejected)
         state["rejected"] = list(dict.fromkeys(state["rejected"]))  # dedupe, keep order
 

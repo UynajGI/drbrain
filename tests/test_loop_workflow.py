@@ -82,6 +82,7 @@ def test_job_log_has_number_gate(tmp_path):
     jobs = tmp_path / "jobs"
     jobs.mkdir()
     run_dir = str(jobs)
+    dead_pid = 99999999  # beyond pid_max: /proc/<pid> never exists → job finished
 
     # empty run_dir / job_id → no evidence
     assert _job_log_has_number(None, "j1") is False
@@ -89,19 +90,24 @@ def test_job_log_has_number_gate(tmp_path):
     # meta json missing
     assert _job_log_has_number(run_dir, "j1") is False
     # meta present but log file missing
-    (jobs / "j1.json").write_text('{"job_id": "j1", "pid": 1}', encoding="utf-8")
+    (jobs / "j1.json").write_text(json.dumps({"job_id": "j1", "pid": dead_pid}), encoding="utf-8")
     assert _job_log_has_number(run_dir, "j1") is False
     # log present but no parseable number
     (jobs / "j1.log").write_text("all done, nothing numeric", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j1") is False
-    # number appears in the log → evidence
+    # number appears in the log + job finished → evidence
     (jobs / "j1.log").write_text("result = 1.0", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j1") is True
+    # still-running job (alive pid) with a numeric log → NOT final evidence
+    (jobs / "j4.json").write_text('{"job_id": "j4", "pid": 1}', encoding="utf-8")
+    (jobs / "j4.log").write_text("progress 0.5", encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j4") is False
     # log_path from meta is honored (not just <job_id>.log)
     elsewhere = tmp_path / "elsewhere.log"
     elsewhere.write_text("computed 42", encoding="utf-8")
     (jobs / "j2.json").write_text(
-        json.dumps({"job_id": "j2", "pid": 2, "log_path": str(elsewhere)}), encoding="utf-8"
+        json.dumps({"job_id": "j2", "pid": dead_pid, "log_path": str(elsewhere)}),
+        encoding="utf-8",
     )
     assert _job_log_has_number(run_dir, "j2") is True
     # malformed meta json → no evidence
@@ -125,10 +131,16 @@ def test_classify_verification_t4_job_gate(tmp_path):
     # 计算工具在场但无 job 证据：computed/value 都填了数值也降级 prediction（防编造核心）
     ver = Verification(statement="h1", supports=1, refutes=0, computed="1.0", value=1.0)
     assert _classify_verification(ver, 0.9, True, run_dir) == "prediction"
-    # job_id 指向真实作业文件且日志含数值 → verified
+    # job_id 指向真实作业文件、日志含数值、作业已结束 → verified
     (jobs / "j1.log").write_text("value 2.5", encoding="utf-8")
     (jobs / "j1.json").write_text(
-        json.dumps({"job_id": "j1", "pid": 1, "log_path": str(jobs / "j1.log")}),
+        json.dumps(
+            {
+                "job_id": "j1",
+                "pid": 99999999,  # dead pid → job finished
+                "log_path": str(jobs / "j1.log"),
+            }
+        ),
         encoding="utf-8",
     )
     ver = Verification(

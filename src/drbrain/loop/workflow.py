@@ -184,6 +184,19 @@ def _job_log_has_number(run_dir: str | None, job_id: str) -> bool:
         return False
     if not isinstance(meta, dict):
         return False
+    # T4 (review): a still-running job's numeric stdout is not final evidence —
+    # only a finished process's log counts as a completed computation.
+    pid = meta.get("pid")
+    if pid:
+        try:
+            stat = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass  # process already reaped → finished
+        else:
+            after = stat[stat.rfind(")") + 2 :]
+            state_ch = after[0] if after else ""
+            if state_ch not in ("Z", "X"):
+                return False  # still running → numeric log is not final evidence
     log_path = meta.get("log_path")
     log_file = Path(log_path) if log_path else jobs / f"{job_id}.log"
     if not log_file.is_file():
@@ -253,6 +266,7 @@ class ResearchLoopWorkflow(Workflow):
         *,
         plugins_dir: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        jobs_dir: str | None = None,
         cfg: Any = None,
         db: Any = None,
         graph: Any = None,
@@ -266,6 +280,7 @@ class ResearchLoopWorkflow(Workflow):
         super().__init__(timeout=timeout, **kwargs)
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
+        self._jobs_dir = jobs_dir
         self._cfg = cfg
         self._db = db
         self._graph = graph
@@ -468,7 +483,7 @@ class ResearchLoopWorkflow(Workflow):
         answer = ""
         if response is not None:
             answer = response.content or ""
-        return answer or "No answer generated."
+        return answer or None
 
     async def run_agent_json(
         self,
@@ -487,7 +502,7 @@ class ResearchLoopWorkflow(Workflow):
         """
         for attempt in range(retries + 1):
             answer = await self.run_agent(agent, user_msg, max_iterations=max_iterations)
-            if answer and answer != "No answer generated.":
+            if answer:
                 data = _parse_json_lenient(answer)
                 if data is not None:
                     return data
@@ -529,10 +544,9 @@ class ResearchLoopWorkflow(Workflow):
         state = await self._get_state(ctx)
         attempt = ev.attempt if isinstance(ev, RetrieveAgain) else 1
         candidates = list(state.candidates)
-        # First attempt only (the RetrieveAgain loop bounds re-runs): the agent
-        # distills the task into a focused query, then a deterministic plugin
-        # search fetches the candidate papers — no free-form output to parse.
-        if attempt == 1 and state.task:
+        # Distill on every attempt: a transient empty first search must be able
+        # to re-run the agent on RetrieveAgain (the loop bounds the re-runs).
+        if state.task:
             query = state.task
             agent = self.build_node_agent()
             if agent is not None:
@@ -921,7 +935,7 @@ class ResearchLoopWorkflow(Workflow):
                     vs_by_stmt = {h.statement: h for h in candidates}
                     # T4: the compute node's job evidence lives in the on-disk
                     # job directory the director points DRBRAIN_RUN_DIR at.
-                    run_dir = os.environ.get("DRBRAIN_RUN_DIR") or None
+                    run_dir = self._jobs_dir or os.environ.get("DRBRAIN_RUN_DIR") or None
                     for raw in raw_vs:
                         if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
                             continue
@@ -1091,7 +1105,7 @@ class ResearchLoopWorkflow(Workflow):
                 f"假设：{[h.statement for h in state.hypotheses]}\n\n"
                 f"已验证结论：{state.verified}\n\n预测：{state.predictions}",
             )
-            if text and text != "No answer generated.":
+            if text:
                 report = text
         final = f"{summary}\n\n{report}"
         state.report = final

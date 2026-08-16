@@ -308,7 +308,13 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     jobs_dir.mkdir(parents=True, exist_ok=True)
     (jobs_dir / "job-1.log").write_text("computed 1.0", encoding="utf-8")
     (jobs_dir / "job-1.json").write_text(
-        json.dumps({"job_id": "job-1", "pid": 1, "log_path": str(jobs_dir / "job-1.log")}),
+        json.dumps(
+            {
+                "job_id": "job-1",
+                "pid": 99999999,  # dead pid → job finished (T4 gate requires completion)
+                "log_path": str(jobs_dir / "job-1.log"),
+            }
+        ),
         encoding="utf-8",
     )
 

@@ -95,7 +95,7 @@ class BM25Search:
         return results[:limit]
 
 
-_bm25_cache: dict[str, BM25Search] = {}
+_bm25_cache: dict[tuple, BM25Search] = {}
 
 
 def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
@@ -110,8 +110,11 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
     # Only cache on-disk databases: in-memory DBs (``:memory:``) share the same
     # ``path`` string across tests and would otherwise collide in the cache.
     cacheable = bool(db_path) and os.path.isfile(db_path)
-    if cacheable and db_path in _bm25_cache:
-        return _bm25_cache[db_path]
+    # Key on path + ranking params + db mtime so writes invalidate the cached
+    # index and a changed k1/b is honoured (review P2).
+    cache_key = (db_path, k1, b, os.path.getmtime(db_path)) if cacheable else None
+    if cache_key is not None and cache_key in _bm25_cache:
+        return _bm25_cache[cache_key]
 
     index = BM25Search()
 
@@ -152,6 +155,6 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
         )
 
     index.build(k1=k1, b=b)
-    if cacheable:
-        _bm25_cache[db_path] = index
+    if cache_key is not None:
+        _bm25_cache[cache_key] = index
     return index

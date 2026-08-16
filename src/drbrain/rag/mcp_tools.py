@@ -20,13 +20,31 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def _run_coro(coro: Any) -> Any:
+    """Run a coroutine, tolerating an already-running event loop.
+
+    Inside a workflow step (a running loop) ``asyncio.run`` raises
+    ``RuntimeError``; fall back to running the coroutine on a fresh loop in a
+    worker thread so the sync MCP bridge stays usable from sync and async
+    callers alike (review P1).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def discover_mcp_tools(server: dict[str, Any]) -> list[dict[str, Any]]:
     """Connect to a stdio MCP server and return its tool descriptors.
 
     Returns ``[{"name", "description", "inputSchema"}, ...]``; raises on a
     connection/transport failure so callers can decide to skip that server.
     """
-    return asyncio.run(_discover(server))
+    return _run_coro(_discover(server))
 
 
 async def _discover(server: dict[str, Any]) -> list[dict[str, Any]]:
@@ -57,7 +75,7 @@ def call_mcp_tool(
     arguments: dict[str, Any],
 ) -> str:
     """Connect to a stdio MCP server, call one tool, return its text output."""
-    return asyncio.run(_call(server, tool_name, arguments))
+    return _run_coro(_call(server, tool_name, arguments))
 
 
 async def _call(
