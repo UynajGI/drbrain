@@ -510,7 +510,8 @@ class ResearchDirector:
             if _job_log_has_number(str(jobs_dir), job_id):
                 continue  # log carries a numeric result → completed, not stale
             try:
-                started = float(meta.get("started_at"))
+                started_raw = meta.get("started_at")
+                started = float(started_raw) if isinstance(started_raw, (int, float)) else 0.0
             except (TypeError, ValueError):
                 started = meta_path.stat().st_mtime  # fall back to meta file mtime
             if now - started > JANITOR_STALE_SECONDS:

@@ -244,6 +244,7 @@ def test_checkpoint_roundtrip(tmp_path):
 # ── integration: continuous loop to stagnation ────────────────────────────────
 
 
+@pytest.mark.timeout(180)
 def test_director_runs_cycles_to_stagnation(monkeypatch, tmp_path):
     _cyclic_llm(monkeypatch, _CYCLE_SCRIPT)
     d = ResearchDirector(
@@ -285,6 +286,7 @@ def test_director_runs_cycles_to_stagnation(monkeypatch, tmp_path):
     assert {e["outcome"] for e in exp_lines} == {"KEEP", "NO_GAIN"}
 
 
+@pytest.mark.timeout(180)
 def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     """T4: the director's DRBRAIN_RUN_DIR wiring feeds the verify job-evidence gate.
 
@@ -325,6 +327,7 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
 # ── T7: per-role cross-cycle memory (critic / verifier) ───────────────────────
 
 
+@pytest.mark.timeout(180)
 def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     """T7: after each cycle the director appends critic/verifier history to knowledge/."""
     script = [
@@ -412,6 +415,7 @@ _DISCUSSION_SCRIPT = [
 ]
 
 
+@pytest.mark.timeout(180)
 def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
     """T8: each cycle's hypotheses land in knowledge/proposals.md (propose role)
     and the critic's score+verdict land in knowledge/reviews.md (non-author role)."""
@@ -508,6 +512,7 @@ _ENDORSE_SCRIPT = [
 ]
 
 
+@pytest.mark.timeout(180)
 def test_director_keeps_cycling_when_critic_endorses_direction(monkeypatch, tmp_path):
     """T8: no-gain alone is not a structural change — with the critic endorsing
     (high mean score, nothing discarded) the director keeps cycling, no pivot."""
@@ -551,6 +556,7 @@ _VETO_SCRIPT = [
 ]
 
 
+@pytest.mark.timeout(180)
 def test_director_pivots_when_critic_vetoes_direction(monkeypatch, tmp_path):
     """T8: stagnation + critic veto (score below the endorsement bar) → pivot."""
     _cyclic_llm(monkeypatch, _VETO_SCRIPT)

@@ -48,9 +48,7 @@ def main() -> int:
     cfg = load_config(str(ROOT / "config.yaml"), str(ROOT / "config.local.yaml"))
     db = Database(args.db)
     try:
-        director = ResearchDirector(
-            cfg, db=db, plugins_dir=args.plugins, run_dir=args.run_dir
-        )
+        director = ResearchDirector(cfg, db=db, plugins_dir=args.plugins, run_dir=args.run_dir)
         state = director.run_sync(
             args.topic, max_cycles=args.max_cycles, stagnation_cycles=args.stagnation
         )
@@ -60,8 +58,10 @@ def main() -> int:
     print("\n" + "=" * 72)
     print("DIRECTOR RESULT")
     print("=" * 72)
-    print(f"cycles={state['cycles']} champion={len(state['champion'])} "
-          f"rejected={len(state['rejected'])} no_gain={state['consecutive_no_gain']}")
+    print(
+        f"cycles={state['cycles']} champion={len(state['champion'])} "
+        f"rejected={len(state['rejected'])} no_gain={state['consecutive_no_gain']}"
+    )
     for c in state["champion"]:
         print(f"  [champion, cycle {c['cycle']}] {c['statement']}")
     print(f"\nworkspace: {args.run_dir}/topological-flat-band/")

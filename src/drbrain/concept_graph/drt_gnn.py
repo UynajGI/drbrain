@@ -38,7 +38,7 @@ class NeighborSampler:
         self.row = row
         self.col = col
         # adjacency lists per node (CSR-like)
-        self._offsets = np.zeros(n_nodes + 1, dtype=np.int64)
+        self._offsets: np.ndarray = np.zeros(n_nodes + 1, dtype=np.int64)
         np.add.at(self._offsets, row + 1, 1)
         self._offsets = np.cumsum(self._offsets)
         order = np.argsort(row, kind="stable")
@@ -97,18 +97,16 @@ class GraphLayer(nn.Module):
         self.w = nn.Linear(2 * in_dim, out_dim, device=device)
         if agg == "gat":
             self.attn = nn.Linear(2 * in_dim, 1, device=device)
+        self.norm: nn.Module | None = None
         if norm == "ln":
             self.norm = nn.LayerNorm(out_dim, device=device)
         elif norm == "bn":
             self.norm = nn.BatchNorm1d(out_dim, device=device)
-        else:
-            self.norm = None
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
         self.residual = residual
+        self.res: nn.Linear | None = None
         if residual and in_dim != out_dim:
             self.res = nn.Linear(in_dim, out_dim, device=device)
-        else:
-            self.res = None
 
     def _activation(self, x: torch.Tensor) -> torch.Tensor:
         if self.act == "silu":
@@ -230,15 +228,11 @@ class DRTGNN(nn.Module):
 
         dims = [in_dim] + [hidden_dim] * (n_layers - 1) + [embed_dim]
         self.co_layers = nn.ModuleList(
-            GraphLayer(
-                dims[i], dims[i + 1], device, act, agg, norm, residual, dropout
-            )
+            GraphLayer(dims[i], dims[i + 1], device, act, agg, norm, residual, dropout)
             for i in range(n_layers)
         )
         self.cit_layers = nn.ModuleList(
-            GraphLayer(
-                dims[i], dims[i + 1], device, act, agg, norm, residual, dropout
-            )
+            GraphLayer(dims[i], dims[i + 1], device, act, agg, norm, residual, dropout)
             for i in range(n_layers)
         )
         if fusion == "gate":
@@ -328,8 +322,13 @@ class Muon(torch.optim.Optimizer):
         adamw_eps: float = 1e-8,
     ):
         defaults = dict(
-            lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps,
-            wd=wd, adamw_betas=adamw_betas, adamw_eps=adamw_eps,
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            wd=wd,
+            adamw_betas=adamw_betas,
+            adamw_eps=adamw_eps,
         )
         super().__init__(params, defaults)
 

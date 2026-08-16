@@ -131,7 +131,9 @@ def test_classify_verification_t4_job_gate(tmp_path):
         json.dumps({"job_id": "j1", "pid": 1, "log_path": str(jobs / "j1.log")}),
         encoding="utf-8",
     )
-    ver = Verification(statement="h1", supports=1, refutes=0, computed="2.5", value=2.5, job_id="j1")
+    ver = Verification(
+        statement="h1", supports=1, refutes=0, computed="2.5", value=2.5, job_id="j1"
+    )
     assert _classify_verification(ver, 0.9, True, run_dir) == "verified"
     # falsified 不受计算门影响
     assert (

@@ -21,9 +21,7 @@ DB_PATH = ROOT / "data" / "drbrain.db"
 
 pytestmark = pytest.mark.integration
 
-_requires_db = pytest.mark.skipif(
-    not DB_PATH.exists(), reason="data/drbrain.db not present"
-)
+_requires_db = pytest.mark.skipif(not DB_PATH.exists(), reason="data/drbrain.db not present")
 
 
 @_requires_db

@@ -31,10 +31,10 @@ CRITIC_SYSTEM_PROMPT = (
     "below the bar — DISCARDed hypotheses are filtered out and never reach verification.\n\n"
     "OUTPUT CONTRACT — your reply MUST be a single JSON object of exactly this shape:\n"
     '{"hypotheses": [{"statement": "...", "score": 0.8, "verdict": "KEEP"}]}\n'
-    "- \"hypotheses\": an array with one entry per candidate hypothesis.\n"
-    "-   \"statement\": the hypothesis text, verbatim (downstream matches on it).\n"
-    "-   \"score\": a float 0-1 — your plausibility/testability score.\n"
-    "-   \"verdict\": \"KEEP\" or \"DISCARD\" — the gate the loop applies verbatim.\n"
+    '- "hypotheses": an array with one entry per candidate hypothesis.\n'
+    '-   "statement": the hypothesis text, verbatim (downstream matches on it).\n'
+    '-   "score": a float 0-1 — your plausibility/testability score.\n'
+    '-   "verdict": "KEEP" or "DISCARD" — the gate the loop applies verbatim.\n'
     "Emit ONLY this JSON object — no prose before or after it. Downstream code "
     "parses it programmatically; anything outside the object is ignored and may "
     "cause the entry to be dropped."
@@ -59,10 +59,10 @@ VERIFIER_SYSTEM_PROMPT = (
     "OUTPUT CONTRACT — your reply MUST be a single JSON object of exactly this shape:\n"
     '{"verifications": [{"statement": "...", "supports": 3, "refutes": 1, '
     '"orthogonal": 2, "evidence": "..."}]}\n'
-    "- \"verifications\": an array with one entry per candidate hypothesis.\n"
-    "-   \"statement\": the hypothesis text, verbatim (downstream matches on it).\n"
-    "-   \"supports\" / \"refutes\" / \"orthogonal\": integer evidence counts.\n"
-    "-   \"evidence\": a short summary of the evidence you collected.\n"
+    '- "verifications": an array with one entry per candidate hypothesis.\n'
+    '-   "statement": the hypothesis text, verbatim (downstream matches on it).\n'
+    '-   "supports" / "refutes" / "orthogonal": integer evidence counts.\n'
+    '-   "evidence": a short summary of the evidence you collected.\n'
     "Emit ONLY this JSON object — no prose before or after it. Downstream code "
     "derives the verdict (verified / falsified / prediction) from these counts; a "
     "reply that is not this JSON shape cannot be verified."
@@ -89,11 +89,11 @@ COMPUTE_SYSTEM_PROMPT = (
     "the verifier node, not to you.\n\n"
     "OUTPUT CONTRACT — your reply MUST be a single JSON object of exactly this shape:\n"
     '{"results": [{"statement": "...", "job_id": "...", "computed": "..."}]}\n'
-    "- \"results\": an array with one entry per hypothesis.\n"
-    "-   \"statement\": the hypothesis text, verbatim (downstream matches on it).\n"
-    "-   \"job_id\": the id returned by run_python(mode=\"async\") whose on-disk "
-    "artifacts contain the numeric result; \"\" when the computation could not be run.\n"
-    "-   \"computed\": a short human-readable summary of the result, or \"\" when none.\n"
+    '- "results": an array with one entry per hypothesis.\n'
+    '-   "statement": the hypothesis text, verbatim (downstream matches on it).\n'
+    '-   "job_id": the id returned by run_python(mode="async") whose on-disk '
+    'artifacts contain the numeric result; "" when the computation could not be run.\n'
+    '-   "computed": a short human-readable summary of the result, or "" when none.\n'
     "Emit ONLY this JSON object — no prose before or after it. Downstream code parses "
     "it programmatically and trusts only the job files a job_id points at."
 )
@@ -134,7 +134,7 @@ ANALYST_SYSTEM_PROMPT = (
     '"statement" (the falsifiable mechanism claim), "prediction" (what evidence would '
     'support it) and "falsification" (what evidence would refute it). "conditions" is an '
     "optional object of boundary conditions.\n"
-    'Emit ONLY this JSON object — no prose before or after it. Downstream code parses it '
+    "Emit ONLY this JSON object — no prose before or after it. Downstream code parses it "
     'programmatically; hypotheses missing "prediction" are dropped.'
 )
 
