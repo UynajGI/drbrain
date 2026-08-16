@@ -605,6 +605,7 @@ def build_agent(
     max_tokens: int = AGENT_MAX_TOKENS,
     include_retrieval: bool = True,
     plugins_dir: str | Path | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
 ) -> Any | None:
     """Assemble the LlamaIndex :class:`FunctionAgent`.
 
@@ -633,6 +634,10 @@ def build_agent(
             tools.append(rt)
     if plugins_dir:
         tools.extend(_load_plugin_tools(plugins_dir))
+    if mcp_servers:
+        from drbrain.rag.mcp_tools import load_mcp_tools
+
+        tools.extend(load_mcp_tools(mcp_servers))
 
     system_prompt = BASE_SYSTEM_PROMPT
     if closure_context:
