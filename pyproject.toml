@@ -53,6 +53,7 @@ dependencies = [
     "llama-index-core>=0.14.23",
     "llama-index-llms-litellm>=0.7.1",
     "llama-index-retrievers-bm25>=0.7.1",
+    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -73,6 +74,10 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-timeout>=0.5",
     "ruff>=0.8",
+]
+materials = [
+    "ase>=3.22",
+    "gpaw>=24.6",
 ]
 
 [project.scripts]

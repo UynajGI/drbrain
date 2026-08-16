@@ -12,7 +12,7 @@ import hashlib
 import itertools
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import litellm
 from loguru import logger
@@ -114,6 +114,54 @@ class KeyRotator:
         return self._keys[hash(key_hint) % len(self._keys)]
 
 
+# Module-level rotators keyed by the keys tuple so each model's key list gets a
+# stable round-robin cursor across calls within a process.
+_API_KEY_ROTATORS: dict[tuple, KeyRotator] = {}
+
+
+def _resolve_api_key(model_cfg: dict) -> str | None:
+    """Return the api_key for one call, rotating when ``api_keys`` (a list) is set.
+
+    ``api_keys`` spreads rate-limit load across accounts (round-robin); a bare
+    ``api_key`` string is used as-is. Returns ``None`` when neither is present.
+    """
+    keys = model_cfg.get("api_keys")
+    if keys:
+        key_tuple = tuple(str(k) for k in keys if k)
+        if not key_tuple:
+            return model_cfg.get("api_key")
+        rotator = _API_KEY_ROTATORS.get(key_tuple)
+        if rotator is None:
+            rotator = KeyRotator(list(key_tuple), strategy="round_robin")
+            _API_KEY_ROTATORS[key_tuple] = rotator
+        return rotator.next()
+    return model_cfg.get("api_key")
+
+
+# Per-agent key counter: one agent (an LLM instance) pins ONE key for its whole
+# multi-turn conversation; different agents get different keys via this counter.
+_AGENT_KEY_COUNTER = itertools.count()
+
+
+def resolve_agent_key(model_cfg: dict) -> dict:
+    """Resolve a model's ``api_keys`` list to ONE fixed ``api_key`` (per agent).
+
+    A multi-turn agent conversation re-sends the same system prompt every round,
+    so rotating keys *per call* would shatter upstream (per-key) cache hits.
+    Instead each agent pins one key for its lifetime; different agents pick
+    different keys round-robin. Returns a shallow copy so the shared config dict
+    is never mutated.
+    """
+    model_cfg = dict(model_cfg)
+    keys = model_cfg.get("api_keys")
+    if isinstance(keys, list):
+        keys = [str(k) for k in keys if k]
+        if keys:
+            model_cfg["api_key"] = keys[next(_AGENT_KEY_COUNTER) % len(keys)]
+    model_cfg.pop("api_keys", None)
+    return model_cfg
+
+
 class LLMClient:
     """Calls LLM with provider/model from config, supports fallback chain."""
 
@@ -158,8 +206,9 @@ def _build_litellm_kwargs(
         "max_tokens": max_tokens,
         "timeout": 60,
     }
-    if model_cfg.get("api_key"):
-        kwargs["api_key"] = model_cfg["api_key"]
+    api_key = _resolve_api_key(model_cfg)
+    if api_key:
+        kwargs["api_key"] = api_key
     if model_cfg.get("base_url"):
         kwargs["api_base"] = model_cfg["base_url"]
     return kwargs
@@ -182,6 +231,67 @@ def _record_llm(model_name: str, provider: str, response, start_time: float) -> 
             duration_ms=duration_ms,
         )
     except Exception:
+        pass
+
+
+def _prompt_hash(prompt: str) -> str:
+    """SHA1 of the prompt text — a stable fingerprint without the content."""
+    return hashlib.sha1((prompt or "").encode()).hexdigest()[:16]
+
+
+def _messages_prompt_hash(messages: list[dict]) -> str:
+    """SHA1 of the serialized messages — fingerprint without the content."""
+    return hashlib.sha1(json.dumps(messages, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _to_int(value: Any) -> int:
+    """Coerce a token/duration value to int (0 when missing or non-numeric)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _log_llm_call(
+    *,
+    model: str,
+    provider: str,
+    status: str,
+    prompt_hash: str,
+    n_messages: int,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    duration_ms: int = 0,
+    error: str = "",
+) -> None:
+    """Append one LLM call trace line to ``data/logs/llm_calls.jsonl``.
+
+    Best-effort and safe: never raises, never logs the api_key or prompt/messages
+    content (only a hash + counts). Logging must never affect the call path.
+    """
+    try:
+        from pathlib import Path
+
+        from drbrain.log import get_session_id
+
+        path = Path("data/logs/llm_calls.jsonl")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": time.time(),
+            "session_id": get_session_id(),
+            "model": model,
+            "provider": provider,
+            "status": status,
+            "prompt_hash": prompt_hash,
+            "n_messages": _to_int(n_messages),
+            "tokens_in": _to_int(tokens_in),
+            "tokens_out": _to_int(tokens_out),
+            "duration_ms": _to_int(duration_ms),
+            "error": str(error)[:200],
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 — logging must never break the call path
         pass
 
 
@@ -209,22 +319,51 @@ def call_with_fallback(
             return cached
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
+        start = time.monotonic()
         try:
-            start = time.monotonic()
             kwargs = _build_litellm_kwargs(model_cfg, prompt, system_prompt, max_tokens)
             response = litellm.completion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
             elapsed = int((time.monotonic() - start) * 1000)
             logger.info(f"[llm] success: {name} in {elapsed}ms")
+            usage = getattr(response, "usage", None)
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="success",
+                prompt_hash=_prompt_hash(prompt),
+                n_messages=1,
+                tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                duration_ms=elapsed,
+            )
             parsed = json.loads(content)
             if _cache is not None:
                 _cache.set(key, parsed)
             return parsed
         except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
             logger.warning(f"[llm] {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="error",
+                prompt_hash=_prompt_hash(prompt),
+                n_messages=1,
+                duration_ms=elapsed,
+                error=str(e)[:200],
+            )
             continue
     logger.error(f"[llm] all {len(models)} models exhausted")
+    _log_llm_call(
+        model="all",
+        provider="",
+        status="error",
+        prompt_hash=_prompt_hash(prompt),
+        n_messages=1,
+        error="all models exhausted",
+    )
     return None
 
 
@@ -251,22 +390,51 @@ async def acall_with_fallback(
             return cached
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
+        start = time.monotonic()
         try:
-            start = time.monotonic()
             kwargs = _build_litellm_kwargs(model_cfg, prompt, system_prompt, max_tokens)
             response = await litellm.acompletion(**kwargs)
             _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
             content = response.choices[0].message.content
             elapsed = int((time.monotonic() - start) * 1000)
             logger.info(f"[llm] async success: {name} in {elapsed}ms")
+            usage = getattr(response, "usage", None)
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="success",
+                prompt_hash=_prompt_hash(prompt),
+                n_messages=1,
+                tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                duration_ms=elapsed,
+            )
             parsed = json.loads(content)
             if _cache is not None:
                 _cache.set(key, parsed)
             return parsed
         except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
             logger.warning(f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}")
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="error",
+                prompt_hash=_prompt_hash(prompt),
+                n_messages=1,
+                duration_ms=elapsed,
+                error=str(e)[:200],
+            )
             continue
     logger.error(f"[llm] async all {len(models)} models exhausted")
+    _log_llm_call(
+        model="all",
+        provider="",
+        status="error",
+        prompt_hash=_prompt_hash(prompt),
+        n_messages=1,
+        error="all models exhausted",
+    )
     return None
 
 
@@ -294,8 +462,9 @@ def call_text_with_fallback(
                 "timeout": 60,
                 "extra_body": {"thinking": {"type": "disabled"}},
             }
-            if model_cfg.get("api_key"):
-                kwargs["api_key"] = model_cfg["api_key"]
+            api_key = _resolve_api_key(model_cfg)
+            if api_key:
+                kwargs["api_key"] = api_key
             if model_cfg.get("base_url"):
                 kwargs["api_base"] = model_cfg["base_url"]
             response = litellm.completion(**kwargs)
@@ -343,8 +512,9 @@ async def acall_text_with_fallback(
                 "max_tokens": max_tokens,
                 "timeout": 60,
             }
-            if model_cfg.get("api_key"):
-                kwargs["api_key"] = model_cfg["api_key"]
+            api_key = _resolve_api_key(model_cfg)
+            if api_key:
+                kwargs["api_key"] = api_key
             if model_cfg.get("base_url"):
                 kwargs["api_base"] = model_cfg["base_url"]
             response = await litellm.acompletion(**kwargs)
@@ -396,8 +566,8 @@ def call_with_messages(
 
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
+        start = time.monotonic()
         try:
-            start = time.monotonic()
             kwargs: dict = {
                 "model": name,
                 "messages": messages,
@@ -405,8 +575,9 @@ def call_with_messages(
                 "max_tokens": max_tokens,
                 "timeout": timeout,
             }
-            if model_cfg.get("api_key"):
-                kwargs["api_key"] = model_cfg["api_key"]
+            api_key = _resolve_api_key(model_cfg)
+            if api_key:
+                kwargs["api_key"] = api_key
             if model_cfg.get("base_url"):
                 kwargs["api_base"] = model_cfg["base_url"]
             if tools:
@@ -421,6 +592,16 @@ def call_with_messages(
             logger.info(f"[llm] call_with_messages success: {name} in {elapsed}ms")
 
             usage = response.usage
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="success",
+                prompt_hash=_messages_prompt_hash(messages),
+                n_messages=len(messages),
+                tokens_in=usage.prompt_tokens if usage else 0,
+                tokens_out=usage.completion_tokens if usage else 0,
+                duration_ms=elapsed,
+            )
             result = {
                 "text": msg.content or "",
                 "tool_calls": _extract_tool_calls(msg),
@@ -433,11 +614,29 @@ def call_with_messages(
                 _cache.set(key, result)
             return result
         except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
             logger.warning(
                 f"[llm] call_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
             )
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="error",
+                prompt_hash=_messages_prompt_hash(messages),
+                n_messages=len(messages),
+                duration_ms=elapsed,
+                error=str(e)[:200],
+            )
             continue
     logger.error(f"[llm] call_with_messages all {len(models)} models exhausted")
+    _log_llm_call(
+        model="all",
+        provider="",
+        status="error",
+        prompt_hash=_messages_prompt_hash(messages),
+        n_messages=len(messages),
+        error="all models exhausted",
+    )
     return None
 
 
@@ -465,8 +664,8 @@ async def acall_with_messages(
 
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
+        start = time.monotonic()
         try:
-            start = time.monotonic()
             kwargs: dict = {
                 "model": name,
                 "messages": messages,
@@ -474,8 +673,9 @@ async def acall_with_messages(
                 "max_tokens": max_tokens,
                 "timeout": timeout,
             }
-            if model_cfg.get("api_key"):
-                kwargs["api_key"] = model_cfg["api_key"]
+            api_key = _resolve_api_key(model_cfg)
+            if api_key:
+                kwargs["api_key"] = api_key
             if model_cfg.get("base_url"):
                 kwargs["api_base"] = model_cfg["base_url"]
             if tools:
@@ -490,6 +690,16 @@ async def acall_with_messages(
             logger.info(f"[llm] acall_with_messages success: {name} in {elapsed}ms")
 
             usage = response.usage
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="success",
+                prompt_hash=_messages_prompt_hash(messages),
+                n_messages=len(messages),
+                tokens_in=usage.prompt_tokens if usage else 0,
+                tokens_out=usage.completion_tokens if usage else 0,
+                duration_ms=elapsed,
+            )
             result = {
                 "text": msg.content or "",
                 "tool_calls": _extract_tool_calls(msg),
@@ -502,11 +712,29 @@ async def acall_with_messages(
                 _cache.set(key, result)
             return result
         except Exception as e:
+            elapsed = int((time.monotonic() - start) * 1000)
             logger.warning(
                 f"[llm] acall_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
             )
+            _log_llm_call(
+                model=model_cfg["model"],
+                provider=model_cfg.get("provider", ""),
+                status="error",
+                prompt_hash=_messages_prompt_hash(messages),
+                n_messages=len(messages),
+                duration_ms=elapsed,
+                error=str(e)[:200],
+            )
             continue
     logger.error(f"[llm] acall_with_messages all {len(models)} models exhausted")
+    _log_llm_call(
+        model="all",
+        provider="",
+        status="error",
+        prompt_hash=_messages_prompt_hash(messages),
+        n_messages=len(messages),
+        error="all models exhausted",
+    )
     return None
 
 
