@@ -1092,3 +1092,160 @@ def format_eval_report(
         lines.append("")
 
     return "\n".join(lines) + "\n"
+
+
+# ── Semantic similarity eval (zero-LLM, embedding cosine) ────────────────────
+
+
+def run_semantic_eval(
+    cfg: Config | dict[str, Any],
+    db: Any,
+    split: str = "val",
+    n: int = 30,
+    top_k: int = 5,
+) -> dict[str, Any]:
+    """Embedding-cosine similarity of synthesized answers vs golden references.
+
+    Zero-LLM (per LlamaIndex ``SemanticSimilarityEvaluator`` semantics): the
+    answer and the golden ``reference_answer`` are embedded through the
+    configured drbrain embed provider (persistent 0.6B service when
+    ``embed.provider=openai-compat``) and scored by cosine similarity. Cheap
+    enough to run as a regression gate after every library merge.
+
+    Requires golden entries with a ``reference_answer``; entries without one
+    are skipped (counted as ``missing``).
+    """
+    cfg = _coerce_cfg(cfg)
+    golden = load_golden(cfg, split=split)
+    if not golden:
+        return {"status": "empty", "split": split, "queries": 0}
+    golden = [g for g in golden if g.get("reference_answer")][: int(n)]
+    if not golden:
+        return {"status": "empty", "split": split, "reason": "no reference_answer in golden"}
+
+    from drbrain.rag.engine import ask_llamaindex
+    from drbrain.services.embedding import _embed_batch
+
+    embed_cfg = getattr(cfg, "embed", None)
+    scores: list[float] = []
+    missing = 0
+    for item in golden:
+        try:
+            answer = ask_llamaindex(item["query"], cfg, db, top_k=top_k)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("[rag] semantic eval ask failed for %.60r: %s", item["query"], exc)
+            answer = None
+        text = (answer or "").strip() if isinstance(answer, str) else ""
+        if not text:
+            missing += 1
+            continue
+        try:
+            vecs = _embed_batch([text, str(item["reference_answer"])], embed_cfg)
+            if not vecs or len(vecs) != 2:
+                missing += 1
+                continue
+            import numpy as np
+
+            a, b = np.asarray(vecs[0], dtype="float32"), np.asarray(vecs[1], dtype="float32")
+            cos = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+            scores.append(cos)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("[rag] semantic eval embed failed: %s", exc)
+            missing += 1
+
+    if not scores:
+        return {"status": "empty", "split": split, "reason": "no scorable answers", "missing": missing}
+    mean = sum(scores) / len(scores)
+    return {
+        "status": "ok",
+        "split": split,
+        "queries": len(golden),
+        "scored": len(scores),
+        "missing": missing,
+        "mean_similarity": round(mean, 4),
+        "pass_rate": round(sum(1 for s in scores if s >= 0.8) / len(scores), 4),
+        "threshold": 0.8,
+    }
+
+
+# ── QA pair generation (one-off LLM cost, reusable golden expansion) ─────────
+
+
+def run_qagen(
+    cfg: Config | dict[str, Any],
+    n_nodes: int = 25,
+    num_questions_per_chunk: int = 2,
+    out_path: str | None = None,
+) -> dict[str, Any]:
+    """Generate retrieval QA pairs from indexed nodes via LlamaIndex
+    ``generate_question_context_pairs`` and merge them into the golden set.
+
+    One-off LLM cost (tokenrouter/fallback chain); the generated pairs are
+    appended to the golden JSONL as split ``generated`` so later retriever
+    evals can use ``--split generated`` for a statistically thicker test.
+    """
+    cfg = _coerce_cfg(cfg)
+    if not _LLAMA_INDEX_AVAILABLE:
+        return {"status": "unavailable", "reason": "llama-index not installed"}
+
+    from drbrain.rag.indexer import load_index
+
+    index, _bm25 = load_index(cfg)
+    if index is None:
+        return {"status": "unavailable", "reason": "no vector index (run: drbrain rag index)"}
+
+    nodes = index.docstore.docs.values() if hasattr(index.docstore, "docs") else []
+    nodes = list(nodes)[: int(n_nodes)]
+    if not nodes:
+        return {"status": "empty", "reason": "no nodes in index docstore"}
+
+    from llama_index.core.evaluation import generate_question_context_pairs
+
+    models = list(getattr(cfg.llm, "models", []) or [])
+    llm = None
+    if models:
+        from llama_index.llms.openai import OpenAI as LIOpenAI
+
+        m = models[0]
+        llm = LIOpenAI(
+            model=str(m.get("model", "gpt-4o-mini")),
+            api_key=str(m.get("api_key") or m.get("api_keys", ["sk-none"])[0] if isinstance(m.get("api_keys"), list) else m.get("api_key") or "sk-none"),
+            api_base=str(m.get("base_url") or "https://api.openai.com/v1").replace("/v1", ""),
+            temperature=0.1,
+        )
+    try:
+        qa = generate_question_context_pairs(
+            nodes, llm=llm, num_questions_per_chunk=int(num_questions_per_chunk)
+        )
+    except Exception as exc:
+        return {"status": "error", "reason": f"generation failed: {exc}"}
+
+    li = get_llamaindex_config(cfg)
+    golden_path = Path(li.eval.golden_set)
+    golden_path.parent.mkdir(parents=True, exist_ok=True)
+    appended = 0
+    with open(golden_path, "a", encoding="utf-8") as f:
+        for q, ctx_ids in zip(qa.queries.values(), qa.relevant_docs.values()):
+            if not str(q).strip():
+                continue
+            f.write(
+                json.dumps(
+                    {
+                        "query": str(q).strip(),
+                        "relevant_papers": [],
+                        "relevant_nodes": [str(i) for i in ctx_ids],
+                        "reference_answer": "",
+                        "split": "generated",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            appended += 1
+    return {
+        "status": "ok",
+        "generated": appended,
+        "nodes_used": len(nodes),
+        "golden_set": str(golden_path),
+        "note": "eval with: drbrain rag eval --metrics retriever --split generated",
+    }

@@ -87,14 +87,24 @@ app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 
 
 @app.callback()
-def _main_callback(ctx: typer.Context) -> None:
+def _main_callback(
+    ctx: typer.Context,
+    config: str = typer.Option(
+        "", "--config", help="Override config file (e.g. config.embed1.yaml)"
+    ),
+) -> None:
     """Called before every command. Sets up logging and loads config."""
     setup_logging()
     from drbrain.config import load_config
     from drbrain.log import get_session_id
 
     ctx.ensure_object(dict)
-    ctx.obj["config"] = load_config()
+    if config:
+        from drbrain.config import Config
+
+        ctx.obj["config"] = Config.from_yaml("config.yaml", config)
+    else:
+        ctx.obj["config"] = load_config()
 
     cmd = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(no args)"
     logger.info(f"CLI invoked [{get_session_id()}]: {cmd}")
