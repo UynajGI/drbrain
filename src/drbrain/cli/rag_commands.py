@@ -97,10 +97,13 @@ def rag_eval_cmd(
     ctx: typer.Context,
     split: str = typer.Option("dev", "--split", help="Golden split: dev|val|test"),
     metrics: str = typer.Option(
-        "retriever", "--metrics", help="Metrics to run: retriever|ragas|all"
+        "retriever", "--metrics", help="Metrics to run: retriever|ragas|semantic|qagen|all"
     ),
     k: str = typer.Option("5,10", "--k", help="Comma-separated top-k values (retriever)"),
-    n: int = typer.Option(10, "--n", help="Max golden queries for the ragas eval"),
+    n: int = typer.Option(10, "--n", help="Max golden queries for the ragas/semantic eval"),
+    n_nodes: int = typer.Option(
+        25, "--n-nodes", help="Nodes to generate QA pairs from (qagen)"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
     out: str = typer.Option(
         "docs/llamaindex-eval-baseline.md",
@@ -124,6 +127,8 @@ def rag_eval_cmd(
     format_eval_report: Any = None
     run_ragas_eval: Any = None
     run_retriever_eval: Any = None
+    run_semantic_eval: Any = None
+    run_qagen: Any = None
     try:
         from drbrain.rag import eval as _eval_mod
         from drbrain.rag.config import get_llamaindex_config
@@ -132,6 +137,8 @@ def rag_eval_cmd(
         format_eval_report = _eval_mod.format_eval_report
         run_ragas_eval = _eval_mod.run_ragas_eval
         run_retriever_eval = _eval_mod.run_retriever_eval
+        run_semantic_eval = _eval_mod.run_semantic_eval
+        run_qagen = _eval_mod.run_qagen
     except ImportError:  # pragma: no cover - defensive
         llama_available = False
 
@@ -142,8 +149,11 @@ def rag_eval_cmd(
         )
         raise typer.Exit(1)
 
-    if metrics not in ("retriever", "ragas", "all"):
-        typer.echo(f"--metrics must be one of retriever|ragas|all, got {metrics!r}", err=True)
+    if metrics not in ("retriever", "ragas", "semantic", "qagen", "all"):
+        typer.echo(
+            f"--metrics must be one of retriever|ragas|semantic|qagen|all, got {metrics!r}",
+            err=True,
+        )
         raise typer.Exit(2)
 
     ks: list[int] = []
@@ -172,10 +182,16 @@ def rag_eval_cmd(
     with open_db(cfg) as db:
         retriever_results = None
         ragas_results = None
+        semantic_results = None
+        qagen_results = None
         if metrics in ("retriever", "all"):
             retriever_results = run_retriever_eval(cfg, db, split=split, ks=ks)
         if metrics in ("ragas", "all"):
             ragas_results = run_ragas_eval(cfg, db, split=split, n=n)
+        if metrics in ("semantic", "all"):
+            semantic_results = run_semantic_eval(cfg, db, split=split, n=n)
+        if metrics in ("qagen", "all"):
+            qagen_results = run_qagen(cfg, n_nodes=n_nodes)
 
     if json_output:
         payload: dict[str, Any] = {"split": split, "metrics": metrics}
@@ -183,9 +199,18 @@ def rag_eval_cmd(
             payload["retriever"] = retriever_results
         if ragas_results is not None:
             payload["ragas"] = ragas_results
+        if semantic_results is not None:
+            payload["semantic"] = semantic_results
+        if qagen_results is not None:
+            payload["qagen"] = qagen_results
         typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
     else:
-        for label, results in (("Retriever", retriever_results), ("RAGAS-style", ragas_results)):
+        for label, results in (
+            ("Retriever", retriever_results),
+            ("RAGAS-style", ragas_results),
+            ("Semantic", semantic_results),
+            ("QAgen", qagen_results),
+        ):
             if results is None:
                 continue
             status = results.get("status")
@@ -205,6 +230,18 @@ def rag_eval_cmd(
             elif status == "ok" and "metrics" in results:
                 for key, info in results["metrics"].items():
                     typer.echo(f"  {key}: mean={info['mean']} (missing={info['missing']})")
+            elif status == "ok" and "mean_similarity" in results:
+                typer.echo(
+                    f"  mean_similarity={results['mean_similarity']} "
+                    f"pass_rate={results['pass_rate']} (threshold={results['threshold']}, "
+                    f"scored={results['scored']}, missing={results['missing']})"
+                )
+            elif status == "ok" and "generated" in results:
+                typer.echo(
+                    f"  generated={results['generated']} QA pairs from {results['nodes_used']} "
+                    f"nodes -> {results['golden_set']}"
+                )
+                typer.echo(f"  note: {results['note']}")
             if results.get("reason"):
                 typer.echo(f"  reason: {results['reason']}")
 

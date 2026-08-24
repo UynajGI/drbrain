@@ -217,10 +217,13 @@ def _ingest_single_paper(
         from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
 
         pageindex_cfg = TreeConfig(
-            if_thinning=True,
-            min_token_threshold=5000,
-            if_add_node_summary=True,
-            if_add_doc_description=True,
+            # 关掉 thinning：短论文(<5000 token)会被整体吞成单节点，tree 只剩 root，
+            # 导致 build 的 section 级抽取退化。全文增强场景保留完整标题树。
+            if_thinning=False,
+            # 关 LLM 摘要：每 section 一次 27b 调用（35s+），100 篇 × 14 section
+            # ≈ 13h 纯摘要。树状化=标题层级结构，摘要留给 RAPTOR/检索时按需生成。
+            if_add_node_summary=False,
+            if_add_doc_description=False,
             if_add_node_text=False,  # Content loaded on demand, not embedded
             if_add_node_id=True,
             max_node_tokens=10000,
