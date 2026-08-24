@@ -52,6 +52,34 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _global_node_id(paper_id: str, node_id: str) -> str:
+    """Compose a globally-unique node id by prefixing ``paper_id``.
+
+    ``tree.json`` node_ids are only unique *within* a paper (the parser
+    numbers them "0000", "0001", ... per paper). ``tree_vectors`` /
+    ``tree_summaries`` use a single-column ``node_id`` primary key, so the
+    per-paper id must be qualified with the paper to stay unique across the
+    whole library.
+
+    Format: ``"{paper_id}:{node_id}"`` (matches the convention already used
+    by :mod:`drbrain.rag.indexer`'s ``_node_key``).
+    """
+    return f"{paper_id}:{node_id}"
+
+
+def _local_node_id(paper_id: str, node_id: str) -> str:
+    """Strip the ``paper_id:`` prefix to recover the per-paper (tree.json) id.
+
+    Inverse of :func:`_global_node_id`. Returns ``node_id`` unchanged when it
+    does not carry the expected prefix (e.g. legacy rows written before the
+    collision fix), so tree.json lookups degrade gracefully rather than crash.
+    """
+    prefix = f"{paper_id}:"
+    if node_id.startswith(prefix):
+        return node_id[len(prefix) :]
+    return node_id
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     import numpy as np
@@ -595,7 +623,32 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
             logger.debug("[embed] GPU adaptive batching unavailable, using fixed batch_size=%d", bs)
 
     embeddings = model.encode(texts, normalize_embeddings=True, batch_size=bs)
-    return [e.tolist() for e in embeddings]
+    # Preserve 1:1 text→vector alignment: callers (build_tree_vectors) rely on
+    # positional correspondence, so a None/empty vector must be replaced by a
+    # deterministic zero vector at the SAME position — never dropped, never
+    # appended out of order.
+    dim = 0
+    for e in embeddings:
+        if e is None:
+            continue
+        vec = [float(x) if x is not None else 0.0 for x in e.tolist()]
+        if vec and not dim:
+            dim = len(vec)
+    if texts and not dim:
+        # Every embedding came back unusable — the model itself is failing, not
+        # a single-node blip. Surface it instead of emitting zero-length vectors
+        # that would break downstream similarity math in a confusing way.
+        raise RuntimeError("embedding model returned no usable vectors")
+    out: list[list[float]] = []
+    for i, e in enumerate(embeddings):
+        if e is None:
+            out.append([0.0] * dim if dim else [])
+            continue
+        vec = [float(x) if x is not None else 0.0 for x in e.tolist()]
+        out.append(vec if vec else ([0.0] * dim if dim else []))
+    while len(out) < len(texts):
+        out.append([0.0] * dim if dim else [])
+    return out
 
 
 # ── Build ────────────────────────────────────────────────────────────────────
@@ -630,6 +683,13 @@ def _collect_tree_nodes(paper_dir: Path) -> list[dict]:
                 text += "\n".join(raw_text.split("\n")[line_start:line_end])
             elif node.get("content"):
                 text += str(node.get("content", ""))
+            elif node.get("summary"):
+                # scibase/oa 管线的 tree.json 只有 title+line_num+summary——
+                # summary 即节点文本（短节点存原文，长节点存 LLM 摘要）。
+                # 缺了这条回退，节点只会拿标题做嵌入（泛化标题 → 大量重复向量簇）
+                text += str(node.get("summary", ""))
+            elif node.get("prefix_summary"):
+                text += str(node.get("prefix_summary", ""))
 
             result.append(
                 {
@@ -676,22 +736,31 @@ def build_tree_vectors(
     # Check existing hashes for incremental update
     conn = connect_wal(db_path)
     try:
-        existing_hashes: dict[str, str] = {}
-        for row in conn.execute("SELECT node_id, content_hash FROM tree_vectors").fetchall():
-            existing_hashes[row[0]] = row[1]
-
+        # 只查本篇节点的 hash（索引 IN 查询）——全表扫描 187 万行/篇是 O(N²) 瓶颈
         paper_id = paper_dir.name
+        all_node_keys = [
+            (node["node_id"], _global_node_id(paper_id, node["node_id"])) for node in nodes
+        ]
+        existing_hashes: dict[str, str] = {}
+        if all_node_keys:
+            ph = ",".join("?" for _ in all_node_keys)
+            for row in conn.execute(
+                f"SELECT node_id, content_hash FROM tree_vectors WHERE node_id IN ({ph})",
+                [g for _, g in all_node_keys],
+            ).fetchall():
+                existing_hashes[row[0]] = row[1]
 
         # Collect nodes that need embedding
         to_embed_texts: list[str] = []
         to_embed_nodes: list[dict] = []
-        for node in nodes:
+        for node, (_, global_nid) in zip(nodes, all_node_keys):
             nhash = _content_hash(node["text"])
-            if existing_hashes.get(node["node_id"]) == nhash:
+            if existing_hashes.get(global_nid) == nhash:
                 continue  # unchanged, skip
             to_embed_texts.append(node["text"])
             to_embed_nodes.append(node)
             to_embed_nodes[-1]["_hash"] = nhash
+            to_embed_nodes[-1]["_global_node_id"] = global_nid
 
         if not to_embed_texts:
             return 0
@@ -701,6 +770,15 @@ def build_tree_vectors(
         if not vectors:
             return 0
 
+        # sqlite-vec 双写：vec 表可用则同步 upsert（失败不阻塞 base 写入）
+        use_vec = False
+        try:
+            from drbrain.storage import vector_index as vi
+
+            use_vec = vi.ensure_vec_table(conn, len(vectors[0]))
+        except Exception:  # noqa: BLE001
+            use_vec = False
+
         # Store
         for node, vec in zip(to_embed_nodes, vectors):
             blob = struct.pack(f"{len(vec)}f", *vec)
@@ -708,8 +786,13 @@ def build_tree_vectors(
                 "INSERT OR REPLACE INTO tree_vectors "
                 "(node_id, paper_id, embedding, content_hash, tree_layer) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (node["node_id"], paper_id, blob, node["_hash"], "pageindex"),
+                (node["_global_node_id"], paper_id, blob, node["_hash"], "pageindex"),
             )
+            if use_vec:
+                try:
+                    vi.vec_upsert(conn, node["_global_node_id"], blob)
+                except Exception as e:  # noqa: BLE001 — dim mismatch etc.
+                    logger.debug("[vec] upsert skipped node_id={}: {}", node["_global_node_id"], e)
 
         conn.commit()
         return len(to_embed_nodes)
@@ -802,6 +885,45 @@ def search_tree(
         query_vec = _embed_batch([query], cfg)[0]
         qv = np.asarray(query_vec, dtype="float32")
         query_dim = len(query_vec)
+
+        # ── sqlite-vec fast path: full-corpus KNN (paper_id not scoped) ──
+        # 归一化向量下 L2 序 == 余弦序；分数换算 cos = 1 - d²/2 保持 fusion 语义。
+        if paper_id is None:
+            from drbrain.storage import vector_index as vi
+
+            try:
+                if (
+                    vi.load_vec(conn)
+                    and vi.vec_synced(conn)
+                    and vi.vec_stored_dim(conn) == query_dim
+                ):
+                    hits = vi.vec_knn(conn, vi.pack_query(query_vec), top_k)
+                    if hits:
+                        ids = [h[0] for h in hits]
+                        ph = ",".join("?" for _ in ids)
+                        meta = {
+                            r[0]: (r[1], r[2])
+                            for r in conn.execute(
+                                f"SELECT node_id, paper_id, tree_layer FROM tree_vectors "
+                                f"WHERE node_id IN ({ph})",
+                                ids,
+                            )
+                        }
+                        results = [
+                            {
+                                "node_id": nid,
+                                "paper_id": meta.get(nid, ("", ""))[0],
+                                "score": vi.l2_to_cosine(d),
+                                "tree_layer": meta.get(nid, ("", ""))[1],
+                            }
+                            for nid, d in hits
+                            if nid in meta
+                        ]
+                        results.sort(key=lambda x: x["score"], reverse=True)
+                        results = _post_filter(results[:top_k])
+                        return results
+            except Exception as e:  # noqa: BLE001 — fall back to brute force
+                logger.warning("[vec] sqlite-vec fast path failed, brute force: {}", e)
 
         # Vectorized cosine similarity: concatenate all blobs into a matrix.
         # Scope to paper_id when provided (avoids full-table scan).

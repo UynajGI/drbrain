@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS concepts (
     confidence REAL DEFAULT 1.0,
     section TEXT DEFAULT '',
     node_id TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    valid_from INTEGER,
+    valid_to INTEGER,
     first_seen INTEGER,
     last_seen INTEGER,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -206,13 +210,17 @@ CREATE TABLE IF NOT EXISTS corpus_sources (
 );
 
 -- Concept graph nodes (unique normalized concept labels + aggregated stats).
+-- v10 adds concept type / noise / singleton markers (populated downstream).
 CREATE TABLE IF NOT EXISTS concept_nodes (
     node_id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL UNIQUE,
     doc_freq INTEGER DEFAULT 0,
     word_count INTEGER DEFAULT 0,
     first_year INTEGER,
-    last_year INTEGER
+    last_year INTEGER,
+    type TEXT DEFAULT 'other',
+    is_noise INTEGER DEFAULT 0,
+    is_singleton INTEGER DEFAULT 0
 );
 
 -- Concept co-occurrence edges, timestamped by publication year. Each paper
@@ -252,7 +260,87 @@ CREATE TABLE IF NOT EXISTS paper_terms (
     kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
     PRIMARY KEY (local_id, term, kind)
 );
+
+-- ── Epistemic layer (v11-v13) ──────────────────────────────────
+-- Knowledge snapshots: versioned, reproducible points-in-time over the graph.
+-- Each snapshot pins the set of entities/claims/evidence an answer was (or
+-- could be) grounded in, so answers can be re-derived against the same state.
+CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    revision_id TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Answer records: bind every generated answer to the evidence it cites, the
+-- knowledge snapshot it was grounded in, and the model/retriever versions that
+-- produced it — so answers are reproducible and auditable rather than
+-- opaque model output.
+CREATE TABLE IF NOT EXISTS answer_records (
+    answer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    evidence_ids TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    model_version TEXT DEFAULT '',
+    snapshot_id TEXT DEFAULT '',
+    retriever_version TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Evidence objects (v14): first-class groundings — the paper / page / verbatim
+-- snippet / numeric value / unit / experimental conditions a claim rests on,
+-- plus provenance and authority. One row per distinct ``paper:node`` grounding.
+CREATE TABLE IF NOT EXISTS evidence (
+    evidence_id TEXT PRIMARY KEY,
+    paper_id TEXT DEFAULT '',
+    node_id TEXT DEFAULT '',
+    page TEXT DEFAULT '',
+    snippet TEXT DEFAULT '',
+    value TEXT DEFAULT '',
+    unit TEXT DEFAULT '',
+    conditions TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_paper ON evidence(paper_id);
+
+-- Claims (v15): first-class assertions with a TBox type (Problem / Method /
+-- Conclusion / Gap / Debate / Actor — or '' when unknown), authority,
+-- provenance, confidence, and a validity window.
+CREATE TABLE IF NOT EXISTS claims (
+    claim_id TEXT PRIMARY KEY,
+    label TEXT DEFAULT '',
+    claim_text TEXT NOT NULL,
+    claim_type TEXT DEFAULT '',
+    authority TEXT DEFAULT '',
+    provenance TEXT DEFAULT '',
+    confidence REAL DEFAULT 1.0,
+    valid_from INTEGER,
+    valid_to INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
 """
+
+
+def _split_evidence_id(identifier: str) -> tuple[str, str]:
+    """Split a ``paper_id:node_id`` evidence identifier into its parts.
+
+    ``paper_id`` is a local_id (sanitized, never contains ':') while ``node_id``
+    may be a hierarchical tree node containing colons, so we split on the
+    *first* colon. A bare identifier with no colon is treated as a paper-only
+    grounding (empty node). Returns ``(paper_id, node_id)``.
+    """
+    identifier = (identifier or "").strip()
+    if not identifier:
+        return "", ""
+    if ":" in identifier:
+        paper_id, node_id = identifier.split(":", 1)
+        return paper_id, node_id
+    return identifier, ""
 
 
 class Database:
@@ -290,6 +378,12 @@ class Database:
             (7, "indexes_v2", self._migrate_add_indexes_v2),
             (8, "change_tracking", self._migrate_add_change_tracking),
             (9, "concept_graph", self._migrate_add_concept_graph),
+            (10, "concept_node_columns", self._migrate_add_concept_columns),
+            (11, "concept_epistemic", self._migrate_add_concept_epistemic),
+            (12, "knowledge_snapshots", self._migrate_add_knowledge_snapshots),
+            (13, "answer_records", self._migrate_add_answer_records),
+            (14, "evidence", self._migrate_add_evidence),
+            (15, "claims", self._migrate_add_claims),
         ]
 
         for version, name, fn in migrations:
@@ -450,6 +544,143 @@ class Database:
                 kind TEXT NOT NULL DEFAULT 'keyword' CHECK(kind IN ('keyword', 'topic')),
                 PRIMARY KEY (local_id, term, kind)
             );
+            """
+        )
+
+    def _migrate_add_concept_columns(self) -> None:
+        """Add concept type / noise / singleton flag columns to concept_nodes (v10).
+
+        Mirrors the research-side concept cleanup layer: typed concepts
+        (material / property / method / phenomenon / other) plus is_noise and
+        is_singleton markers. Idempotent: fresh databases already get these
+        columns via SCHEMA_SQL; pre-existing (v9) databases get them via ALTER.
+
+        This migration only creates the columns. The values are populated by
+        downstream logic, not here: is_singleton = doc_freq == 1; is_noise =
+        label-pattern heuristics (e.g. single chars, numeric-only, biomed
+        residue) combined with low doc_freq.
+        """
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concept_nodes)").fetchall()]
+        if "type" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN type TEXT DEFAULT 'other'")
+        if "is_noise" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_noise INTEGER DEFAULT 0")
+        if "is_singleton" not in cols:
+            self.conn.execute("ALTER TABLE concept_nodes ADD COLUMN is_singleton INTEGER DEFAULT 0")
+
+    def _migrate_add_concept_epistemic(self) -> None:
+        """Add epistemic columns to concepts (v11): provenance / authority / validity window.
+
+        Upgrades the flat `concepts` table toward first-class Claim/Evidence
+        objects: `provenance` records where the claim came from (SOURCE /
+        RETRIEVED / TOOL_RESULT / MODEL_INFERRED / USER_STATED), `authority`
+        records the trust tier (official_db / signed_contract / approved_policy /
+        internal_wiki / email / chat, or a paper-domain equivalent), and
+        `valid_from` / `valid_to` bound the claim's temporal validity (NULL =
+        unknown start / still valid).
+
+        Idempotent: fresh databases already get these columns via SCHEMA_SQL;
+        pre-existing (v10 and earlier) databases get them via ALTER. No values
+        are backfilled — they are populated by downstream epistemic ingestion.
+        """
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(concepts)").fetchall()]
+        if "provenance" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN provenance TEXT DEFAULT ''")
+        if "authority" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN authority TEXT DEFAULT ''")
+        if "valid_from" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN valid_from INTEGER")
+        if "valid_to" not in cols:
+            self.conn.execute("ALTER TABLE concepts ADD COLUMN valid_to INTEGER")
+
+    def _migrate_add_knowledge_snapshots(self) -> None:
+        """Create knowledge_snapshots table (v12). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v12 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                revision_id TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_answer_records(self) -> None:
+        """Create answer_records table (v13). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v13 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS answer_records (
+                answer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                evidence_ids TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                model_version TEXT DEFAULT '',
+                snapshot_id TEXT DEFAULT '',
+                retriever_version TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_evidence(self) -> None:
+        """Create evidence table (v14). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v14 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id TEXT PRIMARY KEY,
+                paper_id TEXT DEFAULT '',
+                node_id TEXT DEFAULT '',
+                page TEXT DEFAULT '',
+                snippet TEXT DEFAULT '',
+                value TEXT DEFAULT '',
+                unit TEXT DEFAULT '',
+                conditions TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                authority TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    def _migrate_add_claims(self) -> None:
+        """Create claims table (v15). Idempotent.
+
+        Fresh databases already get this table via SCHEMA_SQL; this migration
+        records v15 in schema_versions for pre-existing databases and re-asserts
+        the table with IF NOT EXISTS for safety.
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS claims (
+                claim_id TEXT PRIMARY KEY,
+                label TEXT DEFAULT '',
+                claim_text TEXT NOT NULL,
+                claim_type TEXT DEFAULT '',
+                authority TEXT DEFAULT '',
+                provenance TEXT DEFAULT '',
+                confidence REAL DEFAULT 1.0,
+                valid_from INTEGER,
+                valid_to INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
             """
         )
 
@@ -956,6 +1187,151 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
         )
+
+    def record_answer(
+        self,
+        question: str,
+        answer: str,
+        *,
+        session_id: str | None = None,
+        evidence_ids: list[str] | None = None,
+        provenance: str = "",
+        model_version: str = "",
+        snapshot_id: str = "",
+        retriever_version: str = "",
+    ) -> int:
+        """Persist an answer bound to its supporting evidence (auditability).
+
+        ``evidence_ids`` is serialized to a JSON string (the
+        ``answer_records.evidence_ids`` column is TEXT) so it can be restored
+        with ``json.loads`` later. Returns the new ``answer_id``.
+        """
+        import json
+
+        evidence_json = json.dumps(list(evidence_ids or []), ensure_ascii=False)
+        cur = self.conn.execute(
+            "INSERT INTO answer_records "
+            "(session_id, question, answer, evidence_ids, provenance, "
+            " model_version, snapshot_id, retriever_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                question,
+                answer,
+                evidence_json,
+                provenance,
+                model_version,
+                snapshot_id,
+                retriever_version,
+            ),
+        )
+        self.conn.commit()
+
+        # Materialize first-class evidence rows: each ``paper:node`` identifier
+        # becomes an ``evidence`` row. At answer time we only have the grounding
+        # id and provenance — page/snippet/value are left blank rather than
+        # fabricated.
+        for identifier in list(evidence_ids or []):
+            paper_id, node_id = _split_evidence_id(identifier)
+            if paper_id or node_id:
+                self.record_evidence(paper_id, node_id, provenance=provenance)
+
+        # Materialize the answer itself as a first-class claim. The TBox type
+        # (Problem/Method/Conclusion/…) is not known at answer time, so it is
+        # left blank rather than guessed.
+        self.record_claim(question, answer, provenance=provenance)
+
+        return cur.lastrowid or 0
+
+    def record_evidence(
+        self,
+        paper_id: str,
+        node_id: str = "",
+        *,
+        page: str = "",
+        snippet: str = "",
+        value: str = "",
+        unit: str = "",
+        conditions: str = "",
+        provenance: str = "",
+        authority: str = "",
+        evidence_id: str | None = None,
+    ) -> str:
+        """Insert (or replace) a first-class evidence row. Returns ``evidence_id``.
+
+        ``evidence_id`` defaults to ``paper_id:node_id`` (or whichever part is
+        present), so re-recording the same grounding is idempotent. A later
+        record with the same id replaces the row, letting richer fields (page /
+        snippet / value) overwrite the sparse answer-time grounding.
+        """
+        if evidence_id is None:
+            evidence_id = (
+                f"{paper_id}:{node_id}" if (paper_id and node_id) else (paper_id or node_id)
+            )
+        self.conn.execute(
+            "INSERT OR REPLACE INTO evidence "
+            "(evidence_id, paper_id, node_id, page, snippet, value, unit, "
+            " conditions, provenance, authority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                evidence_id,
+                paper_id,
+                node_id,
+                page,
+                snippet,
+                value,
+                unit,
+                conditions,
+                provenance,
+                authority,
+            ),
+        )
+        self.conn.commit()
+        return evidence_id
+
+    def record_claim(
+        self,
+        label: str,
+        claim_text: str,
+        *,
+        claim_type: str = "",
+        authority: str = "",
+        provenance: str = "",
+        confidence: float = 1.0,
+        valid_from: int | None = None,
+        valid_to: int | None = None,
+        claim_id: str | None = None,
+    ) -> str:
+        """Insert (or replace) a first-class claim row. Returns ``claim_id``.
+
+        ``claim_id`` defaults to a stable hash of ``label`` + ``claim_text`` so
+        re-recording the same assertion is idempotent (INSERT OR REPLACE keys
+        on the same id).
+        """
+        import hashlib
+
+        if claim_id is None:
+            digest = hashlib.sha1(f"{label}\x00{claim_text}".encode()).hexdigest()
+            claim_id = f"claim_{digest[:16]}"
+        self.conn.execute(
+            "INSERT OR REPLACE INTO claims "
+            "(claim_id, label, claim_text, claim_type, authority, provenance, "
+            " confidence, valid_from, valid_to) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                claim_id,
+                label,
+                claim_text,
+                claim_type,
+                authority,
+                provenance,
+                confidence,
+                valid_from,
+                valid_to,
+            ),
+        )
+        self.conn.commit()
+        return claim_id
 
     # -- Embeddings --
 

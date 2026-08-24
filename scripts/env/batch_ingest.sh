@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run full pipeline on all PDFs in data/pdfs/
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 MODEL="${MODEL:-openai/gpt-4o}"
 API_BASE="${API_BASE:-}"

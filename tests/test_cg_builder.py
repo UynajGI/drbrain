@@ -9,6 +9,8 @@ from drbrain.concept_graph.builder import (
     apply_filter,
     build_cliques,
     concepts_for_paper,
+    is_formula,
+    is_noise,
     normalize_concept,
 )
 from drbrain.storage.database import Database
@@ -35,11 +37,64 @@ def test_normalize_singularizes() -> None:
     assert normalize_concept("al2o3 coatings") == "al2o3 coating"
     assert normalize_concept("ribbons") == "ribbon"
     assert normalize_concept("batteries") == "battery"
+    assert normalize_concept("processes") == "process"
+    assert normalize_concept("gases") == "gas"
+    assert normalize_concept("catalysts") == "catalyst"
+
+
+def test_normalize_keeps_uncountable_exceptions() -> None:
+    # EXCEPT set: collective/uncountable nouns keep their plural form.
+    assert normalize_concept("series") == "series"
+    assert normalize_concept("species") == "species"
+    assert normalize_concept("status") == "status"
+    assert normalize_concept("analyses") == "analyses"
+    assert normalize_concept("materials") == "materials"
+    assert normalize_concept("properties") == "properties"
+
+
+def test_normalize_unifies_dimension_notation() -> None:
+    # 2d/3d -> 2D/3D writing unification (materials context).
+    assert normalize_concept("2d materials") == "2D materials"
+    assert normalize_concept("3D printing") == "3D printing"
+    assert normalize_concept("1D nanowires") == "1D nanowire"
+    assert normalize_concept("al2o3 coatings") == "al2o3 coating"  # digits untouched
 
 
 def test_normalize_empty() -> None:
     assert normalize_concept("") == ""
     assert normalize_concept("of the") == ""
+
+
+# ── noise / formula heuristics ───────────────────────────────────────────────
+
+
+def test_is_noise_flags_biomedical_residue() -> None:
+    assert is_noise("cancer")
+    assert is_noise("drug delivery")
+    assert is_noise("Alzheimer's disease")
+    assert not is_noise("graphene oxide")
+    assert not is_noise("battery")
+
+
+def test_is_noise_flags_trivial_labels() -> None:
+    assert is_noise("x")
+    assert is_noise("12345")
+    assert is_noise("---")
+    assert is_noise("2019 review")
+    assert is_noise("a" * 81)
+
+
+def test_is_formula_detects_chemical_formulas() -> None:
+    assert is_formula("Al2O3")
+    assert is_formula("TiO2")
+    assert is_formula("SiO2")
+    assert is_formula("Fe2O3")
+    assert is_formula("H2O")
+    assert is_formula("ZnO")
+    assert not is_formula("graphene")
+    assert not is_formula("graphene oxide")
+    assert not is_formula("battery")
+    assert not is_formula("2D materials")
 
 
 # ── concept source ───────────────────────────────────────────────────────────

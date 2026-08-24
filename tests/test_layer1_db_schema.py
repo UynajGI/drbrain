@@ -254,3 +254,91 @@ def test_concepts_node_id_index_exists():
             r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
         }
         assert "idx_concepts_node_id" in indexes
+
+
+def test_concept_nodes_v10_columns_exist():
+    """v10: concept_nodes has type/is_noise/is_singleton columns with defaults."""
+    with tempfile.TemporaryDirectory() as td:
+        db = Database(Path(td) / "test.db")
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(concept_nodes)")}
+        assert "type" in cols
+        assert "is_noise" in cols
+        assert "is_singleton" in cols
+
+        # Defaults apply when a node is inserted without the new columns.
+        db.conn.execute(
+            "INSERT INTO concept_nodes (label, doc_freq) VALUES (?, ?)", ("graphene", 3)
+        )
+        row = db.conn.execute(
+            "SELECT type, is_noise, is_singleton FROM concept_nodes WHERE label = 'graphene'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "other"
+        assert row[1] == 0
+        assert row[2] == 0
+
+        version = db.conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
+        assert version >= 10
+
+
+def test_migration_v10_adds_columns_to_existing_db():
+    """Migration v10 adds type/is_noise/is_singleton to a pre-v10 concept_nodes.
+
+    Simulates a v9-era schema (concept_nodes without the new columns, schema
+    recorded up to v9), then opens a new Database connection which triggers
+    auto-migration.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+
+        import sqlite3
+
+        old_conn = sqlite3.connect(str(db_path))
+        old_conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_versions (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS concept_nodes (
+                node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                label TEXT NOT NULL UNIQUE,
+                doc_freq INTEGER DEFAULT 0,
+                word_count INTEGER DEFAULT 0,
+                first_year INTEGER,
+                last_year INTEGER
+            );
+            INSERT INTO schema_versions (version) VALUES (1);
+            INSERT INTO schema_versions (version) VALUES (2);
+            INSERT INTO schema_versions (version) VALUES (3);
+            INSERT INTO schema_versions (version) VALUES (4);
+            INSERT INTO schema_versions (version) VALUES (5);
+            INSERT INTO schema_versions (version) VALUES (6);
+            INSERT INTO schema_versions (version) VALUES (7);
+            INSERT INTO schema_versions (version) VALUES (8);
+            INSERT INTO schema_versions (version) VALUES (9);
+            INSERT INTO concept_nodes (label, doc_freq) VALUES ('xrd', 1);
+        """)
+        old_conn.commit()
+        old_conn.close()
+
+        # Reopen with Database class — migration v10 should fire.
+        db = Database(db_path)
+
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(concept_nodes)")}
+        assert "type" in cols
+        assert "is_noise" in cols
+        assert "is_singleton" in cols
+
+        # Pre-existing row gets the defaults (no data rewrite).
+        row = db.conn.execute(
+            "SELECT type, is_noise, is_singleton FROM concept_nodes WHERE label = 'xrd'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "other"
+        assert row[1] == 0
+        assert row[2] == 0
+
+        version = db.conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
+        assert version >= 10
+
+        db.conn.close()

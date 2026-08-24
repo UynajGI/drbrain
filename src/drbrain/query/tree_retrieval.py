@@ -446,19 +446,6 @@ def _hybrid_score(
     return merged
 
 
-def _rrf_score(ranked_lists: list[list[str]], k: int = 60) -> list[tuple[str, float]]:
-    """Reciprocal Rank Fusion: combine multiple ranked lists.
-
-    RRF score = sum over lists of 1/(k + rank).
-    """
-    scores: dict[str, float] = {}
-    for lst in ranked_lists:
-        for rank, item in enumerate(lst, start=1):
-            scores[item] = scores.get(item, 0.0) + 1.0 / (k + rank)
-
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-
 def query_cross_paper(
     query: str,
     db_path: Path,
@@ -850,14 +837,17 @@ async def query_by_structure_hybrid(
     vector_candidates: set[str] = set()
     if cfg is not None:
         try:
-            from drbrain.services.embedding import _embed_provider, search_tree
+            from drbrain.services.embedding import _embed_provider, _local_node_id, search_tree
 
             provider = _embed_provider(cfg)
             if provider != "none":
                 vec_results = search_tree(
                     question, db_path, top_k=top_k * 2, cfg=cfg, paper_id=paper_id
                 )
-                vector_candidates = {r["node_id"] for r in vec_results}
+                # search_tree returns globally-unique node_ids ("{paper_id}:{local}");
+                # strip back to the local id so they merge with the LLM-selected
+                # ids (which come straight from tree.json) and resolve correctly.
+                vector_candidates = {_local_node_id(paper_id, r["node_id"]) for r in vec_results}
         except Exception:
             log.warning(
                 "Vector augmentation failed, continuing with LLM-only results", exc_info=True

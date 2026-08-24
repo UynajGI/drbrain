@@ -17,6 +17,7 @@ from drbrain.cli.analysis_commands import (
     landscape_cmd,
     paradigm_cmd,
     reason_cmd,
+    survey_cmd,
     transfers_cmd,
 )
 from drbrain.cli.build_commands import (
@@ -70,6 +71,7 @@ from drbrain.cli.query_commands import (
     show_cmd,
     stats_cmd,
 )
+from drbrain.cli.rag_commands import rag_app
 from drbrain.cli.repair_commands import (
     enrich_cmd,
     import_cmd,
@@ -85,14 +87,24 @@ app = typer.Typer(help="DrBrain — Academic Knowledge Graph System")
 
 
 @app.callback()
-def _main_callback(ctx: typer.Context) -> None:
+def _main_callback(
+    ctx: typer.Context,
+    config: str = typer.Option(
+        "", "--config", help="Override config file (e.g. config.embed1.yaml)"
+    ),
+) -> None:
     """Called before every command. Sets up logging and loads config."""
     setup_logging()
     from drbrain.config import load_config
     from drbrain.log import get_session_id
 
     ctx.ensure_object(dict)
-    ctx.obj["config"] = load_config()
+    if config:
+        from drbrain.config import Config
+
+        ctx.obj["config"] = Config.from_yaml("config.yaml", config)
+    else:
+        ctx.obj["config"] = load_config()
 
     cmd = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(no args)"
     logger.info(f"CLI invoked [{get_session_id()}]: {cmd}")
@@ -151,6 +163,7 @@ app.command("transfers")(transfers_cmd)
 app.command("isomorphism")(isomorphism_cmd)
 app.command("difficulty")(difficulty_cmd)
 app.command("frontier")(frontier_cmd)
+app.command("survey")(survey_cmd)
 app.command("reason")(reason_cmd)
 
 # Sub-apps
@@ -158,6 +171,7 @@ app.add_typer(session_app, name="session")
 app.add_typer(graph_app, name="graph")
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
+app.add_typer(rag_app, name="rag")
 
 if __name__ == "__main__":
     app()

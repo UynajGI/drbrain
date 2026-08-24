@@ -14,15 +14,11 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from pathlib import Path
+from importlib import resources
 
 from loguru import logger
 
 from drbrain.storage.database import Database
-
-LEAN_PROMPT_FILE = (
-    Path(__file__).parent.parent.parent.parent / "prompts" / "extract_concepts_lean.txt"
-)
 
 _CACHE_DDL = """
 CREATE TABLE IF NOT EXISTS paper_concepts_cache (
@@ -41,7 +37,12 @@ def ensure_cache_table(db: Database) -> None:
 
 
 def _lean_prompt() -> str:
-    return LEAN_PROMPT_FILE.read_text(encoding="utf-8")
+    """Load the bundled lean extraction prompt in source and wheel installs."""
+    return (
+        resources.files("drbrain.concept_graph")
+        .joinpath("prompts/extract_concepts_lean.txt")
+        .read_text(encoding="utf-8")
+    )
 
 
 class _RateLimiter:
@@ -124,7 +125,9 @@ def extract_paper_concepts_batch(
 
     Streams in chunks of ``chunk_size`` papers: each chunk is awaited and
     committed before the next is fetched, so long runs show progress and
-    survive interruptions (cache-based resumability).
+    survive interruptions (cache-based resumability). Empty or failed results
+    are cached as ``[]`` terminal outcomes, so an unlimited run cannot select
+    the same paper forever.
 
     Args:
         db: Database handle.
@@ -172,14 +175,15 @@ def extract_paper_concepts_batch(
         for (local_id, _, _), result in zip(rows, results):
             if not isinstance(result, tuple):
                 logger.warning("[cg.extract] paper {} failed: {}", local_id, result)
+                batch.append((local_id, "[]", ""))
                 chunk_failed += 1
                 continue
             labels, model_name = result
             if labels:
-                batch.append((local_id, json.dumps(labels, ensure_ascii=False), model_name))
                 ok += 1
             else:
                 chunk_failed += 1
+            batch.append((local_id, json.dumps(labels, ensure_ascii=False), model_name))
         if batch:
             db.conn.executemany(insert_sql, batch)
             db.conn.commit()

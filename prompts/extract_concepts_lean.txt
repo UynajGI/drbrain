@@ -1,8 +1,0 @@
-Extract key research concepts from the paper title+abstract. Output STRICT JSON: {"concepts": ["label", ...]}
-
-Rules:
-- 8-20 short noun phrases (1-5 words each), all lowercase.
-- Normalize: singular form ("ribbons" -> "ribbon"), drop filler words ("of", "the", "a"), nominalize verb phrases ("removing metal impurities" -> "metal impurity removal").
-- Include: materials, chemical formulae (e.g. "al2o3 coating"), methods, techniques, measured properties, and phenomena.
-- Expand abbreviations only if the long form appears in the text; keep the long form.
-- Only concepts grounded in the text; no invented or overly generic terms (avoid bare "science", "engineering", "analysis").

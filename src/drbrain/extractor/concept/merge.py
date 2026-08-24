@@ -11,7 +11,11 @@ from drbrain.extractor.concept.tree_helpers import (
     _collect_leaf_nodes,
     _is_quality_content,
 )
-from drbrain.extractor.concept.types import ExtractedConcepts
+from drbrain.extractor.concept.types import (
+    MATERIAL_DOMAIN,
+    MATERIAL_TYPE_FIELDS,
+    ExtractedConcepts,
+)
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
 
@@ -42,25 +46,29 @@ def _merge_concepts(
         results: List of ExtractedConcepts from each section.
         sections: Optional list of section titles parallel to results.
     """
-    merged: dict = {
-        "problems": [],
-        "methods": [],
-        "conclusions": [],
-        "debates": [],
-        "gaps": [],
-        "actors": [],
-        "relations": [],
-        "arguments": [],
-    }
+    categories = (
+        "problems",
+        "methods",
+        "conclusions",
+        "debates",
+        "gaps",
+        "actors",
+    ) + tuple(MATERIAL_TYPE_FIELDS.values())
+    merged: dict = {cat: [] for cat in categories}
+    merged["relations"] = []
+    merged["arguments"] = []
 
-    for category in ("problems", "methods", "conclusions", "debates", "gaps", "actors"):
+    for category in categories:
         seen: dict[str, float] = {}
         items: list[dict] = []
         for idx, result in enumerate(results):
             section = sections[idx] if sections and idx < len(sections) else ""
             for item in getattr(result, category, []):
                 label = item.get("label", "").strip().lower()
-                conf = item.get("confidence", 0.0)
+                try:
+                    conf = float(item.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    conf = 0.0
                 if label and (label not in seen or conf > seen[label]):
                     seen[label] = conf
                     # Remove previous entry with lower confidence
@@ -92,14 +100,22 @@ def _merge_concepts(
             if arg_key in seen_args:
                 # Keep higher confidence
                 idx = seen_args[arg_key]
-                if arg.confidence > raw_args[idx].get("confidence", 0):
+                try:
+                    prev_conf = float(raw_args[idx].get("confidence", 0))
+                except (TypeError, ValueError):
+                    prev_conf = 0.0
+                if arg.confidence > prev_conf:
                     raw_args[idx] = arg.to_dict()
             else:
                 seen_args[arg_key] = len(raw_args)
                 raw_args.append(arg.to_dict())
     merged["arguments"] = raw_args
 
-    return ExtractedConcepts(merged)
+    domain = next(
+        (r.domain for r in results if getattr(r, "domain", None) == MATERIAL_DOMAIN),
+        None,
+    )
+    return ExtractedConcepts(merged, domain=domain)
 
 
 async def extract_section_concepts(

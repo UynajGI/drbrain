@@ -370,10 +370,16 @@ def embed_cmd(
     tree: bool = typer.Option(
         False, "--tree", help="Generate tree node text embeddings (PageIndex + RAPTOR)"
     ),
+    papers: str = typer.Option(
+        "", "--papers", help="Comma-separated paper IDs to embed (default: all)"
+    ),
+    db_path: str = typer.Option(
+        "", "--db", help="Override db path (shard databases; default cfg db.path)"
+    ),
 ):
     """Train TransE graph embeddings. Use --tree for text embeddings."""
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
+    db = Database(db_path or cfg["db"]["path"])
 
     # --tree mode: text embeddings for tree nodes (Layer 2)
     if tree:
@@ -399,8 +405,11 @@ def embed_cmd(
         )
         bridge_mod = __import__("drbrain.services.embedding", fromlist=["build_paper_tree_vectors"])
         total = 0
+        paper_filter = {p.strip() for p in papers.split(",") if p.strip()} if papers else None
         for paper_path in sorted(papers_dir.iterdir()):
             if not paper_path.is_dir():
+                continue
+            if paper_filter is not None and paper_path.name not in paper_filter:
                 continue
             count = asyncio.run(
                 bridge_mod.build_paper_tree_vectors(paper_path, db.path, embed_cfg, llm_models)

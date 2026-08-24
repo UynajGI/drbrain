@@ -32,6 +32,14 @@ data/
 # Local config (contains secrets)
 config.local.yaml
 
+# 运行时派生配置：含 API key 或本机端口覆盖，不进 git
+config.9b.yaml
+config.build.yaml
+config.build_ox.yaml
+config.qwenmax.yaml
+config.e80*.yaml
+config.embed*.yaml
+
 # MinerU temp output
 mineru_*/
 
@@ -51,3 +59,21 @@ docs/learn/
 .trellis/
 .qoder/
 docs/superpowers/specs/
+
+# All research artifacts (scripts/reports/data/plugins) live here and are local-only
+research/
+
+# Local agent tooling (per-user / generated — never commit)
+.qwen/
+.agents/
+.codegraph/
+
+# Runtime caches (API cache responses)
+cache/
+
+# Research-loop run workspaces (generated per-topic outputs: autoresearch*)
+workspace/
+
+# Test-run artifacts (test API keys in config.yaml + local DBs — never commit)
+test-run/
+

@@ -11,6 +11,30 @@ from drbrain.services.repair import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _offline_network_sources():
+    """Hermetic default for all network-backed repair sources (T9).
+
+    Several ``repair_paper`` tests exercise only one repair source but let the
+    others run — and ``_repair_via_title_year`` (crossref) / ``_enrich_via_openalex``
+    / ``_fetch_arxiv_metadata`` hit the network, making those tests dependent on
+    external API availability (crossref rate-limits this host with HTTP 400/429,
+    which turned green baseline tests flaky). This autouse fixture stubs the
+    network clients to a fast "no result" default; tests that specifically test
+    a source patch it explicitly (``unittest.mock.patch`` inside the test body
+    takes precedence over the fixture default).
+    """
+    with (
+        patch("drbrain.extractor.crossref.fetch_doi_by_title", return_value=None),
+        patch("drbrain.extractor.crossref.fetch_doi_by_doi", return_value=None),
+        patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata", return_value=None),
+        patch("drbrain.extractor.openalex.get_work_enriched", return_value=None),
+        patch("drbrain.extractor.openalex.search_work_by_title", return_value=None),
+        patch("drbrain.extractor.openalex.search_authors_by_work", return_value=None),
+    ):
+        yield
+
+
 def test_normalize_title_all_caps():
     """All-caps titles are normalized to title case."""
     result = normalize_title("DEEP LEARNING FOR GRAPHS")
@@ -135,9 +159,8 @@ def test_repair_via_crossref_returns_repairs():
     }
 
     with patch(
-        "drbrain.extractor.crossref.fetch_work_by_doi",
+        "drbrain.extractor.crossref.fetch_doi_by_doi",
         return_value=crossref_data,
-        create=True,
     ):
         repairs = repair_paper(db, "p1", dry_run=True)
 
@@ -297,9 +320,8 @@ def test_repair_paper_dry_run_false_applies_updates():
     }
 
     with patch(
-        "drbrain.extractor.crossref.fetch_work_by_doi",
+        "drbrain.extractor.crossref.fetch_doi_by_doi",
         return_value=crossref_data,
-        create=True,
     ):
         repairs = repair_paper(db, "p1", dry_run=False)
 
@@ -433,6 +455,9 @@ def test_repair_paper_handles_repair_fn_exception():
 
     # Mock _repair_via_crossref to raise (covering the except in
     # repair_paper's for-loop), while _repair_via_arxiv still succeeds.
+    # The remaining loop members (_repair_via_title_year, _enrich_via_openalex)
+    # are also stubbed: they hit crossref/openalex over the network, which
+    # makes this unit test environment-dependent (T9: hermetic fix).
     with (
         patch(
             "drbrain.services.repair._repair_via_crossref",
@@ -442,6 +467,8 @@ def test_repair_paper_handles_repair_fn_exception():
             "drbrain.parser.mineru_parser._fetch_arxiv_metadata",
             return_value=("ArXiv Title", 2025),
         ),
+        patch("drbrain.services.repair._repair_via_title_year", return_value=[]),
+        patch("drbrain.services.repair._enrich_via_openalex", return_value=[]),
     ):
         repairs = repair_paper(db, "p1", dry_run=True)
 
