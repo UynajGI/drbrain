@@ -663,13 +663,26 @@ def test_eval_cmd_structure_and_baseline_file(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr("drbrain.rag.eval.run_ragas_eval", lambda *a, **k: ragas_result)
     monkeypatch.setattr(
         "drbrain.rag.eval.run_semantic_eval",
-        lambda *a, **k: {"status": "ok", "split": "dev", "queries": 1, "scored": 1,
-                         "missing": 0, "mean_similarity": 0.9, "pass_rate": 1.0, "threshold": 0.8},
+        lambda *a, **k: {
+            "status": "ok",
+            "split": "dev",
+            "queries": 1,
+            "scored": 1,
+            "missing": 0,
+            "mean_similarity": 0.9,
+            "pass_rate": 1.0,
+            "threshold": 0.8,
+        },
     )
     monkeypatch.setattr(
         "drbrain.rag.eval.run_qagen",
-        lambda *a, **k: {"status": "ok", "generated": 4, "nodes_used": 2,
-                         "golden_set": "g.jsonl", "note": "n"},
+        lambda *a, **k: {
+            "status": "ok",
+            "generated": 4,
+            "nodes_used": 2,
+            "golden_set": "g.jsonl",
+            "note": "n",
+        },
     )
 
     ctx = mock.MagicMock(spec=__import__("typer").Context)

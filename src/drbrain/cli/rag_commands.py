@@ -101,9 +101,7 @@ def rag_eval_cmd(
     ),
     k: str = typer.Option("5,10", "--k", help="Comma-separated top-k values (retriever)"),
     n: int = typer.Option(10, "--n", help="Max golden queries for the ragas/semantic eval"),
-    n_nodes: int = typer.Option(
-        25, "--n-nodes", help="Nodes to generate QA pairs from (qagen)"
-    ),
+    n_nodes: int = typer.Option(25, "--n-nodes", help="Nodes to generate QA pairs from (qagen)"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
     out: str = typer.Option(
         "docs/llamaindex-eval-baseline.md",

@@ -398,5 +398,3 @@ class TestRateLimitStateMachine:
         finally:
             _RATE_LIMIT_SM.on_success(rl_cfg, "sk-a")
             _RATE_LIMIT_SM.on_success(rl_cfg, "sk-b")
-
-
