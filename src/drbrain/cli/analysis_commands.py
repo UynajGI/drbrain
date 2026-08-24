@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any
 
 import typer
@@ -96,6 +95,11 @@ def reason_cmd(
         "-v",
         help="Show workflow pipeline diagram and step-by-step result summary.",
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Output JSON (full answer + tool trajectory)",
+    ),
 ):
     """LLM agent that reasons over the knowledge graph using tool-calling."""
     if isinstance(list_workflows_flag, typer.models.OptionInfo):
@@ -123,6 +127,8 @@ def reason_cmd(
         no_cache = no_cache.default
     if isinstance(visualize, typer.models.OptionInfo):
         visualize = visualize.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
 
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
@@ -214,75 +220,88 @@ def reason_cmd(
         db.close()
         raise typer.Exit(1)
 
-    if session_id:
-        # ── SessionAgent path (persistent multi-turn reasoning) ──
-        from drbrain.extractor.session_agent import SessionAgent
+    # ── LlamaIndex agent path (T9: sole engine; --workflow / --bidirectional
+    # keep their deterministic pipelines — design §4.4) ──
+    if not bidirectional:
+        from drbrain.rag.engine import resolve_engine
 
-        agent: Any = SessionAgent()
-        if session_id == "new":
-            sid = agent.create_session(db, title="reason", models=models)
-            if closure_ctx:
-                agent.inject_context(closure_ctx, label="closure")
-        else:
-            ok = agent.load_session(
-                db, session_id, graph=graph, models=models, closure_context=closure_ctx
+        if resolve_engine(cfg, "llamaindex") != "llamaindex":
+            typer.echo(
+                "[reason] llamaindex engine unavailable: set `llamaindex.enabled: true` "
+                "in config.yaml and run `drbrain rag index` to build the index",
+                err=True,
             )
-            if not ok:
-                typer.echo(f"Session not found: {session_id}", err=True)
-                db.close()
-                raise typer.Exit(1)
-            sid = session_id
+            db.close()
+            raise typer.Exit(1)
 
-        agent.graph = graph
+        from drbrain.rag.agent import reason_llamaindex
 
-        if bidirectional:
-            typer.echo(f"Bidirectional reasoning (session): {question}\n")
-            result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
-            if "error" in result:
-                typer.echo(f"Error: {result['error']}", err=True)
-            else:
-                typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
-                typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
-                for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
-                    typer.echo(
-                        f"  Round {i}: consistent={v['consistent']}, "
-                        f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
-                    )
-        else:
-            typer.echo(f"Reasoning (session): {question}\n")
-            answer = asyncio.run(agent.ask(question))
-            typer.echo(answer)
-
-        typer.echo(f"\n[Session: {sid}]")
-    else:
-        # ── ReasonerAgent path (stateless, original behavior) ──
-        from drbrain.extractor.reasoner import ReasonerAgent
-
-        reasoner_agent: Any = ReasonerAgent(
-            db=db, graph_engine=graph, models=models, closure_context=closure_ctx
+        typer.echo(f"Reasoning (llamaindex): {question}\n")
+        result = reason_llamaindex(
+            cfg,
+            db,
+            question,
+            max_turns=5,
+            session_id=session_id,
+            graph=graph,
+            closure_context=closure_ctx,
         )
-
-        if bidirectional:
-            typer.echo(f"Bidirectional reasoning: {question}\n")
-            result = asyncio.run(
-                reasoner_agent.reason_bidirectional(question, max_rounds=max_rounds)
-            )
-            if "error" in result:
-                typer.echo(f"Error: {result['error']}", err=True)
-            else:
-                typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
-                typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
-                for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
-                    typer.echo(
-                        f"  Round {i}: consistent={v['consistent']}, "
-                        f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
-                    )
+        if json_output:
+            typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         else:
-            typer.echo(f"Reasoning: {question}\n")
-            answer = asyncio.run(reasoner_agent.reason(question))
-            typer.echo(answer)
+            typer.echo(result.get("answer", ""))
+            tool_calls = result.get("tool_calls", [])
+            if tool_calls:
+                typer.echo(f"\nTool calls ({len(tool_calls)}):")
+                for tc in tool_calls:
+                    typer.echo(
+                        f"  - {tc.get('name')}({json.dumps(tc.get('args') or {}, ensure_ascii=False)})"
+                    )
+                    summary = (tc.get("result_summary") or "").strip()
+                    if summary:
+                        typer.echo(f"      {summary[:200]}")
+            typer.echo(f"\n[turns: {result.get('turns', 0)}, engine: llamaindex]")
+            if result.get("session_id"):
+                typer.echo(f"[Session: {result['session_id']}]")
+        db.close()
+        return
 
+    # ── Bidirectional path (deterministic LLM-KG loop, SessionAgent-based) ──
+    from drbrain.extractor.session_agent import SessionAgent
+
+    agent: Any = SessionAgent()
+    if session_id == "new":
+        sid = agent.create_session(db, title="reason", models=models)
+        if closure_ctx:
+            agent.inject_context(closure_ctx, label="closure")
+    else:
+        ok = agent.load_session(
+            db, session_id, graph=graph, models=models, closure_context=closure_ctx
+        )
+        if not ok:
+            typer.echo(f"Session not found: {session_id}", err=True)
+            db.close()
+            raise typer.Exit(1)
+        sid = session_id
+
+    agent.graph = graph
+
+    typer.echo(f"Bidirectional reasoning (session): {question}\n")
+    result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
+    if "error" in result:
+        typer.echo(f"Error: {result['error']}", err=True)
+    else:
+        typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
+        typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
+        for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
+            typer.echo(
+                f"  Round {i}: consistent={v['consistent']}, "
+                f"violations={len(v['violations'])}, patterns={len(v['patterns'])}"
+            )
+
+    typer.echo(f"\n[Session: {sid}]")
     db.close()
+    return
 
 
 def ask_cmd(
@@ -290,161 +309,103 @@ def ask_cmd(
     question: list[str] = typer.Argument(
         ..., help="Natural language question about the knowledge graph"
     ),
-    top_k: int = typer.Option(5, "--top", "-k", help="Number of graph concepts to retrieve"),
+    top_k: int = typer.Option(5, "--top", "-k", help="Number of sections to retrieve"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
-    hyde: bool = typer.Option(
-        False,
-        "--hyde",
-        help="Reformulate the query via HyDE (one extra LLM call) before retrieval",
-    ),
-    rerank: bool = typer.Option(
-        False, "--rerank", help="Apply cross-encoder rerank (auto no-op if unavailable)"
-    ),
-    rrf_k: int = typer.Option(60, "--rrf-k", help="RRF damping constant"),
 ):
-    """Ask a question in natural language — searches the KG and returns an answer.
+    """Ask a question in natural language — LlamaIndex retrieval + REFINE synthesis.
 
-    Retrieval uses hybrid search (BM25 + embedding fused via RRF) at the paper
-    level, then expands each paper's concepts for graph context. ``--hyde``
-    reformulates the query with a hypothetical document first; ``--rerank``
-    applies a cross-encoder. When embedding is disabled, runs in pure-BM25 mode.
+    Sole engine since T9 (终态清理): the legacy hybrid-search + graph-context
+    path and the ``--engine``/``--hyde``/``--rerank``/``--rrf-k`` switches were
+    removed (design §1 替换清单). Requires ``llamaindex.enabled: true`` and a
+    built index (``drbrain rag index``); the answer includes structured
+    sources.
 
     Example: drbrain ask "Is attention better than CNN for NLP?"
     """
-    import asyncio
-
     # Normalize typer OptionInfo objects when called directly (not via CLI)
     if isinstance(top_k, typer.models.OptionInfo):
         top_k = int(top_k.default or 5)
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
-    if isinstance(hyde, typer.models.OptionInfo):
-        hyde = hyde.default
-    if isinstance(rerank, typer.models.OptionInfo):
-        rerank = rerank.default
-    if isinstance(rrf_k, typer.models.OptionInfo):
-        rrf_k = int(rrf_k.default) if rrf_k.default is not None else 60
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]
-    db = Database(cfg["db"]["path"])
 
-    models = cfg.llm.models if hasattr(cfg, "llm") else cfg.get("llm", {}).get("models", [])
+    from drbrain.rag.engine import resolve_engine
 
-    # ── Optional HyDE query transform (LLM; auto-falls-back on failure) ──
-    query_text = question_text
-    if hyde:
-        from drbrain.query.query_transform import ahyde_transform
-
-        try:
-            hyde_result = asyncio.run(ahyde_transform(question_text, models))
-            query_text = hyde_result.query  # original on failure, hypothesis on success
-        except Exception:
-            # Defensive: ahyde_transform already swallows caller errors, but the
-            # CLI must never crash the whole query because of a HyDE hiccup.
-            query_text = question_text
-
-    # ── Hybrid retrieval (BM25 + embedding RRF; pure BM25 when embed disabled) ──
-    from drbrain.config import EmbedConfig
-    from drbrain.query.hybrid_retrieval import hybrid_search
-
-    embed_cfg_raw = (
-        cfg.get("embed", EmbedConfig())
-        if isinstance(cfg, dict)
-        else getattr(cfg, "embed", EmbedConfig())
-    )
-    embed_cfg = EmbedConfig(**embed_cfg_raw) if isinstance(embed_cfg_raw, dict) else embed_cfg_raw
-    db_path_val = cfg["db"]["path"] if isinstance(cfg, dict) else cfg.db.path
-
-    hits = hybrid_search(
-        query_text,
-        db,
-        Path(db_path_val),
-        embed_cfg=embed_cfg,
-        top_k=top_k,
-        rerank=rerank,
-        rrf_k=rrf_k,
-    )
-
-    if not hits:
-        db.close()
-        typer.echo("No relevant concepts found in the knowledge graph.")
-        return
-
-    # ── Build context: expand each paper hit into its concepts ──
-    graph = GraphEngine()
-    graph.load_from_db(db)
-    context_parts: list[str] = []
-    seed_labels: list[str] = []
-    for hit in hits:
-        paper_id = hit.paper_id
-        paper_info = db.get_paper(paper_id) if paper_id else {}
-        paper_title = paper_info.get("title", paper_id) if paper_info else paper_id
-        concepts = db.get_concepts_by_paper(paper_id) if paper_id else []
-        if not concepts:
-            # Fallback: use the best BM25 row's label/type from the hit payload
-            row = hit.payload.get("bm25", hit.payload) if isinstance(hit.payload, dict) else {}
-            label = row.get("label", "")
-            ctype = row.get("type", "")
-            if label:
-                context_parts.append(f"- {label} ({ctype}) from {paper_title}")
-                seed_labels.append(label)
-            continue
-        for c in concepts:
-            label = c.get("label", "")
-            ctype = c.get("type", "")
-            if not label:
-                continue
-            context_parts.append(f"- {label} ({ctype}) from {paper_title}")
-            seed_labels.append(label)
-            if label in graph.graph:
-                neighbors = graph.traverse({label}, hops=1, direction="both")[:5]
-                for n in neighbors:
-                    rel = n.path[0].relation.replace("_", " ") if n.path else "related to"
-                    context_parts.append(f"  --{rel}--> {n.target}")
-
-    # Inject closure-inferred edges for matched concept labels
-    if seed_labels:
-        closure_ctx = _build_closure_context(graph, seed_labels, top_k=top_k)
-        if closure_ctx:
-            context_parts.append("\nInferred relations (logical closure):")
-            context_parts.append(closure_ctx)
-
-    context = "\n".join(context_parts[:50])
-
-    if not models:
-        db.close()
-        typer.echo("No LLM models configured. Showing graph context only:\n\n" + context)
-        return
-
-    from drbrain.extractor.llm_client import acall_text_with_fallback
-
-    prompt = (
-        f"Answer this research question using the knowledge graph context below.\n\n"
-        f"Question: {question_text}\n\n"
-        f"Knowledge Graph Context:\n{context}\n\n"
-        f"Answer concisely in 2-4 sentences. If the context doesn't contain "
-        f"enough information, say so. Cite specific concepts and relations."
-    )
-
-    answer = asyncio.run(acall_text_with_fallback(prompt, models, max_tokens=300))
-    db.close()
-
-    if json_output:
-        import json as _json
-
+    if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
-            _json.dumps(
-                {"question": question_text, "answer": answer, "context": context},
-                indent=2,
-                ensure_ascii=False,
-            )
+            "[ask] llamaindex engine unavailable: set `llamaindex.enabled: true` "
+            "in config.yaml and run `drbrain rag index` to build the index",
+            err=True,
         )
+        raise typer.Exit(1)
+
+    db = Database(cfg["db"]["path"])
+    try:
+        try:
+            _ask_llamaindex_cli(cfg, db, question_text, top_k=top_k, json_output=json_output)
+        except Exception as exc:
+            typer.echo(f"[ask] llamaindex query failed: {exc}", err=True)
+            raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+def _ask_llamaindex_cli(
+    cfg: Any, db: Database, question: str, top_k: int, json_output: bool
+) -> None:
+    """Run ``ask --engine llamaindex``: answer + structured sources.
+
+    Streaming follows ``llamaindex.streaming`` (config); ``--json`` forces the
+    non-streaming path so the full result dict can be serialized in one shot.
+    """
+    from drbrain.rag.config import get_llamaindex_config
+    from drbrain.rag.engine import ask_llamaindex
+
+    streaming = bool(get_llamaindex_config(cfg).streaming)
+    if json_output:
+        result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
+        typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
         return
 
-    typer.echo(f"\nQ: {question_text}\n")
-    typer.echo(f"A: {answer}\n")
-    typer.echo(f"(based on {len(hits)} papers, {len(seed_labels)} concepts)")
+    if not streaming:
+        _render_ask_llamaindex(ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False))
+        return
+
+    typer.echo(f"\nQ: {question}\n")
+    result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=True)
+    final: dict[str, Any] | None = None
+    for item in result:
+        if "chunk" in item:
+            typer.echo(item["chunk"], nl=False)
+        else:
+            final = item
+    typer.echo("\n")
+    if final is None:  # pragma: no cover - defensive: empty stream
+        final = {"question": question, "answer": "", "sources": [], "engine": "llamaindex"}
+    _render_ask_sources(final)
+
+
+def _render_ask_llamaindex(result: dict[str, Any]) -> None:
+    """Plain rendering of the llamaindex ask result dict (Q / A / sources)."""
+    typer.echo(f"\nQ: {result.get('question', '')}\n")
+    typer.echo(f"A: {result.get('answer', '')}\n")
+    _render_ask_sources(result)
+
+
+def _render_ask_sources(result: dict[str, Any]) -> None:
+    """Print the structured source back-links of an ask result."""
+    sources = result.get("sources") or []
+    typer.echo(f"Sources ({len(sources)}, engine: {result.get('engine', 'llamaindex')}):")
+    for i, src in enumerate(sources, start=1):
+        title = src.get("title") or ""
+        nid = src.get("node_id") or ""
+        pid = src.get("paper_id") or ""
+        score = src.get("score")
+        score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
+        label = title if title else (nid if nid else pid)
+        typer.echo(f"  {i}. {label}  (paper: {pid}, node: {nid}, score: {score_str})")
 
 
 def evolve_cmd(
@@ -911,3 +872,55 @@ def frontier_cmd(
                 typer.echo(f"  [{s['type']}] {s['description'][:120]}")
 
     db.close()
+
+
+def survey_cmd(
+    ctx: typer.Context,
+    topic: str = typer.Argument(
+        None, help="Topic to survey (optional; defaults to the whole library)"
+    ),
+    output: str = typer.Option(
+        None, "--output", "-o", help="Write markdown to FILE instead of stdout"
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output structured JSON instead of markdown"
+    ),
+    top_n: int = typer.Option(10, "--top-n", help="Max items per section"),
+):
+    """Generate a one-shot markdown literature survey.
+
+    Produces a three-section 综述: Gap 清单 (研究空白 + 争论 + 前沿信号),
+    文献交叉引用 (谁引谁 + 共享引用), and 证据链 (每条 Gap/结论追溯到来源).
+    """
+    # Normalize typer OptionInfo objects when called directly (not via CLI)
+    if isinstance(topic, typer.models.OptionInfo):
+        topic = topic.default
+    if isinstance(output, typer.models.OptionInfo):
+        output = output.default
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = json_output.default
+    if isinstance(top_n, typer.models.OptionInfo):
+        top_n = int(top_n.default or 10)
+
+    cfg = ctx.obj["config"]
+    db = Database(cfg["db"]["path"])
+    graph = GraphEngine()
+    graph.load_from_db(db)
+
+    from drbrain.report.survey import generate_survey, generate_survey_data
+
+    try:
+        if json_output:
+            data = generate_survey_data(db, topic, graph=graph, top_n=top_n)
+            typer.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+        else:
+            md = generate_survey(db, topic, graph=graph, top_n=top_n)
+            if output:
+                from pathlib import Path
+
+                Path(output).write_text(md, encoding="utf-8")
+                typer.echo(f"Survey written to {output}")
+            else:
+                typer.echo(md)
+    finally:
+        db.close()
