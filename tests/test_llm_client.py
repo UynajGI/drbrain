@@ -70,6 +70,40 @@ def test_call_with_fallback_all_fail():
         assert result is None
 
 
+def test_call_with_fallback_can_disable_thinking_for_one_request():
+    """A structured request can opt into the Qwen/Zhipu thinking switch."""
+    mock_response = mock.Mock()
+    mock_response.choices = [mock.Mock()]
+    mock_response.choices[0].message.content = '{"ok": true}'
+    mock_response.usage.prompt_tokens = 1
+    mock_response.usage.completion_tokens = 1
+
+    with (
+        mock.patch(
+            "drbrain.extractor.llm_client.litellm.completion", return_value=mock_response
+        ) as completion,
+        mock.patch("drbrain.extractor.llm_client._record_llm"),
+        mock.patch("drbrain.extractor.llm_client._log_llm_call"),
+    ):
+        from drbrain.extractor.llm_client import call_with_fallback
+
+        result = call_with_fallback(
+            "test",
+            [
+                {
+                    "provider": "openai",
+                    "model": "gpt-4",
+                    "api_key": "sk-test",
+                    "thinking_param": "enable_thinking",
+                }
+            ],
+            disable_thinking=True,
+        )
+
+    assert result == {"ok": True}
+    assert completion.call_args.kwargs["extra_body"] == {"enable_thinking": False}
+
+
 class TestKeyRotator:
     """Key rotation strategies: round_robin cycling and hash-bound mapping."""
 

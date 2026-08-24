@@ -93,6 +93,7 @@ packages = ["src/drbrain"]
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "drbrain/skills"
 "skills-lock.json" = "drbrain/skills-lock.json"
+"src/drbrain/concept_graph/prompts/extract_concepts_lean.txt" = "drbrain/concept_graph/prompts/extract_concepts_lean.txt"
 
 [tool.ruff]
 target-version = "py312"

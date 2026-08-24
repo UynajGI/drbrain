@@ -40,13 +40,16 @@ def require_torch():
     return importlib.import_module("torch")
 
 
-def build_node_topo_features(db: Database, labels: list[str], years: list[int]) -> np.ndarray:
+def build_node_topo_features(
+    db: Database, labels: list[str], years: list[int], *, whitelist: set[str] | None = None
+) -> np.ndarray:
     """Per-node topological features: ``[degree, two_path]`` for each year.
 
     Args:
         db: Database handle.
         labels: Ordered node labels (row order of the returned matrix).
         years: Ascending slice years.
+        whitelist: Optional node whitelist to restrict the yearly subgraphs.
 
     Returns:
         Float matrix of shape ``(len(labels), 2 * len(years))``.
@@ -55,7 +58,7 @@ def build_node_topo_features(db: Database, labels: list[str], years: list[int]) 
     feat = np.zeros((n, 2 * len(years)), dtype=np.float32)
     idx = {lab: i for i, lab in enumerate(labels)}
     for yi, t in enumerate(years):
-        g = yearly_subgraph(db, t)
+        g = yearly_subgraph(db, t, labels=whitelist)
         for lab, i in idx.items():
             if lab in g:
                 feat[i, 2 * yi] = float(g.degree(lab, weight="weight"))
@@ -66,13 +69,15 @@ def build_node_topo_features(db: Database, labels: list[str], years: list[int]) 
     return (feat - feat.mean(axis=0)) / std
 
 
-def build_normalized_adjacency(db: Database, labels: list[str], cutoff: int):
+def build_normalized_adjacency(
+    db: Database, labels: list[str], cutoff: int, *, whitelist: set[str] | None = None
+):
     """Row-normalized adjacency tensor (with self-loops) over ``labels`` at G_cutoff."""
     torch = require_torch()
     n = len(labels)
     idx = {lab: i for i, lab in enumerate(labels)}
     adj = np.zeros((n, n), dtype=np.float32)
-    g = yearly_subgraph(db, cutoff)
+    g = yearly_subgraph(db, cutoff, labels=whitelist)
     for u, v in g.edges():
         if u in idx and v in idx:
             adj[idx[u], idx[v]] = 1.0
@@ -130,22 +135,31 @@ class GNNLinkClassifier:
         labels: np.ndarray,
         years: list[int],
         cutoff: int,
+        *,
+        node_labels: set[str] | None = None,
     ) -> GNNLinkClassifier:
-        """Train the encoder + decoder on labelled concept pairs."""
+        """Train the encoder + decoder on labelled concept pairs.
+
+        Args:
+            node_labels: Optional node whitelist. When given, the GNN vocabulary
+                is restricted to the whitelist (e.g. a subfield), keeping the
+                dense adjacency matrix tractable.
+        """
         torch = require_torch()
         torch.manual_seed(self.seed)
 
         # Vocabulary = ALL nodes in the cutoff graph (so message passing sees the
         # full neighbourhood and test pairs over valid nodes get real scores),
-        # unioned with any training-pair endpoints.
-        cutoff_nodes = set(yearly_subgraph(db, cutoff).nodes())
+        # unioned with any training-pair endpoints. With a subfield whitelist the
+        # graph is restricted to those nodes instead.
+        cutoff_nodes = set(yearly_subgraph(db, cutoff, labels=node_labels).nodes())
         nodes = sorted(cutoff_nodes | {n for pair in pairs for n in pair})
         self._nodes = nodes
         self._label2idx = {lab: i for i, lab in enumerate(nodes)}
-        x_np = build_node_topo_features(db, nodes, years)
+        x_np = build_node_topo_features(db, nodes, years, whitelist=node_labels)
         self._x_np = x_np
         x = torch.tensor(x_np, dtype=torch.float32)
-        self._adj = build_normalized_adjacency(db, nodes, cutoff)
+        self._adj = build_normalized_adjacency(db, nodes, cutoff, whitelist=node_labels)
 
         encoder, decoder = self._build_model(torch, x.shape[1])
         self._encoder, self._decoder = encoder, decoder

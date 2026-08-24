@@ -70,3 +70,159 @@ def test_cg_ingest_unknown_source(monkeypatch) -> None:
     monkeypatch.setattr(registry, "get_source", _raise)
     result = runner.invoke(cg_app, ["ingest", "--source", "nope"], obj={"config": {}})
     assert result.exit_code == 1
+
+
+def test_cg_predict_invalid_model() -> None:
+    result = runner.invoke(
+        cg_app,
+        [
+            "predict",
+            "--feat-cutoff",
+            "2016",
+            "--train-end",
+            "2019",
+            "--test-end",
+            "2022",
+            "--model",
+            "nope",
+        ],
+        obj={"config": {}},
+    )
+    assert result.exit_code == 1
+    assert "Invalid model" in result.output
+
+
+def test_cg_predict_gnn_mixture_requires_embeddings() -> None:
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(db_path)
+        db.conn.execute("INSERT INTO papers (local_id, title, year) VALUES ('p', 'Paper', 2010)")
+        # Pre-cutoff triangle + one edge emerging in the test window.
+        for u, v, year in [("a", "b", 2010), ("a", "c", 2012), ("b", "c", 2021)]:
+            db.conn.execute(
+                "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+                "VALUES (?, ?, ?, 'p', 1)",
+                (u, v, year),
+            )
+        db.conn.commit()
+        db.close()
+        cfg = {"db": {"path": str(db_path)}}
+        result = runner.invoke(
+            cg_app,
+            [
+                "predict",
+                "--feat-cutoff",
+                "2016",
+                "--train-end",
+                "2019",
+                "--test-end",
+                "2022",
+                "--model",
+                "gnn-mixture",
+            ],
+            obj={"config": cfg},
+        )
+        assert result.exit_code == 1
+        assert "embeddings" in result.output
+
+
+def _predict_db(tmpdir: Path) -> Path:
+    from drbrain.storage.database import Database
+
+    db_path = tmpdir / "test.db"
+    db = Database(db_path)
+    db.conn.execute("INSERT INTO papers (local_id, title, year) VALUES ('p', 'Paper', 2010)")
+    # Pre-cutoff triangle + one edge emerging in the test window.
+    for u, v, year in [("a", "b", 2010), ("a", "c", 2012), ("b", "c", 2021)]:
+        db.conn.execute(
+            "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+            "VALUES (?, ?, ?, 'p', 1)",
+            (u, v, year),
+        )
+    db.conn.commit()
+    db.close()
+    return db_path
+
+
+def test_cg_predict_output_pairs_writes_file() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        db_path = _predict_db(Path(td))
+        out_pairs = Path(td) / "pairs.json"
+        cfg = {"db": {"path": str(db_path)}}
+        result = runner.invoke(
+            cg_app,
+            [
+                "predict",
+                "--feat-cutoff",
+                "2016",
+                "--train-end",
+                "2019",
+                "--test-end",
+                "2022",
+                "--model",
+                "baseline",
+                "--output-pairs",
+                str(out_pairs),
+            ],
+            obj={"config": cfg},
+        )
+        assert result.exit_code == 0, result.output
+        assert out_pairs.exists()
+        payload = json.loads(out_pairs.read_text(encoding="utf-8"))
+        assert payload["model"] == "baseline"
+        assert payload["pairs"]
+        assert all({"u", "v", "score", "observed"} <= set(p) for p in payload["pairs"])
+
+
+def test_cg_predict_labels_file_restricts_subfield() -> None:
+    from drbrain.storage.database import Database
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        db = Database(db_path)
+        db.conn.execute("INSERT INTO papers (local_id, title, year) VALUES ('p', 'Paper', 2010)")
+        # 5-node graph: c/e excluded by the labels file; a-d emerges in test window.
+        for u, v, year in [
+            ("a", "b", 2010),
+            ("a", "c", 2012),
+            ("b", "c", 2010),
+            ("d", "e", 2010),
+            ("a", "d", 2021),
+        ]:
+            db.conn.execute(
+                "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+                "VALUES (?, ?, ?, 'p', 1)",
+                (u, v, year),
+            )
+        db.conn.commit()
+        db.close()
+        labels_file = Path(td) / "labels.txt"
+        labels_file.write_text("a\nb\nd\n", encoding="utf-8")
+        out_pairs = Path(td) / "pairs.json"
+        cfg = {"db": {"path": str(db_path)}}
+        result = runner.invoke(
+            cg_app,
+            [
+                "predict",
+                "--feat-cutoff",
+                "2016",
+                "--train-end",
+                "2019",
+                "--test-end",
+                "2022",
+                "--model",
+                "baseline",
+                "--labels-file",
+                str(labels_file),
+                "--output-pairs",
+                str(out_pairs),
+            ],
+            obj={"config": cfg},
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(out_pairs.read_text(encoding="utf-8"))
+        allowed = {"a", "b", "d"}
+        assert payload["pairs"]
+        assert all(p["u"] in allowed and p["v"] in allowed for p in payload["pairs"])
