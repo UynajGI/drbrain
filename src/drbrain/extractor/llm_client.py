@@ -461,6 +461,8 @@ def _build_litellm_kwargs(
     prompt: str,
     system_prompt: str,
     max_tokens: int,
+    *,
+    disable_thinking: bool = False,
     api_key: str | None = None,
 ) -> dict:
     name = f"{model_cfg['provider']}/{model_cfg['model']}"
@@ -490,13 +492,19 @@ def _build_litellm_kwargs(
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
         "max_tokens": max_tokens,
-        # thinking 模型（如 qwen3）默认开启推理链，抽取场景会拖慢响应、
-        # 吃 max_tokens 配额甚至超时 —— 统一禁用，对齐 call_text_with_fallback。
-        # ox-alpha-free 等强制 thinking 的模型配置 disable_thinking: false 跳过。
-        "extra_body": _thinking_extra_body(model_cfg),
         # 长全文抽取（8k chars prompt）27b 可能几十秒 —— timeout 可 per-model 覆盖。
         "timeout": model_cfg.get("timeout", 60),
     }
+    # A per-model body is authoritative. Otherwise the lean concept extractor
+    # can request the Qwen/Zhipu switch without changing the fallback client's
+    # existing provider-specific thinking policy.
+    extra_body = model_cfg.get("extra_body")
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
+    elif disable_thinking and model_cfg.get("thinking_param") == "enable_thinking":
+        kwargs["extra_body"] = {"enable_thinking": False}
+    else:
+        kwargs["extra_body"] = _thinking_extra_body(model_cfg)
     if api_key is None:
         api_key = _resolve_api_key(model_cfg)
     if api_key:
@@ -593,6 +601,7 @@ def call_with_fallback(
     system_prompt: str = "",
     max_tokens: int = 16384,
     *,
+    disable_thinking: bool = False,
     _cache: ApiCache | None = None,
 ) -> dict | None:
     """Try models in order, return first successful parsed JSON response.
@@ -622,7 +631,12 @@ def call_with_fallback(
                 start = time.monotonic()
                 try:
                     kwargs = _build_litellm_kwargs(
-                        model_cfg, prompt, system_prompt, max_tokens, api_key=api_key
+                        model_cfg,
+                        prompt,
+                        system_prompt,
+                        max_tokens,
+                        disable_thinking=disable_thinking,
+                        api_key=api_key,
                     )
                     response = litellm.completion(**kwargs)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
@@ -699,6 +713,7 @@ async def acall_with_fallback(
     system_prompt: str = "",
     max_tokens: int = 16384,
     *,
+    disable_thinking: bool = False,
     _cache: ApiCache | None = None,
 ) -> dict | list | None:
     """Async version of call_with_fallback.
@@ -727,7 +742,12 @@ async def acall_with_fallback(
                 start = time.monotonic()
                 try:
                     kwargs = _build_litellm_kwargs(
-                        model_cfg, prompt, system_prompt, max_tokens, api_key=api_key
+                        model_cfg,
+                        prompt,
+                        system_prompt,
+                        max_tokens,
+                        disable_thinking=disable_thinking,
+                        api_key=api_key,
                     )
                     response = await litellm.acompletion(**kwargs)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)

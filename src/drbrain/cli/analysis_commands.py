@@ -403,7 +403,7 @@ def _render_ask_sources(result: dict[str, Any]) -> None:
         nid = src.get("node_id") or ""
         pid = src.get("paper_id") or ""
         score = src.get("score")
-        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+        score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
         label = title if title else (nid if nid else pid)
         typer.echo(f"  {i}. {label}  (paper: {pid}, node: {nid}, score: {score_str})")
 
