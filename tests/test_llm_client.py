@@ -168,3 +168,235 @@ class TestResolveAgentKey:
         from drbrain.extractor.llm_client import resolve_agent_key
 
         assert resolve_agent_key({"api_key": "sk-x"}) == {"api_key": "sk-x"}
+
+
+class TestRpmThrottle:
+    """Per-model RPM throttle: pace calls to stay within a configured rpm."""
+
+    def test_interval_secs(self):
+        from drbrain.extractor.llm_client import _rpm_interval_secs
+
+        assert _rpm_interval_secs({"rpm": 30}) == 2.0
+        assert _rpm_interval_secs({"rpm": 60}) == 1.0
+        assert _rpm_interval_secs({"rpm": 0}) == 0.0
+        assert _rpm_interval_secs({}) == 0.0
+        assert _rpm_interval_secs({"rpm": "oops"}) == 0.0
+
+    def test_throttle_sleeps_on_second_call(self):
+        from drbrain.extractor.llm_client import _rpm_last_call, _throttle
+
+        cfg = {"provider": "openai", "model": "throttle-test", "rpm": 30}
+        _rpm_last_call.pop("openai/throttle-test", None)  # 清残留状态
+        with mock.patch("drbrain.extractor.llm_client.time.sleep") as m_sleep:
+            _throttle(cfg)  # 第一次：不 sleep
+            m_sleep.assert_not_called()
+            _throttle(cfg)  # 第二次：等 ~2s 保持 30 rpm
+            m_sleep.assert_called_once()
+            wait = m_sleep.call_args[0][0]
+            assert 1.5 <= wait <= 2.1
+
+    def test_throttle_skips_without_rpm(self):
+        from drbrain.extractor.llm_client import _throttle
+
+        with mock.patch("drbrain.extractor.llm_client.time.sleep") as m_sleep:
+            _throttle({"provider": "openai", "model": "no-rpm"})
+            m_sleep.assert_not_called()
+
+    def test_athrottle_awaits_interval(self):
+        import asyncio
+
+        from drbrain.extractor.llm_client import _athrottle, _rpm_async_last_call
+
+        cfg = {"provider": "openai", "model": "throttle-async-test", "rpm": 30}
+        _rpm_async_last_call.pop("openai/throttle-async-test", None)
+
+        async def _go():
+            with mock.patch("drbrain.extractor.llm_client.asyncio.sleep") as m_sleep:
+                await _athrottle(cfg)  # 第一次：不等
+                m_sleep.assert_not_called()
+                await _athrottle(cfg)  # 第二次：等 ~2s
+                m_sleep.assert_called_once()
+                wait = m_sleep.call_args[0][0]
+                assert 1.5 <= wait <= 2.1
+
+        asyncio.run(_go())
+
+
+class TestRateLimitStateMachine:
+    """自动路由状态机：限流 → 冷却跳过 → 到期恢复 / 成功复位（per-key）。"""
+
+    def _cfg(self, name="rl-test", **kw):
+        return {"provider": "openai", "model": name, **kw}
+
+    def test_is_rate_limit_detection(self):
+        from drbrain.extractor.llm_client import _is_rate_limit
+
+        assert _is_rate_limit(Exception("RateLimitError: free model capacity is limited"))
+        assert _is_rate_limit(Exception("429 Too Many Requests"))
+        assert _is_rate_limit(Exception("Out of credits: balance $0.0000"))
+        assert _is_rate_limit(Exception("quota exceeded"))
+        assert _is_rate_limit(Exception("Monthly usage limit reached"))
+        # 非限流错误不误判
+        assert not _is_rate_limit(Exception("Expecting property name enclosed in double quotes"))
+        assert not _is_rate_limit(Exception("connection reset"))
+
+    def test_cooldown_skip_and_recovery(self):
+        from drbrain.extractor.llm_client import RateLimitStateMachine
+
+        sm = RateLimitStateMachine()
+        cfg = self._cfg(cooldown_secs=60)
+        key = "sk-a"
+        assert sm.is_key_available(cfg, key)  # 初始 NORMAL
+        wait = sm.on_rate_limit(cfg, key)
+        assert wait == 60.0
+        assert not sm.is_key_available(cfg, key)  # 冷却中 → 跳过
+        assert sm.remaining(cfg, key) > 0
+        # 冷却到期 → 自动恢复 NORMAL
+        with mock.patch("drbrain.extractor.llm_client.time.monotonic", return_value=1e9 + 100):
+            assert sm.is_key_available(cfg, key)
+
+    def test_success_resets_cooldown(self):
+        from drbrain.extractor.llm_client import RateLimitStateMachine
+
+        sm = RateLimitStateMachine()
+        cfg = self._cfg(cooldown_secs=60)
+        key = "sk-a"
+        sm.on_rate_limit(cfg, key)
+        assert not sm.is_key_available(cfg, key)
+        sm.on_success(cfg, key)
+        assert sm.is_key_available(cfg, key)
+        assert sm.remaining(cfg, key) == 0.0
+
+    def test_exponential_backoff_capped(self):
+        from drbrain.extractor.llm_client import RateLimitStateMachine
+
+        sm = RateLimitStateMachine()
+        cfg = self._cfg(cooldown_secs=10, max_cooldown_secs=40)
+        key = "sk-a"
+        waits = [sm.on_rate_limit(cfg, key) for _ in range(5)]
+        assert waits == [10.0, 20.0, 40.0, 40.0, 40.0]  # 10→20→40 封顶
+
+    def test_zero_cooldown_disables_skip(self):
+        from drbrain.extractor.llm_client import RateLimitStateMachine
+
+        sm = RateLimitStateMachine()
+        cfg = self._cfg(cooldown_secs=0)
+        key = "sk-a"
+        assert sm.on_rate_limit(cfg, key) == 0.0
+        assert sm.is_key_available(cfg, key)  # 冷却 0s → 立即可用
+
+    def test_per_key_isolation(self):
+        """一个 key 冷却不影响同模型的其他 key。"""
+        from drbrain.extractor.llm_client import RateLimitStateMachine
+
+        sm = RateLimitStateMachine()
+        cfg = self._cfg(cooldown_secs=60)
+        sm.on_rate_limit(cfg, "sk-bad")
+        assert not sm.is_key_available(cfg, "sk-bad")
+        assert sm.is_key_available(cfg, "sk-good")  # 其他 key 不受影响
+
+    def test_resolve_api_key_skips_cooldown_key(self):
+        """round-robin 跳过冷却中的 key，用下一个可用 key。"""
+        from drbrain.extractor.llm_client import _RATE_LIMIT_SM, _resolve_api_key
+
+        cfg = {
+            "provider": "openai",
+            "model": "rl-keys",
+            "api_keys": ["sk-bad", "sk-good"],
+            "cooldown_secs": 60,
+        }
+        _RATE_LIMIT_SM.on_success(cfg, "sk-bad")
+        _RATE_LIMIT_SM.on_success(cfg, "sk-good")
+        try:
+            _RATE_LIMIT_SM.on_rate_limit(cfg, "sk-bad")  # 把 sk-bad 打入冷却
+            # 轮换应跳过 sk-bad，返回 sk-good
+            got = {_resolve_api_key(cfg) for _ in range(4)}
+            assert got == {"sk-good"}
+        finally:
+            _RATE_LIMIT_SM.on_success(cfg, "sk-bad")
+            _RATE_LIMIT_SM.on_success(cfg, "sk-good")
+
+    def test_call_with_fallback_skips_exhausted_key(self):
+        """一个 key 限流 → 只跳过该 key，用池里下一个 key 继续（不跳过整个模型）。"""
+        from drbrain.extractor.llm_client import _RATE_LIMIT_SM, call_with_fallback
+
+        mock_response = mock.Mock()
+        mock_response.choices = [mock.Mock()]
+        mock_response.choices[0].message.content = '{"ok": true}'
+        mock_response.usage.prompt_tokens = 1
+        mock_response.usage.completion_tokens = 1
+
+        cfg = {
+            "provider": "openai",
+            "model": "rl-keys2",
+            "api_keys": ["sk-bad", "sk-good"],
+            "cooldown_secs": 60,
+        }
+        _RATE_LIMIT_SM.on_success(cfg, "sk-bad")
+        _RATE_LIMIT_SM.on_success(cfg, "sk-good")
+
+        def _side_effect(**kwargs):
+            if kwargs.get("api_key") == "sk-bad":
+                raise Exception("Monthly usage limit reached. Resets in 19 days.")
+            return mock_response
+
+        try:
+            with (
+                mock.patch(
+                    "drbrain.extractor.llm_client.litellm.completion", side_effect=_side_effect
+                ) as m_comp,
+                mock.patch("drbrain.extractor.llm_client._record_llm"),
+                mock.patch("drbrain.extractor.llm_client._log_llm_call"),
+            ):
+                result = call_with_fallback("p", [cfg])
+            assert result == {"ok": True}
+            # sk-bad 被跳过，sk-good 成功
+            used_keys = [c.kwargs.get("api_key") for c in m_comp.call_args_list]
+            assert "sk-good" in used_keys
+            # sk-bad 已进入冷却
+            assert not _RATE_LIMIT_SM.is_key_available(cfg, "sk-bad")
+            assert _RATE_LIMIT_SM.is_key_available(cfg, "sk-good")
+        finally:
+            _RATE_LIMIT_SM.on_success(cfg, "sk-bad")
+            _RATE_LIMIT_SM.on_success(cfg, "sk-good")
+
+    def test_call_with_fallback_all_keys_exhausted_skips_model(self):
+        """所有 key 都冷却 → 跳过该模型，fallback 链走下一个模型。"""
+        from drbrain.extractor.llm_client import _RATE_LIMIT_SM, call_with_fallback
+
+        mock_response = mock.Mock()
+        mock_response.choices = [mock.Mock()]
+        mock_response.choices[0].message.content = '{"ok": true}'
+        mock_response.usage.prompt_tokens = 1
+        mock_response.usage.completion_tokens = 1
+
+        rl_cfg = {
+            "provider": "openai",
+            "model": "rl-all",
+            "api_keys": ["sk-a", "sk-b"],
+            "cooldown_secs": 60,
+        }
+        ok_cfg = {"provider": "openai", "model": "rl-ok3"}
+        _RATE_LIMIT_SM.on_success(rl_cfg, "sk-a")
+        _RATE_LIMIT_SM.on_success(rl_cfg, "sk-b")
+        # 两个 key 都打入冷却
+        _RATE_LIMIT_SM.on_rate_limit(rl_cfg, "sk-a")
+        _RATE_LIMIT_SM.on_rate_limit(rl_cfg, "sk-b")
+        try:
+            with (
+                mock.patch(
+                    "drbrain.extractor.llm_client.litellm.completion", return_value=mock_response
+                ) as m_comp,
+                mock.patch("drbrain.extractor.llm_client._record_llm"),
+                mock.patch("drbrain.extractor.llm_client._log_llm_call"),
+            ):
+                result = call_with_fallback("p", [rl_cfg, ok_cfg])
+            assert result == {"ok": True}
+            # 只调用了 ok_cfg（rl-all 全 key 冷却被跳过）
+            called_models = [c.kwargs["model"] for c in m_comp.call_args_list]
+            assert called_models == ["openai/rl-ok3"]
+        finally:
+            _RATE_LIMIT_SM.on_success(rl_cfg, "sk-a")
+            _RATE_LIMIT_SM.on_success(rl_cfg, "sk-b")
+
+

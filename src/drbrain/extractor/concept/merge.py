@@ -65,7 +65,10 @@ def _merge_concepts(
             section = sections[idx] if sections and idx < len(sections) else ""
             for item in getattr(result, category, []):
                 label = item.get("label", "").strip().lower()
-                conf = item.get("confidence", 0.0)
+                try:
+                    conf = float(item.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    conf = 0.0
                 if label and (label not in seen or conf > seen[label]):
                     seen[label] = conf
                     # Remove previous entry with lower confidence
@@ -97,7 +100,11 @@ def _merge_concepts(
             if arg_key in seen_args:
                 # Keep higher confidence
                 idx = seen_args[arg_key]
-                if arg.confidence > raw_args[idx].get("confidence", 0):
+                try:
+                    prev_conf = float(raw_args[idx].get("confidence", 0))
+                except (TypeError, ValueError):
+                    prev_conf = 0.0
+                if arg.confidence > prev_conf:
                     raw_args[idx] = arg.to_dict()
             else:
                 seen_args[arg_key] = len(raw_args)

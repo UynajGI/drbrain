@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -312,11 +313,25 @@ async def _extract_entities(
     results = await asyncio.gather(*tasks)
     for concepts in results:
         for c in concepts:
+            # Drop reference-like Actor concepts (e.g. "Ishii et al. group",
+            # "Reference corpus authors") — these are citation noise, not actors.
+            if c.get("type") == "Actor" and _is_reference_actor(c.get("label", "")):
+                continue
             key = (c.get("label", "").strip().lower(), c.get("type", ""))
             if key not in seen:
                 seen.add(key)
                 all_concepts.append(c)
     return all_concepts
+
+
+def _is_reference_actor(label: str) -> bool:
+    """True when an Actor label is really a reference citation, not a real actor."""
+    lower = label.lower()
+    if "reference" in lower or "et al" in lower or "corpus authors" in lower:
+        return True
+    if re.search(r"\bet al\.?\b", lower):
+        return True
+    return False
 
 
 async def _extract_relations(
