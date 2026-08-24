@@ -71,13 +71,32 @@ def _extract_nodes_from_markdown(markdown_content: str) -> tuple[list[dict], lis
     # Common plain-word section titles (uppercase or title case).
     word_title_pattern = r"^([A-Z][A-Za-z0-9 &'()\-–—/:]{2,40})$"
     _common_section_words = {
-        "abstract", "introduction", "methods", "methodology", "results",
-        "discussion", "conclusion", "conclusions", "references", "acknowledgements",
-        "acknowledgment", "keywords", "introduction and background",
-        "results and discussion", "experimental", "experimental section",
-        "materials and methods", "materials", "supplementary", "appendix",
-        "correspondence", "funding information", "conflict of interest",
-        "data availability", "author contributions", "declaration",
+        "abstract",
+        "introduction",
+        "methods",
+        "methodology",
+        "results",
+        "discussion",
+        "conclusion",
+        "conclusions",
+        "references",
+        "acknowledgements",
+        "acknowledgment",
+        "keywords",
+        "introduction and background",
+        "results and discussion",
+        "experimental",
+        "experimental section",
+        "materials and methods",
+        "materials",
+        "supplementary",
+        "appendix",
+        "correspondence",
+        "funding information",
+        "conflict of interest",
+        "data availability",
+        "author contributions",
+        "declaration",
     }
     code_block_pattern = r"^```"
     node_list = []
@@ -364,15 +383,39 @@ def _normalize_section_headers(markdown_content: str) -> str:
     """
     lines = markdown_content.split("\n")
     _known = {
-        "abstract", "introduction", "methods", "methodology", "results",
-        "discussion", "conclusion", "conclusions", "references", "acknowledgements",
-        "acknowledgment", "keywords", "introduction and background",
-        "results and discussion", "experimental", "experimental section",
-        "materials and methods", "materials", "supplementary", "appendix",
-        "correspondence", "funding information", "conflict of interest",
-        "data availability", "author contributions", "declaration",
-        "introduction and motivation", "related work", "background",
-        "conclusions and outlook", "summary", "overview", "discussion and conclusions",
+        "abstract",
+        "introduction",
+        "methods",
+        "methodology",
+        "results",
+        "discussion",
+        "conclusion",
+        "conclusions",
+        "references",
+        "acknowledgements",
+        "acknowledgment",
+        "keywords",
+        "introduction and background",
+        "results and discussion",
+        "experimental",
+        "experimental section",
+        "materials and methods",
+        "materials",
+        "supplementary",
+        "appendix",
+        "correspondence",
+        "funding information",
+        "conflict of interest",
+        "data availability",
+        "author contributions",
+        "declaration",
+        "introduction and motivation",
+        "related work",
+        "background",
+        "conclusions and outlook",
+        "summary",
+        "overview",
+        "discussion and conclusions",
     }
     out: list[str] = []
     for i, line in enumerate(lines):
@@ -438,18 +481,32 @@ def _is_affiliation_like(text: str) -> bool:
     if any(
         w in lower
         for w in (
-            "university", "laboratory", "department", "institute", "school",
-            "college", "academy", "center for", "centre for", "saudi arabia",
-            "correspondence to", "corresponding author", "address",
+            "university",
+            "laboratory",
+            "department",
+            "institute",
+            "school",
+            "college",
+            "academy",
+            "center for",
+            "centre for",
+            "saudi arabia",
+            "correspondence to",
+            "corresponding author",
+            "address",
         )
     ):
         return True
     # Journal metadata lines (not sections).
-    if re.match(r"^(published|received|accepted|revised|available online|article info|submitted)\b", lower):
+    if re.match(
+        r"^(published|received|accepted|revised|available online|article info|submitted)\b", lower
+    ):
         return True
     if re.match(r"^\d{1,2} [a-z]+ \d{4}$", lower):  # date like "4 March 2021"
         return True
-    if re.match(r"^[a-z0-9_]+( \d+)? \d{2}/\d{4}$", lower):  # doc code + date like "MK_AD9792EN 43729 08/2022"
+    if re.match(
+        r"^[a-z0-9_]+( \d+)? \d{2}/\d{4}$", lower
+    ):  # doc code + date like "MK_AD9792EN 43729 08/2022"
         return True
     return False
 

@@ -66,6 +66,8 @@ new relationships through rule-based graph closure.
 | `src/drbrain/loop/` | Research loop — LlamaIndex Workflow 编排闭环 (13 节点 + agent-backed + 4 角色 analyst/critic/compute/verifier + 讨论层 discussion.py(消息板+非作者门+queue claim) + 互验/实算门 + 闭环沉淀) |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
+| `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库 |
+| `scripts/serve_embedding.py` | 本地 Qwen3-Embedding-0.6B 常驻服务（openai-compat /v1/embeddings，max_seq_length=512，batch_size=8 防 OOM，GPU 绑卡） |
 | `tests/` | pytest test suite |
 | `skills/` | Project skills (AgentSkills.io standard, canonical source) |
 | `.github/` | CI workflow, issue/PR templates |

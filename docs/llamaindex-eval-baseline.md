@@ -61,3 +61,84 @@
 - **Top-1 改变:13/30 query(43%)** — 真实重排扰动显著
 - 与 T8 mock 词法重排对比(mock 反而伤 MRR 0.9333→0.8500):语义 bge/Qwen reranker 必要性得到真实验证
 - 结论:rerank 默认开(Qwen3-Reranker-0.6B)带来 MRR +2.7% 相对提升;离线环境需预缓存模型(modelscope `Qwen/Qwen3-Reranker-0.6B`),模型缺失时 Noop 降级路径已验证
+
+---
+
+## LlamaIndex RAG 评估基线 — 2026-08-19T21:11:05
+
+### 配置
+- golden_set: `data/llamaindex/golden.jsonl`;split 选项: ['dev', 'val', 'test']
+- enabled=True · retrievers=['bm25', 'vector'] · fusion_mode=reciprocal_rank · rerank=True · similarity_cutoff=0.7
+- embed_model: `Qwen/Qwen3-Embedding-0.6B`
+
+### Retriever eval(HitRate@K / MRR@K)
+
+- status: `ok`;split: `dev`;queries: 30
+
+| level | metric | K=5 | K=10 |
+| --- | --- | --- | --- |
+| paper | hit_rate | 0.9667 | 0.9667 |
+| paper | mrr | 0.9417 | 0.9417 |
+| node | hit_rate | 0.9667 | 0.9667 |
+| node | mrr | 0.875 | 0.875 |
+
+---
+
+## LlamaIndex RAG 评估基线 — 2026-08-20T11:51:05
+
+### 配置
+- golden_set: `data/llamaindex/golden.jsonl`;split 选项: ['dev', 'val', 'test']
+- enabled=True · retrievers=['bm25', 'vector'] · fusion_mode=reciprocal_rank · rerank=True · similarity_cutoff=0.7
+- embed_model: `Qwen/Qwen3-Embedding-0.6B`
+
+### Retriever eval(HitRate@K / MRR@K)
+
+- status: `ok`;split: `dev`;queries: 30
+
+| level | metric | K=5 | K=10 |
+| --- | --- | --- | --- |
+| paper | hit_rate | 0.9667 | 0.9667 |
+| paper | mrr | 0.9417 | 0.9417 |
+| node | hit_rate | 0.9667 | 0.9667 |
+| node | mrr | 0.875 | 0.875 |
+
+---
+
+## LlamaIndex RAG 评估基线 — 2026-08-21T01:49:59
+
+### 配置
+- golden_set: `data/llamaindex/golden.jsonl`;split 选项: ['dev', 'val', 'test']
+- enabled=True · retrievers=['bm25', 'vector'] · fusion_mode=reciprocal_rank · rerank=True · similarity_cutoff=0.7
+- embed_model: `Qwen/Qwen3-Embedding-0.6B`
+
+### Retriever eval(HitRate@K / MRR@K)
+
+- status: `ok`;split: `dev`;queries: 30
+
+| level | metric | K=5 | K=10 |
+| --- | --- | --- | --- |
+| paper | hit_rate | 0.9667 | 0.9667 |
+| paper | mrr | 0.9417 | 0.9417 |
+| node | hit_rate | 0.9667 | 0.9667 |
+| node | mrr | 0.875 | 0.875 |
+
+---
+
+## LlamaIndex RAG 评估基线 — 2026-08-21T12:31:27
+
+### 配置
+- golden_set: `data/llamaindex/golden.jsonl`;split 选项: ['dev', 'val', 'test']
+- enabled=True · retrievers=['bm25', 'vector'] · fusion_mode=reciprocal_rank · rerank=True · similarity_cutoff=0.7
+- embed_model: `Qwen/Qwen3-Embedding-0.6B`
+
+### Retriever eval(HitRate@K / MRR@K)
+
+- status: `ok`;split: `dev`;queries: 30
+
+| level | metric | K=5 | K=10 |
+| --- | --- | --- | --- |
+| paper | hit_rate | 0.9667 | 0.9667 |
+| paper | mrr | 0.9417 | 0.9417 |
+| node | hit_rate | 0.9667 | 0.9667 |
+| node | mrr | 0.875 | 0.875 |
+
