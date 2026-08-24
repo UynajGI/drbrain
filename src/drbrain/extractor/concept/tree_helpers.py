@@ -170,6 +170,10 @@ def _apply_tree_weights(concepts: list[dict], leaves: list[dict], structure: lis
             weight = _tree_position_weight(found_leaf, depth)
             # Blend with existing confidence
             existing = c.get("confidence", 1.0)
+            try:
+                existing = float(existing)
+            except (TypeError, ValueError):
+                existing = 1.0
             c["confidence"] = round(existing * weight, 3)
 
 

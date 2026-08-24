@@ -135,6 +135,16 @@ def test_merge_concepts_arguments_dedup():
     assert merged.arguments[0].confidence == 0.95
 
 
+def test_merge_concepts_string_confidence_robust():
+    """LLM 偶发把 confidence 返回成字符串（如 "0.8"）不应导致 merge 崩溃。"""
+    r1 = ExtractedConcepts({"problems": [{"label": "P1", "confidence": "0.8"}]})
+    r2 = ExtractedConcepts({"problems": [{"label": "P1", "confidence": 0.9}]})
+    merged = _merge_concepts([r1, r2])
+    assert len(merged.problems) == 1
+    # 字符串 confidence 被转成 float 参与比较，0.9 胜出
+    assert merged.problems[0]["confidence"] == 0.9
+
+
 def test_merge_concepts_empty():
     """Merging empty list returns empty ExtractedConcepts."""
     merged = _merge_concepts([])

@@ -58,8 +58,27 @@ class DocumentTree:
 
 
 def _extract_nodes_from_markdown(markdown_content: str) -> tuple[list[dict], list[str]]:
-    """Extract header nodes from markdown content."""
+    """Extract header nodes from markdown content.
+
+    Recognizes markdown ``#`` headers, plain-text numbered sections
+    (``1. Title`` / ``2.1 Methods`` / ``1 INTRODUCTION``), and common
+    plain-word section titles (Abstract / Introduction / Methods / ...).
+    scibase cleaned fulltexts use these plain-text forms (no ``#``).
+    """
     header_pattern = r"^(#{1,6})\s+(.+)$"
+    # Plain-text numbered section: "1. Title", "2.1 Title", "1 INTRODUCTION".
+    numbered_pattern = r"^(\d+(?:\.\d+)*)\.?\s+([A-Z][A-Za-z0-9 ,&'()\-–—/:]+?)\s*$"
+    # Common plain-word section titles (uppercase or title case).
+    word_title_pattern = r"^([A-Z][A-Za-z0-9 &'()\-–—/:]{2,40})$"
+    _common_section_words = {
+        "abstract", "introduction", "methods", "methodology", "results",
+        "discussion", "conclusion", "conclusions", "references", "acknowledgements",
+        "acknowledgment", "keywords", "introduction and background",
+        "results and discussion", "experimental", "experimental section",
+        "materials and methods", "materials", "supplementary", "appendix",
+        "correspondence", "funding information", "conflict of interest",
+        "data availability", "author contributions", "declaration",
+    }
     code_block_pattern = r"^```"
     node_list = []
     in_code_block = False
@@ -75,6 +94,17 @@ def _extract_nodes_from_markdown(markdown_content: str) -> tuple[list[dict], lis
             match = re.match(header_pattern, stripped)
             if match:
                 node_list.append({"node_title": match.group(2).strip(), "line_num": line_num})
+                continue
+            num_match = re.match(numbered_pattern, stripped)
+            if num_match:
+                title = num_match.group(2).strip()
+                # Skip if the "title" is really a sentence (too long / ends with .)
+                if len(title.split()) <= 12 and not title.endswith("."):
+                    node_list.append({"node_title": title, "line_num": line_num})
+                continue
+            word_match = re.match(word_title_pattern, stripped)
+            if word_match and word_match.group(1).strip().lower() in _common_section_words:
+                node_list.append({"node_title": word_match.group(1).strip(), "line_num": line_num})
 
     return node_list, markdown_content.split("\n")
 
@@ -85,13 +115,21 @@ def _extract_node_text_content(node_list: list[dict], markdown_lines: list[str])
     for node in node_list:
         line_content = markdown_lines[node["line_num"] - 1]
         header_match = re.match(r"^(#{1,6})", line_content)
-        if header_match is None:
-            continue
+        if header_match is not None:
+            level = len(header_match.group(1))
+        else:
+            # Plain-text numbered section: level = number of dots + 1
+            # (e.g. "2.1" -> 2, "3.2.1" -> 3). Plain-word title -> level 1.
+            num_match = re.match(r"^(\d+(?:\.\d+)*)\.?\s+", line_content)
+            if num_match is not None:
+                level = num_match.group(1).count(".") + 1
+            else:
+                level = 1
         all_nodes.append(
             {
                 "title": node["node_title"],
                 "line_num": node["line_num"],
-                "level": len(header_match.group(1)),
+                "level": level,
             }
         )
 
@@ -308,6 +346,114 @@ def _structure_to_list(structure) -> list[dict]:
 # -- Main entry point --
 
 
+def _normalize_section_headers(markdown_content: str) -> str:
+    """Mechanically convert plain-text section titles to markdown ``#`` headers.
+
+    scibase cleaned fulltexts use diverse plain-text section formats (``1.
+    Introduction``, ``1 INTRODUCTION``, ``Abstract``, ``KEYWORDS``, ...) with
+    no ``#``. Instead of enumerating every pattern, detect section titles by
+    structural heuristics and normalize them to ``#`` headers so the tree
+    builder's existing header logic works unchanged.
+
+    A line is a section title when ALL hold:
+      * short (<= 12 words, <= 80 chars)
+      * does not end in sentence punctuation (``.`` ``;`` ``,``) — ``:`` allowed
+      * is followed by a blank line (markdown heading convention)
+      * looks like a heading: numbered, all-caps, title-case, or a known
+        section word
+    """
+    lines = markdown_content.split("\n")
+    _known = {
+        "abstract", "introduction", "methods", "methodology", "results",
+        "discussion", "conclusion", "conclusions", "references", "acknowledgements",
+        "acknowledgment", "keywords", "introduction and background",
+        "results and discussion", "experimental", "experimental section",
+        "materials and methods", "materials", "supplementary", "appendix",
+        "correspondence", "funding information", "conflict of interest",
+        "data availability", "author contributions", "declaration",
+        "introduction and motivation", "related work", "background",
+        "conclusions and outlook", "summary", "overview", "discussion and conclusions",
+    }
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Already a markdown header or code block — leave as-is.
+        if stripped.startswith("#") or stripped.startswith("```"):
+            out.append(line)
+            continue
+        # Blank line — keep.
+        if not stripped:
+            out.append(line)
+            continue
+        # Must be followed by a blank line (or be the last line) to be a heading.
+        next_blank = (i + 1 >= len(lines)) or (not lines[i + 1].strip())
+        if not next_blank:
+            out.append(line)
+            continue
+        # Short line.
+        words = stripped.split()
+        if len(words) > 12 or len(stripped) > 80:
+            out.append(line)
+            continue
+        # No sentence-ending punctuation.
+        if stripped.endswith((".", ";", ",")):
+            out.append(line)
+            continue
+        # Looks like a heading?
+        lower = stripped.lower()
+        is_numbered = bool(re.match(r"^\d+(\.\d+)*\.?\s+", stripped))
+        is_allcaps = stripped.isupper() and len(stripped) > 2
+        is_known = lower in _known
+        # Filter affiliation/address/DOI lines (not section titles).
+        if _is_affiliation_like(stripped):
+            out.append(line)
+            continue
+        # Title-case short line: only treat as heading if followed by a
+        # substantial content block (filters author-affiliation/address lines).
+        is_titlecase = stripped[0].isupper() and not stripped.endswith(":")
+        if is_numbered or is_allcaps or is_known:
+            out.append("# " + stripped)
+        elif is_titlecase and len(words) <= 6:
+            # Look ahead past the blank line for a substantial paragraph.
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            following = lines[j].strip() if j < len(lines) else ""
+            if len(following) >= 60:
+                out.append("# " + stripped)
+            else:
+                out.append(line)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def _is_affiliation_like(text: str) -> bool:
+    """True when a short line is an affiliation/address/DOI/metadata line, not a section title."""
+    lower = text.lower()
+    if "@" in text or "doi:" in lower or "email:" in lower:
+        return True
+    if re.search(r"\d{2,}-\d{2,}", text):  # postal codes like 23955-6900
+        return True
+    if any(
+        w in lower
+        for w in (
+            "university", "laboratory", "department", "institute", "school",
+            "college", "academy", "center for", "centre for", "saudi arabia",
+            "correspondence to", "corresponding author", "address",
+        )
+    ):
+        return True
+    # Journal metadata lines (not sections).
+    if re.match(r"^(published|received|accepted|revised|available online|article info|submitted)\b", lower):
+        return True
+    if re.match(r"^\d{1,2} [a-z]+ \d{4}$", lower):  # date like "4 March 2021"
+        return True
+    if re.match(r"^[a-z0-9_]+( \d+)? \d{2}/\d{4}$", lower):  # doc code + date like "MK_AD9792EN 43729 08/2022"
+        return True
+    return False
+
+
 async def md_to_tree(
     md_path: str | Path,
     config: TreeConfig | None = None,
@@ -334,6 +480,10 @@ async def md_to_tree(
     md_path = Path(md_path)
     with open(md_path, encoding="utf-8") as f:
         markdown_content = f.read()
+
+    # Mechanically normalize plain-text section titles to # headers so the
+    # tree builder recognizes scibase-style fulltexts (no # in source).
+    markdown_content = _normalize_section_headers(markdown_content)
 
     line_count = markdown_content.count("\n") + 1
     model = models[0].get("model", None) if models else None
@@ -380,6 +530,9 @@ async def md_to_tree(
     doc_description = None
     if config.if_add_doc_description and models:
         clean_structure = _create_clean_structure_for_description(tree_structure)
+        # 顶层是 list（多 section）时包成 dict，避免被 else {} 吞成空结构
+        if isinstance(clean_structure, list):
+            clean_structure = {"structure": clean_structure}
         doc_description = await _generate_doc_description(
             clean_structure if isinstance(clean_structure, dict) else {}, models
         )
