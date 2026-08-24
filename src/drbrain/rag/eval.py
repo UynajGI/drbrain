@@ -1154,7 +1154,12 @@ def run_semantic_eval(
             missing += 1
 
     if not scores:
-        return {"status": "empty", "split": split, "reason": "no scorable answers", "missing": missing}
+        return {
+            "status": "empty",
+            "split": split,
+            "reason": "no scorable answers",
+            "missing": missing,
+        }
     mean = sum(scores) / len(scores)
     return {
         "status": "ok",
@@ -1199,7 +1204,7 @@ def run_qagen(
     if not nodes:
         return {"status": "empty", "reason": "no nodes in index docstore"}
 
-    from llama_index.core.evaluation import generate_question_context_pairs
+    from llama_index.core.evaluation import DatasetGenerator
 
     models = list(getattr(cfg.llm, "models", []) or [])
     llm = None
@@ -1209,14 +1214,28 @@ def run_qagen(
         m = models[0]
         llm = LIOpenAI(
             model=str(m.get("model", "gpt-4o-mini")),
-            api_key=str(m.get("api_key") or m.get("api_keys", ["sk-none"])[0] if isinstance(m.get("api_keys"), list) else m.get("api_key") or "sk-none"),
+            api_key=str(
+                m.get("api_key") or m.get("api_keys", ["sk-none"])[0]
+                if isinstance(m.get("api_keys"), list)
+                else m.get("api_key") or "sk-none"
+            ),
             api_base=str(m.get("base_url") or "https://api.openai.com/v1").replace("/v1", ""),
             temperature=0.1,
         )
     try:
-        qa = generate_question_context_pairs(
-            nodes, llm=llm, num_questions_per_chunk=int(num_questions_per_chunk)
-        )
+        # llama-index-core >=0.14 removed ``generate_question_context_pairs``;
+        # DatasetGenerator is the replacement. Generate per node so each
+        # question keeps its source node id (relevant_docs semantics).
+        queries: dict[str, str] = {}
+        relevant_docs: dict[str, list[str]] = {}
+        for node in nodes:
+            gen = DatasetGenerator(
+                [node], llm=llm, num_questions_per_chunk=int(num_questions_per_chunk)
+            )
+            for q in gen.generate_questions_from_nodes():
+                qid = f"{node.node_id}:{len(queries)}"
+                queries[qid] = str(q)
+                relevant_docs[qid] = [str(node.node_id)]
     except Exception as exc:
         return {"status": "error", "reason": f"generation failed: {exc}"}
 
@@ -1225,7 +1244,7 @@ def run_qagen(
     golden_path.parent.mkdir(parents=True, exist_ok=True)
     appended = 0
     with open(golden_path, "a", encoding="utf-8") as f:
-        for q, ctx_ids in zip(qa.queries.values(), qa.relevant_docs.values()):
+        for q, ctx_ids in zip(queries.values(), relevant_docs.values()):
             if not str(q).strip():
                 continue
             f.write(
