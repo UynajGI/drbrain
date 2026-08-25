@@ -423,6 +423,25 @@ def test_cancel_revokes_the_active_lease_and_prevents_cycle_completion(tmp_path)
     assert invoked is False
 
 
+def test_paused_run_can_atomically_commit_its_already_active_cycle(tmp_path):
+    ledger, run_id, _ = _running(tmp_path)
+    step_id = ledger.active_leased_steps(run_id)[0]
+    transitions = TransitionService(ledger)
+
+    transitions.pause_run(run_id, reason="operator_pause")
+    event = transitions.complete_cycle(
+        run_id,
+        step_id=step_id,
+        cycle_result={"outcome": "KEEP"},
+        state_snapshot={"cycles": 1},
+        research_state=None,
+        worker_id="worker",
+    )
+
+    assert event.event_type == "cycle_completed"
+    assert ledger.get_run_by_id(run_id).status == "paused"  # type: ignore[union-attr]
+
+
 def test_director_discards_an_active_cycle_when_a_runtime_budget_is_exhausted(tmp_path):
     director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
 
@@ -468,3 +487,28 @@ def test_director_accepts_unprefixed_budget_boundary_names(tmp_path):
     assert state["cycles"] == 0
     assert run.budget["max_attempts"] == 0
     assert run.status == "failed"
+
+
+def test_director_rejects_unknown_budget_names(tmp_path):
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
+
+    with pytest.raises(ValueError, match="unknown budget"):
+        asyncio.run(director.run("unknown budget", max_cycles=1, budget={"modelcalls": 1}))
+
+
+def test_failed_cycle_setup_releases_its_unstarted_attempt_budget(tmp_path, monkeypatch):
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
+
+    def fail_begin_cycle(self, *_args, **_kwargs):
+        raise RuntimeError("cannot claim cycle")
+
+    monkeypatch.setattr(TransitionService, "begin_cycle", fail_begin_cycle)
+    with pytest.raises(RuntimeError, match="cannot claim cycle"):
+        asyncio.run(director.run("begin failure", max_cycles=1, budget={"max_attempts": 1}))
+
+    ledger = RunLedger(tmp_path / "runs" / "ledger.sqlite3")
+    run = ledger.get_run("begin failure")
+    assert run is not None
+    budget = RunGovernance(ledger).audit_summary(run.run_id)["budget"]
+    assert budget["usage"]["attempts"] == 0
+    assert "budget_released" in RunGovernance(ledger).audit_summary(run.run_id)["event_types"]

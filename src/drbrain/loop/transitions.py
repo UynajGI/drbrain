@@ -282,7 +282,7 @@ class TransitionService:
         """Commit a completed cycle and its replayable compatibility snapshot."""
         with self._ledger.transaction() as conn:
             status = self._run_status(conn, run_id)
-            if status != RUN_RUNNING:
+            if status not in {RUN_RUNNING, RUN_PAUSED}:
                 raise RunExecutionBlockedError(
                     f"cannot complete cycle while run {run_id} is {status!r}"
                 )

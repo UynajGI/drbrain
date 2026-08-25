@@ -60,3 +60,9 @@ The ledger records every reservation and transitions the run to an explanatory
 failed terminal state before a limit would be exceeded. `audit_summary()`
 reports both configured limits and consumed usage. Existing callers that omit
 `budget` retain their historical unbounded behavior.
+
+Budget exhaustion is intentionally terminal: it is a hard cost/side-effect
+ceiling rather than a pause. Start a new run with a higher limit after auditing
+the exhausted run. For an opaque agent that cannot expose per-turn callbacks,
+the loop reserves its configured maximum trajectory up front; failed model
+requests still count as attempted external calls.
