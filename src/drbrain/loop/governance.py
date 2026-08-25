@@ -12,9 +12,10 @@ from drbrain.loop.transitions import TransitionService
 class RunGovernance:
     """Additive operational API over a run ledger.
 
-    Read methods deliberately use the ledger's read-only accessors.  Mutation
-    methods delegate run lifecycle changes to :class:`TransitionService` and
-    preserve all existing workspace files and evidence artifacts.
+    Read methods deliberately use the ledger's read-only accessors. Lifecycle
+    controls delegate to :class:`TransitionService`; approval and budget
+    controls persist their own audited ledger mutations. All preserve existing
+    workspace files and evidence artifacts.
     """
 
     def __init__(self, ledger: RunLedger) -> None:

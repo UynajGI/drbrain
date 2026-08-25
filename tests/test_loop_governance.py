@@ -174,6 +174,41 @@ def test_approval_decision_reuses_the_waiting_call_contract(tmp_path):
     assert retried.status is ToolCallStatus.SUCCEEDED
 
 
+def test_operator_rejection_is_recorded_in_the_durable_audit_trace(tmp_path):
+    ledger, run_id, broker = _running(tmp_path)
+    control = RunGovernance(ledger)
+    tool = ToolDefinition(
+        name="needs_approval",
+        source="plugin",
+        input_schema={"type": "object"},
+        side_effect="irreversible",
+        required_capabilities=("plugin:compute",),
+        supports_idempotency=True,
+    )
+    waiting = asyncio.run(
+        broker.execute(
+            node_name="compute",
+            definition=tool,
+            arguments={"target": "fixture"},
+            executor=lambda: {"changed": True},
+        )
+    )
+    control.reject(waiting.tool_call_id, actor="operator", reason="out of scope")
+
+    rejected = asyncio.run(
+        broker.execute(
+            node_name="compute",
+            definition=tool,
+            arguments={"target": "fixture"},
+            executor=lambda: {"changed": True},
+        )
+    )
+
+    assert rejected.status is ToolCallStatus.DENIED
+    assert ledger.tool_calls(run_id)[-1].status == ToolCallStatus.DENIED.value
+    assert "tool_denied" in RunGovernance(ledger).audit_summary(run_id)["event_types"]
+
+
 def test_approval_authorizes_only_one_retry_and_can_be_granted_again(tmp_path):
     ledger, run_id, broker = _running(tmp_path)
     control = RunGovernance(ledger)
@@ -527,6 +562,15 @@ def test_director_rejects_unknown_budget_names(tmp_path):
 
     with pytest.raises(ValueError, match="invalid budget"):
         asyncio.run(director.run("invalid budget", max_cycles=1, budget={"attempts": -1}))
+
+    with pytest.raises(ValueError, match="ambiguous budget"):
+        asyncio.run(
+            director.run(
+                "ambiguous budget",
+                max_cycles=1,
+                budget={"attempts": 1, "max_attempts": 2},
+            )
+        )
 
 
 def test_failed_cycle_setup_releases_its_unstarted_attempt_budget(tmp_path, monkeypatch):

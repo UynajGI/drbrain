@@ -1112,6 +1112,19 @@ class ResearchDirector:
             if invalid_budget_values:
                 name, value = next(iter(invalid_budget_values.items()))
                 raise ValueError(f"invalid budget limit for {name!r}: {value!r}")
+            provided_names: dict[str, set[str]] = {}
+            for name in budget:
+                provided = str(name)
+                canonical = budget_aliases.get(provided, provided)
+                provided_names.setdefault(canonical, set()).add(provided)
+            ambiguous_budget_limits = {
+                canonical: sorted(names)
+                for canonical, names in provided_names.items()
+                if len(names) > 1
+            }
+            if ambiguous_budget_limits:
+                canonical, names = next(iter(ambiguous_budget_limits.items()))
+                raise ValueError(f"ambiguous budget limit for {canonical!r}: " + ", ".join(names))
             effective_budget.update(
                 {budget_aliases.get(str(name), str(name)): value for name, value in budget.items()}
             )
@@ -1265,7 +1278,12 @@ class ResearchDirector:
                 try:
                     ledger.reserve_budget(run.run_id, {"attempts": 1})
                 except RunExecutionBlockedError as exc:
-                    stop_status = "budget_exhausted"
+                    current = ledger.get_run_by_id(run.run_id)
+                    stop_status = (
+                        current.status
+                        if current is not None and current.status in {"paused", "cancelled"}
+                        else "budget_exhausted"
+                    )
                     logger.info("[director] stop before a new cycle: %s", exc)
                     break
                 try:

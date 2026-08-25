@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import logging
 import re
 import uuid
 from collections.abc import Callable, Mapping
@@ -26,6 +27,7 @@ _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*"
     r"(?:bearer\s+)?[^,\s]+"
 )
+logger = logging.getLogger(__name__)
 
 
 class ToolCallStatus(StrEnum):
@@ -130,12 +132,6 @@ class ToolBroker:
                 arguments=normalized_arguments,
             )
         operator_decision = self._ledger.approval_decision(self.run_id, key)
-        if operator_decision == "rejected":
-            return ToolObservation(
-                tool_call_id=tool_call_id,
-                status=ToolCallStatus.DENIED,
-                error="operator rejected this idempotent tool proposal",
-            )
         proposal = ToolProposal(
             tool_call_id=tool_call_id,
             node_name=node_name,
@@ -156,6 +152,28 @@ class ToolBroker:
                 status=ToolCallStatus.DENIED,
                 error=str(exc),
                 execution_blocked=True,
+            )
+        if operator_decision == "rejected":
+            reason = "operator rejected this idempotent tool proposal"
+            self._ledger.record_tool_decision(
+                tool_call_id=tool_call_id,
+                run_id=self.run_id,
+                step_id=self.step_id,
+                attempt_id=self.attempt_id,
+                worker_id=self.worker_id,
+                tool_name=definition.name,
+                source=definition.source,
+                side_effect=definition.side_effect,
+                node_name=node_name,
+                proposal=safe_proposal,
+                idempotency_key=key,
+                status=ToolCallStatus.DENIED.value,
+                reason=reason,
+            )
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                status=ToolCallStatus.DENIED,
+                error=reason,
             )
         if not decision.allowed:
             status = (
@@ -221,16 +239,55 @@ class ToolBroker:
                 tool_call_id=tool_call_id,
             )
             if not approval_claimed:
+                current_decision = self._ledger.approval_decision(self.run_id, key)
+                if current_decision == "rejected":
+                    status = ToolCallStatus.DENIED
+                    reason = "operator rejected this idempotent tool proposal"
+                else:
+                    status = ToolCallStatus.WAITING_APPROVAL
+                    reason = "operator approval was already consumed; a fresh approval is required"
+                self._ledger.record_tool_decision(
+                    tool_call_id=tool_call_id,
+                    run_id=self.run_id,
+                    step_id=self.step_id,
+                    attempt_id=self.attempt_id,
+                    worker_id=self.worker_id,
+                    tool_name=definition.name,
+                    source=definition.source,
+                    side_effect=definition.side_effect,
+                    node_name=node_name,
+                    proposal=safe_proposal,
+                    idempotency_key=key,
+                    status=status.value,
+                    reason=reason,
+                )
                 return ToolObservation(
                     tool_call_id=tool_call_id,
-                    status=ToolCallStatus.WAITING_APPROVAL,
-                    error="operator approval was already consumed; a fresh approval is required",
+                    status=status,
+                    error=reason,
                 )
 
         amounts: dict[str, int | float] = {"tool_calls": 1}
         if definition.source == "rag":
             amounts["rag_calls"] = 1
         reserved = False
+
+        def compensate_pre_intent() -> None:
+            if reserved:
+                try:
+                    self._ledger.release_budget(self.run_id, amounts)
+                except Exception as rollback_exc:  # noqa: BLE001 - preserve original failure
+                    logger.error("[loop] unable to release pre-intent budget: %s", rollback_exc)
+            if approval_claimed:
+                try:
+                    self._ledger.restore_approval(
+                        run_id=self.run_id,
+                        idempotency_key=key,
+                        tool_call_id=tool_call_id,
+                    )
+                except Exception as rollback_exc:  # noqa: BLE001 - preserve original failure
+                    logger.error("[loop] unable to restore operator approval: %s", rollback_exc)
+
         try:
             self._ledger.reserve_budget(self.run_id, amounts)
             reserved = True
@@ -249,14 +306,7 @@ class ToolBroker:
                 lease_seconds=self.lease_seconds,
             )
         except (RunBudgetExceededError, RunExecutionBlockedError) as exc:
-            if reserved:
-                self._ledger.release_budget(self.run_id, amounts)
-            if approval_claimed:
-                self._ledger.restore_approval(
-                    run_id=self.run_id,
-                    idempotency_key=key,
-                    tool_call_id=tool_call_id,
-                )
+            compensate_pre_intent()
             return ToolObservation(
                 tool_call_id=tool_call_id,
                 status=ToolCallStatus.DENIED,
@@ -264,14 +314,7 @@ class ToolBroker:
                 execution_blocked=True,
             )
         except Exception:
-            if reserved:
-                self._ledger.release_budget(self.run_id, amounts)
-            if approval_claimed:
-                self._ledger.restore_approval(
-                    run_id=self.run_id,
-                    idempotency_key=key,
-                    tool_call_id=tool_call_id,
-                )
+            compensate_pre_intent()
             raise
 
         keepalive = asyncio.create_task(self._maintain_lease())
