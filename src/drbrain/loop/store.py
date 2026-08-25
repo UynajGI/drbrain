@@ -658,6 +658,36 @@ class RunLedger:
             assert updated is not None  # protected by the update above
             return self._tool_call_from_row(updated)
 
+    def record_evidence_bundle(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        bundle: Mapping[str, Any],
+    ) -> None:
+        """Append generation-pinned retrieval evidence to the durable event trail."""
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="rag_evidence",
+                event_type="rag_evidence_recorded",
+                payload={
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "bundle": dict(bundle),
+                },
+            )
+
     def renew_lease(
         self,
         *,

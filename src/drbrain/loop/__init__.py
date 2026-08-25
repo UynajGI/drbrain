@@ -9,6 +9,7 @@ understanding through the RAG layer (:mod:`drbrain.rag`).
 from drbrain.loop.director import ResearchDirector
 from drbrain.loop.events import (
     Evidence,
+    EvidenceBundle,
     Hypothesis,
     ResearchState,
 )
@@ -18,6 +19,7 @@ from drbrain.loop.workflow import ResearchLoopWorkflow
 
 __all__ = [
     "Evidence",
+    "EvidenceBundle",
     "Hypothesis",
     "ResearchDirector",
     "ResearchLoopWorkflow",
