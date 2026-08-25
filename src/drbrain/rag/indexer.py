@@ -479,11 +479,11 @@ def _generation_references(storage_root: Path) -> dict[str, str] | None:
         try:
             legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            logger.warning("[rag] generation references are unreadable at %s", legacy_path)
+            logger.error("[rag] generation references are unreadable at %s", legacy_path)
             return None
         raw = legacy_payload.get("references", {}) if isinstance(legacy_payload, dict) else {}
         if not isinstance(raw, dict):
-            logger.warning("[rag] generation references are malformed at %s", legacy_path)
+            logger.error("[rag] generation references are malformed at %s", legacy_path)
             return None
         references.update(
             {
@@ -499,21 +499,21 @@ def _generation_references(storage_root: Path) -> dict[str, str] | None:
     try:
         paths = sorted(references_dir.glob("*.json"))
     except OSError:
-        logger.warning("[rag] generation reference directory is unreadable at %s", references_dir)
+        logger.error("[rag] generation reference directory is unreadable at %s", references_dir)
         return None
     for path in paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            logger.warning("[rag] generation reference is unreadable at %s", path)
+            logger.error("[rag] generation reference is unreadable at %s", path)
             return None
         if not isinstance(payload, dict):
-            logger.warning("[rag] generation reference is malformed at %s", path)
+            logger.error("[rag] generation reference is malformed at %s", path)
             return None
         run_id = str(payload.get("run_id") or "").strip()
         generation = str(payload.get("generation") or "").strip()
         if not run_id or not generation:
-            logger.warning("[rag] generation reference is malformed at %s", path)
+            logger.error("[rag] generation reference is malformed at %s", path)
             return None
         references[run_id] = generation
     return references

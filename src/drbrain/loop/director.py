@@ -1036,7 +1036,10 @@ class ResearchDirector:
             from drbrain.rag.indexer import capture_index_generation
 
             captured_generation = capture_index_generation(self._cfg)
-        except Exception:  # noqa: BLE001 - RAG is optional for existing loop users
+        except Exception as exc:  # noqa: BLE001 - RAG is optional for existing loop users
+            logger.warning(
+                "[director] cannot capture RAG generation; disabling RAG evidence: %s", exc
+            )
             captured_generation = None
         existing_run = ledger.get_run(topic)
         if existing_run is not None:

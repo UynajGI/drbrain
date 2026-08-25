@@ -198,6 +198,42 @@ def test_brokerless_rag_evidence_is_durably_recorded(monkeypatch):
     assert recorded == [bundle.model_dump(mode="json")]
 
 
+def test_brokered_rag_retrieval_runs_the_executor_off_loop(monkeypatch):
+    monkeypatch.setattr(
+        rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
+    )
+
+    class Broker:
+        def __init__(self):
+            self.recorded: list[dict[str, object]] = []
+            self.policy = None
+
+        async def execute(self, **kwargs):
+            return SimpleNamespace(
+                ok=True,
+                output=await kwargs["executor"](),
+                tool_call_id="rag-brokered",
+            )
+
+        def record_evidence_bundle(self, bundle):
+            self.recorded.append(bundle)
+
+    broker = Broker()
+    workflow = ResearchLoopWorkflow(
+        cfg=object(),
+        db=object(),
+        graph=object(),
+        rag_generation="g-1",
+        tool_broker=broker,
+    )
+
+    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+
+    assert titles == ["Stability"]
+    assert bundle is not None
+    assert broker.recorded == [bundle.model_dump(mode="json")]
+
+
 def test_brokerless_evidence_write_failure_is_fail_closed(monkeypatch):
     monkeypatch.setattr(
         rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
