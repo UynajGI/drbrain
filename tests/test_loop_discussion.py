@@ -169,6 +169,36 @@ def test_queue_ignores_a_replayed_stable_item_id():
     assert [queued.id for queued in q.list_pending()] == ["que-stable"]
 
 
+def test_queue_refreshes_a_replayed_stable_item_from_canonical_state():
+    q = ResearchQueue()
+    q.add(
+        QueueItem(id="que-stable", statement="h1", proposed_by="analyst", discussion_pending=True)
+    )
+    q.add(
+        QueueItem(
+            id="que-stable",
+            statement="h1",
+            proposed_by="analyst",
+            discussion_pending=False,
+            score=0.9,
+        )
+    )
+
+    claimed = q.claim("compute")
+    assert claimed is not None
+    assert claimed.score == 0.9
+
+
+def test_queue_removes_a_pending_item_that_becomes_ineligible():
+    q = ResearchQueue()
+    q.add(
+        QueueItem(id="que-stable", statement="h1", proposed_by="analyst", discussion_pending=False)
+    )
+    q.remove_pending("que-stable")
+
+    assert q.claim("compute") is None
+
+
 def test_queue_roundtrip(tmp_path):
     import json
 
