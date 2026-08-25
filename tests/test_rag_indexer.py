@@ -13,11 +13,14 @@ needs no GPU/network. A real-model smoke test is marked ``integration``.
 
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from drbrain.config import Config, DirsConfig, EmbedConfig, LlamaIndexConfig
+from drbrain.rag import indexer as rag_indexer
 from drbrain.rag.indexer import MANIFEST_NAME, build_index, collect_tree_nodes, load_index
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
@@ -479,6 +482,78 @@ def test_build_index_failed_generation_keeps_previous_active_index(tmp_path):
     index, bm25 = load_index(cfg, embed_model=good)
     assert len(index.docstore.docs) == 2
     assert len(bm25.corpus) == 2
+
+
+def test_failed_staged_validation_removes_orphaned_generation(tmp_path, monkeypatch):
+    """A validation failure must not leave an unbounded staging directory."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+    build_index(cfg, db, embed_model=embed)
+    active_path = tmp_path / "li" / "active.json"
+    before = active_path.read_text(encoding="utf-8")
+
+    def fail_validation(*_args, **_kwargs):
+        raise ValueError("injected staged validation failure")
+
+    monkeypatch.setattr(rag_indexer, "load_index_from_storage", fail_validation)
+    with pytest.raises(RuntimeError, match="staged generation validation failed"):
+        build_index(cfg, db, force=True, embed_model=embed)
+
+    assert active_path.read_text(encoding="utf-8") == before
+    assert not list((tmp_path / "li" / "generations").glob(".staging-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_atomic_control_files_remain_group_readable(tmp_path):
+    """Atomic replacement preserves the conventional shared-readable mode."""
+    control_file = tmp_path / "active.json"
+    rag_indexer._write_json_atomically(control_file, {"generation": "g-test"})
+    assert stat.S_IMODE(control_file.stat().st_mode) == 0o644
+
+
+def test_generation_pruning_keeps_active_and_rollback_window(tmp_path):
+    """Retention bounds old snapshots without touching the active generation."""
+    root = tmp_path / "li"
+    generations = root / "generations"
+    generations.mkdir(parents=True)
+    names = ["g-1", "g-2", "g-3", "g-4"]
+    for offset, name in enumerate(names):
+        generation = generations / name
+        generation.mkdir()
+        os.utime(generation, (1_000_000 + offset, 1_000_000 + offset))
+
+    pruned = rag_indexer._prune_inactive_generations(
+        root, "g-4", retain_count=3, grace_seconds=0
+    )
+
+    assert pruned == ["g-1"]
+    assert not (generations / "g-1").exists()
+    assert all((generations / name).is_dir() for name in ("g-2", "g-3", "g-4"))
+
+
+def test_manifest_mirror_failure_does_not_unpublish_a_valid_generation(tmp_path, monkeypatch):
+    """The compatibility mirror cannot turn a successful activation into failure."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+    original_write_manifest = rag_indexer._write_manifest
+    storage_root = tmp_path / "li"
+
+    def fail_root_mirror(storage_dir, manifest):
+        if Path(storage_dir) == storage_root:
+            raise OSError("injected root manifest failure")
+        return original_write_manifest(storage_dir, manifest)
+
+    monkeypatch.setattr(rag_indexer, "_write_manifest", fail_root_mirror)
+    stats = build_index(cfg, db, embed_model=embed)
+
+    active = json.loads((storage_root / "active.json").read_text(encoding="utf-8"))
+    assert active["generation"] == stats["generation"]
 
 
 def test_build_index_force_reembeds_all(tmp_path):

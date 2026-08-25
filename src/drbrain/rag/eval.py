@@ -100,11 +100,11 @@ _ABSTRACT_TITLE_PREFIXES = ("abstract", "summary")
 
 
 def _write_text_atomically(path: Path, content: str) -> None:
-    """Replace ``path`` with durable same-directory staging.
+    """Atomically replace ``path`` through same-directory staging.
 
     ``os.replace`` is atomic on the local filesystem. Keeping the temporary
-    file beside its destination avoids cross-volume moves, so an interrupted
-    evaluation cannot leave a partially rewritten baseline or golden set.
+    file beside its destination avoids cross-volume moves, so readers never
+    observe a partially rewritten baseline or golden set.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
