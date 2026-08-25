@@ -1091,14 +1091,22 @@ class ResearchDirector:
             "max_adaptations": max_adaptations,
         }
         if budget is not None:
+            budget_aliases = {
+                "attempts": "max_attempts",
+                "tool_calls": "max_tool_calls",
+                "rag_calls": "max_rag_calls",
+                "model_calls": "max_model_calls",
+                "wall_seconds": "max_wall_seconds",
+            }
+            supported_budget_keys = set(budget_aliases) | set(budget_aliases.values())
+            unknown_budget_keys = sorted(
+                str(name) for name in budget if str(name) not in supported_budget_keys
+            )
+            if unknown_budget_keys:
+                raise ValueError("unknown budget limit(s): " + ", ".join(unknown_budget_keys))
             effective_budget.update(
                 {
-                    (
-                        f"max_{name}"
-                        if str(name)
-                        in {"attempts", "tool_calls", "rag_calls", "model_calls", "wall_seconds"}
-                        else str(name)
-                    ): value
+                    budget_aliases.get(str(name), str(name)): value
                     for name, value in budget.items()
                     if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
                 }
@@ -1256,12 +1264,20 @@ class ResearchDirector:
                     stop_status = "budget_exhausted"
                     logger.info("[director] stop before a new cycle: %s", exc)
                     break
-                step_id = transitions.begin_cycle(
-                    run.run_id,
-                    cycle=state["cycles"] + 1,
-                    worker_id=self._worker_id,
-                    lease_seconds=self._lease_seconds,
-                )
+                try:
+                    step_id = transitions.begin_cycle(
+                        run.run_id,
+                        cycle=state["cycles"] + 1,
+                        worker_id=self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                    )
+                except Exception:
+                    # Reservation occurs before the durable attempt exists so a
+                    # zero budget cannot create a live lease. Compensate only
+                    # this setup failure; once begin_cycle succeeds, the cycle
+                    # itself is a real counted research attempt.
+                    ledger.release_budget(run.run_id, {"attempts": 1})
+                    raise
                 active_attempt_id = ledger.active_attempt_id(step_id)
                 if (
                     active_attempt_id is None
@@ -1327,7 +1343,7 @@ class ResearchDirector:
             current = ledger.get_run_by_id(run.run_id)
             if current is None:  # pragma: no cover - run identity is durable
                 raise RuntimeError(f"durable run {run.run_id!r} disappeared")
-            if current.status != "running":
+            if current.status in {"failed", "cancelled"}:
                 if current.status == "failed":
                     transitions.fail_cycle(
                         run.run_id,
@@ -1340,8 +1356,6 @@ class ResearchDirector:
                     stop_status = "budget_exhausted"
                 elif current.status == "cancelled":
                     stop_status = "cancelled"
-                else:
-                    stop_status = current.status
                 logger.info("[director] do not project terminal run state: %s", current.status)
                 break
             champion_before = len(state["champion"])
@@ -1377,8 +1391,10 @@ class ResearchDirector:
                 )
             except RunExecutionBlockedError:
                 current = ledger.get_run_by_id(run.run_id)
-                if current is not None and current.status in {"failed", "cancelled"}:
-                    stop_status = "budget_exhausted" if current.status == "failed" else "cancelled"
+                if current is not None and current.status in {"failed", "cancelled", "paused"}:
+                    stop_status = (
+                        "budget_exhausted" if current.status == "failed" else current.status
+                    )
                     logger.info("[director] terminal run won cycle completion: %s", current.status)
                     break
                 raise
@@ -1386,6 +1402,11 @@ class ResearchDirector:
             # commits do we update the pre-existing file workspace.
             self._project_cycle(topic, state, cycle_result, rs)
             ledger.mark_projected(run.run_id, event.event_seq)
+            current = ledger.get_run_by_id(run.run_id)
+            if current is not None and current.status == "paused":
+                stop_status = "paused"
+                logger.info("[director] paused after committing active cycle")
+                break
             logger.info(
                 "[director] cycle=%d champion=%d rejected=%d no_gain=%d",
                 state["cycles"],
