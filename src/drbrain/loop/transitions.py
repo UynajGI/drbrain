@@ -673,7 +673,7 @@ class TransitionService:
 
     def front_half_snapshot(self, run_id: str) -> dict[str, Any]:
         """Return canonical front-half facts so a crashed workflow can rebuild its view."""
-        with self._ledger.transaction() as conn:
+        with self._ledger.read_transaction() as conn:
             self._run_status(conn, run_id)
             specs = conn.execute(
                 "SELECT * FROM research_front_half_node_specs WHERE run_id = ? ORDER BY node_name",
