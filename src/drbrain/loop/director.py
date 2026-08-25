@@ -34,6 +34,7 @@ from drbrain.loop.checkpointing import (
     WorkflowCheckpointService,
 )
 from drbrain.loop.events import ResearchState
+from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.store import LedgerEvent, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, redact
@@ -883,7 +884,12 @@ class ResearchDirector:
         checkpoint = self._active_checkpoint
         tool_broker = None
         evidence_recorder = None
+        durable_front_half = None
         if checkpoint is not None:
+            durable_front_half = DurableFrontHalf(
+                TransitionService(checkpoint.ledger), checkpoint.run_id
+            )
+            durable_front_half.ensure_node_contracts()
 
             def evidence_recorder(bundle: Mapping[str, Any]) -> None:
                 checkpoint.ledger.record_evidence_bundle(
@@ -920,6 +926,7 @@ class ResearchDirector:
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
             evidence_recorder=evidence_recorder,
+            durable_front_half=durable_front_half,
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it

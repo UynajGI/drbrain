@@ -72,7 +72,42 @@ def test_ledger_rejects_a_newer_schema_before_altering_research_runs(tmp_path):
 
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
     assert "config_json" not in columns
+    assert "research_proposals" not in tables
+
+
+def test_ledger_migrates_v4_runs_to_the_durable_front_half_tables(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = RunLedger(path)
+    ledger.get_or_create_run("v4 front half")
+
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE research_queue_items")
+        conn.execute("DROP TABLE research_critic_reviews")
+        conn.execute("DROP TABLE research_proposals")
+        conn.execute("DROP TABLE research_front_half_node_specs")
+        conn.execute(
+            "DELETE FROM ledger_schema_versions WHERE version = ?", (LEDGER_SCHEMA_VERSION,)
+        )
+        conn.execute("INSERT INTO ledger_schema_versions(version, applied_at) VALUES (4, 0)")
+
+    RunLedger(path).get_run("v4 front half")
+
+    with sqlite3.connect(path) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        version = conn.execute("SELECT MAX(version) FROM ledger_schema_versions").fetchone()[0]
+    assert {
+        "research_front_half_node_specs",
+        "research_proposals",
+        "research_critic_reviews",
+        "research_queue_items",
+    } <= tables
+    assert version == LEDGER_SCHEMA_VERSION
 
 
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):

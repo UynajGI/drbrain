@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 4
+LEDGER_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -279,6 +279,65 @@ class RunLedger:
         if "config_json" not in run_columns:
             conn.execute(
                 "ALTER TABLE research_runs ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if current < 5:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_front_half_node_specs (
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    node_name TEXT NOT NULL,
+                    input_schema_json TEXT NOT NULL,
+                    output_schema_json TEXT NOT NULL,
+                    allowed_tools_json TEXT NOT NULL,
+                    max_attempts INTEGER NOT NULL,
+                    retry_class TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, node_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS research_proposals (
+                    proposal_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    claim_id TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    review_score REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE (run_id, claim_id),
+                    CHECK (status IN ('proposed', 'discussion_pending', 'critiqued', 'discarded'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_research_proposals_run_created
+                    ON research_proposals(run_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS research_critic_reviews (
+                    review_id TEXT PRIMARY KEY,
+                    proposal_id TEXT NOT NULL REFERENCES research_proposals(proposal_id),
+                    reviewer TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    verdict TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    UNIQUE (proposal_id, reviewer)
+                );
+
+                CREATE TABLE IF NOT EXISTS research_queue_items (
+                    queue_item_id TEXT PRIMARY KEY,
+                    proposal_id TEXT NOT NULL UNIQUE REFERENCES research_proposals(proposal_id),
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    status TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    CHECK (status IN ('pending_review', 'ready', 'discarded'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_research_queue_items_run_status
+                    ON research_queue_items(run_id, status, created_at);
+                """
             )
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(

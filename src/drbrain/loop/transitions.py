@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -416,6 +417,329 @@ class TransitionService:
                 event_type="cycle_manual_review",
                 payload={"step_id": step_id, "reason": reason},
             )
+
+    def register_front_half_node_contracts(
+        self, run_id: str, node_specs: Mapping[str, Mapping[str, Any]]
+    ) -> None:
+        """Persist immutable node contracts for a run's durable front half."""
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            inserted = 0
+            for node_name, raw_spec in node_specs.items():
+                spec = dict(raw_spec)
+                max_attempts = int(spec.get("max_attempts", 0))
+                retry_class = str(spec.get("retry_class", "")).strip()
+                if not node_name or max_attempts < 1 or not retry_class:
+                    raise ValueError("front-half node contract is incomplete")
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO research_front_half_node_specs(
+                        run_id, node_name, input_schema_json, output_schema_json,
+                        allowed_tools_json, max_attempts, retry_class, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        node_name,
+                        json.dumps(spec.get("input_schema", {}), ensure_ascii=False),
+                        json.dumps(spec.get("output_schema", {}), ensure_ascii=False),
+                        json.dumps(list(spec.get("allowed_tools", [])), ensure_ascii=False),
+                        max_attempts,
+                        retry_class,
+                        time.time(),
+                    ),
+                )
+                inserted += cursor.rowcount
+            if inserted:
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor="workflow",
+                    event_type="front_half_contracts_registered",
+                    payload={"nodes": sorted(node_specs)},
+                )
+
+    def record_front_half_proposal(
+        self,
+        run_id: str,
+        *,
+        proposal_id: str,
+        claim_id: str,
+        author: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Record a proposal once; replay returns its canonical durable record."""
+        if not proposal_id or not claim_id or not author:
+            raise ValueError("proposal_id, claim_id and author are required")
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            row = self._proposal_row(conn, proposal_id)
+            if row is None:
+                claim_row = conn.execute(
+                    "SELECT proposal_id FROM research_proposals WHERE run_id = ? AND claim_id = ?",
+                    (run_id, claim_id),
+                ).fetchone()
+                if claim_row is not None and str(claim_row["proposal_id"]) != proposal_id:
+                    raise ValueError("claim_id already belongs to another durable proposal")
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_proposals(
+                        proposal_id, run_id, claim_id, author, payload_json, status,
+                        review_score, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 'proposed', NULL, ?, ?)
+                    """,
+                    (
+                        proposal_id,
+                        run_id,
+                        claim_id,
+                        author,
+                        json.dumps(dict(payload), ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor=author,
+                    event_type="proposal_recorded",
+                    payload={"proposal_id": proposal_id, "claim_id": claim_id},
+                )
+                row = self._proposal_row(conn, proposal_id)
+            if row is None or str(row["run_id"]) != run_id:
+                raise KeyError(f"unknown proposal {proposal_id}")
+            return self._proposal_dict(row)
+
+    def record_front_half_review(
+        self,
+        run_id: str,
+        *,
+        proposal_id: str,
+        review_id: str,
+        reviewer: str,
+        score: float,
+        verdict: str,
+        content: str,
+    ) -> dict[str, Any]:
+        """Record one non-author critic review idempotently."""
+        with self._ledger.transaction() as conn:
+            proposal = self._proposal_row(conn, proposal_id)
+            if proposal is None or str(proposal["run_id"]) != run_id:
+                raise KeyError(f"unknown proposal {proposal_id}")
+            if reviewer == str(proposal["author"]):
+                raise ValueError("a durable review must be from a non-author")
+            row = conn.execute(
+                "SELECT * FROM research_critic_reviews WHERE proposal_id = ? AND reviewer = ?",
+                (proposal_id, reviewer),
+            ).fetchone()
+            if row is None:
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_critic_reviews(
+                        review_id, proposal_id, reviewer, score, verdict, content, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (review_id, proposal_id, reviewer, float(score), verdict, content, now),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor=reviewer,
+                    event_type="critic_review_recorded",
+                    payload={
+                        "proposal_id": proposal_id,
+                        "review_id": review_id,
+                        "verdict": verdict,
+                    },
+                )
+                row = conn.execute(
+                    "SELECT * FROM research_critic_reviews WHERE review_id = ?", (review_id,)
+                ).fetchone()
+            if row is None:
+                raise RuntimeError("durable critic review was not persisted")
+            return self._review_dict(row)
+
+    def settle_front_half_proposal(
+        self,
+        run_id: str,
+        *,
+        proposal_id: str,
+        queue_item_id: str,
+        discard_score: float,
+    ) -> dict[str, Any]:
+        """Atomically enforce the non-author gate and materialize one queue item."""
+        with self._ledger.transaction() as conn:
+            proposal = self._proposal_row(conn, proposal_id)
+            if proposal is None or str(proposal["run_id"]) != run_id:
+                raise KeyError(f"unknown proposal {proposal_id}")
+            reviews = conn.execute(
+                "SELECT * FROM research_critic_reviews WHERE proposal_id = ? ORDER BY created_at, review_id",
+                (proposal_id,),
+            ).fetchall()
+            scores = [float(review["score"]) for review in reviews]
+            if not reviews:
+                status, queue_status, score = "discussion_pending", "pending_review", 0.0
+            else:
+                score = round(sum(scores) / len(scores), 4)
+                all_discard = all(str(review["verdict"]) == "DISCARD" for review in reviews)
+                if score < discard_score or all_discard:
+                    status, queue_status = "discarded", "discarded"
+                else:
+                    status, queue_status = "critiqued", "ready"
+            previous_status = str(proposal["status"])
+            if previous_status != status or proposal["review_score"] != score:
+                conn.execute(
+                    """
+                    UPDATE research_proposals
+                    SET status = ?, review_score = ?, updated_at = ?
+                    WHERE proposal_id = ?
+                    """,
+                    (status, score, time.time(), proposal_id),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor="transition",
+                    event_type=f"proposal_{status}",
+                    payload={"proposal_id": proposal_id, "score": score},
+                )
+            queue = conn.execute(
+                "SELECT * FROM research_queue_items WHERE proposal_id = ?", (proposal_id,)
+            ).fetchone()
+            if queue is None:
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_queue_items(
+                        queue_item_id, proposal_id, run_id, status, score, payload_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        queue_item_id,
+                        proposal_id,
+                        run_id,
+                        queue_status,
+                        score,
+                        proposal["payload_json"],
+                        now,
+                        now,
+                    ),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor="transition",
+                    event_type="queue_item_recorded",
+                    payload={
+                        "proposal_id": proposal_id,
+                        "queue_item_id": queue_item_id,
+                        "status": queue_status,
+                    },
+                )
+                queue = conn.execute(
+                    "SELECT * FROM research_queue_items WHERE queue_item_id = ?", (queue_item_id,)
+                ).fetchone()
+            elif str(queue["status"]) != queue_status or float(queue["score"]) != score:
+                conn.execute(
+                    """
+                    UPDATE research_queue_items SET status = ?, score = ?, updated_at = ?
+                    WHERE proposal_id = ?
+                    """,
+                    (queue_status, score, time.time(), proposal_id),
+                )
+                queue = conn.execute(
+                    "SELECT * FROM research_queue_items WHERE proposal_id = ?", (proposal_id,)
+                ).fetchone()
+            if queue is None:
+                raise RuntimeError("durable queue item was not persisted")
+            return {"status": status, "score": score, "queue_item": self._queue_item_dict(queue)}
+
+    def front_half_snapshot(self, run_id: str) -> dict[str, Any]:
+        """Return canonical front-half facts so a crashed workflow can rebuild its view."""
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            specs = conn.execute(
+                "SELECT * FROM research_front_half_node_specs WHERE run_id = ? ORDER BY node_name",
+                (run_id,),
+            ).fetchall()
+            proposals = conn.execute(
+                "SELECT * FROM research_proposals WHERE run_id = ? ORDER BY created_at, proposal_id",
+                (run_id,),
+            ).fetchall()
+            queue_items = conn.execute(
+                "SELECT * FROM research_queue_items WHERE run_id = ? ORDER BY created_at, queue_item_id",
+                (run_id,),
+            ).fetchall()
+            proposal_values = []
+            for proposal in proposals:
+                value = self._proposal_dict(proposal)
+                reviews = conn.execute(
+                    "SELECT * FROM research_critic_reviews WHERE proposal_id = ? ORDER BY created_at, review_id",
+                    (proposal["proposal_id"],),
+                ).fetchall()
+                value["reviews"] = [self._review_dict(review) for review in reviews]
+                proposal_values.append(value)
+            return {
+                "node_specs": {str(row["node_name"]): self._node_spec_dict(row) for row in specs},
+                "proposals": proposal_values,
+                "queue_items": [self._queue_item_dict(item) for item in queue_items],
+            }
+
+    @staticmethod
+    def _proposal_row(conn: Any, proposal_id: str) -> Any:
+        return conn.execute(
+            "SELECT * FROM research_proposals WHERE proposal_id = ?", (proposal_id,)
+        ).fetchone()
+
+    @staticmethod
+    def _json(value: Any, default: Any) -> Any:
+        try:
+            return json.loads(str(value)) if value else default
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    @classmethod
+    def _node_spec_dict(cls, row: Any) -> dict[str, Any]:
+        return {
+            "input_schema": cls._json(row["input_schema_json"], {}),
+            "output_schema": cls._json(row["output_schema_json"], {}),
+            "allowed_tools": cls._json(row["allowed_tools_json"], []),
+            "max_attempts": int(row["max_attempts"]),
+            "retry_class": str(row["retry_class"]),
+        }
+
+    @classmethod
+    def _proposal_dict(cls, row: Any) -> dict[str, Any]:
+        return {
+            "proposal_id": str(row["proposal_id"]),
+            "claim_id": str(row["claim_id"]),
+            "author": str(row["author"]),
+            "payload": cls._json(row["payload_json"], {}),
+            "status": str(row["status"]),
+            "review_score": row["review_score"],
+        }
+
+    @staticmethod
+    def _review_dict(row: Any) -> dict[str, Any]:
+        return {
+            "review_id": str(row["review_id"]),
+            "reviewer": str(row["reviewer"]),
+            "score": float(row["score"]),
+            "verdict": str(row["verdict"]),
+            "content": str(row["content"]),
+        }
+
+    @classmethod
+    def _queue_item_dict(cls, row: Any) -> dict[str, Any]:
+        return {
+            "queue_item_id": str(row["queue_item_id"]),
+            "proposal_id": str(row["proposal_id"]),
+            "status": str(row["status"]),
+            "score": float(row["score"]),
+            "payload": cls._json(row["payload_json"], {}),
+        }
 
     @staticmethod
     def _run_status(conn: Any, run_id: str) -> str:

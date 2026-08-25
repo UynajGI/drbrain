@@ -29,6 +29,16 @@ def test_post_creates_typed_post():
     assert post.content == "h1 假设"
 
 
+def test_post_and_comment_accept_stable_ids_without_replaying_them():
+    board = MessageBoard()
+    pid = board.post(POST_PROPOSAL, author="analyst", content="h1", post_id="prp-stable")
+    assert board.post(POST_PROPOSAL, author="analyst", content="h1", post_id="prp-stable") == pid
+
+    board.comment(pid, author="critic", content="review", comment_id="rev-stable")
+    board.comment(pid, author="critic", content="review", comment_id="rev-stable")
+    assert len(board.get_post(pid).comments) == 1
+
+
 def test_post_rejects_unknown_type():
     board = MessageBoard()
     try:
@@ -143,6 +153,15 @@ def test_queue_version_bumps_on_mutation():
     v1 = q.version
     q.claim("compute")
     assert q.version > v1
+
+
+def test_queue_ignores_a_replayed_stable_item_id():
+    q = ResearchQueue()
+    item = QueueItem(id="que-stable", statement="h1", proposed_by="analyst")
+    q.add(item)
+    q.add(item)
+
+    assert [queued.id for queued in q.list_pending()] == ["que-stable"]
 
 
 def test_queue_roundtrip(tmp_path):
