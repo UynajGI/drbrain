@@ -35,7 +35,7 @@ STEP_MANUAL_REVIEW = "manual_review"
 
 
 RUN_TRANSITIONS: Mapping[str, frozenset[str]] = {
-    RUN_CREATED: frozenset({RUN_RUNNING}),
+    RUN_CREATED: frozenset({RUN_RUNNING, RUN_CANCELLED}),
     RUN_RUNNING: frozenset({RUN_PAUSED, RUN_SUCCEEDED, RUN_FAILED, RUN_CANCELLED}),
     RUN_PAUSED: frozenset({RUN_RUNNING, RUN_CANCELLED}),
     RUN_SUCCEEDED: frozenset(),

@@ -1280,7 +1280,12 @@ class ResearchDirector:
                     # zero budget cannot create a live lease. Compensate only
                     # this setup failure; once begin_cycle succeeds, the cycle
                     # itself is a real counted research attempt.
-                    ledger.release_budget(run.run_id, {"attempts": 1})
+                    try:
+                        ledger.release_budget(run.run_id, {"attempts": 1})
+                    except Exception as release_exc:  # noqa: BLE001 - preserve setup cause
+                        logger.error(
+                            "[director] could not release unstarted attempt: %s", release_exc
+                        )
                     raise
                 active_attempt_id = ledger.active_attempt_id(step_id)
                 if (
@@ -1326,6 +1331,10 @@ class ResearchDirector:
                 if current is not None and current.status == "cancelled":
                     stop_status = "cancelled"
                     logger.info("[director] cycle cancelled while executing: %s", exc)
+                    break
+                if current is not None and current.status == "paused":
+                    stop_status = "paused"
+                    logger.info("[director] run paused while executing: %s", exc)
                     break
                 raise
             except CheckpointError as exc:

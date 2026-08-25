@@ -65,6 +65,15 @@ def test_status_trace_and_audit_are_read_only_and_cancel_keeps_evidence(tmp_path
     assert control.trace(run_id)["events"][-1]["event_type"] == "run_cancelled"
 
 
+def test_operator_can_cancel_a_created_run(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("not started")
+
+    status = RunGovernance(ledger).cancel(run.run_id, reason="operator_stop")
+
+    assert status["status"] == "cancelled"
+
+
 def test_pause_blocks_new_broker_side_effects_and_resume_restores_execution(tmp_path):
     ledger, run_id, broker = _running(tmp_path)
     control = RunGovernance(ledger)
@@ -464,6 +473,26 @@ def test_director_discards_an_active_cycle_when_a_runtime_budget_is_exhausted(tm
     assert "run_budget_exhausted" in event_types
     assert "cycle_failed" in event_types
     assert "cycle_completed" not in event_types
+
+
+def test_director_stops_gracefully_when_operator_pauses_during_a_cycle(tmp_path):
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
+
+    async def pause_during_cycle(*_args, **_kwargs):
+        ledger = RunLedger(tmp_path / "runs" / "ledger.sqlite3")
+        run = ledger.get_run("paused runtime")
+        assert run is not None
+        TransitionService(ledger).pause_run(run.run_id, reason="operator_pause")
+        raise RunExecutionBlockedError("run is paused")
+
+    director._run_cycle = pause_during_cycle  # type: ignore[method-assign]
+    state = asyncio.run(director.run("paused runtime", max_cycles=1))
+
+    ledger = RunLedger(tmp_path / "runs" / "ledger.sqlite3")
+    run = ledger.get_run("paused runtime")
+    assert run is not None
+    assert state["cycles"] == 0
+    assert run.status == "paused"
 
 
 def test_director_stops_before_claiming_a_cycle_when_attempt_budget_is_exhausted(tmp_path):
