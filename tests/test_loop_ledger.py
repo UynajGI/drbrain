@@ -129,7 +129,7 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
     assert run is not None
     resumed = [event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"]
     assert len(resumed) == 1
-    assert resumed[0].payload["config"] == {"n_critics": 2, "rag_generation": None}
+    assert resumed[0].payload["config"] == {"n_critics": 2, "rag_generation": "legacy"}
     assert resumed[0].payload["budget"] == {
         "max_cycles": 0,
         "stagnation_cycles": 7,
