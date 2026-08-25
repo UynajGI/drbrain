@@ -447,7 +447,7 @@ class ResearchLoopWorkflow(Workflow):
                     arguments=arguments,
                     executor=lambda: registry.call("search_papers", arguments),
                 )
-                if observation.execution_blocked:
+                if getattr(observation, "execution_blocked", False):
                     raise RunExecutionBlockedError(observation.error or "direct search was blocked")
                 if not observation.ok or not isinstance(observation.output, dict):
                     return []
@@ -511,7 +511,7 @@ class ResearchLoopWorkflow(Workflow):
                         top_k=limit,
                     ),
                 )
-                if observation.execution_blocked:
+                if getattr(observation, "execution_blocked", False):
                     raise RunExecutionBlockedError(
                         observation.error or "generation-pinned RAG retrieval was blocked"
                     )
