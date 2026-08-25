@@ -12,6 +12,8 @@ from drbrain.loop.events import (
     Hypothesis,
     ResearchState,
 )
+from drbrain.loop.policy import ToolDefinition, ToolPolicy
+from drbrain.loop.tool_broker import ToolBroker, ToolCallStatus, ToolObservation
 from drbrain.loop.workflow import ResearchLoopWorkflow
 
 __all__ = [
@@ -20,4 +22,9 @@ __all__ = [
     "ResearchDirector",
     "ResearchLoopWorkflow",
     "ResearchState",
+    "ToolBroker",
+    "ToolCallStatus",
+    "ToolDefinition",
+    "ToolObservation",
+    "ToolPolicy",
 ]
