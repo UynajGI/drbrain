@@ -513,7 +513,11 @@ class ResearchLoopWorkflow(Workflow):
         for row in records:
             if not isinstance(row, Mapping):
                 continue
-            item = Evidence.model_validate({**row, "snippet": str(row.get("text") or "")})
+            try:
+                item = Evidence.model_validate({**row, "snippet": str(row.get("text") or "")})
+            except Exception as exc:  # noqa: BLE001 - one malformed record must not drop the batch
+                logger.warning("[loop] skipping malformed RAG evidence record: %s", exc)
+                continue
             if item.evidence_id:
                 evidence.append(item)
         if not evidence:
