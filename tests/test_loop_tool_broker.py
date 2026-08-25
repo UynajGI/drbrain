@@ -13,7 +13,12 @@ from drbrain.loop.workflow import ResearchLoopWorkflow
 from drbrain.plugins.protocol import Plugin, PluginResult, ResultStatus
 
 
-def _broker(tmp_path, *, step_capabilities: dict[str, set[str]] | None = None):
+def _broker(
+    tmp_path,
+    *,
+    step_capabilities: dict[str, set[str]] | None = None,
+    lease_seconds: float = 60,
+):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("broker topic")
     transitions = TransitionService(ledger)
@@ -22,7 +27,7 @@ def _broker(tmp_path, *, step_capabilities: dict[str, set[str]] | None = None):
         run.run_id,
         cycle=1,
         worker_id="worker-a",
-        lease_seconds=60,
+        lease_seconds=lease_seconds,
     )
     attempt_id = ledger.active_attempt_id(step_id)
     assert attempt_id is not None
@@ -32,7 +37,7 @@ def _broker(tmp_path, *, step_capabilities: dict[str, set[str]] | None = None):
         step_id=step_id,
         attempt_id=attempt_id,
         worker_id="worker-a",
-        lease_seconds=60,
+        lease_seconds=lease_seconds,
         policy=ToolPolicy(step_capabilities=step_capabilities or {"retrieve": {"graph:read"}}),
     )
     return broker, ledger, run.run_id
@@ -248,19 +253,60 @@ def test_idempotency_records_never_contain_secret_arguments(tmp_path):
         supports_idempotency=True,
     )
 
-    asyncio.run(
+    executions = 0
+
+    def handler():
+        nonlocal executions
+        executions += 1
+        return {"answer": executions}
+
+    first = asyncio.run(
         broker.execute(
             node_name="retrieve",
             definition=idempotent_read,
             arguments={"api_key": "must-not-persist"},
-            executor=lambda: {"answer": "ok"},
+            executor=handler,
+        )
+    )
+    second = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=idempotent_read,
+            arguments={"api_key": "different-credential"},
+            executor=handler,
         )
     )
 
-    call = ledger.tool_calls(run_id)[0]
-    assert call.idempotency_key is not None
-    assert "must-not-persist" not in call.idempotency_key
+    calls = ledger.tool_calls(run_id)
+    assert executions == 2
+    assert first.reused is False
+    assert second.reused is False
+    assert calls[0].idempotency_key is not None
+    assert calls[0].idempotency_key != calls[1].idempotency_key
+    assert "must-not-persist" not in calls[0].idempotency_key
+    assert "different-credential" not in calls[1].idempotency_key
     assert all("must-not-persist" not in str(event.payload) for event in ledger.events(run_id))
+    assert all("different-credential" not in str(event.payload) for event in ledger.events(run_id))
+
+
+def test_broker_renews_lease_during_a_long_tool_call(tmp_path):
+    broker, ledger, run_id = _broker(tmp_path, lease_seconds=1)
+
+    async def slow_read():
+        await asyncio.sleep(1.1)
+        return {"answer": "completed under renewed lease"}
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=_read_tool(),
+            arguments={"query": "long tool"},
+            executor=slow_read,
+        )
+    )
+
+    assert observation.status is ToolCallStatus.SUCCEEDED
+    assert ledger.tool_calls(run_id)[0].status == ToolCallStatus.SUCCEEDED
 
 
 def test_workflow_direct_search_routes_classified_plugin_through_broker(tmp_path):

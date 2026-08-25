@@ -78,6 +78,81 @@ def _default_state(topic: str) -> dict[str, Any]:
     }
 
 
+_MCP_CONTRACT_FIELDS = (
+    "id",
+    "name",
+    "command",
+    "url",
+    "args",
+    "timeout_seconds",
+    "trusted",
+    "allowed_tools",
+    "required_capabilities",
+    "side_effect",
+    "code_digest",
+    "version",
+    "max_output_bytes",
+    "cost_hint",
+    "supports_idempotency",
+    "supports_reconcile",
+    "supports_cancel",
+    "sandbox_profile",
+    "approval_policy",
+)
+_UNORDERED_MCP_FIELDS = frozenset({"allowed_tools", "required_capabilities"})
+_IGNORED_PLUGIN_SOURCE_PARTS = frozenset({".git", ".venv", "venv", "__pycache__", "site-packages"})
+
+
+def _file_sha256(path: Path) -> str | None:
+    """Return a source digest without retaining the source or its contents."""
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _plugin_source_contract(plugins_dir: str | Path | None) -> dict[str, Any] | None:
+    """Fingerprint discoverable plugin sources for safe checkpoint resumption."""
+    if not plugins_dir:
+        return None
+    root = Path(plugins_dir).resolve()
+    if not root.is_dir():
+        return {"path": str(root), "state": "missing_or_not_directory", "sources": []}
+    sources: list[dict[str, str | None]] = []
+    for path in sorted(root.rglob("*.py"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root)
+        if any(part in _IGNORED_PLUGIN_SOURCE_PARTS for part in relative.parts):
+            continue
+        sources.append({"path": relative.as_posix(), "sha256": _file_sha256(path)})
+    return {"path": str(root), "state": "directory", "sources": sources}
+
+
+def _mcp_contract(server: dict[str, Any]) -> dict[str, Any]:
+    """Project every execution/policy-relevant MCP field without secrets."""
+    contract: dict[str, Any] = {}
+    for field in _MCP_CONTRACT_FIELDS:
+        value = server.get(field)
+        if value is None:
+            continue
+        if isinstance(value, str | int | float | bool):
+            contract[field] = value
+        elif isinstance(value, (list, tuple, set, frozenset)) and all(
+            isinstance(item, str | int | float | bool) for item in value
+        ):
+            items = list(value)
+            if field in _UNORDERED_MCP_FIELDS:
+                items.sort(key=lambda item: json.dumps(item, sort_keys=True))
+            contract[field] = items
+    env = server.get("env")
+    if isinstance(env, dict):
+        contract["env_keys"] = sorted(str(key) for key in env)
+    return contract
+
+
 # ── markdown frontmatter helpers ──────────────────────────────────────────────
 
 
@@ -215,19 +290,14 @@ class ResearchDirector:
             if public_models:
                 model_manifest["models"] = public_models
 
-        servers: list[dict[str, str]] = []
+        servers: list[dict[str, Any]] = []
         for server in self._mcp_servers or []:
             if not isinstance(server, dict):
                 continue
-            public = {
-                key: str(server[key])
-                for key in ("name", "command", "url")
-                if server.get(key) is not None
-            }
-            if public:
-                servers.append(public)
+            servers.append(_mcp_contract(server))
         tool_manifest = {
             "plugins_dir": str(Path(self._plugins_dir).resolve()) if self._plugins_dir else None,
+            "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
             "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
             "tool_policy": self._tool_policy.to_manifest()
             if self._tool_policy is not None
