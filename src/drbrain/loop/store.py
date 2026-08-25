@@ -616,6 +616,66 @@ class RunLedger:
             raise RunBudgetExceededError(exhaustion_message)
         return result
 
+    def release_budget(self, run_id: str, amounts: Mapping[str, int | float]) -> dict[str, Any]:
+        """Compensate an unexecuted reservation when setup fails before intent.
+
+        The release is deliberately append-only in the audit trail: it only
+        reduces counters committed by an earlier boundary reservation and never
+        changes a terminal run back to running.
+        """
+        normalized = {
+            str(kind): float(amount)
+            for kind, amount in amounts.items()
+            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+        }
+        if not normalized:
+            return self.budget_snapshot(run_id)
+        with self.transaction() as conn:
+            run = conn.execute(
+                "SELECT budget_json, created_at FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            row = conn.execute(
+                "SELECT usage_json, exhausted_at, exhausted_reason FROM research_budget_usage "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            usage = self._json_mapping(row["usage_json"] if row is not None else "{}")
+            for kind, amount in normalized.items():
+                usage[kind] = max(0.0, float(usage.get(kind, 0.0)) - amount)
+            usage["wall_seconds"] = max(0.0, time.time() - float(run["created_at"]))
+            now = time.time()
+            conn.execute(
+                """
+                INSERT INTO research_budget_usage(run_id, usage_json, exhausted_at, exhausted_reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    usage_json = excluded.usage_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    _as_json(usage),
+                    row["exhausted_at"] if row is not None else None,
+                    row["exhausted_reason"] if row is not None else None,
+                    now,
+                ),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="budget",
+                event_type="budget_released",
+                payload={"amounts": normalized, "usage": usage},
+            )
+            return {
+                "limits": self._json_mapping(run["budget_json"]),
+                "usage": usage,
+                "exhausted": row is not None and row["exhausted_at"] is not None,
+                "reason": str(row["exhausted_reason"] or "") if row is not None else "",
+            }
+
     def approval_decision(self, run_id: str, idempotency_key: str | None) -> str | None:
         """Return the operator decision applicable to one deterministic tool retry.
 

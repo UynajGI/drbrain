@@ -227,11 +227,13 @@ class ToolBroker:
                     error="operator approval was already consumed; a fresh approval is required",
                 )
 
+        amounts: dict[str, int | float] = {"tool_calls": 1}
+        if definition.source == "rag":
+            amounts["rag_calls"] = 1
+        reserved = False
         try:
-            amounts: dict[str, int | float] = {"tool_calls": 1}
-            if definition.source == "rag":
-                amounts["rag_calls"] = 1
             self._ledger.reserve_budget(self.run_id, amounts)
+            reserved = True
             self._ledger.record_tool_intent(
                 tool_call_id=tool_call_id,
                 run_id=self.run_id,
@@ -247,6 +249,8 @@ class ToolBroker:
                 lease_seconds=self.lease_seconds,
             )
         except (RunBudgetExceededError, RunExecutionBlockedError) as exc:
+            if reserved:
+                self._ledger.release_budget(self.run_id, amounts)
             if approval_claimed:
                 self._ledger.restore_approval(
                     run_id=self.run_id,
@@ -260,6 +264,8 @@ class ToolBroker:
                 execution_blocked=True,
             )
         except Exception:
+            if reserved:
+                self._ledger.release_budget(self.run_id, amounts)
             if approval_claimed:
                 self._ledger.restore_approval(
                     run_id=self.run_id,

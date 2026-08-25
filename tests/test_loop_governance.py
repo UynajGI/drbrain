@@ -283,6 +283,30 @@ def test_idempotent_replay_uses_cached_result_without_spending_budget(tmp_path):
     assert audit["budget"]["exhausted"] is False
 
 
+def test_intent_setup_failure_releases_its_unexecuted_tool_budget(tmp_path, monkeypatch):
+    ledger, run_id, broker = _running(tmp_path, budget={"max_tool_calls": 1})
+
+    def fail_before_intent(**_kwargs):
+        raise RuntimeError("ledger temporarily unavailable")
+
+    monkeypatch.setattr(ledger, "record_tool_intent", fail_before_intent)
+    with pytest.raises(RuntimeError, match="temporarily unavailable"):
+        asyncio.run(
+            broker.execute(
+                node_name="compute",
+                definition=_compute_tool(),
+                arguments={"job": "retryable"},
+                executor=lambda: {"unexpected": True},
+                approved=True,
+            )
+        )
+
+    audit = RunGovernance(ledger).audit_summary(run_id)
+    assert audit["budget"]["usage"]["tool_calls"] == 0
+    assert audit["budget"]["exhausted"] is False
+    assert "budget_released" in audit["event_types"]
+
+
 def test_model_budget_blocks_agent_before_it_is_called(tmp_path):
     ledger, run_id, _ = _running(tmp_path, budget={"max_model_calls": 0})
     invoked = False
@@ -337,6 +361,30 @@ def test_each_function_agent_turn_reserves_model_budget_before_calling_the_model
     budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
     assert budget["usage"]["model_calls"] == 2
     assert budget["exhausted"] is True
+
+
+def test_agent_without_turn_hook_reserves_its_worst_case_trajectory(tmp_path):
+    ledger, run_id, _ = _running(tmp_path, budget={"max_model_calls": 2})
+    invoked = False
+
+    class _OpaqueAgent:
+        def run(self, **_kwargs):
+            nonlocal invoked
+            invoked = True
+
+            async def result():
+                return type("Result", (), {"response": type("Response", (), {"content": "ok"})()})()
+
+            return result()
+
+    workflow = ResearchLoopWorkflow(
+        budget_reserver=lambda amounts: ledger.reserve_budget(run_id, amounts)
+    )
+    with pytest.raises(RunExecutionBlockedError):
+        asyncio.run(workflow.run_agent(_OpaqueAgent(), "pessimistic fallback", max_iterations=3))
+
+    assert invoked is False
+    assert RunGovernance(ledger).audit_summary(run_id)["budget"]["exhausted"] is True
 
 
 def test_cancel_revokes_the_active_lease_and_prevents_cycle_completion(tmp_path):
@@ -407,3 +455,16 @@ def test_director_stops_before_claiming_a_cycle_when_attempt_budget_is_exhausted
     assert state["cycles"] == 0
     assert control.status("budgeted topic")["status"] == "failed"
     assert control.audit_summary("budgeted topic")["budget"]["exhausted"] is True
+
+
+def test_director_accepts_unprefixed_budget_boundary_names(tmp_path):
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
+
+    state = asyncio.run(director.run("short budget", max_cycles=1, budget={"attempts": 0}))
+
+    ledger = RunLedger(tmp_path / "runs" / "ledger.sqlite3")
+    run = ledger.get_run("short budget")
+    assert run is not None
+    assert state["cycles"] == 0
+    assert run.budget["max_attempts"] == 0
+    assert run.status == "failed"

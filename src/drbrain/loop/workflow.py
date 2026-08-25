@@ -828,10 +828,11 @@ class ResearchLoopWorkflow(Workflow):
                 wrapped = True
             except (AttributeError, TypeError):
                 # Some third-party agents prohibit instance method shadowing.
-                # Keep their historic one-call contract as a conservative fallback.
-                await self._reserve_budget({"model_calls": 1})
+                # Reserve their worst-case trajectory rather than under-count a
+                # multi-turn implementation that bypasses ``take_step``.
+                await self._reserve_budget({"model_calls": max(1, int(max_iterations))})
         else:
-            await self._reserve_budget({"model_calls": 1})
+            await self._reserve_budget({"model_calls": max(1, int(max_iterations))})
         try:
             handler = agent.run(user_msg=user_msg, max_iterations=max(1, int(max_iterations)))
             result = await handler

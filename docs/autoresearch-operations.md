@@ -45,6 +45,9 @@ boundary.
 `ResearchDirector.run()` accepts an additive `budget=` mapping for a new run.
 Supported enforced limits are `max_attempts`, `max_tool_calls`,
 `max_rag_calls`, `max_model_calls`, and `max_wall_seconds`.
+The shorter boundary names (`attempts`, `tool_calls`, `rag_calls`,
+`model_calls`, and `wall_seconds`) are accepted as additive aliases and are
+stored canonically with the `max_` prefix.
 
 ```python
 await director.run(
