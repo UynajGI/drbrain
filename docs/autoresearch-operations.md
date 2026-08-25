@@ -82,6 +82,9 @@ they are never estimated from text. ToolBroker records
 CPU only for bounded synchronous adapters running in an isolated worker thread.
 A provider-reported CPU value takes precedence because it can attribute
 subprocess work more precisely, and GPU time must be reported by the plugin
-because the host cannot reliably attribute GPU work. If an observed amount crosses its
+because the host cannot reliably attribute GPU work. If a bounded synchronous
+adapter times out, its worker may continue after cancellation; the broker
+conservatively charges its timeout duration as a single-thread CPU upper bound,
+so retries cannot evade the CPU cap. If an observed amount crosses its
 limit, that completed boundary stays in the audit trace and the run becomes
 terminal before any later model, RAG, or tool boundary is admitted.

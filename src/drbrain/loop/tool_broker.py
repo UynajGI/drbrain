@@ -458,6 +458,7 @@ class ToolBroker:
         definition: ToolDefinition,
     ) -> _ExecutionOutcome:
         cpu_seconds = 0.0
+        timeout_seconds: float | None = None
         try:
             if definition.timeout_s is None:
                 result = executor()
@@ -468,15 +469,24 @@ class ToolBroker:
                 # an async one. Invoke it off-loop so the broker's timeout
                 # policy remains real; cancellation cannot stop the underlying
                 # side effect, which is why write timeouts settle as UNKNOWN.
-                timeout = max(0.001, definition.timeout_s)
+                timeout_seconds = max(0.001, definition.timeout_s)
                 result, cpu_seconds = await asyncio.wait_for(
-                    asyncio.to_thread(_call_with_thread_cpu, executor), timeout=timeout
+                    asyncio.to_thread(_call_with_thread_cpu, executor), timeout=timeout_seconds
                 )
                 if inspect.isawaitable(result):
-                    result = await asyncio.wait_for(result, timeout=timeout)
+                    result = await asyncio.wait_for(result, timeout=timeout_seconds)
             outcome = _normalize_result(result)
         except TimeoutError as exc:
-            outcome = _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
+            # Cancellation cannot stop ``to_thread`` work. Its exact CPU time
+            # is no longer observable, but one worker thread cannot consume
+            # more CPU than its elapsed timeout; debit that conservative upper
+            # bound so retries cannot evade the CPU budget with timeouts.
+            timed_out_cpu = max(cpu_seconds, timeout_seconds or 0.0)
+            outcome = _ExecutionOutcome(
+                ToolCallStatus.TIMED_OUT,
+                error=str(exc) or "tool timeout",
+                resource_usage={"cpu_seconds": timed_out_cpu} if timed_out_cpu else {},
+            )
         except Exception as exc:  # noqa: BLE001 - normalize arbitrary tool failures
             outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
         resource_usage = _normalize_resource_usage(outcome.resource_usage)
