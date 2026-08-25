@@ -65,6 +65,7 @@ class Comment:
     content: str = ""
     score: float | None = None
     verdict: str | None = None
+    comment_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +73,7 @@ class Comment:
             "content": self.content,
             "score": self.score,
             "verdict": self.verdict,
+            "comment_id": self.comment_id,
         }
 
     @classmethod
@@ -81,6 +83,7 @@ class Comment:
             content=str(d.get("content", "")),
             score=d.get("score"),
             verdict=d.get("verdict"),
+            comment_id=str(d.get("comment_id", "")),
         )
 
 
@@ -129,12 +132,21 @@ class MessageBoard:
         self._order: list[str] = []  # insertion order for list_posts
         self._lock = threading.Lock()
 
-    def post(self, post_type: str, author: str, content: str) -> str:
-        """Create a post and return its id."""
+    def post(self, post_type: str, author: str, content: str, *, post_id: str | None = None) -> str:
+        """Create a post and return its id, replaying a supplied idempotently."""
         if post_type not in POST_TYPES:
             raise ValueError(f"unknown post type {post_type!r}; expected one of {POST_TYPES}")
-        pid = uuid.uuid4().hex[:12]
+        pid = post_id or uuid.uuid4().hex[:12]
         with self._lock:
+            existing = self._posts.get(pid)
+            if existing is not None:
+                if (
+                    existing.post_type != post_type
+                    or existing.author != author
+                    or existing.content != content
+                ):
+                    raise ValueError("stable post_id conflicts with the existing post")
+                return pid
             self._posts[pid] = Post(id=pid, post_type=post_type, author=author, content=content)
             self._order.append(pid)
         return pid
@@ -146,14 +158,24 @@ class MessageBoard:
         content: str,
         score: float | None = None,
         verdict: str | None = None,
+        *,
+        comment_id: str | None = None,
     ) -> None:
         """Append a comment to ``post_id`` (no-op if the post is unknown)."""
         with self._lock:
             post = self._posts.get(post_id)
             if post is None:
                 return
+            if comment_id and any(comment.comment_id == comment_id for comment in post.comments):
+                return
             post.comments.append(
-                Comment(author=author, content=content, score=score, verdict=verdict)
+                Comment(
+                    author=author,
+                    content=content,
+                    score=score,
+                    verdict=verdict,
+                    comment_id=comment_id or "",
+                )
             )
 
     def get_post(self, post_id: str) -> Post | None:
@@ -276,8 +298,25 @@ class ResearchQueue:
 
     def add(self, item: QueueItem) -> None:
         with self._lock:
+            if item.id in self._claims:
+                return
+            for index, pending in enumerate(self._pending):
+                if pending.id != item.id:
+                    continue
+                if pending.to_dict() != item.to_dict():
+                    self._pending[index] = item
+                    self._version += 1
+                return
             self._pending.append(item)
             self._version += 1
+
+    def remove_pending(self, item_id: str) -> None:
+        """Remove a no-longer-eligible pending item without touching active claims."""
+        with self._lock:
+            original_size = len(self._pending)
+            self._pending = [item for item in self._pending if item.id != item_id]
+            if len(self._pending) != original_size:
+                self._version += 1
 
     def claim(self, agent_name: str) -> QueueItem | None:
         """Claim the first non-``discussion_pending`` item, or ``None``.
