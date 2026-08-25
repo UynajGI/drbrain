@@ -206,6 +206,43 @@ async def test_graph_tool_executes_through_execute_tool():
     assert isinstance(json.loads(out2.content), list)
 
 
+async def test_brokered_graph_tool_uses_step_policy_and_control_plane():
+    """The additive broker hook wraps graph execution without changing legacy tools."""
+    from drbrain.loop.policy import ToolPolicy
+    from drbrain.loop.tool_broker import ToolCallStatus, ToolObservation
+
+    class RecordingBroker:
+        policy = ToolPolicy(step_capabilities={"retrieve": {"graph:read"}})
+
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, **kwargs):
+            self.calls.append(kwargs)
+            return ToolObservation(
+                tool_call_id="tool-call",
+                status=ToolCallStatus.SUCCEEDED,
+                output=kwargs["executor"](),
+            )
+
+    broker = RecordingBroker()
+    agent = build_agent(
+        _cfg(),
+        db=None,
+        graph=None,
+        tool_broker=broker,
+        workflow_step="retrieve",
+    )
+    assert agent is not None
+    out = await next(t for t in agent.tools if t.metadata.name == "search_concepts").acall(
+        query="nothing"
+    )
+
+    assert json.loads(out.content) == []
+    assert broker.calls[0]["node_name"] == "retrieve"
+    assert broker.calls[0]["definition"].source == "graph"
+
+
 # ── AgentFunctionLLM glue ───────────────────────────────────────────────────
 
 

@@ -338,7 +338,80 @@ def _schema_to_model(name: str, schema: dict) -> Any:
 # ── graph tools: FunctionTool wrappers over execute_tool ────────────────────
 
 
-def _make_graph_tool(name: str, db: Any, graph: Any, papers_dir: Path | None) -> Any:
+def _resolve_durable_policy(tool_broker: Any, tool_policy: Any) -> Any | None:
+    """Return the policy for a brokered agent without importing loop at module load.
+
+    ``drbrain.loop.__init__`` exports the workflow and in turn references this
+    module, so importing its policy types here would create an import cycle.
+    Runtime broker use happens after both packages have initialized.
+    """
+    if tool_broker is None:
+        return None
+    policy = tool_policy if tool_policy is not None else getattr(tool_broker, "policy", None)
+    if policy is None:
+        raise ValueError("tool_broker requires a ToolPolicy")
+    return policy
+
+
+def _durable_tool_definition(
+    *,
+    name: str,
+    source: str,
+    input_schema: dict[str, Any],
+    side_effect: str = "read",
+    required_capabilities: tuple[str, ...],
+    code_digest: str = "",
+    version: str = "",
+    resource_scope: dict[str, Any] | None = None,
+    secret_refs: tuple[str, ...] = (),
+    max_output_bytes: int | None = None,
+    cost_hint: float | None = None,
+    supports_idempotency: bool = False,
+    supports_reconcile: bool = False,
+    supports_cancel: bool = False,
+    sandbox_profile: str = "",
+    approval_policy: str = "default",
+    trusted: bool = False,
+    allowed_tools: tuple[str, ...] = (),
+    timeout_s: float | None = None,
+) -> Any:
+    """Build a loop ``ToolDefinition`` lazily to avoid a package import cycle."""
+    from drbrain.loop.policy import ToolDefinition
+
+    known_effects = {"pure", "read", "write", "irreversible", "unspecified"}
+    return ToolDefinition(
+        name=name,
+        source=source,
+        input_schema=input_schema,
+        side_effect=side_effect if side_effect in known_effects else "unspecified",
+        required_capabilities=required_capabilities,
+        code_digest=code_digest,
+        version=version,
+        resource_scope=resource_scope or {},
+        secret_refs=secret_refs,
+        max_output_bytes=max_output_bytes,
+        cost_hint=cost_hint,
+        supports_idempotency=supports_idempotency,
+        supports_reconcile=supports_reconcile,
+        supports_cancel=supports_cancel,
+        sandbox_profile=sandbox_profile,
+        approval_policy=approval_policy,
+        trusted=trusted,
+        allowed_tools=allowed_tools,
+        timeout_s=timeout_s,
+    )
+
+
+def _make_graph_tool(
+    name: str,
+    db: Any,
+    graph: Any,
+    papers_dir: Path | None,
+    *,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> Any | None:
     """Build one ``FunctionTool`` backed by ``agent_tools.execute_tool``.
 
     ``execute_tool(name, args, db=, graph=, papers_dir=)`` dispatches to the
@@ -348,8 +421,35 @@ def _make_graph_tool(name: str, db: Any, graph: Any, papers_dir: Path | None) ->
     """
     spec = CANONICAL_TOOL_SPECS[name]
     fn_spec = spec["function"]
+    definition = None
+    if tool_broker is not None:
+        if not workflow_step:
+            raise ValueError("brokered graph tools require workflow_step")
+        definition = _durable_tool_definition(
+            name=name,
+            source="graph",
+            input_schema=fn_spec["parameters"],
+            side_effect="read",
+            required_capabilities=("graph:read",),
+        )
+        if tool_policy is None or not tool_policy.is_visible(
+            node_name=workflow_step, definition=definition
+        ):
+            return None
 
     async def _exec(**kwargs: Any) -> str:
+        if tool_broker is not None:
+            assert definition is not None
+            assert workflow_step is not None
+            observation = await tool_broker.execute(
+                node_name=workflow_step,
+                definition=definition,
+                arguments=kwargs,
+                executor=lambda: execute_tool(
+                    name, kwargs, db=db, graph=graph, papers_dir=papers_dir
+                ),
+            )
+            return observation.to_llm_message()
         result = execute_tool(name, kwargs, db=db, graph=graph, papers_dir=papers_dir)
         return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -361,7 +461,14 @@ def _make_graph_tool(name: str, db: Any, graph: Any, papers_dir: Path | None) ->
     )
 
 
-def _make_validate_tool(db: Any, graph: Any) -> Any | None:
+def _make_validate_tool(
+    db: Any,
+    graph: Any,
+    *,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> Any | None:
     """Optional ``kg_validate`` tool (T9 decision: ADD as the 8th tool).
 
     ``kg_validate`` is drbrain's KG-consistency check (TBox/RBox violations +
@@ -377,7 +484,45 @@ def _make_validate_tool(db: Any, graph: Any) -> Any | None:
         return None
     from drbrain.extractor.agent_tools import kg_validate
 
+    schema = {
+        "type": "object",
+        "properties": {
+            "hypothesis": {
+                "type": "string",
+                "description": "The hypothesis text to validate against the KG",
+            }
+        },
+        "required": ["hypothesis"],
+    }
+    definition = None
+    if tool_broker is not None:
+        if not workflow_step:
+            raise ValueError("brokered graph tools require workflow_step")
+        definition = _durable_tool_definition(
+            name="kg_validate",
+            source="graph",
+            input_schema=schema,
+            side_effect="read",
+            required_capabilities=("graph:read",),
+        )
+        if tool_policy is None or not tool_policy.is_visible(
+            node_name=workflow_step, definition=definition
+        ):
+            return None
+
     async def _validate(**kwargs: Any) -> str:
+        if tool_broker is not None:
+            assert definition is not None
+            assert workflow_step is not None
+            observation = await tool_broker.execute(
+                node_name=workflow_step,
+                definition=definition,
+                arguments=kwargs,
+                executor=lambda: kg_validate(
+                    str(kwargs.get("hypothesis") or ""), db=db, graph=graph
+                ),
+            )
+            return observation.to_llm_message()
         result = kg_validate(str(kwargs.get("hypothesis") or ""), db=db, graph=graph)
         return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -390,23 +535,19 @@ def _make_validate_tool(db: Any, graph: Any) -> Any | None:
             "debates and gaps). Call this after forming a conclusion to verify "
             "it is supported by the graph."
         ),
-        fn_schema=_schema_to_model(
-            "kg_validate",
-            {
-                "type": "object",
-                "properties": {
-                    "hypothesis": {
-                        "type": "string",
-                        "description": "The hypothesis text to validate against the KG",
-                    }
-                },
-                "required": ["hypothesis"],
-            },
-        ),
+        fn_schema=_schema_to_model("kg_validate", schema),
     )
 
 
-def _build_retrieval_tool(cfg: Config, db: Any, graph: Any) -> Any | None:
+def _build_retrieval_tool(
+    cfg: Config,
+    db: Any,
+    graph: Any,
+    *,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> Any | None:
     """Optional fused-retrieval tool (``search_documents``) over LlamaIndex legs.
 
     Only registered when the LlamaIndex index/legs actually exist on disk —
@@ -415,6 +556,31 @@ def _build_retrieval_tool(cfg: Config, db: Any, graph: Any) -> Any | None:
     and the agent keeps the 8 graph tools. Any failure is swallowed (the tool
     is a bonus, never a blocker).
     """
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Question or keywords to search in the indexed corpus",
+            }
+        },
+        "required": ["query"],
+    }
+    definition = None
+    if tool_broker is not None:
+        if not workflow_step:
+            raise ValueError("brokered retrieval tools require workflow_step")
+        definition = _durable_tool_definition(
+            name="search_documents",
+            source="rag",
+            input_schema=schema,
+            side_effect="read",
+            required_capabilities=("rag:read",),
+        )
+        if tool_policy is None or not tool_policy.is_visible(
+            node_name=workflow_step, definition=definition
+        ):
+            return None
     try:
         from llama_index.core.schema import QueryBundle
 
@@ -437,8 +603,7 @@ def _build_retrieval_tool(cfg: Config, db: Any, graph: Any) -> Any | None:
         log.warning("[rag] retrieval tool unavailable (%s); keeping 8 graph tools", exc)
         return None
 
-    async def _search(**kwargs: Any) -> str:
-        query = kwargs.get("query", "")
+    def _search_rows(query: str) -> list[dict[str, Any]]:
         nodes = fused.retrieve(QueryBundle(query_str=query))
         rows = []
         for nws in nodes[:5]:
@@ -453,7 +618,21 @@ def _build_retrieval_tool(cfg: Config, db: Any, graph: Any) -> Any | None:
                     "text": (nws.node.get_content() or "")[:500],
                 }
             )
-        return json.dumps(rows, ensure_ascii=False, default=str)
+        return rows
+
+    async def _search(**kwargs: Any) -> str:
+        query = str(kwargs.get("query", ""))
+        if tool_broker is not None:
+            assert definition is not None
+            assert workflow_step is not None
+            observation = await tool_broker.execute(
+                node_name=workflow_step,
+                definition=definition,
+                arguments=kwargs,
+                executor=lambda: _search_rows(query),
+            )
+            return observation.to_llm_message()
+        return json.dumps(_search_rows(query), ensure_ascii=False, default=str)
 
     return FunctionTool.from_defaults(
         fn=_search,
@@ -462,6 +641,7 @@ def _build_retrieval_tool(cfg: Config, db: Any, graph: Any) -> Any | None:
             "Search papers and sections via fused BM25 + vector retrieval over the "
             "LlamaIndex index (paper_id/node_id/title + section text)."
         ),
+        fn_schema=_schema_to_model("search_documents", schema),
     )
 
 
@@ -598,7 +778,13 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
 # ── agent assembly ──────────────────────────────────────────────────────────
 
 
-def _load_plugin_tools(plugins_dir: str | Path) -> list:
+def _load_plugin_tools(
+    plugins_dir: str | Path,
+    *,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> list:
     """Discover plugins from ``plugins_dir`` and bridge them to LlamaIndex tools.
 
     Graceful by design: any discovery/bridge failure returns ``[]`` so the
@@ -613,12 +799,169 @@ def _load_plugin_tools(plugins_dir: str | Path) -> list:
     try:
         registry = PluginRegistry()
         n = registry.discover(plugins_dir)
-        tools = registry.to_llamaindex_tools()
+        if tool_broker is None:
+            tools = registry.to_llamaindex_tools()
+        else:
+            if not workflow_step:
+                raise ValueError("brokered plugin tools require workflow_step")
+
+            def _definition(plugin: Any) -> Any:
+                capabilities = tuple(plugin.required_capabilities) or (f"plugin:{plugin.name}",)
+                resource_scope = dict(plugin.resource_scope)
+                if plugin.resource:
+                    resource_scope.setdefault("resource", plugin.resource)
+                return _durable_tool_definition(
+                    name=plugin.name,
+                    source="plugin",
+                    input_schema=plugin.input_schema,
+                    side_effect=plugin.side_effect,
+                    required_capabilities=capabilities,
+                    code_digest=plugin.code_digest,
+                    version=plugin.version,
+                    resource_scope=resource_scope,
+                    secret_refs=tuple(plugin.secret_refs),
+                    max_output_bytes=plugin.max_output_bytes,
+                    cost_hint=plugin.cost_hint,
+                    supports_idempotency=plugin.supports_idempotency,
+                    supports_reconcile=plugin.supports_reconcile,
+                    supports_cancel=plugin.supports_cancel,
+                    sandbox_profile=plugin.sandbox_profile,
+                    approval_policy=plugin.approval_policy,
+                    timeout_s=plugin.timeout_s,
+                )
+
+            def _include(plugin: Any) -> bool:
+                return tool_policy is not None and tool_policy.is_visible(
+                    node_name=workflow_step, definition=_definition(plugin)
+                )
+
+            async def _brokered_call(plugin: Any, arguments: dict[str, Any]) -> str:
+                observation = await tool_broker.execute(
+                    node_name=workflow_step,
+                    definition=_definition(plugin),
+                    arguments=arguments,
+                    executor=lambda: registry.call(plugin.name, arguments),
+                )
+                return observation.to_llm_message()
+
+            tools = registry.to_llamaindex_tools(
+                call_override=_brokered_call,
+                include=_include,
+            )
         log.info("[rag] loaded %d plugin(s) from %s → %d tool(s)", n, plugins_dir, len(tools))
         return tools
     except Exception as exc:  # noqa: BLE001 — plugin failure must not break assembly
         log.warning("[rag] plugin discovery failed for %s: %s", plugins_dir, exc)
         return []
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    """Normalize host-owned list metadata without exposing arbitrary objects."""
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> Any:
+    """Map a trusted MCP descriptor onto the same durable tool contract."""
+    tool_name = str(descriptor.get("name") or "").strip()
+    server_id = str(server.get("id") or server.get("name") or server.get("command") or "mcp")
+    raw_schema = descriptor.get("inputSchema")
+    schema = dict(raw_schema) if isinstance(raw_schema, dict) else {}
+    capabilities = _string_tuple(server.get("required_capabilities"))
+    if not capabilities:
+        capabilities = (f"mcp:{server_id}:{tool_name}",)
+    raw_timeout = server.get("timeout_seconds")
+    try:
+        timeout_s = (
+            float(raw_timeout)
+            if raw_timeout is not None and not isinstance(raw_timeout, bool)
+            else None
+        )
+    except (TypeError, ValueError):
+        timeout_s = None
+    return _durable_tool_definition(
+        name=tool_name,
+        source="mcp",
+        input_schema=schema,
+        side_effect=str(server.get("side_effect") or "unspecified"),
+        required_capabilities=capabilities,
+        code_digest=str(server.get("code_digest") or ""),
+        version=str(server.get("version") or ""),
+        resource_scope={"server_id": server_id},
+        secret_refs=_string_tuple(server.get("secret_refs")),
+        max_output_bytes=(
+            int(server["max_output_bytes"])
+            if isinstance(server.get("max_output_bytes"), int)
+            and not isinstance(server.get("max_output_bytes"), bool)
+            else None
+        ),
+        cost_hint=(
+            float(server["cost_hint"])
+            if isinstance(server.get("cost_hint"), int | float)
+            and not isinstance(server.get("cost_hint"), bool)
+            else None
+        ),
+        supports_idempotency=server.get("supports_idempotency") is True,
+        supports_reconcile=server.get("supports_reconcile") is True,
+        supports_cancel=server.get("supports_cancel") is True,
+        sandbox_profile=str(server.get("sandbox_profile") or ""),
+        approval_policy=str(server.get("approval_policy") or "default"),
+        trusted=server.get("trusted") is True,
+        allowed_tools=_string_tuple(server.get("allowed_tools")),
+        timeout_s=timeout_s,
+    )
+
+
+def _load_mcp_tools(
+    mcp_servers: list[dict[str, Any]],
+    *,
+    require_trusted: bool,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> list:
+    """Load MCP tools directly or through the broker, preserving legacy defaults."""
+    from drbrain.rag.mcp_tools import call_mcp_tool, load_mcp_tools
+
+    if tool_broker is None:
+        return load_mcp_tools(mcp_servers, require_trusted=require_trusted)
+    if not workflow_step:
+        raise ValueError("brokered MCP tools require workflow_step")
+
+    def _include(server: dict[str, Any], descriptor: dict[str, Any]) -> bool:
+        return tool_policy is not None and tool_policy.is_visible(
+            node_name=workflow_step,
+            definition=_mcp_tool_definition(server, descriptor),
+        )
+
+    async def _brokered_call(
+        server: dict[str, Any],
+        descriptor: dict[str, Any],
+        arguments: dict[str, Any],
+        trusted: bool,
+    ) -> str:
+        observation = await tool_broker.execute(
+            node_name=workflow_step,
+            definition=_mcp_tool_definition(server, descriptor),
+            arguments=arguments,
+            executor=lambda: call_mcp_tool(
+                server,
+                str(descriptor["name"]),
+                arguments,
+                require_trusted=trusted,
+            ),
+        )
+        return observation.to_llm_message()
+
+    return load_mcp_tools(
+        mcp_servers,
+        require_trusted=True,
+        call_override=_brokered_call,
+        include=_include,
+    )
 
 
 def build_agent(
@@ -634,6 +977,9 @@ def build_agent(
     plugins_dir: str | Path | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     require_trusted_mcp: bool = False,
+    tool_broker: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
 ) -> Any | None:
     """Assemble the LlamaIndex :class:`FunctionAgent`.
 
@@ -645,27 +991,73 @@ def build_agent(
     unavailable (callers fall back to legacy). ``session_id`` is accepted for
     interface parity; history read/restore happens in
     :func:`reason_llamaindex` via :func:`load_session_history`.
+
+    ``tool_broker`` is an additive durable-loop hook. When present,
+    ``workflow_step`` selects a policy-filtered surface and every exposed tool
+    runs through the broker; absent it, construction and direct execution keep
+    their historic behavior.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         return None
     cfg = _coerce_cfg(cfg)
     papers_dir = _resolve_papers_dir(cfg, db)
+    policy = _resolve_durable_policy(tool_broker, tool_policy)
+    if tool_broker is not None and not workflow_step:
+        raise ValueError("brokered agents require workflow_step")
 
-    tools = [_make_graph_tool(name, db, graph, papers_dir) for name in GRAPH_TOOL_NAMES]
+    tools = []
+    for name in GRAPH_TOOL_NAMES:
+        graph_tool = _make_graph_tool(
+            name,
+            db,
+            graph,
+            papers_dir,
+            tool_broker=tool_broker,
+            tool_policy=policy,
+            workflow_step=workflow_step,
+        )
+        if graph_tool is not None:
+            tools.append(graph_tool)
     # T9: kg_validate (KG consistency check) as the 8th tool, only with a graph.
-    vt = _make_validate_tool(db, graph)
+    vt = _make_validate_tool(
+        db,
+        graph,
+        tool_broker=tool_broker,
+        tool_policy=policy,
+        workflow_step=workflow_step,
+    )
     if vt is not None:
         tools.append(vt)
     if include_retrieval:
-        rt = _build_retrieval_tool(cfg, db, graph)
+        rt = _build_retrieval_tool(
+            cfg,
+            db,
+            graph,
+            tool_broker=tool_broker,
+            tool_policy=policy,
+            workflow_step=workflow_step,
+        )
         if rt is not None:
             tools.append(rt)
     if plugins_dir:
-        tools.extend(_load_plugin_tools(plugins_dir))
+        tools.extend(
+            _load_plugin_tools(
+                plugins_dir,
+                tool_broker=tool_broker,
+                tool_policy=policy,
+                workflow_step=workflow_step,
+            )
+        )
     if mcp_servers:
-        from drbrain.rag.mcp_tools import load_mcp_tools
-
-        tools.extend(load_mcp_tools(mcp_servers, require_trusted=require_trusted_mcp))
+        tools.extend(
+            _load_mcp_tools(
+                mcp_servers,
+                require_trusted=require_trusted_mcp,
+                tool_broker=tool_broker,
+                tool_policy=policy,
+                workflow_step=workflow_step,
+            )
+        )
 
     system_prompt = BASE_SYSTEM_PROMPT
     if closure_context:

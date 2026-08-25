@@ -53,6 +53,8 @@ from drbrain.loop.events import (
     Verification,
     Verified,
 )
+from drbrain.loop.policy import ToolDefinition, ToolPolicy
+from drbrain.loop.tool_broker import ToolBroker
 
 _STATE_KEY = "research_state"
 MAX_RETRIEVE_ATTEMPTS = 3
@@ -273,6 +275,8 @@ class ResearchLoopWorkflow(Workflow):
         graph: Any = None,
         timeout: float | None = 600.0,
         n_critics: int = DEFAULT_N_CRITICS,
+        tool_broker: ToolBroker | None = None,
+        tool_policy: ToolPolicy | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -285,6 +289,12 @@ class ResearchLoopWorkflow(Workflow):
         self._cfg = cfg
         self._db = db
         self._graph = graph
+        self._tool_broker = tool_broker
+        self._tool_policy = (
+            tool_policy
+            if tool_policy is not None
+            else (tool_broker.policy if tool_broker is not None else None)
+        )
         self._plugin_registry: Any = None
         # Discussion layer: an in-process message board + research queue shared
         # by the analyst/critic/compute nodes within this single run.
@@ -337,7 +347,34 @@ class ResearchLoopWorkflow(Workflow):
                 self._plugin_registry.discover(self._plugins_dir)
         return self._plugin_registry
 
-    def _direct_search(self, query: str, limit: int = 10) -> list[str]:
+    @staticmethod
+    def _plugin_definition(plugin: Any) -> ToolDefinition:
+        """Project additive plugin metadata into the durable tool contract."""
+        capabilities = tuple(plugin.required_capabilities) or (f"plugin:{plugin.name}",)
+        resource_scope = dict(plugin.resource_scope)
+        if plugin.resource:
+            resource_scope.setdefault("resource", plugin.resource)
+        return ToolDefinition(
+            name=plugin.name,
+            source="plugin",
+            input_schema=plugin.input_schema,
+            side_effect=plugin.side_effect,
+            required_capabilities=capabilities,
+            code_digest=plugin.code_digest,
+            version=plugin.version,
+            resource_scope=resource_scope,
+            secret_refs=tuple(plugin.secret_refs),
+            max_output_bytes=plugin.max_output_bytes,
+            cost_hint=plugin.cost_hint,
+            supports_idempotency=plugin.supports_idempotency,
+            supports_reconcile=plugin.supports_reconcile,
+            supports_cancel=plugin.supports_cancel,
+            sandbox_profile=plugin.sandbox_profile,
+            approval_policy=plugin.approval_policy,
+            timeout_s=plugin.timeout_s,
+        )
+
+    async def _direct_search(self, query: str, limit: int = 10) -> list[str]:
         """Deterministic candidate fetch via the local KG ``search_papers`` plugin.
 
         Used as the reliable path in :meth:`retrieve`: the agent distills the
@@ -347,7 +384,20 @@ class ResearchLoopWorkflow(Workflow):
         """
         registry = self.load_plugins()
         try:
-            result = registry.call("search_papers", {"query": query, "limit": limit})
+            arguments = {"query": query, "limit": limit}
+            if self._tool_broker is not None:
+                plugin = registry.get("search_papers")
+                observation = await self._tool_broker.execute(
+                    node_name="retrieve",
+                    definition=self._plugin_definition(plugin),
+                    arguments=arguments,
+                    executor=lambda: registry.call("search_papers", arguments),
+                )
+                if not observation.ok or not isinstance(observation.output, dict):
+                    return []
+                papers = observation.output.get("papers", []) or []
+                return [str(p.get("title", "")).strip() for p in papers if p.get("title")]
+            result = registry.call("search_papers", arguments)
         except Exception:  # noqa: BLE001 — plugin absence must not break the loop
             return []
         if not getattr(result, "ok", False) or not isinstance(getattr(result, "data", None), dict):
@@ -440,13 +490,21 @@ class ResearchLoopWorkflow(Workflow):
 
         return "\n".join(lines)
 
-    def build_node_agent(self, *, plugins_dir: str | None = None, role: str | None = None) -> Any:
-        """Assemble the loop's :class:`FunctionAgent` with the full tool surface.
+    def build_node_agent(
+        self,
+        *,
+        plugins_dir: str | None = None,
+        role: str | None = None,
+        step_name: str | None = None,
+    ) -> Any:
+        """Assemble one node's :class:`FunctionAgent`.
 
         Reuses :func:`drbrain.rag.agent.build_agent` (7 graph tools + fused
         retrieval + external plugins). Returns ``None`` when no config is
         supplied or llama-index is unavailable — callers must not assume an
-        agent is always present.
+        agent is always present. When a :class:`ToolBroker` is attached,
+        ``step_name`` selects the policy-filtered tool surface; legacy runs keep
+        the historic full surface.
 
         ``role`` (T1) swaps in a role-differentiated system prompt (analyst /
         critic / verifier) instead of the generic assistant template; ``None``
@@ -463,6 +521,9 @@ class ResearchLoopWorkflow(Workflow):
             graph=self._graph,
             plugins_dir=plugins_dir if plugins_dir is not None else self._plugins_dir,
             mcp_servers=self._mcp_servers,
+            tool_broker=self._tool_broker,
+            tool_policy=self._tool_policy,
+            workflow_step=step_name,
         )
         if agent is not None and role:
             from drbrain.loop.roles import ROLE_SYSTEM_PROMPTS
@@ -483,7 +544,17 @@ class ResearchLoopWorkflow(Workflow):
         """
         names: list[str] = []
         try:
-            names += [p.name for p in self.load_plugins().list_plugins()]
+            plugins = self.load_plugins().list_plugins()
+            if self._tool_broker is not None and self._tool_policy is not None:
+                plugins = [
+                    plugin
+                    for plugin in plugins
+                    if self._tool_policy.is_visible(
+                        node_name="compute",
+                        definition=self._plugin_definition(plugin),
+                    )
+                ]
+            names += [plugin.name for plugin in plugins]
         except Exception:  # noqa: BLE001 — capability probe must never break a node
             pass
         if agent is not None:
@@ -580,7 +651,7 @@ class ResearchLoopWorkflow(Workflow):
         # to re-run the agent on RetrieveAgain (the loop bounds the re-runs).
         if state.task:
             query = state.task
-            agent = self.build_node_agent()
+            agent = self.build_node_agent(step_name="retrieve")
             if agent is not None:
                 q = await self.run_agent_json(
                     agent,
@@ -592,7 +663,7 @@ class ResearchLoopWorkflow(Workflow):
                     query = str(q["query"]).strip()
                 else:
                     query = self._fallback_query(state.task)
-            candidates = self._direct_search(query)
+            candidates = await self._direct_search(query)
         state.candidates = candidates
         state.retrieve_candidates = candidates
         await self._set_state(ctx, state)
@@ -622,7 +693,7 @@ class ResearchLoopWorkflow(Workflow):
     async def extract(self, ctx: Context, ev: Parsed) -> Extracted:
         state = await self._get_state(ctx)
         entities = list(state.entities)
-        agent = self.build_node_agent()
+        agent = self.build_node_agent(step_name="extract")
         if agent is not None and ev.docs:
             data = await self.run_agent_json(
                 agent,
@@ -674,7 +745,7 @@ class ResearchLoopWorkflow(Workflow):
         # agent-backed: the ANALYST role (T1) derives falsifiable hypotheses from
         # the retrieved candidates, the extracted entities and the prior context —
         # never in the abstract (ROLE-ANALYST Step 1: audit results, then induct).
-        agent = self.build_node_agent(role="analyst")
+        agent = self.build_node_agent(role="analyst", step_name="identify_gaps")
         if agent is not None:
             prior = state.prior_context
             context_line = (
@@ -781,7 +852,7 @@ class ResearchLoopWorkflow(Workflow):
             await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "critic"
         )
         critic_names = [f"critic-{i + 1}" for i in range(self._n_critics)]
-        agents = [self.build_node_agent(role="critic") for _ in critic_names]
+        agents = [self.build_node_agent(role="critic", step_name="critique") for _ in critic_names]
         pairs = [(name, agent) for name, agent in zip(critic_names, agents) if agent is not None]
         if pairs and ev.hypotheses:
             results = await asyncio.gather(
@@ -894,7 +965,7 @@ class ResearchLoopWorkflow(Workflow):
         comment gate). ``discussion_pending`` items are never claimable —
         mirroring ROLE-GPU Step 3's refusal to run an undiscussed proposal.
         """
-        agent = self.build_node_agent(role="compute")
+        agent = self.build_node_agent(role="compute", step_name="compute")
         candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
         if agent is not None and self._has_compute_tools(agent):
             # Claim every queued, discussed hypothesis. Each claim is atomic
@@ -945,7 +1016,7 @@ class ResearchLoopWorkflow(Workflow):
         falsified = list(state.falsified)
         predictions = list(state.predictions)
         verifications = list(state.verifications)
-        agent = self.build_node_agent(role="verifier")
+        agent = self.build_node_agent(role="verifier", step_name="verify")
         handled = False
         if agent is not None and candidates:
             has_compute = self._has_compute_tools(agent)
@@ -1125,7 +1196,7 @@ class ResearchLoopWorkflow(Workflow):
             f"verified={len(state.verified)}; falsified={len(state.falsified)}"
         )
         report = self._build_template_report(state)
-        agent = self.build_node_agent()
+        agent = self.build_node_agent(step_name="report")
         if agent is not None:
             text = await self.run_agent(
                 agent,

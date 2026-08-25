@@ -33,7 +33,9 @@ from drbrain.loop.checkpointing import (
     WorkflowCheckpointService,
 )
 from drbrain.loop.events import ResearchState
+from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.store import LedgerEvent, RunLedger
+from drbrain.loop.tool_broker import ToolBroker
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
     CRITIQUE_DISCARD_SCORE,
@@ -137,6 +139,7 @@ class ResearchDirector:
         run_dir: str | Path = "workspace/autoresearch",
         n_critics: int = 3,
         lease_seconds: float = 900.0,
+        tool_policy: ToolPolicy | None = None,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -146,6 +149,7 @@ class ResearchDirector:
         self._run_dir = Path(run_dir)
         self._n_critics = max(1, int(n_critics))
         self._lease_seconds = max(1.0, float(lease_seconds))
+        self._tool_policy = tool_policy
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
@@ -225,6 +229,9 @@ class ResearchDirector:
         tool_manifest = {
             "plugins_dir": str(Path(self._plugins_dir).resolve()) if self._plugins_dir else None,
             "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
+            "tool_policy": self._tool_policy.to_manifest()
+            if self._tool_policy is not None
+            else None,
         }
         return CheckpointManifest(
             workflow_version="research-loop-v1",
@@ -800,6 +807,20 @@ class ResearchDirector:
         prior_champion: list[str] | None = None,
         prior_rejected: list[str] | None = None,
     ) -> tuple[str, ResearchState | None]:
+        checkpoint = self._active_checkpoint
+        tool_broker = None
+        if self._tool_policy is not None:
+            if checkpoint is None:
+                raise RuntimeError("durable tool policy requires an active checkpoint attempt")
+            tool_broker = ToolBroker(
+                ledger=checkpoint.ledger,
+                run_id=checkpoint.run_id,
+                step_id=checkpoint.step_id,
+                attempt_id=checkpoint.attempt_id,
+                worker_id=checkpoint.worker_id,
+                lease_seconds=checkpoint.lease_seconds,
+                policy=self._tool_policy,
+            )
         wf = ResearchLoopWorkflow(
             cfg=self._cfg,
             db=self._db,
@@ -810,8 +831,9 @@ class ResearchDirector:
             # Per-run job dir (not process-global env): concurrent directors on
             # different topics keep their own compute evidence (review P1).
             jobs_dir=str(self._topic_dir(topic) / "jobs"),
+            tool_broker=tool_broker,
+            tool_policy=self._tool_policy,
         )
-        checkpoint = self._active_checkpoint
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it
             # does not invent a new StartEvent or rerun successful prior nodes.

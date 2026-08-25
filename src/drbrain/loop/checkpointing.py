@@ -91,6 +91,11 @@ class WorkflowCheckpointService:
         self.lease_seconds = lease_seconds
         self.checkpoint = checkpoint
 
+    @property
+    def ledger(self) -> RunLedger:
+        """Expose the leased ledger to additive control-plane integrations."""
+        return self._ledger
+
     def capture(self, *, ctx: Any, workflow: Any, step_name: str) -> LedgerCheckpoint:
         """Persist a safe Context boundary and renew the current worker lease."""
         try:
