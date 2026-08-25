@@ -482,7 +482,8 @@ class ResearchLoopWorkflow(Workflow):
                     node_name="retrieve",
                     definition=definition,
                     arguments=arguments,
-                    executor=lambda: retrieve_documents(
+                    executor=lambda: asyncio.to_thread(
+                        retrieve_documents,
                         self._cfg,
                         self._db,
                         self._graph,
