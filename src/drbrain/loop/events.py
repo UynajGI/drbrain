@@ -65,6 +65,8 @@ class Hypothesis(BaseModel):
     """
 
     claim_id: str = ""
+    proposal_id: str = ""
+    queue_item_id: str = ""
     evidence_ids: list[str] = Field(default_factory=list)
     statement: str
     conditions: dict[str, Any] = Field(default_factory=dict)

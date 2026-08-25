@@ -6,7 +6,10 @@ import asyncio
 import json
 
 from drbrain.loop import ResearchLoopWorkflow, ResearchState
-from drbrain.loop.events import Evidence, Hypothesis
+from drbrain.loop.events import Evidence, GapsIdentified, Hypothesis
+from drbrain.loop.front_half import DurableFrontHalf
+from drbrain.loop.store import RunLedger
+from drbrain.loop.transitions import TransitionService
 
 
 def _run(task: str) -> str:
@@ -50,6 +53,70 @@ def test_evidence_and_hypothesis_schema():
     h = Hypothesis(statement="s", conditions={"T": 300})
     assert h.status == "proposed"
     assert h.conditions == {"T": 300}
+
+
+def test_critique_rebuilds_the_compute_gate_from_durable_reviews(tmp_path, monkeypatch):
+    class _Store:
+        def __init__(self):
+            self.values = {"research_state": ResearchState(task="durable critique")}
+
+        async def get(self, key, default=None):
+            return self.values.get(key, default)
+
+        async def set(self, key, value):
+            self.values[key] = value
+
+    class _Context:
+        def __init__(self):
+            self.store = _Store()
+
+    async def exercise():
+        ledger = RunLedger(tmp_path / "ledger.sqlite3")
+        run = ledger.get_or_create_run("durable critique")
+        front_half = DurableFrontHalf(TransitionService(ledger), run.run_id)
+        front_half.ensure_node_contracts()
+        event = GapsIdentified(
+            hypotheses=[
+                Hypothesis(
+                    claim_id="cl-durable-critique",
+                    statement="durable review survives a crash",
+                    prediction="a stored critic review enables compute",
+                    falsification="a stored critic review is ignored",
+                )
+            ]
+        )
+        context = _Context()
+        workflow = ResearchLoopWorkflow(durable_front_half=front_half)
+        monkeypatch.setattr(workflow, "build_node_agent", lambda **_kwargs: None)
+
+        pending = await workflow.critique(context, event)
+        assert pending.hypotheses[0].status == "proposed"
+        assert workflow._queue.claim("compute") is None  # noqa: SLF001
+
+        proposal = front_half.snapshot()["proposals"][0]
+        front_half.record_review(
+            proposal["proposal_id"],
+            reviewer="critic-1",
+            score=0.9,
+            verdict="KEEP",
+            content="durably reviewed",
+        )
+        restored = ResearchLoopWorkflow(durable_front_half=front_half)
+        monkeypatch.setattr(restored, "build_node_agent", lambda **_kwargs: None)
+
+        accepted = await restored.critique(context, event)
+        assert accepted.hypotheses[0].status == "critiqued"
+        assert restored._queue.claim("compute") is not None  # noqa: SLF001
+        event_types = [entry.event_type for entry in ledger.events(run.run_id)]
+        assert {
+            "front_half_contracts_registered",
+            "proposal_recorded",
+            "critic_review_recorded",
+            "proposal_critiqued",
+            "queue_item_recorded",
+        } <= set(event_types)
+
+    asyncio.run(exercise())
 
 
 def test_load_plugins_discovers_external(tmp_path):
