@@ -206,7 +206,7 @@ PluginRegistry.to_llamaindex_tools()       # 桥接为 LlamaIndex FunctionTool
 
 ## 五、Research Loop 设计（对标 AutoScientists）
 
-目录：`src/drbrain/loop/`（7 模块）。
+目录：`src/drbrain/loop/`（8 个执行模块 + package init）。
 
 ### 5.1 对标结论
 
@@ -219,7 +219,7 @@ drbrain 的 Loop **对齐 AutoScientists（mims-harvard/AutoScientists）的机�
 | queue.md（pending/claims + If-Match 乐观锁 claim） | `discussion.py` — `ResearchQueue`（`claim()` 跳过 pending，version 计数对齐 If-Match） |
 | **Discussion-Before-Queuing**（proposal 需 ≥1 非作者 comment） | `critique` 节点：多 critic 并发评论 → 非作者门 → 入队 |
 | monitor janitor（stale claim release） | `director._janitor_scan` |
-| 单 canonical log（experiments.jsonl，orchestrator 写） | `director._log_experiment` |
+| durable run ledger（run / step / attempt / event） | `store.py` + `state.py` + `transitions.py`；`ledger.sqlite3`（WAL）是新 run 的事实源，旧文件是兼容投影 |
 | teams/roster.md 团队名单 | `director._save_roster` |
 | HEARTBEAT Mode Selector（Discussion/No-Team/Normal） | `state["mode"]`（discussion/execute）+ pending 跨轮传递 |
 
@@ -273,13 +273,18 @@ flowchart LR
 
 ### 5.5 编排与持久化（director.py）
 
-`ResearchDirector` 是纯协调者（对齐 AutoScientists「orchestrator 只 launch + harvest，不训练」）：
+`ResearchDirector` 是纯协调者（对齐 AutoScientists「orchestrator 只 launch + harvest，不训练」）。新 run 的持久化顺序是 **ledger 事务提交 → 兼容文件投影**：
+
+- `workspace/autoresearch/ledger.sqlite3` 是独立于知识图谱主库的 SQLite/WAL 运行账本，包含 `research_runs`、`research_steps`、`research_attempts`、`research_events`。`TransitionService` 是唯一的 run/step 状态写入口。
+- 每个 cycle 先在同一 ledger 事务中结算 step/attempt 并追加 snapshot event，再生成既有 Markdown、JSON、trace 和 JSONL 文件。若投影中断，下一次 `ResearchDirector.run()` 按 `last_projected_event` 重放已提交的 cycle。
+- 旧 topic 首次接入只写一条 `legacy_snapshot_imported` 事件，不重写历史文件。PR 1 只保证 cycle 边界与投影恢复；节点级 Context checkpoint/resume 属于后续阶段，未完成 cycle 会保留为 `unknown` 审计记录。
 
 - **循环**：`while cycles < max_cycles` → `_run_cycle`（建 workflow 跑一轮）→ `_absorb`（分类 champion/dead-end）→ 落盘 → stagnation 检测 → adapt。
-- **持久化文件**（`workspace/autoresearch/<topic>/`）：
+- **兼容投影文件**（`workspace/autoresearch/<topic>/`）：
 
 | 文件 | 职责 |
 |---|---|
+| `workspace/autoresearch/ledger.sqlite3` | 新 run 的 canonical run/step/attempt/event ledger（WAL；不并入知识图谱 schema） |
 | `run.json` | 运行时续跑状态（cycles/no_gain/adaptations/pending/mode/时间戳） |
 | `champion.md` / `dead_ends.md` | 已验证结论 / 已否定假设 |
 | `knowledge/patterns.md` | 获胜模式 + 死胡同 + 耗尽方向 |
@@ -288,7 +293,7 @@ flowchart LR
 | `teams/roster.md` | 团队名单（T8） |
 | `results/cycle-NNN.md` | 每轮结果 |
 | `traces/cycle-NNN.json` | 完整 ResearchState 可审计快照 |
-| `logs/experiments.jsonl` / `sessions.jsonl` / `janitor.jsonl` | 单 canonical log + 会话 + janitor 审计 |
+| `logs/experiments.jsonl` / `sessions.jsonl` / `janitor.jsonl` | 兼容审计投影 + 会话 + janitor 记录 |
 | `jobs/` | compute 作业落盘（run_python async 的 .py/.json/.log） |
 
 - **T8 endorsement**：`_critic_vetoes_direction`（critic 独立否决当前方向 → 结构性转向）。
@@ -321,14 +326,14 @@ sequenceDiagram
     P-->>W: job_id（作业落盘 jobs/）
     W->>W: verify 节点 → 检查 jobs/<id>.log 有数字
     W->>D: report（markdown 报告）
-    D->>D: _absorb + 落盘（proposals/reviews/roster/run.json/experiments.jsonl）
+    D->>D: _absorb → ledger commit → 兼容投影（proposals/reviews/roster/run.json/experiments.jsonl）
 ```
 
 **关键数据流**：
 
 - Loop 的 agent 节点通过 `build_node_agent(role=...)` 复用 RAG 的 `build_agent`（7 图工具 + 融合检索 + 插件 + MCP），所以**讨论/计算/核验时 agent 能现场查文献、查图、调插件**。
 - `compute` 节点通过 `run_python` 插件把 DFT 作业落盘到 `jobs/`，`verify` 节点通过 `check_job` 的落盘产物做硬门核验。
-- 每轮结束 director 把结论（champion/dead-end/讨论记录/作业）持久化，下一轮作为 prior_context 注入，形成**跨轮记忆闭环**。
+- 每轮结束 director 先把结论（champion/dead-end/讨论记录/作业）提交进 ledger，再更新工作区投影；下一轮作为 prior_context 注入，形成**跨轮记忆闭环**。
 
 ---
 
