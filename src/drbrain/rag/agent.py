@@ -35,7 +35,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from drbrain.config import ApiConfig, Config, DBConfig, DirsConfig, EmbedConfig, LLMConfig
 from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
@@ -353,12 +353,21 @@ def _resolve_durable_policy(tool_broker: Any, tool_policy: Any) -> Any | None:
     return policy
 
 
+def _normalize_side_effect(
+    value: str,
+) -> Literal["pure", "read", "write", "irreversible", "unspecified"]:
+    """Fail closed when host-supplied tool metadata is not a known effect."""
+    if value not in {"pure", "read", "write", "irreversible", "unspecified"}:
+        value = "unspecified"
+    return cast(Literal["pure", "read", "write", "irreversible", "unspecified"], value)
+
+
 def _durable_tool_definition(
     *,
     name: str,
     source: str,
     input_schema: dict[str, Any],
-    side_effect: Literal["pure", "read", "write", "irreversible", "unspecified"] = "read",
+    side_effect: str = "read",
     required_capabilities: tuple[str, ...],
     code_digest: str = "",
     version: str = "",
@@ -382,7 +391,7 @@ def _durable_tool_definition(
         name=name,
         source=source,
         input_schema=input_schema,
-        side_effect=side_effect,
+        side_effect=_normalize_side_effect(side_effect),
         required_capabilities=required_capabilities,
         code_digest=code_digest,
         version=version,
