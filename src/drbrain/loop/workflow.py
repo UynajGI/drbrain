@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -290,6 +291,37 @@ class ResearchLoopWorkflow(Workflow):
         self._board = MessageBoard()
         self._queue = ResearchQueue()
         self._n_critics = max(1, int(n_critics))
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        """Return the workflow-owned state that LlamaIndex Context does not own."""
+        return {
+            "message_board": self._board.to_dict(),
+            "research_queue": self._queue.to_dict(),
+        }
+
+    def restore_checkpoint_state(self, value: Mapping[str, Any]) -> None:
+        """Restore collaboration state alongside a JSON-serialized Context."""
+        board_value = value.get("message_board", {})
+        queue_value = value.get("research_queue", {})
+        self._board = MessageBoard.from_dict(
+            dict(board_value) if isinstance(board_value, Mapping) else {}
+        )
+        queue = ResearchQueue.from_dict(
+            dict(queue_value) if isinstance(queue_value, Mapping) else {}
+        )
+        # QueueItem deliberately avoids an import-time dependency on workflow
+        # event types.  Rehydrate its JSON payload at the workflow boundary so a
+        # resumed compute node still receives a real Hypothesis model.
+        for item in [*queue.list_pending(), *queue.list_claimed()]:
+            if isinstance(item.hypothesis, Mapping):
+                try:
+                    item.hypothesis = Hypothesis.model_validate(dict(item.hypothesis))
+                except Exception:  # noqa: BLE001 - corrupt checkpoint becomes non-claimable
+                    logger.warning(
+                        "[loop] dropped invalid queued hypothesis during checkpoint restore"
+                    )
+                    item.hypothesis = None
+        self._queue = queue
 
     def load_plugins(self) -> Any:
         """Discover external plugins (data / software) for agent tools.
