@@ -119,6 +119,61 @@ def test_policy_denial_is_durable_and_never_reaches_the_handler(tmp_path):
     assert ledger.events(run_id)[-1].event_type == "tool_denied"
 
 
+def test_verifier_is_read_only_even_when_host_grants_a_write_capability(tmp_path):
+    broker, _, _ = _broker(tmp_path, step_capabilities={"verify": {"plugin:mutate"}})
+    definition = ToolDefinition(
+        name="overwrite_experiment",
+        source="plugin",
+        input_schema={"type": "object"},
+        side_effect="write",
+        required_capabilities=("plugin:mutate",),
+        supports_idempotency=True,
+    )
+    called = False
+
+    def handler():
+        nonlocal called
+        called = True
+        return {"changed": True}
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="verify",
+            definition=definition,
+            arguments={},
+            executor=handler,
+            approved=True,
+        )
+    )
+
+    assert observation.status is ToolCallStatus.DENIED
+    assert called is False
+
+
+def test_compute_output_is_resolved_to_its_durable_tool_call(tmp_path):
+    broker, _, _ = _broker(tmp_path, step_capabilities={"compute": {"plugin:compute"}})
+    definition = ToolDefinition(
+        name="run_python",
+        source="plugin",
+        input_schema={"type": "object"},
+        side_effect="write",
+        required_capabilities=("plugin:compute",),
+        supports_idempotency=True,
+    )
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="compute",
+            definition=definition,
+            arguments={},
+            executor=lambda: {"job_id": "job-durable"},
+            approved=True,
+        )
+    )
+
+    assert broker.tool_call_id_for_output("job-durable") == observation.tool_call_id
+
+
 def test_durable_mcp_requires_trust_and_a_nonempty_allowlist(tmp_path):
     broker, ledger, run_id = _broker(tmp_path, step_capabilities={"retrieve": {"mcp:echo"}})
     invoked = False

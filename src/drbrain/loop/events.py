@@ -192,6 +192,7 @@ class Computed(Event):
     hypotheses: list[Hypothesis] = Field(default_factory=list)  # critiqued (KEEP) hypotheses
     job_ids: dict[str, str] = Field(default_factory=dict)  # statement → run_python(async) job_id
     summaries: dict[str, str] = Field(default_factory=dict)  # statement → 实算摘要（可选）
+    experiment_ids: dict[str, str] = Field(default_factory=dict)  # statement → durable experiment
 
 
 class Verified(Event):
@@ -199,6 +200,7 @@ class Verified(Event):
     falsified: list[str] = Field(default_factory=list)
     predictions: list[str] = Field(default_factory=list)
     verifications: list[Verification] = Field(default_factory=list)  # T3 三角验证计数
+    experiment_ids: dict[str, str] = Field(default_factory=dict)  # statement → durable experiment
 
 
 class Settled(Event):

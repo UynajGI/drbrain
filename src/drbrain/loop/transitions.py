@@ -32,6 +32,10 @@ class LeaseUnavailableError(RuntimeError):
     """Raised when another worker still owns an in-flight cycle lease."""
 
 
+class ChampionVersionConflictError(RuntimeError):
+    """Raised when a champion promotion loses its expected-version CAS race."""
+
+
 class TransitionService:
     """Apply validated lifecycle changes and append their audit events atomically."""
 
@@ -747,6 +751,463 @@ class TransitionService:
                 "proposals": proposal_values,
                 "queue_items": [self._queue_item_dict(item) for item in queue_items],
             }
+
+    def register_execution_node_contracts(
+        self, run_id: str, node_specs: Mapping[str, Mapping[str, Any]]
+    ) -> None:
+        """Persist immutable contracts for compute, verify, settle and report."""
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            inserted_nodes: list[str] = []
+            for node_name, raw_spec in node_specs.items():
+                spec = dict(raw_spec)
+                max_attempts = int(spec.get("max_attempts", 0))
+                retry_class = str(spec.get("retry_class", "")).strip()
+                if not node_name or max_attempts < 1 or not retry_class:
+                    raise ValueError("execution node contract is incomplete")
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO research_execution_node_specs(
+                        run_id, node_name, input_schema_json, output_schema_json,
+                        allowed_tools_json, max_attempts, retry_class, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        node_name,
+                        json.dumps(spec.get("input_schema", {}), ensure_ascii=False),
+                        json.dumps(spec.get("output_schema", {}), ensure_ascii=False),
+                        json.dumps(list(spec.get("allowed_tools", [])), ensure_ascii=False),
+                        max_attempts,
+                        retry_class,
+                        time.time(),
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM research_execution_node_specs
+                        WHERE run_id = ? AND node_name = ?
+                        """,
+                        (run_id, node_name),
+                    ).fetchone()
+                    if row is None or self._node_contract(
+                        dict(spec)
+                    ) != self._node_contract_from_row(row):
+                        raise ValueError(
+                            "execution node contract conflicts with its existing record"
+                        )
+                else:
+                    inserted_nodes.append(node_name)
+            if inserted_nodes:
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor="workflow",
+                    event_type="execution_contracts_registered",
+                    payload={"nodes": sorted(inserted_nodes)},
+                )
+
+    def record_experiment(
+        self,
+        run_id: str,
+        *,
+        experiment_id: str,
+        proposal_id: str,
+        claim_id: str,
+        plan: Mapping[str, Any],
+        environment: Mapping[str, Any],
+        config: Mapping[str, Any],
+        seed: int | None,
+        producer_attempt_id: str | None = None,
+        step_id: str | None = None,
+        worker_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Write a replay-safe experiment plan before compute is allowed to run."""
+        if not experiment_id or not claim_id:
+            raise ValueError("experiment_id and claim_id are required")
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            if step_id:
+                self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+            row = conn.execute(
+                "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            contract = {
+                "proposal_id": proposal_id,
+                "claim_id": claim_id,
+                "plan": self._json_roundtrip(plan),
+                "environment": self._json_roundtrip(environment),
+                "config": self._json_roundtrip(config),
+                "seed": seed,
+            }
+            if row is None:
+                existing = conn.execute(
+                    "SELECT experiment_id FROM research_experiments WHERE run_id = ? AND claim_id = ?",
+                    (run_id, claim_id),
+                ).fetchone()
+                if existing is not None and str(existing["experiment_id"]) != experiment_id:
+                    raise ValueError("claim_id already belongs to another durable experiment")
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_experiments(
+                        experiment_id, run_id, proposal_id, claim_id, producer_attempt_id,
+                        plan_json, environment_json, config_json, seed, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)
+                    """,
+                    (
+                        experiment_id,
+                        run_id,
+                        proposal_id,
+                        claim_id,
+                        producer_attempt_id,
+                        json.dumps(contract["plan"], ensure_ascii=False),
+                        json.dumps(contract["environment"], ensure_ascii=False),
+                        json.dumps(contract["config"], ensure_ascii=False),
+                        seed,
+                        now,
+                        now,
+                    ),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor="compute",
+                    event_type="experiment_planned",
+                    payload={"experiment_id": experiment_id, "claim_id": claim_id},
+                )
+                row = conn.execute(
+                    "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
+                ).fetchone()
+            elif str(row["run_id"]) != run_id or contract != self._experiment_contract(row):
+                raise ValueError("durable experiment replay conflicts with its existing contract")
+            if row is None:
+                raise RuntimeError("durable experiment was not persisted")
+            return self._experiment_dict(row)
+
+    def record_execution_artifact(
+        self,
+        run_id: str,
+        *,
+        artifact_id: str,
+        experiment_id: str,
+        actor: str,
+        kind: str,
+        media_type: str,
+        uri: str,
+        sha256: str,
+        byte_size: int,
+        metadata: Mapping[str, Any],
+        tool_call_id: str = "",
+        producer_attempt_id: str | None = None,
+        step_id: str | None = None,
+        worker_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record immutable compute artifacts; verifier writes are always forbidden."""
+        if actor != "compute":
+            raise PermissionError("only compute may write experiment artifacts")
+        if not artifact_id or not kind or not uri or not sha256:
+            raise ValueError("artifact identity, kind, uri and sha256 are required")
+        with self._ledger.transaction() as conn:
+            experiment = conn.execute(
+                "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            if experiment is None or str(experiment["run_id"]) != run_id:
+                raise KeyError(f"unknown experiment {experiment_id!r}")
+            if step_id:
+                self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+            row = conn.execute(
+                "SELECT * FROM research_artifacts WHERE artifact_id = ?", (artifact_id,)
+            ).fetchone()
+            contract = {
+                "experiment_id": experiment_id,
+                "kind": kind,
+                "media_type": media_type,
+                "uri": uri,
+                "sha256": sha256,
+                "byte_size": int(byte_size),
+                "metadata": self._json_roundtrip(metadata),
+                "tool_call_id": tool_call_id,
+            }
+            if row is None:
+                duplicate = conn.execute(
+                    """
+                    SELECT * FROM research_artifacts
+                    WHERE experiment_id = ? AND kind = ? AND sha256 = ? AND uri = ?
+                    """,
+                    (experiment_id, kind, sha256, uri),
+                ).fetchone()
+                if duplicate is not None:
+                    row = duplicate
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO research_artifacts(
+                            artifact_id, run_id, experiment_id, producer_attempt_id, tool_call_id,
+                            kind, media_type, uri, sha256, byte_size, metadata_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            artifact_id,
+                            run_id,
+                            experiment_id,
+                            producer_attempt_id,
+                            tool_call_id or None,
+                            kind,
+                            media_type,
+                            uri,
+                            sha256,
+                            int(byte_size),
+                            json.dumps(contract["metadata"], ensure_ascii=False),
+                            time.time(),
+                        ),
+                    )
+                    self._ledger.append_event(
+                        conn,
+                        run_id,
+                        actor="compute",
+                        event_type="experiment_artifact_recorded",
+                        payload={
+                            "experiment_id": experiment_id,
+                            "artifact_id": artifact_id,
+                            "kind": kind,
+                            "tool_call_id": tool_call_id or None,
+                        },
+                    )
+                    row = conn.execute(
+                        "SELECT * FROM research_artifacts WHERE artifact_id = ?", (artifact_id,)
+                    ).fetchone()
+            if row is None:
+                raise RuntimeError("durable artifact was not persisted")
+            if self._artifact_contract(row) != contract:
+                raise ValueError("durable artifact replay conflicts with its existing contract")
+            if kind == "output" and str(experiment["status"]) == "planned":
+                conn.execute(
+                    "UPDATE research_experiments SET status = 'computed', updated_at = ? WHERE experiment_id = ?",
+                    (time.time(), experiment_id),
+                )
+            return self._artifact_dict(row)
+
+    def settle_execution_claim(
+        self,
+        run_id: str,
+        *,
+        settlement_id: str,
+        experiment_id: str,
+        verification: Mapping[str, Any],
+        evidence_ids: list[str],
+        has_numeric_artifact: bool,
+        expected_champion_version: int | None,
+        noise_band: float,
+        required_repeats: int,
+    ) -> dict[str, Any]:
+        """Derive KEEP/DISCARD/INSUFFICIENT and CAS-promote only safe keeps."""
+        with self._ledger.transaction() as conn:
+            experiment = conn.execute(
+                "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
+            ).fetchone()
+            if experiment is None or str(experiment["run_id"]) != run_id:
+                raise KeyError(f"unknown experiment {experiment_id!r}")
+            claim_id = str(experiment["claim_id"])
+            existing = conn.execute(
+                "SELECT * FROM research_claim_settlements WHERE run_id = ? AND claim_id = ?",
+                (run_id, claim_id),
+            ).fetchone()
+            if existing is not None:
+                return self._settlement_dict(existing)
+
+            status = str(verification.get("status") or "prediction")
+            value = verification.get("value")
+            numeric_value = (
+                float(value)
+                if isinstance(value, int | float) and not isinstance(value, bool)
+                else None
+            )
+            has_evidence = bool(evidence_ids)
+            verdict = "insufficient"
+            reason = "unresolved_verification"
+            if status == "verified":
+                if not has_numeric_artifact:
+                    reason = "missing_numeric_artifact"
+                elif not has_evidence:
+                    reason = "missing_evidence"
+                elif (
+                    noise_band > 0
+                    and numeric_value is not None
+                    and abs(numeric_value) <= noise_band
+                    and required_repeats > 1
+                ):
+                    reason = "near_noise_requires_repeat"
+                else:
+                    verdict, reason = "keep", "verified_with_numeric_artifact_and_evidence"
+            elif status == "falsified":
+                if has_evidence:
+                    verdict, reason = "discard", "falsified_by_evidence"
+                else:
+                    reason = "missing_evidence"
+
+            champion_version: int | None = None
+            if verdict == "keep":
+                if expected_champion_version is None:
+                    raise ValueError("KEEP settlement requires an expected champion version")
+                champion = conn.execute(
+                    "SELECT version FROM research_champion_versions WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                current_version = int(champion["version"]) if champion is not None else 0
+                if current_version != int(expected_champion_version):
+                    raise ChampionVersionConflictError(
+                        f"champion version changed: expected {expected_champion_version}, got {current_version}"
+                    )
+                champion_version = current_version + 1
+                if champion is None:
+                    conn.execute(
+                        "INSERT INTO research_champion_versions(run_id, version, updated_at) VALUES (?, ?, ?)",
+                        (run_id, champion_version, time.time()),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE research_champion_versions SET version = ?, updated_at = ? WHERE run_id = ?",
+                        (champion_version, time.time(), run_id),
+                    )
+
+            now = time.time()
+            result = self._json_roundtrip(dict(verification))
+            conn.execute(
+                """
+                INSERT INTO research_claim_settlements(
+                    settlement_id, run_id, experiment_id, claim_id, verdict, reason,
+                    evidence_ids_json, result_json, expected_champion_version, champion_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    settlement_id,
+                    run_id,
+                    experiment_id,
+                    claim_id,
+                    verdict,
+                    reason,
+                    json.dumps(list(dict.fromkeys(evidence_ids)), ensure_ascii=False),
+                    json.dumps(result, ensure_ascii=False),
+                    expected_champion_version,
+                    champion_version,
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE research_experiments SET status = 'settled', updated_at = ? WHERE experiment_id = ?",
+                (now, experiment_id),
+            )
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor="settle",
+                event_type="claim_settled",
+                payload={
+                    "settlement_id": settlement_id,
+                    "experiment_id": experiment_id,
+                    "claim_id": claim_id,
+                    "verdict": verdict,
+                    "reason": reason,
+                    "champion_version": champion_version,
+                },
+            )
+            row = conn.execute(
+                "SELECT * FROM research_claim_settlements WHERE settlement_id = ?", (settlement_id,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("durable settlement was not persisted")
+            return self._settlement_dict(row)
+
+    def execution_snapshot(self, run_id: str) -> dict[str, Any]:
+        """Return the execution facts used by recovery and deterministic reporting."""
+        with self._ledger.transaction() as conn:
+            self._run_status(conn, run_id)
+            specs = conn.execute(
+                "SELECT * FROM research_execution_node_specs WHERE run_id = ? ORDER BY node_name",
+                (run_id,),
+            ).fetchall()
+            experiments = conn.execute(
+                "SELECT * FROM research_experiments WHERE run_id = ? ORDER BY created_at, experiment_id",
+                (run_id,),
+            ).fetchall()
+            artifacts = conn.execute(
+                "SELECT * FROM research_artifacts WHERE run_id = ? ORDER BY created_at, artifact_id",
+                (run_id,),
+            ).fetchall()
+            settlements = conn.execute(
+                "SELECT * FROM research_claim_settlements WHERE run_id = ? ORDER BY created_at, settlement_id",
+                (run_id,),
+            ).fetchall()
+            champion = conn.execute(
+                "SELECT version FROM research_champion_versions WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            return {
+                "node_specs": {str(row["node_name"]): self._node_spec_dict(row) for row in specs},
+                "experiments": [self._experiment_dict(row) for row in experiments],
+                "artifacts": [self._artifact_dict(row) for row in artifacts],
+                "settlements": [self._settlement_dict(row) for row in settlements],
+                "champion_version": int(champion["version"]) if champion is not None else 0,
+            }
+
+    @classmethod
+    def _experiment_contract(cls, row: Any) -> dict[str, Any]:
+        return {
+            "proposal_id": str(row["proposal_id"] or ""),
+            "claim_id": str(row["claim_id"]),
+            "plan": cls._json(row["plan_json"], {}),
+            "environment": cls._json(row["environment_json"], {}),
+            "config": cls._json(row["config_json"], {}),
+            "seed": row["seed"],
+        }
+
+    @classmethod
+    def _experiment_dict(cls, row: Any) -> dict[str, Any]:
+        return {
+            "experiment_id": str(row["experiment_id"]),
+            "proposal_id": str(row["proposal_id"] or ""),
+            "claim_id": str(row["claim_id"]),
+            "producer_attempt_id": str(row["producer_attempt_id"] or ""),
+            "plan": cls._json(row["plan_json"], {}),
+            "environment": cls._json(row["environment_json"], {}),
+            "config": cls._json(row["config_json"], {}),
+            "seed": row["seed"],
+            "status": str(row["status"]),
+        }
+
+    @classmethod
+    def _artifact_contract(cls, row: Any) -> dict[str, Any]:
+        return {
+            "experiment_id": str(row["experiment_id"]),
+            "kind": str(row["kind"]),
+            "media_type": str(row["media_type"]),
+            "uri": str(row["uri"]),
+            "sha256": str(row["sha256"]),
+            "byte_size": int(row["byte_size"]),
+            "metadata": cls._json(row["metadata_json"], {}),
+            "tool_call_id": str(row["tool_call_id"] or ""),
+        }
+
+    @classmethod
+    def _artifact_dict(cls, row: Any) -> dict[str, Any]:
+        value = cls._artifact_contract(row)
+        value["artifact_id"] = str(row["artifact_id"])
+        value["producer_attempt_id"] = str(row["producer_attempt_id"] or "")
+        return value
+
+    @classmethod
+    def _settlement_dict(cls, row: Any) -> dict[str, Any]:
+        return {
+            "settlement_id": str(row["settlement_id"]),
+            "experiment_id": str(row["experiment_id"]),
+            "claim_id": str(row["claim_id"]),
+            "verdict": str(row["verdict"]),
+            "reason": str(row["reason"]),
+            "evidence_ids": cls._json(row["evidence_ids_json"], []),
+            "result": cls._json(row["result_json"], {}),
+            "expected_champion_version": row["expected_champion_version"],
+            "champion_version": row["champion_version"],
+        }
 
     @staticmethod
     def _proposal_row(conn: Any, proposal_id: str) -> Any:

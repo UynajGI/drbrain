@@ -106,7 +106,43 @@ def test_ledger_migrates_v4_runs_to_the_durable_front_half_tables(tmp_path):
         "research_proposals",
         "research_critic_reviews",
         "research_queue_items",
+        "research_execution_node_specs",
+        "research_experiments",
+        "research_artifacts",
+        "research_claim_settlements",
+        "research_champion_versions",
     } <= tables
+    assert version == LEDGER_SCHEMA_VERSION
+
+
+def test_ledger_migrates_v5_runs_to_execution_artifact_tables(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = RunLedger(path)
+    ledger.get_or_create_run("v5 execution")
+
+    execution_tables = {
+        "research_execution_node_specs",
+        "research_experiments",
+        "research_artifacts",
+        "research_claim_settlements",
+        "research_champion_versions",
+    }
+    with sqlite3.connect(path) as conn:
+        for table in execution_tables:
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute(
+            "DELETE FROM ledger_schema_versions WHERE version = ?", (LEDGER_SCHEMA_VERSION,)
+        )
+        conn.execute("INSERT INTO ledger_schema_versions(version, applied_at) VALUES (5, 0)")
+
+    RunLedger(path).get_run("v5 execution")
+
+    with sqlite3.connect(path) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        version = conn.execute("SELECT MAX(version) FROM ledger_schema_versions").fetchone()[0]
+    assert execution_tables <= tables
     assert version == LEDGER_SCHEMA_VERSION
 
 

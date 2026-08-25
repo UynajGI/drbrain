@@ -130,6 +130,8 @@ class ToolPolicy:
 
     def is_visible(self, *, node_name: str, definition: ToolDefinition) -> bool:
         """Whether a classified tool belongs on this node's agent surface."""
+        if node_name == "verify" and definition.side_effect not in {"pure", "read"}:
+            return False
         if definition.side_effect == "unspecified":
             return False
         if definition.source == "mcp" and (not definition.trusted or not definition.allowed_tools):
@@ -139,6 +141,11 @@ class ToolPolicy:
     def evaluate(self, proposal: ToolProposal) -> PolicyDecision:
         """Validate and authorize a concrete proposal without invoking a handler."""
         definition = proposal.definition
+        if proposal.node_name == "verify" and definition.side_effect not in {"pure", "read"}:
+            return PolicyDecision(
+                PolicyDisposition.DENY,
+                "verifier is read-only and cannot modify experiment artifacts",
+            )
         try:
             validate_arguments(definition.input_schema, proposal.arguments)
         except ValueError as exc:
