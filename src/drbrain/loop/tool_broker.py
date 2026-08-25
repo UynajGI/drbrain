@@ -133,6 +133,7 @@ class ToolBroker:
         )
         safe_proposal = self._safe_proposal(proposal)
         decision = self.policy.evaluate(proposal)
+        self._renew_lease()
         if not decision.allowed:
             status = (
                 ToolCallStatus.WAITING_APPROVAL
@@ -198,14 +199,30 @@ class ToolBroker:
             node_name=node_name,
             proposal=safe_proposal,
             idempotency_key=key,
+            lease_seconds=self.lease_seconds,
         )
 
-        outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error="tool executor produced no result")
-        attempts = 0
-        for attempts in range(1, decision.max_attempts + 1):
-            outcome = await self._execute_once(executor, definition)
-            if outcome.status is not ToolCallStatus.TIMED_OUT or attempts >= decision.max_attempts:
-                break
+        keepalive = asyncio.create_task(self._maintain_lease())
+        try:
+            outcome = _ExecutionOutcome(
+                ToolCallStatus.FAILED, error="tool executor produced no result"
+            )
+            attempts = 0
+            for attempts in range(1, decision.max_attempts + 1):
+                outcome = await self._execute_once(executor, definition)
+                if (
+                    outcome.status is not ToolCallStatus.TIMED_OUT
+                    or attempts >= decision.max_attempts
+                ):
+                    break
+        finally:
+            keepalive.cancel()
+            try:
+                await keepalive
+            except asyncio.CancelledError:
+                pass
+
+        self._renew_lease()
 
         status = outcome.status
         if status is ToolCallStatus.TIMED_OUT and definition.side_effect in {
@@ -229,6 +246,7 @@ class ToolBroker:
             worker_id=self.worker_id,
             status=status.value,
             observation=safe_observation,
+            lease_seconds=self.lease_seconds,
         )
         return ToolObservation(
             tool_call_id=tool_call_id,
@@ -237,6 +255,22 @@ class ToolBroker:
             error=outcome.error,
             attempts=attempts,
         )
+
+    def _renew_lease(self) -> None:
+        self._ledger.renew_lease(
+            run_id=self.run_id,
+            step_id=self.step_id,
+            attempt_id=self.attempt_id,
+            worker_id=self.worker_id,
+            lease_seconds=self.lease_seconds,
+        )
+
+    async def _maintain_lease(self) -> None:
+        """Keep ownership alive while an external tool may still be running."""
+        interval = max(0.1, min(self.lease_seconds / 3.0, 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            self._renew_lease()
 
     async def _execute_once(
         self,
@@ -298,9 +332,10 @@ class ToolBroker:
             "node_name": node_name,
             "tool_name": definition.name,
             "source": definition.source,
-            # Idempotency is an internal reconciliation aid, never a channel
-            # for smuggling prompt secrets into the ledger/event trail.
-            "arguments": _redact(dict(arguments)),
+            # Hash the full canonical call identity locally.  Only the digest is
+            # persisted, so redaction must not collapse credentials or tenants
+            # into one reusable idempotency key.
+            "arguments": dict(arguments),
         }
         encoded = json.dumps(payload, ensure_ascii=False, default=str, sort_keys=True).encode(
             "utf-8"

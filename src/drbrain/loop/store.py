@@ -467,6 +467,7 @@ class RunLedger:
         node_name: str,
         proposal: Mapping[str, Any],
         idempotency_key: str | None,
+        lease_seconds: float | None = None,
     ) -> LedgerToolCall:
         """Durably record an authorized intent before an external handler runs."""
         with self.transaction() as conn:
@@ -495,6 +496,15 @@ class RunLedger:
                 updated_at=now,
             )
             self._insert_tool_call(conn, call)
+            if lease_seconds is not None:
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_expires_at = ?, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now + max(1.0, float(lease_seconds)), now, step_id),
+                )
             self.append_event(
                 conn,
                 run_id,
@@ -587,6 +597,7 @@ class RunLedger:
         worker_id: str,
         status: str,
         observation: Mapping[str, Any],
+        lease_seconds: float | None = None,
     ) -> LedgerToolCall:
         """Settle a prior intent with a durable observation under the same lease."""
         if status not in {"succeeded", "failed", "timed_out", "unknown"}:
@@ -619,6 +630,15 @@ class RunLedger:
                 """,
                 (status, _as_json(dict(observation)), now, tool_call_id),
             )
+            if lease_seconds is not None:
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_expires_at = ?, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now + max(1.0, float(lease_seconds)), now, step_id),
+                )
             self.append_event(
                 conn,
                 run_id,
@@ -637,6 +657,34 @@ class RunLedger:
             ).fetchone()
             assert updated is not None  # protected by the update above
             return self._tool_call_from_row(updated)
+
+    def renew_lease(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> None:
+        """Extend an owned running attempt lease without changing its progress."""
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now + max(1.0, float(lease_seconds)), now, step_id),
+            )
 
     def tool_calls(self, run_id: str) -> list[LedgerToolCall]:
         """Read the durable tool trail in issue order for one run."""
