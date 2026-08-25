@@ -230,6 +230,31 @@ def test_ledger_records_a_fail_closed_rag_evidence_downgrade(tmp_path):
     assert event.payload == {"generation": "g-1", "reason": "retention_unavailable"}
 
 
+def test_checkpoint_generation_stays_disabled_when_retain_fails_again(tmp_path, monkeypatch):
+    """A checkpoint must not revive evidence for a generation that is not retained."""
+    from drbrain.rag import indexer
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("checkpoint RAG retention", config={"rag_generation": "g-1"})
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path)
+    attempts: list[str] = []
+
+    def unavailable(_cfg, generation, _run_id):
+        attempts.append(generation)
+        raise OSError("generation reference storage unavailable")
+
+    monkeypatch.setattr(indexer, "retain_index_generation", unavailable)
+
+    director._rag_generation = director._retain_rag_generation(ledger, run.run_id, "g-1")
+    director._adopt_checkpoint_rag_generation(ledger, run.run_id, "g-1")
+
+    assert attempts == ["g-1", "g-1"]
+    assert director._rag_generation is None
+    assert [event.event_type for event in ledger.events(run.run_id)].count(
+        "rag_evidence_disabled"
+    ) == 2
+
+
 def test_interrupted_cycle_is_marked_unknown_for_a_later_resume(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("interrupted topic")
