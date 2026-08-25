@@ -15,6 +15,32 @@ from drbrain.loop.store import RunLedger
 from drbrain.loop.transitions import TransitionService
 
 
+def test_ledger_adds_config_json_to_preexisting_run_table(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE research_runs (
+                run_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                budget_json TEXT NOT NULL DEFAULT '{}',
+                last_projected_event INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )
+            """
+        )
+
+    RunLedger(path).get_run("missing")
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
+    assert "config_json" in columns
+
+
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("durable topic")

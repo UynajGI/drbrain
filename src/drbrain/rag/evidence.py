@@ -43,7 +43,7 @@ def build_evidence_record(
     query: str,
     retriever: str,
     rank: int,
-    score: float,
+    score: float | None,
     source: Mapping[str, Any],
     filters: Mapping[str, Any] | None = None,
     excerpt: str | None = None,
@@ -84,5 +84,5 @@ def build_evidence_record(
         "filters": dict(filters or {}),
         "retriever": str(retriever),
         "rank": max(1, int(rank)),
-        "score": float(score),
+        "score": float(score) if score is not None else None,
     }

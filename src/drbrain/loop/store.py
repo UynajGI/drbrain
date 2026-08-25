@@ -266,6 +266,14 @@ class RunLedger:
                 ON research_events(run_id, event_seq);
             """
         )
+        run_columns = {
+            str(column["name"])
+            for column in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+        }
+        if "config_json" not in run_columns:
+            conn.execute(
+                "ALTER TABLE research_runs ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'"
+            )
         row = conn.execute("SELECT MAX(version) AS version FROM ledger_schema_versions").fetchone()
         current = int(row["version"] or 0)
         if current > LEDGER_SCHEMA_VERSION:
