@@ -1055,15 +1055,17 @@ class ResearchLoopWorkflow(Workflow):
         post_ids: dict[str, str] = {}
         durable_reviews: dict[str, list[dict[str, Any]]] = {}
         if self._durable_front_half is not None:
-            self._durable_front_half.ensure_node_contracts()
+            await asyncio.to_thread(self._durable_front_half.ensure_node_contracts)
         for h in ev.hypotheses:
             if not h.claim_id:
                 h = h.model_copy(update={"claim_id": _claim_id(h.statement)})
             if self._durable_front_half is None:
                 post_id = board.post(POST_PROPOSAL, author="analyst", content=h.statement)
             else:
-                proposal = self._durable_front_half.record_proposal(
-                    h.model_dump(mode="json"), author="analyst"
+                proposal = await asyncio.to_thread(
+                    self._durable_front_half.record_proposal,
+                    h.model_dump(mode="json"),
+                    author="analyst",
                 )
                 post_id = str(proposal["proposal_id"])
                 h = h.model_copy(update={"proposal_id": post_id})
@@ -1071,9 +1073,10 @@ class ResearchLoopWorkflow(Workflow):
             post_ids[h.statement] = post_id
             hypotheses_to_review.append(h)
         if self._durable_front_half is not None:
+            snapshot = await asyncio.to_thread(self._durable_front_half.snapshot)
             durable_reviews = {
                 str(proposal["proposal_id"]): list(proposal["reviews"])
-                for proposal in self._durable_front_half.snapshot()["proposals"]
+                for proposal in snapshot["proposals"]
             }
             for post_id, reviews in durable_reviews.items():
                 for review in reviews:
@@ -1120,7 +1123,8 @@ class ResearchLoopWorkflow(Workflow):
                 if self._durable_front_half is None:
                     board.comment(post_id, author=name, content=flaw, score=score, verdict=verdict)
                 else:
-                    review = self._durable_front_half.record_review(
+                    review = await asyncio.to_thread(
+                        self._durable_front_half.record_review,
                         post_id,
                         reviewer=name,
                         score=score,
@@ -1142,8 +1146,10 @@ class ResearchLoopWorkflow(Workflow):
         discussed = 0
         for h in hypotheses_to_review:
             if self._durable_front_half is not None:
-                decision = self._durable_front_half.settle_proposal(
-                    post_ids[h.statement], discard_score=CRITIQUE_DISCARD_SCORE
+                decision = await asyncio.to_thread(
+                    self._durable_front_half.settle_proposal,
+                    post_ids[h.statement],
+                    discard_score=CRITIQUE_DISCARD_SCORE,
                 )
                 queue_item = dict(decision["queue_item"])
                 decision_status = str(decision["status"])
