@@ -37,6 +37,7 @@ from drbrain.loop.discussion import (
     QueueItem,
     ResearchQueue,
 )
+from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.events import (
     Computed,
     Critiqued,
@@ -314,6 +315,7 @@ class ResearchLoopWorkflow(Workflow):
         rag_generation: str | None | _UnsetRagGeneration = _RAG_GENERATION_UNSET,
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         durable_front_half: DurableFrontHalf | None = None,
+        durable_execution: DurableExecution | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -329,6 +331,7 @@ class ResearchLoopWorkflow(Workflow):
         self._tool_broker = tool_broker
         self._evidence_recorder = evidence_recorder
         self._durable_front_half = durable_front_half
+        self._durable_execution = durable_execution
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
@@ -1272,7 +1275,10 @@ class ResearchLoopWorkflow(Workflow):
         """
         agent = self.build_node_agent(role="compute", step_name="compute")
         candidates = [h for h in ev.hypotheses if h.status == "critiqued" and h.statement.strip()]
-        if agent is not None and self._has_compute_tools(agent):
+        durable_broker_missing = self._durable_execution is not None and self._tool_broker is None
+        if durable_broker_missing:
+            logger.warning("[loop] compute skipped: durable execution requires ToolBroker")
+        if agent is not None and self._has_compute_tools(agent) and not durable_broker_missing:
             # Claim every queued, discussed hypothesis. Each claim is atomic
             # under the queue's lock (single-process If-Match equivalent).
             claimed: list[Hypothesis] = []
@@ -1285,7 +1291,32 @@ class ResearchLoopWorkflow(Workflow):
             candidates = claimed
         job_ids: dict[str, str] = {}
         summaries: dict[str, str] = {}
-        if agent is not None and candidates and self._has_compute_tools(agent):
+        experiment_ids: dict[str, str] = {}
+        if self._durable_execution is not None:
+            execution_config = {
+                "tool_policy": self._tool_policy.to_manifest()
+                if self._tool_policy is not None
+                else {},
+                "compute_tools": list(_COMPUTE_TOOL_NAMES),
+            }
+            execution_environment = {
+                "jobs_dir": self._jobs_dir or "",
+                "rag_generation": self._rag_generation or "",
+            }
+            for hypothesis in candidates:
+                experiment = await asyncio.to_thread(
+                    self._durable_execution.record_experiment,
+                    hypothesis.model_dump(mode="json"),
+                    environment=execution_environment,
+                    config=execution_config,
+                )
+                experiment_ids[hypothesis.statement] = str(experiment["experiment_id"])
+        if (
+            agent is not None
+            and candidates
+            and self._has_compute_tools(agent)
+            and not durable_broker_missing
+        ):
             data = await self.run_agent_json(
                 agent,
                 "对以下每个 hypothesis：读取它的 prediction 字段（其中描述了要计算的数值量，"
@@ -1303,12 +1334,38 @@ class ResearchLoopWorkflow(Workflow):
                         continue
                     stmt = str(raw.get("statement", "")).strip()
                     if stmt in valid:  # only results for proposed hypotheses count
-                        job_ids[stmt] = str(raw.get("job_id") or "")
+                        job_id = str(raw.get("job_id") or "")
+                        job_ids[stmt] = job_id
                         summaries[stmt] = str(raw.get("computed") or "")
+                        experiment_id = experiment_ids.get(stmt)
+                        if self._durable_execution is not None and experiment_id and job_id:
+                            tool_call_id = (
+                                self._tool_broker.tool_call_id_for_output(job_id)
+                                if self._tool_broker is not None
+                                else ""
+                            )
+                            tool_proposal = (
+                                self._tool_broker.tool_call_proposal(tool_call_id)
+                                if self._tool_broker is not None and tool_call_id
+                                else {}
+                            )
+                            await asyncio.to_thread(
+                                self._durable_execution.record_compute_output,
+                                experiment_id,
+                                job_id=job_id,
+                                jobs_dir=self._jobs_dir or "",
+                                tool_call_id=tool_call_id,
+                                code=tool_proposal.get("arguments", {}),
+                            )
         logger.info(
             "[loop] compute: %d computation(s) for %d hypothesis(es)", len(job_ids), len(candidates)
         )
-        return Computed(hypotheses=candidates, job_ids=job_ids, summaries=summaries)
+        return Computed(
+            hypotheses=candidates,
+            job_ids=job_ids,
+            summaries=summaries,
+            experiment_ids=experiment_ids,
+        )
 
     # 11. 证据核验（T1 核验者角色 + T2 分数消费 + T3 三角验证代码化 + T4 实算门）
     @step
@@ -1425,6 +1482,7 @@ class ResearchLoopWorkflow(Workflow):
             falsified=falsified,
             predictions=predictions,
             verifications=verifications,
+            experiment_ids=ev.experiment_ids,
         )
 
     def _verify_prompt(
@@ -1487,13 +1545,51 @@ class ResearchLoopWorkflow(Workflow):
     @step
     async def settle(self, ctx: Context, ev: Verified) -> Settled:
         state = await self._get_state(ctx)
-        state.verified = ev.verified
-        state.falsified = ev.falsified
-        state.predictions = ev.predictions
+        if self._durable_execution is None:
+            state.verified = ev.verified
+            state.falsified = ev.falsified
+            state.predictions = ev.predictions
+        else:
+            verification_by_statement = {item.statement: item for item in ev.verifications}
+            hypothesis_by_statement = {item.statement: item for item in state.hypotheses}
+            canonical_verified: list[str] = []
+            canonical_falsified: list[str] = []
+            canonical_predictions: list[str] = []
+            for statement, experiment_id in ev.experiment_ids.items():
+                verification = verification_by_statement.get(statement)
+                if verification is None:
+                    hypothesis = hypothesis_by_statement.get(statement)
+                    verification_payload = {
+                        "claim_id": hypothesis.claim_id if hypothesis is not None else "",
+                        "statement": statement,
+                        "status": "prediction",
+                        "evidence_ids": [],
+                    }
+                else:
+                    verification_payload = verification.model_dump(mode="json")
+                expected_version = (await asyncio.to_thread(self._durable_execution.snapshot))[
+                    "champion_version"
+                ]
+                settlement = await asyncio.to_thread(
+                    self._durable_execution.settle_verification,
+                    experiment_id,
+                    verification=verification_payload,
+                    expected_champion_version=int(expected_version),
+                )
+                verdict = settlement["verdict"]
+                if verdict == "keep":
+                    canonical_verified.append(statement)
+                elif verdict == "discard":
+                    canonical_falsified.append(statement)
+                else:
+                    canonical_predictions.append(statement)
+            state.verified = list(dict.fromkeys(canonical_verified))
+            state.falsified = list(dict.fromkeys(canonical_falsified))
+            state.predictions = list(dict.fromkeys(canonical_predictions))
         state.verifications = ev.verifications
         self._persist_claims(state)
         await self._set_state(ctx, state)
-        return Settled(verified=ev.verified, falsified=ev.falsified)
+        return Settled(verified=state.verified, falsified=state.falsified)
 
     def _persist_claims(self, state: ResearchState) -> None:
         """闭环沉淀：把核验结论/证伪/预测写回 KG（``claims`` 表）。
@@ -1568,7 +1664,10 @@ class ResearchLoopWorkflow(Workflow):
         )
         report = self._build_template_report(state)
         agent = self.build_node_agent(step_name="report")
-        if agent is not None:
+        # Durable reports are a projection of settled facts.  Letting a report
+        # model replace this text would let it introduce an unregistered
+        # conclusion, so the agent-backed prose remains a legacy-only path.
+        if agent is not None and self._durable_execution is None:
             text = await self.run_agent(
                 agent,
                 "基于以下研究状态，撰写一份结构化研究报告（markdown），涵盖："

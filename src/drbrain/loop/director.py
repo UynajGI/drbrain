@@ -33,6 +33,7 @@ from drbrain.loop.checkpointing import (
     CheckpointRestoreError,
     WorkflowCheckpointService,
 )
+from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.events import ResearchState
 from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolPolicy
@@ -217,6 +218,8 @@ class ResearchDirector:
         n_critics: int = 3,
         lease_seconds: float = 900.0,
         tool_policy: ToolPolicy | None = None,
+        noise_band: float = 0.0,
+        required_repeats: int = 2,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -227,6 +230,8 @@ class ResearchDirector:
         self._n_critics = max(1, int(n_critics))
         self._lease_seconds = max(1.0, float(lease_seconds))
         self._tool_policy = tool_policy
+        self._noise_band = max(0.0, float(noise_band))
+        self._required_repeats = max(1, int(required_repeats))
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
@@ -885,6 +890,7 @@ class ResearchDirector:
         tool_broker = None
         evidence_recorder = None
         durable_front_half = None
+        durable_execution = None
         if checkpoint is not None:
             durable_front_half = DurableFrontHalf(
                 TransitionService(checkpoint.ledger), checkpoint.run_id
@@ -912,6 +918,17 @@ class ResearchDirector:
                 lease_seconds=checkpoint.lease_seconds,
                 policy=self._tool_policy,
             )
+        if checkpoint is not None and tool_broker is not None:
+            durable_execution = DurableExecution(
+                TransitionService(checkpoint.ledger),
+                checkpoint.run_id,
+                step_id=checkpoint.step_id,
+                attempt_id=checkpoint.attempt_id,
+                worker_id=checkpoint.worker_id,
+                noise_band=self._noise_band,
+                required_repeats=self._required_repeats,
+            )
+            await asyncio.to_thread(durable_execution.ensure_node_contracts)
         wf = ResearchLoopWorkflow(
             cfg=self._cfg,
             db=self._db,
@@ -927,6 +944,7 @@ class ResearchDirector:
             rag_generation=self._rag_generation,
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
+            durable_execution=durable_execution,
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it

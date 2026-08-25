@@ -266,6 +266,30 @@ class ToolBroker:
             bundle=_redact(dict(bundle)),
         )
 
+    def tool_call_id_for_output(self, value: str) -> str:
+        """Resolve a durable compute-tool locator for a returned output value.
+
+        Compute agents commonly expose only a job id in their final JSON.  This
+        resolves the job id against SQLite-backed observations instead of trusting
+        an agent-supplied tool-call id, and therefore also works after resume.
+        """
+        needle = str(value)
+        if not needle:
+            return ""
+        for call in reversed(self._ledger.tool_calls(self.run_id)):
+            if call.node_name != "compute" or call.status != ToolCallStatus.SUCCEEDED:
+                continue
+            if _contains_value(call.observation.get("output"), needle):
+                return call.tool_call_id
+        return ""
+
+    def tool_call_proposal(self, tool_call_id: str) -> dict[str, Any]:
+        """Return the already-redacted durable proposal for an artifact pointer."""
+        for call in self._ledger.tool_calls(self.run_id):
+            if call.tool_call_id == tool_call_id:
+                return dict(call.proposal)
+        return {}
+
     def _renew_lease(self) -> None:
         self._ledger.renew_lease(
             run_id=self.run_id,
@@ -384,6 +408,14 @@ def _normalize_result(result: Any) -> _ExecutionOutcome:
         error=getattr(result, "error", None) or f"tool result status {status!r}",
         evidence=getattr(result, "evidence", None),
     )
+
+
+def _contains_value(value: Any, needle: str) -> bool:
+    if isinstance(value, Mapping):
+        return any(_contains_value(item, needle) for item in value.values())
+    if isinstance(value, list | tuple | set | frozenset):
+        return any(_contains_value(item, needle) for item in value)
+    return str(value) == needle
 
 
 def _redact(value: Any) -> Any:
