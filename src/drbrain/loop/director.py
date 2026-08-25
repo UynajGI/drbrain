@@ -26,6 +26,8 @@ from typing import Any
 from loguru import logger
 
 from drbrain.loop.events import ResearchState
+from drbrain.loop.store import LedgerEvent, RunLedger
+from drbrain.loop.transitions import TransitionService
 from drbrain.loop.workflow import (
     CRITIQUE_DISCARD_SCORE,
     ResearchLoopWorkflow,
@@ -136,6 +138,10 @@ class ResearchDirector:
         self._run_dir = Path(run_dir)
         self._n_critics = max(1, int(n_critics))
 
+    def _ledger(self) -> RunLedger:
+        """Return this director's isolated, SQLite-only run ledger."""
+        return RunLedger(self._run_dir / "ledger.sqlite3")
+
     # ── workspace paths ───────────────────────────────────────────────────────
 
     def _topic_dir(self, topic: str) -> Path:
@@ -156,6 +162,18 @@ class ResearchDirector:
 
     def _run_json(self, topic: str) -> Path:
         return self._topic_dir(topic) / "run.json"
+
+    def _has_legacy_projection(self, topic: str) -> bool:
+        """Whether a topic predates the ledger and has workspace state to import."""
+        return any(
+            path.exists()
+            for path in (
+                self._run_json(topic),
+                self._champion_md(topic),
+                self._dead_ends_md(topic),
+                self._patterns_md(topic),
+            )
+        )
 
     def _champion_md(self, topic: str) -> Path:
         return self._topic_dir(topic) / "champion.md"
@@ -221,6 +239,49 @@ class ResearchDirector:
             "started_at": run.get("started_at", time.time()),
             "updated_at": run.get("updated_at", time.time()),
         }
+
+    def _project_cycle(
+        self,
+        topic: str,
+        state: dict[str, Any],
+        cycle_result: dict[str, Any],
+        research_state: ResearchState | None,
+    ) -> None:
+        """Write one committed cycle to the existing compatibility workspace."""
+        self._save_cycle_trace(topic, state["cycles"], research_state)
+        self._save_state(topic, state)
+        self._save_cycle_result(topic, cycle_result)
+        self._log_experiment(topic, cycle_result)
+        self._save_role_memories(topic, state["cycles"], research_state)
+        self._save_discussion(topic, state["cycles"], research_state)
+        self._janitor_scan(topic, state)
+
+    def _project_pending_ledger_events(self, topic: str, ledger: RunLedger, run_id: str) -> None:
+        """Replay ledger commits that reached SQLite before their file projection."""
+        for event in ledger.pending_projection_events(run_id):
+            self._project_ledger_event(topic, event)
+            ledger.mark_projected(run_id, event.event_seq)
+
+    def _project_ledger_event(self, topic: str, event: LedgerEvent) -> None:
+        """Materialize one replayable ledger event into backward-compatible files."""
+        state = event.payload.get("state")
+        if not isinstance(state, dict):
+            raise ValueError(f"ledger event {event.event_seq} has no state snapshot")
+
+        if event.event_type == "state_snapshot":
+            self._save_state(topic, state)
+            return
+
+        cycle_result = event.payload.get("cycle_result")
+        if not isinstance(cycle_result, dict):
+            raise ValueError(f"ledger event {event.event_seq} has no cycle result")
+        raw_research_state = event.payload.get("research_state")
+        research_state = (
+            ResearchState.model_validate(raw_research_state)
+            if raw_research_state is not None
+            else None
+        )
+        self._project_cycle(topic, state, cycle_result, research_state)
 
     def _save_state(self, topic: str, state: dict[str, Any]) -> None:
         """Persist the semantic state to its canonical files (single-writer)."""
@@ -328,6 +389,16 @@ class ResearchDirector:
         except OSError:
             logger.warning("[director] trace write failed for cycle %d", cycle_no)
 
+    @staticmethod
+    def _append_missing_lines(path: Path, lines: list[str]) -> None:
+        """Append only absent lines so replaying a committed cycle is idempotent."""
+        existing = set(path.read_text(encoding="utf-8").splitlines()) if path.exists() else set()
+        missing = list(dict.fromkeys(line for line in lines if line not in existing))
+        if not missing:
+            return
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n".join(missing) + "\n")
+
     # ── T7: per-role cross-cycle memory (director is the single writer) ─────────
 
     def _save_role_memories(self, topic: str, cycle_no: int, rs: ResearchState | None) -> None:
@@ -352,8 +423,7 @@ class ResearchDirector:
             path = self._role_memory_md(topic, "critic")
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write("\n".join(critic_lines) + "\n")
+                self._append_missing_lines(path, critic_lines)
             except OSError:
                 logger.warning("[director] role-critic memory write failed")
 
@@ -367,8 +437,7 @@ class ResearchDirector:
             path = self._role_memory_md(topic, "verifier")
             path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write("\n".join(verifier_lines) + "\n")
+                self._append_missing_lines(path, verifier_lines)
             except OSError:
                 logger.warning("[director] role-verifier memory write failed")
 
@@ -408,11 +477,9 @@ class ResearchDirector:
             )
         try:
             if proposal_lines:
-                with open(knowledge / "proposals.md", "a", encoding="utf-8") as f:
-                    f.write("\n".join(proposal_lines) + "\n")
+                self._append_missing_lines(knowledge / "proposals.md", proposal_lines)
             if review_lines:
-                with open(knowledge / "reviews.md", "a", encoding="utf-8") as f:
-                    f.write("\n".join(review_lines) + "\n")
+                self._append_missing_lines(knowledge / "reviews.md", review_lines)
         except OSError:
             logger.warning("[director] discussion write failed")
 
@@ -464,7 +531,16 @@ class ResearchDirector:
             "completed_at": result.get("completed_at"),
             "duration_seconds": result.get("duration_seconds"),
         }
-        with open(self._logs_dir(topic) / "experiments.jsonl", "a", encoding="utf-8") as f:
+        path = self._logs_dir(topic) / "experiments.jsonl"
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    existing = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if existing.get("cycle") == entry["cycle"]:
+                    return
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def _log_session(
@@ -487,8 +563,28 @@ class ResearchDirector:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def _append_janitor_log(self, topic: str, entry: dict[str, Any]) -> None:
-        """Append one line to ``logs/janitor.jsonl`` (stale-job audit trail)."""
-        with open(self._logs_dir(topic) / "janitor.jsonl", "a", encoding="utf-8") as f:
+        """Append one distinct line to ``logs/janitor.jsonl``.
+
+        A committed cycle can be replayed after a process exits between its
+        workspace projection and ``mark_projected``.  ``stale_seconds`` varies
+        on replay, so deduplicate on the stable identity of a janitor finding
+        rather than on the complete serialized JSON object.
+        """
+        path = self._logs_dir(topic) / "janitor.jsonl"
+        identity_fields = ("event", "job_id", "statement", "cycle", "started_at")
+        identity = tuple(entry.get(field) for field in identity_fields)
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    existing = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(existing, dict)
+                    and tuple(existing.get(field) for field in identity_fields) == identity
+                ):
+                    return
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     # ── T-janitor: stale async-job re-claim (simplified monitor) ───────────────
@@ -717,7 +813,33 @@ class ResearchDirector:
         the loop *pivots* and keeps going — only after ``max_adaptations``
         pivots does it stop.
         """
+        ledger = self._ledger()
+        existing_run = ledger.get_run(topic)
+        if existing_run is not None:
+            # A prior process may have committed a cycle before its Markdown / JSONL
+            # projection finished. Replay that committed fact before deriving the
+            # current in-memory state from the compatibility workspace.
+            self._project_pending_ledger_events(topic, ledger, existing_run.run_id)
+
+        legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
+        config = {"n_critics": self._n_critics}
+        budget = {
+            "max_cycles": max_cycles,
+            "stagnation_cycles": stagnation_cycles,
+            "max_adaptations": max_adaptations,
+        }
+        run = ledger.get_or_create_run(
+            topic,
+            config=config,
+            budget=budget,
+            legacy_snapshot=state if legacy_projection else None,
+        )
+        if existing_run is not None:
+            ledger.record_resume(run.run_id, config=config, budget=budget)
+        transitions = TransitionService(ledger)
+        transitions.reconcile_incomplete_cycles(run.run_id)
+        transitions.start_run(run.run_id)
         session_started = time.time()
         # Agent 自写的后台作业（run_python mode=async）落进本课题工作区，check_job
         # 从同一目录轮询——长 DFT/计算因此随课题一起沉淀、可审计、可续跑。
@@ -737,12 +859,18 @@ class ResearchDirector:
         while state["cycles"] < max_cycles:
             prior = self._build_prior_context(state)
             cycle_started = time.time()
-            report, rs = await self._run_cycle(
-                topic,
-                prior,
-                prior_champion=[c["statement"] for c in state["champion"]],
-                prior_rejected=list(state["rejected"]),
-            )
+            step_id = transitions.begin_cycle(run.run_id, cycle=state["cycles"] + 1)
+            try:
+                report, rs = await self._run_cycle(
+                    topic,
+                    prior,
+                    prior_champion=[c["statement"] for c in state["champion"]],
+                    prior_rejected=list(state["rejected"]),
+                )
+            except Exception as exc:
+                transitions.fail_cycle(run.run_id, step_id=step_id, error=exc)
+                transitions.pause_run(run.run_id, reason="cycle_failed")
+                raise
             champion_before = len(state["champion"])
             cycle_result = self._absorb(state, report, rs)
             # Mode Selector: hypotheses the critic left undiscussed
@@ -753,7 +881,6 @@ class ResearchDirector:
             pending = [h.statement for h in (rs.hypotheses if rs else []) if h.status == "proposed"]
             state["pending"] = pending
             state["mode"] = "discussion" if pending else "execute"
-            self._save_cycle_trace(topic, state["cycles"], rs)
             champion_after = len(state["champion"])
             cycle_result.update(
                 {
@@ -765,16 +892,17 @@ class ResearchDirector:
                     "duration_seconds": round(time.time() - cycle_started, 2),
                 }
             )
-            # single-writer: persist semantic objects + per-cycle evidence + canonical log
-            self._save_state(topic, state)
-            self._save_cycle_result(topic, cycle_result)
-            self._log_experiment(topic, cycle_result)
-            # T7: append this cycle's critic/verifier history to per-role memory files.
-            self._save_role_memories(topic, state["cycles"], rs)
-            # T8: proposal board + critic reviews (Discussion-Before-Queuing, file form).
-            self._save_discussion(topic, state["cycles"], rs)
-            # T-janitor: flag async jobs that claimed compute but produced no result.
-            self._janitor_scan(topic, state)
+            event = transitions.complete_cycle(
+                run.run_id,
+                step_id=step_id,
+                cycle_result=cycle_result,
+                state_snapshot=state,
+                research_state=rs.model_dump() if rs is not None else None,
+            )
+            # SQLite is the durable source of truth. Only after its transaction
+            # commits do we update the pre-existing file workspace.
+            self._project_cycle(topic, state, cycle_result, rs)
+            ledger.mark_projected(run.run_id, event.event_seq)
             logger.info(
                 "[director] cycle=%d champion=%d rejected=%d no_gain=%d",
                 state["cycles"],
@@ -801,13 +929,18 @@ class ResearchDirector:
                 )
                 state["rejected"] = list(dict.fromkeys(state["rejected"]))
                 state["consecutive_no_gain"] = 0
+                event = transitions.record_state_snapshot(
+                    run.run_id, reason="stagnation_adaptation", state_snapshot=state
+                )
                 self._save_state(topic, state)
+                ledger.mark_projected(run.run_id, event.event_seq)
                 logger.info("[director] adapt #%d: pivot direction", state["adaptations"])
                 if state["adaptations"] >= max_adaptations:
                     stop_status = "max_adaptations"
                     logger.info("[director] max adaptations reached — stop")
                     break
 
+        transitions.pause_run(run.run_id, reason=stop_status)
         self._log_session(topic, state, stop_status, session_started)
         return state
 
