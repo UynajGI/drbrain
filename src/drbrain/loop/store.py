@@ -145,8 +145,7 @@ class RunLedger:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys=ON")
-            self._ensure_schema(conn)
-            conn.commit()
+            self._ensure_schema_for_read(conn)
             conn.execute("BEGIN")
             try:
                 yield conn
@@ -157,6 +156,25 @@ class RunLedger:
                 conn.commit()
         finally:
             conn.close()
+
+    def _ensure_schema_for_read(self, conn: sqlite3.Connection) -> None:
+        """Upgrade before a read only when this database is not already current."""
+        version_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_schema_versions'"
+        ).fetchone()
+        if version_table is not None:
+            row = conn.execute(
+                "SELECT MAX(version) AS version FROM ledger_schema_versions"
+            ).fetchone()
+            current = int(row["version"] or 0)
+            if current > LEDGER_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"ledger schema {current} is newer than supported {LEDGER_SCHEMA_VERSION}"
+                )
+            if current == LEDGER_SCHEMA_VERSION:
+                return
+        self._ensure_schema(conn)
+        conn.commit()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(

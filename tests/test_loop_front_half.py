@@ -90,3 +90,35 @@ def test_front_half_rejects_conflicting_proposal_or_review_replays(tmp_path):
             verdict="KEEP",
             content="sound",
         )
+
+
+def test_front_half_normalizes_contracts_and_rejects_node_contract_drift(tmp_path):
+    front_half = _front_half(tmp_path)
+    proposal = _proposal()
+    proposal["conditions"] = {"labels": ("a", "b")}
+    front_half.record_proposal(proposal, author="analyst")
+    # JSON persistence turns tuples into lists; the same live contract remains a replay.
+    front_half.record_proposal(proposal, author="analyst")
+
+    changed = FRONT_HALF_NODE_SPECS[-1].to_dict()
+    changed["max_attempts"] = int(changed["max_attempts"]) + 1
+    with pytest.raises(ValueError, match="contract conflicts"):
+        front_half.transitions.register_front_half_node_contracts(
+            front_half.run_id, {"critique": changed}
+        )
+
+
+def test_front_half_does_not_revive_a_discarded_proposal(tmp_path):
+    front_half = _front_half(tmp_path)
+    proposal = front_half.record_proposal(_proposal(), author="analyst")
+    front_half.record_review(
+        proposal["proposal_id"], reviewer="critic-1", score=0.1, verdict="DISCARD", content="weak"
+    )
+    first = front_half.settle_proposal(proposal["proposal_id"], discard_score=0.4)
+    front_half.record_review(
+        proposal["proposal_id"], reviewer="critic-2", score=0.9, verdict="KEEP", content="later"
+    )
+    replay = front_half.settle_proposal(proposal["proposal_id"], discard_score=0.4)
+
+    assert first["status"] == replay["status"] == "discarded"
+    assert replay["queue_item"]["status"] == "discarded"

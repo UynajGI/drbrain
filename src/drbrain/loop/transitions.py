@@ -450,6 +450,20 @@ class TransitionService:
                         time.time(),
                     ),
                 )
+                if cursor.rowcount == 0:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM research_front_half_node_specs
+                        WHERE run_id = ? AND node_name = ?
+                        """,
+                        (run_id, node_name),
+                    ).fetchone()
+                    if row is None or self._node_contract(
+                        dict(spec)
+                    ) != self._node_contract_from_row(row):
+                        raise ValueError(
+                            "front-half node contract conflicts with its existing record"
+                        )
                 inserted += cursor.rowcount
             if inserted:
                 self._ledger.append_event(
@@ -508,8 +522,8 @@ class TransitionService:
                     payload={"proposal_id": proposal_id, "claim_id": claim_id},
                 )
                 row = self._proposal_row(conn, proposal_id)
-            elif str(row["author"]) != author or self._proposal_contract(
-                dict(payload)
+            elif str(row["author"]) != author or self._json_roundtrip(
+                self._proposal_contract(dict(payload))
             ) != self._proposal_contract(self._json(row["payload_json"], {})):
                 raise ValueError("durable proposal replay conflicts with its existing contract")
             if row is None or str(row["run_id"]) != run_id:
@@ -588,7 +602,10 @@ class TransitionService:
                 (proposal_id,),
             ).fetchall()
             scores = [float(review["score"]) for review in reviews]
-            if not reviews:
+            if str(proposal["status"]) == "discarded":
+                status, queue_status = "discarded", "discarded"
+                score = float(proposal["review_score"] or 0.0)
+            elif not reviews:
                 status, queue_status, score = "discussion_pending", "pending_review", 0.0
             else:
                 score = round(sum(scores) / len(scores), 4)
@@ -714,6 +731,32 @@ class TransitionService:
             return json.loads(str(value)) if value else default
         except (TypeError, json.JSONDecodeError):
             return default
+
+    @staticmethod
+    def _json_roundtrip(value: Any) -> Any:
+        return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True))
+
+    @classmethod
+    def _node_contract(cls, spec: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "input_schema": cls._json_roundtrip(spec.get("input_schema", {})),
+            "output_schema": cls._json_roundtrip(spec.get("output_schema", {})),
+            "allowed_tools": cls._json_roundtrip(list(spec.get("allowed_tools", []))),
+            "max_attempts": int(spec.get("max_attempts", 0)),
+            "retry_class": str(spec.get("retry_class", "")),
+        }
+
+    @classmethod
+    def _node_contract_from_row(cls, row: Any) -> dict[str, Any]:
+        return cls._node_contract(
+            {
+                "input_schema": cls._json(row["input_schema_json"], {}),
+                "output_schema": cls._json(row["output_schema_json"], {}),
+                "allowed_tools": cls._json(row["allowed_tools_json"], []),
+                "max_attempts": row["max_attempts"],
+                "retry_class": row["retry_class"],
+            }
+        )
 
     @staticmethod
     def _proposal_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
