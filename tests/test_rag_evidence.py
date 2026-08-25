@@ -141,6 +141,11 @@ def test_retrieval_rows_bind_the_visible_excerpt_separately_from_the_full_chunk(
     assert row["content_length"] == len(full_text)
     assert row["excerpt_length"] == len(row["text"])
 
+    unscored = rag_agent._retrieval_rows(
+        [SimpleNamespace(node=node, score=None)], generation="g-1", query="stability"
+    )[0]
+    assert unscored["score"] is None
+
 
 def test_explicit_unavailable_generation_does_not_recapture_the_active_pointer(monkeypatch):
     capture = Mock(return_value="g-new-active")
@@ -171,6 +176,10 @@ def test_brokerless_rag_evidence_is_durably_recorded(monkeypatch):
     monkeypatch.setattr(
         rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
     )
+    async def immediate_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("drbrain.loop.workflow.asyncio.to_thread", immediate_to_thread)
     recorded: list[dict[str, object]] = []
     workflow = ResearchLoopWorkflow(
         cfg=object(),
@@ -290,6 +299,7 @@ def test_report_keeps_claim_to_evidence_links_and_rejects_unknown_ids():
     report = ResearchLoopWorkflow._build_template_report(state)
 
     assert "cl-1" in report
+    assert "- [cl-1] A supports B" in report
     assert "ev-1" in report
     assert "generation=g-1" in report
     assert _referenced_evidence_ids(["ev-1", "unknown", "ev-1"], {"ev-1"}) == ["ev-1"]

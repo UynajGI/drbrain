@@ -468,7 +468,11 @@ class ResearchLoopWorkflow(Workflow):
                     source="rag",
                     input_schema={
                         "type": "object",
-                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                        "properties": {
+                            "query": {"type": "string"},
+                            "limit": {"type": "integer"},
+                            "generation": {"type": "string"},
+                        },
                         "required": ["query"],
                     },
                     side_effect="read",
@@ -492,7 +496,8 @@ class ResearchLoopWorkflow(Workflow):
                 records = observation.output
                 tool_call_id = observation.tool_call_id
             else:
-                records = retrieve_documents(
+                records = await asyncio.to_thread(
+                    retrieve_documents,
                     self._cfg,
                     self._db,
                     self._graph,
@@ -598,8 +603,8 @@ class ResearchLoopWorkflow(Workflow):
         lines.append("\n## 假设（可证伪：prediction / falsification）")
         if state.hypotheses:
             for h in state.hypotheses:
-                claim_ref = f" [{h.claim_id}]" if h.claim_id else ""
-                lines.append(f"-{claim_ref} {h.statement}（score {h.score:.2f}）")
+                claim_ref = f"[{h.claim_id}] " if h.claim_id else ""
+                lines.append(f"- {claim_ref}{h.statement}（score {h.score:.2f}）")
                 if h.prediction:
                     lines.append(f"  - 支持证据：{h.prediction}")
                 if h.falsification:
@@ -624,9 +629,9 @@ class ResearchLoopWorkflow(Workflow):
             for v in state.verifications:
                 computed = f"，实算={v.computed}" if v.computed else ""
                 links = f"，evidence={','.join(v.evidence_ids)}" if v.evidence_ids else ""
-                claim_ref = f" [{v.claim_id}]" if v.claim_id else ""
+                claim_ref = f"[{v.claim_id}] " if v.claim_id else ""
                 lines.append(
-                    f"-{claim_ref} {v.statement}：supports={v.supports}, refutes={v.refutes}, "
+                    f"- {claim_ref}{v.statement}：supports={v.supports}, refutes={v.refutes}, "
                     f"orthogonal={v.orthogonal} → {v.status}{links}{computed}"
                 )
         else:

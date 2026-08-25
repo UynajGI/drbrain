@@ -577,7 +577,7 @@ def _retrieval_rows(
                 query=query,
                 retriever="fusion",
                 rank=rank,
-                score=float(score or 0.0),
+                score=score,
                 source={**row, "text": full_text},
                 filters=filters,
                 excerpt=str(row["text"]),
