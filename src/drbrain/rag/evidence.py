@@ -46,18 +46,20 @@ def build_evidence_record(
     score: float,
     source: Mapping[str, Any],
     filters: Mapping[str, Any] | None = None,
+    excerpt: str | None = None,
 ) -> dict[str, Any]:
     """Build additive, stable provenance fields for one retrieved passage.
 
     ``source`` remains caller-owned and is never mutated.  The identifier binds
-    a logical index snapshot, the document/chunk locator, and the exact content
-    returned to the model; a published later generation consequently cannot
-    masquerade as evidence from an in-flight run.
+    a logical index snapshot, the document/chunk locator, and the full indexed
+    chunk. ``excerpt`` is additive: it records the smaller passage delivered to
+    a model without weakening the canonical full-chunk checksum.
     """
     paper_id = str(source.get("paper_id") or "").strip()
     node_id = str(source.get("node_id") or "").strip()
     title = str(source.get("title") or "").strip()
     text = str(source.get("text") or "")
+    visible_excerpt = text if excerpt is None else str(excerpt)
     resolved_generation = str(generation or "legacy").strip() or "legacy"
     content_checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
     document_locator = {"paper_id": paper_id, "title": title}
@@ -75,6 +77,9 @@ def build_evidence_record(
         "document_locator": document_locator,
         "chunk_locator": chunk_locator,
         "content_checksum": content_checksum,
+        "excerpt_checksum": hashlib.sha256(visible_excerpt.encode("utf-8")).hexdigest(),
+        "content_length": len(text),
+        "excerpt_length": len(visible_excerpt),
         "query": str(query),
         "filters": dict(filters or {}),
         "retriever": str(retriever),

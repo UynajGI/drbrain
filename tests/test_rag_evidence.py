@@ -1,8 +1,17 @@
+import asyncio
+import hashlib
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from drbrain.loop.events import Evidence, EvidenceBundle, Hypothesis, ResearchState, Verification
+from drbrain.loop.events import (
+    Computed,
+    Evidence,
+    EvidenceBundle,
+    Hypothesis,
+    ResearchState,
+    Verification,
+)
 from drbrain.loop.workflow import (
     ResearchLoopWorkflow,
     _has_required_evidence,
@@ -85,6 +94,154 @@ def test_retrieve_documents_refuses_an_invalid_active_pointer(monkeypatch):
 
     assert rag_agent.retrieve_documents(object(), object(), object(), "perovskite") == []
     get_retrievers.assert_not_called()
+
+
+def test_resolved_generation_only_uses_persisted_retrievers(monkeypatch):
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(indexer, "capture_index_generation", lambda _cfg: "g-pinned")
+
+    def get_retrievers(*_args, **kwargs):
+        observed.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
+
+    assert rag_agent.retrieve_documents(object(), object(), object(), "perovskite") == []
+    assert observed == {"generation": "g-pinned", "generation_backed_only": True}
+
+
+def test_retrieval_tool_uses_the_resolved_generation_for_its_legs(monkeypatch):
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(indexer, "capture_index_generation", lambda _cfg: "g-pinned")
+
+    def get_retrievers(*_args, **kwargs):
+        observed.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
+
+    assert rag_agent._build_retrieval_tool(object(), object(), object()) is None
+    assert observed == {"generation": "g-pinned", "generation_backed_only": True}
+
+
+def test_retrieval_rows_bind_the_visible_excerpt_separately_from_the_full_chunk():
+    full_text = "a" * 501
+    node = SimpleNamespace(
+        metadata={"paper_id": "paper-1", "node_id": "section-2", "title": "Stability"},
+        get_content=lambda: full_text,
+    )
+
+    row = rag_agent._retrieval_rows(
+        [SimpleNamespace(node=node, score=0.9)], generation="g-1", query="stability"
+    )[0]
+
+    assert row["text"] == full_text[:500]
+    assert row["content_checksum"] == hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+    assert row["excerpt_checksum"] == hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+    assert row["content_length"] == len(full_text)
+    assert row["excerpt_length"] == len(row["text"])
+
+
+def test_explicit_unavailable_generation_does_not_recapture_the_active_pointer(monkeypatch):
+    capture = Mock(return_value="g-new-active")
+    monkeypatch.setattr(indexer, "capture_index_generation", capture)
+
+    workflow = ResearchLoopWorkflow(cfg=object(), rag_generation=None)
+
+    assert workflow._rag_generation is None
+    capture.assert_not_called()
+
+
+def _pinned_record() -> dict[str, object]:
+    return {
+        "evidence_id": "ev-1",
+        "generation": "g-1",
+        "document_locator": {"paper_id": "paper-1", "title": "Stability"},
+        "chunk_locator": {"node_id": "section-2"},
+        "content_checksum": "a" * 64,
+        "query": "stability",
+        "retriever": "fusion",
+        "rank": 1,
+        "score": 0.9,
+        "text": "Stable passage",
+    }
+
+
+def test_brokerless_rag_evidence_is_durably_recorded(monkeypatch):
+    monkeypatch.setattr(
+        rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
+    )
+    recorded: list[dict[str, object]] = []
+    workflow = ResearchLoopWorkflow(
+        cfg=object(),
+        db=object(),
+        graph=object(),
+        rag_generation="g-1",
+        evidence_recorder=recorded.append,
+    )
+
+    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+
+    assert titles == ["Stability"]
+    assert bundle is not None
+    assert bundle.tool_call_id.startswith("rag-")
+    assert recorded == [bundle.model_dump(mode="json")]
+
+
+def test_brokerless_evidence_write_failure_is_fail_closed(monkeypatch):
+    monkeypatch.setattr(
+        rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
+    )
+
+    def fail_record(_bundle):
+        raise OSError("ledger unavailable")
+
+    workflow = ResearchLoopWorkflow(
+        cfg=object(),
+        db=object(),
+        graph=object(),
+        rag_generation="g-1",
+        evidence_recorder=fail_record,
+    )
+
+    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None)
+
+
+def test_verifier_accepts_a_claim_id_when_the_model_omits_the_statement(monkeypatch):
+    hypothesis = Hypothesis(claim_id="cl-1", statement="Canonical claim", status="critiqued")
+    evidence = Evidence(evidence_id="ev-1", generation="g-1")
+    state = ResearchState(
+        evidence=[evidence],
+        evidence_bundles=[
+            EvidenceBundle(bundle_id="eb-1", records=[evidence], evidence_ids=["ev-1"])
+        ],
+    )
+
+    class Store:
+        async def get(self, key, default=None):
+            return state if key == "research_state" else default
+
+        async def set(self, _key, _value):
+            return None
+
+    workflow = ResearchLoopWorkflow()
+    monkeypatch.setattr(workflow, "build_node_agent", lambda **_kwargs: object())
+    monkeypatch.setattr(workflow, "_has_compute_tools", lambda _agent: False)
+
+    async def verifier_result(*_args, **_kwargs):
+        return {
+            "verifications": [
+                {"claim_id": "cl-1", "evidence_ids": ["ev-1"], "supports": 1, "refutes": 0}
+            ]
+        }
+
+    monkeypatch.setattr(workflow, "run_agent_json", verifier_result)
+    result = asyncio.run(
+        workflow.verify(SimpleNamespace(store=Store()), Computed(hypotheses=[hypothesis]))
+    )
+
+    assert result.verifications[0].claim_id == "cl-1"
+    assert result.verifications[0].statement == "Canonical claim"
 
 
 def test_pinned_generation_lookup_does_not_follow_a_new_active_pointer(tmp_path):
