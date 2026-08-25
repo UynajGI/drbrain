@@ -70,12 +70,15 @@ except ImportError:  # pragma: no cover - envs without llama-index
 
 __all__ = [
     "_LLAMA_INDEX_AVAILABLE",
+    "LEGACY_INDEX_GENERATION",
     "MANIFEST_NAME",
     "build_index",
+    "capture_index_generation",
     "collect_tree_nodes",
     "get_active_index_generation",
     "get_index_health",
     "load_index",
+    "retain_index_generation",
 ]
 
 #: Layer tag stored on PageIndex nodes (mirrors ``tree_vectors.tree_layer``).
@@ -86,10 +89,16 @@ MANIFEST_NAME = "manifest.json"
 ACTIVE_POINTER_NAME = "active.json"
 #: Directory holding immutable, fully-built index generations.
 GENERATIONS_DIR_NAME = "generations"
+#: Explicit snapshot label for the pre-generation flat storage layout.
+LEGACY_INDEX_GENERATION = "legacy"
 #: Completed generations retained for rollback and in-flight readers.
 GENERATION_RETAIN_COUNT = 3
 #: Minimum completed-generation age before automatic retention pruning.
 GENERATION_PRUNE_GRACE_SECONDS = 3600.0
+#: Durable autoresearch run -> immutable generation references.
+GENERATION_REFERENCES_NAME = "generation-references.json"
+#: Per-run references avoid read-modify-write races between concurrent directors.
+GENERATION_REFERENCES_DIR_NAME = "generation-references"
 #: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
 #: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
 #: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
@@ -374,6 +383,34 @@ def get_active_index_generation(cfg: Config) -> str | None:
     return active[1] if active is not None else None
 
 
+def capture_index_generation(cfg: Config) -> str | None:
+    """Capture the snapshot a long-running caller must keep using.
+
+    ``get_active_index_generation`` keeps its historic ``None`` return for both
+    a legacy flat index and an invalid pointer. Durable callers need to
+    distinguish them: only a missing pointer is the explicit ``"legacy"``
+    snapshot; a malformed or dangling pointer remains unavailable/fail-closed.
+    """
+    active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
+    if active is None:
+        return None
+    return active[1] or LEGACY_INDEX_GENERATION
+
+
+def _storage_root_for_generation(storage_dir: str | Path, generation: str | None) -> Path | None:
+    """Resolve an optional immutable snapshot without following a newer pointer."""
+    root = Path(storage_dir)
+    if generation is None:
+        active = _active_storage_root(root)
+        return active[0] if active is not None else None
+    if generation == LEGACY_INDEX_GENERATION:
+        return root
+    if not generation or Path(generation).name != generation:
+        return None
+    candidate = root / GENERATIONS_DIR_NAME / generation
+    return candidate if candidate.is_dir() else None
+
+
 def _new_generation_id() -> str:
     return f"g-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
 
@@ -432,12 +469,100 @@ def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
     _write_json_atomically(Path(storage_dir) / MANIFEST_NAME, manifest)
 
 
+def _generation_references(storage_root: Path) -> dict[str, str] | None:
+    """Read durable run references, returning ``None`` for unsafe control data."""
+    references: dict[str, str] = {}
+    # Read the first PR's single-file shape as a compatibility input, but write
+    # only isolated run files below so concurrent run creation cannot lose refs.
+    legacy_path = storage_root / GENERATION_REFERENCES_NAME
+    if legacy_path.exists():
+        try:
+            legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.error("[rag] generation references are unreadable at %s", legacy_path)
+            return None
+        raw = legacy_payload.get("references", {}) if isinstance(legacy_payload, dict) else {}
+        if not isinstance(raw, dict):
+            logger.error("[rag] generation references are malformed at %s", legacy_path)
+            return None
+        references.update(
+            {
+                str(run_id): str(generation)
+                for run_id, generation in raw.items()
+                if str(run_id).strip() and str(generation).strip()
+            }
+        )
+
+    references_dir = storage_root / GENERATION_REFERENCES_DIR_NAME
+    if not references_dir.exists():
+        return references
+    try:
+        paths = sorted(references_dir.glob("*.json"))
+    except OSError:
+        logger.error("[rag] generation reference directory is unreadable at %s", references_dir)
+        return None
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.error("[rag] generation reference is unreadable at %s", path)
+            return None
+        if not isinstance(payload, dict):
+            logger.error("[rag] generation reference is malformed at %s", path)
+            return None
+        run_id = str(payload.get("run_id") or "").strip()
+        generation = str(payload.get("generation") or "").strip()
+        if not run_id or not generation:
+            logger.error("[rag] generation reference is malformed at %s", path)
+            return None
+        references[run_id] = generation
+    return references
+
+
+def _referenced_generations(storage_root: Path) -> set[str]:
+    """Return immutable snapshots still required by durable autoresearch runs."""
+    references = _generation_references(storage_root)
+    if references is not None:
+        return set(references.values())
+    # A damaged retention ledger must not become permission to delete audit
+    # evidence. Keep all completed snapshots until an operator repairs it.
+    generations_root = storage_root / GENERATIONS_DIR_NAME
+    try:
+        return {
+            child.name
+            for child in generations_root.iterdir()
+            if child.is_dir() and child.name.startswith("g-")
+        }
+    except OSError:
+        return set()
+
+
+def retain_index_generation(cfg: Config, generation: str | None, run_id: str) -> bool:
+    """Durably retain a run's index snapshot without introducing another service."""
+    resolved_generation = str(generation or "").strip()
+    if not resolved_generation or resolved_generation == LEGACY_INDEX_GENERATION:
+        return False
+    storage_root = Path(get_llamaindex_config(cfg).storage_dir)
+    generation_root = storage_root / GENERATIONS_DIR_NAME / resolved_generation
+    if not generation_root.is_dir():
+        raise RuntimeError(f"cannot retain unavailable index generation {resolved_generation!r}")
+    if _generation_references(storage_root) is None:
+        raise RuntimeError("cannot update unreadable generation references")
+    reference_name = hashlib.sha256(str(run_id).encode("utf-8")).hexdigest() + ".json"
+    _write_json_atomically(
+        storage_root / GENERATION_REFERENCES_DIR_NAME / reference_name,
+        {"run_id": str(run_id), "generation": resolved_generation},
+    )
+    return True
+
+
 def _prune_inactive_generations(
     storage_root: Path,
     active_generation: str,
     *,
     retain_count: int = GENERATION_RETAIN_COUNT,
     grace_seconds: float = GENERATION_PRUNE_GRACE_SECONDS,
+    protected_generations: Iterable[str] = (),
 ) -> list[str]:
     """Bound completed snapshots while retaining a reader/rollback window.
 
@@ -454,6 +579,7 @@ def _prune_inactive_generations(
     completed = [child for child in entries if child.is_dir() and child.name.startswith("g-")]
     completed.sort(key=lambda child: child.stat().st_mtime, reverse=True)
     protected = {active_generation}
+    protected.update(str(generation) for generation in protected_generations if str(generation))
     for child in completed:
         if len(protected) >= retain_count:
             break
@@ -794,7 +920,11 @@ def build_index(
             "[rag] published generation %s but could not mirror manifest: %s", generation, exc
         )
     try:
-        stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
+        stats["pruned_generations"] = _prune_inactive_generations(
+            storage_root,
+            generation,
+            protected_generations=_referenced_generations(storage_root),
+        )
     except OSError as exc:
         logger.warning(
             "[rag] published generation %s but could not prune stale generations: %s",
@@ -813,22 +943,33 @@ def build_index(
 def load_index(
     cfg: Config,
     embed_model: Any | None = None,
+    *,
+    generation: str | None = None,
 ) -> tuple[Any | None, Any | None]:
     """Load the persisted ``(VectorStoreIndex, BM25Retriever)`` from disk.
 
     Returns ``(None, None)`` when llama-index is unavailable or no index has
     been built yet. The embed model defaults to the T1 DrbrainEmbedding
     adapter (lazy — no model load happens here unless a query embeds).
+
+    ``generation`` is additive.  When supplied it resolves that immutable
+    generation (or the explicit ``"legacy"`` snapshot) instead of following
+    ``active.json``; callers that omit it keep the historic active-pointer
+    behavior.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         return None, None
 
     li = get_llamaindex_config(cfg)
-    active_store = _active_storage_root(li.storage_dir)
-    if active_store is None:
-        logger.error("[rag] active generation pointer is invalid at %s", li.storage_dir)
+    active_root = _storage_root_for_generation(li.storage_dir, generation)
+    if active_root is None:
+        if generation is None:
+            logger.error("[rag] active generation pointer is invalid at %s", li.storage_dir)
+        else:
+            logger.error(
+                "[rag] requested generation %r is unavailable at %s", generation, li.storage_dir
+            )
         return None, None
-    active_root, _ = active_store
     _, vector_dir, bm25_dir = _storage_dirs(active_root)
     embed = embed_model or _default_embed_model(cfg)
     top_k = cfg.embed.top_k or 10

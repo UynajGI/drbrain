@@ -13,14 +13,14 @@ import time
 import uuid
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 3
+LEDGER_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,8 @@ class LedgerRun:
     topic: str
     status: str
     last_projected_event: int
+    # Default preserves direct construction by older callers.
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,14 @@ class RunLedger:
             raise RuntimeError(
                 f"ledger schema {current} is newer than supported {LEDGER_SCHEMA_VERSION}"
             )
+        run_columns = {
+            str(column["name"])
+            for column in conn.execute("PRAGMA table_info(research_runs)").fetchall()
+        }
+        if "config_json" not in run_columns:
+            conn.execute(
+                "ALTER TABLE research_runs ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'"
+            )
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, ?)",
@@ -280,7 +290,7 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event
+                SELECT run_id, topic, status, last_projected_event, config_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
@@ -299,7 +309,7 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event
+                SELECT run_id, topic, status, last_projected_event, config_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
@@ -344,7 +354,7 @@ class RunLedger:
                     event_type="legacy_snapshot_imported",
                     payload={"state": dict(legacy_snapshot)},
                 )
-            return LedgerRun(run_id, topic, RUN_CREATED, 0)
+            return LedgerRun(run_id, topic, RUN_CREATED, 0, dict(config or {}))
 
     def record_resume(
         self,
@@ -378,6 +388,26 @@ class RunLedger:
                     "config": dict(config),
                     "budget": dict(budget),
                 },
+            )
+
+    def record_rag_evidence_disabled(
+        self,
+        run_id: str,
+        *,
+        generation: str,
+        reason: str = "retention_unavailable",
+    ) -> LedgerEvent:
+        """Append a fail-closed RAG downgrade without rewriting the run specification."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            return self.append_event(
+                conn,
+                run_id,
+                actor="director",
+                event_type="rag_evidence_disabled",
+                payload={"generation": generation, "reason": reason},
             )
 
     def append_event(
@@ -657,6 +687,36 @@ class RunLedger:
             ).fetchone()
             assert updated is not None  # protected by the update above
             return self._tool_call_from_row(updated)
+
+    def record_evidence_bundle(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        bundle: Mapping[str, Any],
+    ) -> None:
+        """Append generation-pinned retrieval evidence to the durable event trail."""
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="rag_evidence",
+                event_type="rag_evidence_recorded",
+                payload={
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "bundle": dict(bundle),
+                },
+            )
 
     def renew_lease(
         self,
@@ -1051,11 +1111,13 @@ class RunLedger:
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
             return None
+        config = _from_json(row["config_json"], {})
         return LedgerRun(
             run_id=str(row["run_id"]),
             topic=str(row["topic"]),
             status=str(row["status"]),
             last_projected_event=int(row["last_projected_event"]),
+            config=dict(config) if isinstance(config, Mapping) else {},
         )
 
     @staticmethod
