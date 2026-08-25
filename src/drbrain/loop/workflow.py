@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import re
-import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -448,11 +447,15 @@ class ResearchLoopWorkflow(Workflow):
                     arguments=arguments,
                     executor=lambda: registry.call("search_papers", arguments),
                 )
+                if observation.execution_blocked:
+                    raise RunExecutionBlockedError(observation.error or "direct search was blocked")
                 if not observation.ok or not isinstance(observation.output, dict):
                     return []
                 papers = observation.output.get("papers", []) or []
                 return [str(p.get("title", "")).strip() for p in papers if p.get("title")]
             result = registry.call("search_papers", arguments)
+        except RunExecutionBlockedError:
+            raise
         except Exception:  # noqa: BLE001 — plugin absence must not break the loop
             return []
         if not getattr(result, "ok", False) or not isinstance(getattr(result, "data", None), dict):
@@ -466,13 +469,18 @@ class ResearchLoopWorkflow(Workflow):
         """Retrieve generation-pinned documents and retain their audit links."""
         if self._cfg is None or not self._rag_generation:
             return [], None
-        if self._tool_broker is None and not await self._reserve_budget({"rag_calls": 1}):
+        # Generation-pinned evidence must never enter reports or state without
+        # its durable bundle. Avoid paying an embedding/retrieval call when an
+        # in-memory compatibility run cannot retain that bundle at all.
+        if self._tool_broker is None and self._evidence_recorder is None:
             return [], None
+        if self._tool_broker is None:
+            await self._reserve_budget({"rag_calls": 1})
         try:
             from drbrain.rag.agent import retrieve_documents
 
             arguments = {"query": query, "limit": limit, "generation": self._rag_generation}
-            tool_call_id = f"rag-{uuid.uuid4().hex}"
+            tool_call_id: str | None = None
             if self._tool_broker is not None:
                 definition = ToolDefinition(
                     name="search_documents",
@@ -503,6 +511,10 @@ class ResearchLoopWorkflow(Workflow):
                         top_k=limit,
                     ),
                 )
+                if observation.execution_blocked:
+                    raise RunExecutionBlockedError(
+                        observation.error or "generation-pinned RAG retrieval was blocked"
+                    )
                 if not observation.ok or not isinstance(observation.output, list):
                     return [], None
                 records = observation.output
@@ -517,6 +529,8 @@ class ResearchLoopWorkflow(Workflow):
                     generation=self._rag_generation,
                     top_k=limit,
                 )
+        except RunExecutionBlockedError:
+            raise
         except Exception as exc:  # noqa: BLE001 - optional retrieval must not stop the loop
             logger.warning("[loop] generation-pinned RAG retrieval failed: %s", exc)
             return [], None
@@ -534,6 +548,19 @@ class ResearchLoopWorkflow(Workflow):
         if not evidence:
             return [], None
         evidence_ids = [item.evidence_id for item in evidence if item.evidence_id]
+        if tool_call_id is None:
+            # Brokerless evidence has no tool row. Derive a stable synthetic ID
+            # so checkpoint replay collapses to the same durable bundle.
+            tool_call_id = (
+                "rag-"
+                + hashlib.sha256(
+                    json.dumps(
+                        {"generation": self._rag_generation, "query": query, "ids": evidence_ids},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).hexdigest()[:24]
+            )
         bundle_id_input = json.dumps(
             {
                 "generation": self._rag_generation,
@@ -779,10 +806,41 @@ class ResearchLoopWorkflow(Workflow):
         """
         if agent is None:
             return None
-        if not await self._reserve_budget({"model_calls": 1}):
-            return None
-        handler = agent.run(user_msg=user_msg, max_iterations=max(1, int(max_iterations)))
-        result = await handler
+        original_take_step = getattr(agent, "take_step", None)
+        agent_dict = getattr(agent, "__dict__", {})
+        previous_override = agent_dict.get("take_step")
+        had_override = "take_step" in agent_dict
+        wrapped = False
+        if callable(original_take_step):
+
+            async def budgeted_take_step(*args: Any, **kwargs: Any) -> Any:
+                # FunctionAgent.take_step performs exactly one LLM request. A
+                # local wrapper keeps accounting scoped to this workflow rather
+                # than registering a process-global LlamaIndex event handler.
+                await self._reserve_budget({"model_calls": 1})
+                result = original_take_step(*args, **kwargs)
+                if hasattr(result, "__await__"):
+                    return await result
+                return result
+
+            try:
+                object.__setattr__(agent, "take_step", budgeted_take_step)
+                wrapped = True
+            except (AttributeError, TypeError):
+                # Some third-party agents prohibit instance method shadowing.
+                # Keep their historic one-call contract as a conservative fallback.
+                await self._reserve_budget({"model_calls": 1})
+        else:
+            await self._reserve_budget({"model_calls": 1})
+        try:
+            handler = agent.run(user_msg=user_msg, max_iterations=max(1, int(max_iterations)))
+            result = await handler
+        finally:
+            if wrapped:
+                if had_override:
+                    object.__setattr__(agent, "take_step", previous_override)
+                else:
+                    object.__delattr__(agent, "take_step")
         response = getattr(result, "response", None)
         answer = ""
         if response is not None:
@@ -816,16 +874,11 @@ class ResearchLoopWorkflow(Workflow):
                 )
         return None
 
-    async def _reserve_budget(self, amounts: dict[str, int | float]) -> bool:
+    async def _reserve_budget(self, amounts: dict[str, int | float]) -> None:
         """Block a new model/RAG call once durable governance disallows it."""
         if self._budget_reserver is None:
-            return True
-        try:
-            await asyncio.to_thread(self._budget_reserver, amounts)
-        except RunExecutionBlockedError as exc:
-            logger.warning("[loop] execution boundary blocked: %s", exc)
-            return False
-        return True
+            return
+        await asyncio.to_thread(self._budget_reserver, amounts)
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)

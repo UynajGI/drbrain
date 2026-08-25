@@ -1286,6 +1286,23 @@ class ResearchDirector:
                     prior_rejected=list(state["rejected"]),
                 )
                 checkpoint_id = self._active_checkpoint_id
+            except RunExecutionBlockedError as exc:
+                current = ledger.get_run_by_id(run.run_id)
+                if current is not None and current.status == "failed":
+                    transitions.fail_cycle(
+                        run.run_id,
+                        step_id=step_id,
+                        error=exc,
+                        worker_id=self._worker_id,
+                    )
+                    stop_status = "budget_exhausted"
+                    logger.info("[director] runtime budget exhausted: %s", exc)
+                    break
+                if current is not None and current.status == "cancelled":
+                    stop_status = "cancelled"
+                    logger.info("[director] cycle cancelled while executing: %s", exc)
+                    break
+                raise
             except CheckpointError as exc:
                 transitions.mark_manual_review(run.run_id, step_id=step_id, reason=str(exc))
                 transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
@@ -1302,6 +1319,26 @@ class ResearchDirector:
             finally:
                 self._active_checkpoint = None
                 self._active_checkpoint_id = None
+            current = ledger.get_run_by_id(run.run_id)
+            if current is None:  # pragma: no cover - run identity is durable
+                raise RuntimeError(f"durable run {run.run_id!r} disappeared")
+            if current.status != "running":
+                if current.status == "failed":
+                    transitions.fail_cycle(
+                        run.run_id,
+                        step_id=step_id,
+                        error=RunExecutionBlockedError(
+                            "run failed at a governed execution boundary"
+                        ),
+                        worker_id=self._worker_id,
+                    )
+                    stop_status = "budget_exhausted"
+                elif current.status == "cancelled":
+                    stop_status = "cancelled"
+                else:
+                    stop_status = current.status
+                logger.info("[director] do not project terminal run state: %s", current.status)
+                break
             champion_before = len(state["champion"])
             cycle_result = self._absorb(state, report, rs)
             # Mode Selector: hypotheses the critic left undiscussed
@@ -1323,15 +1360,23 @@ class ResearchDirector:
                     "duration_seconds": round(time.time() - cycle_started, 2),
                 }
             )
-            event = transitions.complete_cycle(
-                run.run_id,
-                step_id=step_id,
-                cycle_result=cycle_result,
-                state_snapshot=state,
-                research_state=rs.model_dump() if rs is not None else None,
-                checkpoint_id=checkpoint_id,
-                worker_id=self._worker_id,
-            )
+            try:
+                event = transitions.complete_cycle(
+                    run.run_id,
+                    step_id=step_id,
+                    cycle_result=cycle_result,
+                    state_snapshot=state,
+                    research_state=rs.model_dump() if rs is not None else None,
+                    checkpoint_id=checkpoint_id,
+                    worker_id=self._worker_id,
+                )
+            except RunExecutionBlockedError:
+                current = ledger.get_run_by_id(run.run_id)
+                if current is not None and current.status in {"failed", "cancelled"}:
+                    stop_status = "budget_exhausted" if current.status == "failed" else "cancelled"
+                    logger.info("[director] terminal run won cycle completion: %s", current.status)
+                    break
+                raise
             # SQLite is the durable source of truth. Only after its transaction
             # commits do we update the pre-existing file workspace.
             self._project_cycle(topic, state, cycle_result, rs)
