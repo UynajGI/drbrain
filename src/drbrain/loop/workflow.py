@@ -57,6 +57,7 @@ from drbrain.loop.events import (
     Verification,
     Verified,
 )
+from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
 from drbrain.loop.tool_broker import ToolBroker
 
@@ -312,6 +313,7 @@ class ResearchLoopWorkflow(Workflow):
         tool_policy: ToolPolicy | None = None,
         rag_generation: str | None | _UnsetRagGeneration = _RAG_GENERATION_UNSET,
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
+        durable_front_half: DurableFrontHalf | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -326,6 +328,7 @@ class ResearchLoopWorkflow(Workflow):
         self._graph = graph
         self._tool_broker = tool_broker
         self._evidence_recorder = evidence_recorder
+        self._durable_front_half = durable_front_half
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
@@ -975,15 +978,28 @@ class ResearchLoopWorkflow(Workflow):
         # prediction is not a hypothesis, and statements/predictions repeating prior
         # champion/dead-ends are re-proposals — drop both in code instead of sending
         # filler downstream.
+        prior_claim_ids = {
+            _claim_id(statement) for statement in prior_statements if statement.strip()
+        }
+        seen_claim_ids: set[str] = set()
         kept: list[Hypothesis] = []
         for h in hypotheses:
             if not h.statement or not h.prediction:
                 continue
-            if prior_statements and _is_duplicate_proposal(h.statement, prior_statements):
+            stable_claim_id = h.claim_id or _claim_id(h.statement)
+            if stable_claim_id in prior_claim_ids or stable_claim_id in seen_claim_ids:
                 continue
-            if prior_statements and _is_duplicate_proposal(h.prediction, prior_statements):
-                continue
-            kept.append(h)
+            # Text overlap is a candidate-match signal only.  Its durable claim
+            # identity, not similarity, decides whether a proposal is repeated.
+            if prior_statements and (
+                _is_duplicate_proposal(h.statement, prior_statements)
+                or _is_duplicate_proposal(h.prediction, prior_statements)
+            ):
+                logger.info(
+                    "[loop] identify_gaps: proposal %s has historical text overlap", stable_claim_id
+                )
+            seen_claim_ids.add(stable_claim_id)
+            kept.append(h.model_copy(update={"claim_id": stable_claim_id}))
         dropped = len(hypotheses) - len(kept)
         if dropped:
             logger.info(
@@ -1035,9 +1051,54 @@ class ResearchLoopWorkflow(Workflow):
         queue = self._queue
 
         # 1. 分析师（proposer）把每个假设作为 [PROPOSAL] 发到消息板。
+        hypotheses_to_review: list[Hypothesis] = []
         post_ids: dict[str, str] = {}
+        statement_claim_ids: dict[str, str] = {}
+        if self._durable_front_half is not None:
+            await asyncio.to_thread(self._durable_front_half.ensure_node_contracts)
         for h in ev.hypotheses:
-            post_ids[h.statement] = board.post(POST_PROPOSAL, author="analyst", content=h.statement)
+            if not h.claim_id:
+                h = h.model_copy(update={"claim_id": _claim_id(h.statement)})
+            if h.claim_id in post_ids:
+                logger.warning("[loop] critique: skipped duplicate durable claim %s", h.claim_id)
+                continue
+            if self._durable_front_half is None:
+                post_id = board.post(POST_PROPOSAL, author="analyst", content=h.statement)
+            else:
+                proposal = await asyncio.to_thread(
+                    self._durable_front_half.record_proposal,
+                    h.model_dump(mode="json"),
+                    author="analyst",
+                )
+                post_id = str(proposal["proposal_id"])
+                h = h.model_copy(update={"proposal_id": post_id})
+                board.post(POST_PROPOSAL, author="analyst", content=h.statement, post_id=post_id)
+            post_ids[h.claim_id] = post_id
+            statement_claim_ids[_claim_id(h.statement)] = h.claim_id
+            hypotheses_to_review.append(h)
+        if self._durable_front_half is not None:
+            snapshot = await asyncio.to_thread(self._durable_front_half.snapshot)
+            for proposal in snapshot["proposals"]:
+                post_id = str(proposal["proposal_id"])
+                payload = proposal.get("payload", {})
+                if isinstance(payload, Mapping):
+                    statement = str(payload.get("statement", ""))
+                    if statement.strip():
+                        board.post(
+                            POST_PROPOSAL,
+                            author=str(proposal["author"]),
+                            content=statement,
+                            post_id=post_id,
+                        )
+                for review in proposal["reviews"]:
+                    board.comment(
+                        post_id,
+                        author=str(review["reviewer"]),
+                        content=str(review["content"]),
+                        score=float(review["score"]),
+                        verdict=str(review["verdict"]),
+                        comment_id=str(review["review_id"]),
+                    )
 
         # 2. 并发 N 个独立 critic agent（非作者 reviewer）对同一批假设评论。
         critic_history = _read_role_history(
@@ -1046,10 +1107,10 @@ class ResearchLoopWorkflow(Workflow):
         critic_names = [f"critic-{i + 1}" for i in range(self._n_critics)]
         agents = [self.build_node_agent(role="critic", step_name="critique") for _ in critic_names]
         pairs = [(name, agent) for name, agent in zip(critic_names, agents) if agent is not None]
-        if pairs and ev.hypotheses:
+        if pairs and hypotheses_to_review:
             results = await asyncio.gather(
                 *[
-                    self._run_critic(agent, name, ev.hypotheses, critic_history)
+                    self._run_critic(agent, name, hypotheses_to_review, critic_history)
                     for name, agent in pairs
                 ]
             )
@@ -1064,21 +1125,73 @@ class ResearchLoopWorkflow(Workflow):
                 if not isinstance(raw, dict):
                     continue
                 stmt = str(raw.get("statement", "")).strip()
-                if stmt not in post_ids:
+                claim_id = statement_claim_ids.get(_claim_id(stmt))
+                if claim_id is None:
                     continue
                 score = float(raw.get("score", 0.0) or 0.0)
                 flaw = str(raw.get("flaw", "") or "").strip()
                 verdict = "DISCARD" if score < CRITIQUE_DISCARD_SCORE else "KEEP"
-                board.comment(
-                    post_ids[stmt], author=name, content=flaw, score=score, verdict=verdict
-                )
+                post_id = post_ids[claim_id]
+                if self._durable_front_half is None:
+                    board.comment(post_id, author=name, content=flaw, score=score, verdict=verdict)
+                else:
+                    review = await asyncio.to_thread(
+                        self._durable_front_half.record_review,
+                        post_id,
+                        reviewer=name,
+                        score=score,
+                        verdict=verdict,
+                        content=flaw,
+                    )
+                    board.comment(
+                        post_id,
+                        author=str(review["reviewer"]),
+                        content=str(review["content"]),
+                        score=float(review["score"]),
+                        verdict=str(review["verdict"]),
+                        comment_id=str(review["review_id"]),
+                    )
 
         # 4. 讨论门：收到 ≥1 非作者评论才入队（可被 compute claim），否则标
         #    discussion_pending（compute 拒绝 claim，对齐 ROLE-GPU Step 3）。
         hypotheses: list[Hypothesis] = []
         discussed = 0
-        for h in ev.hypotheses:
-            non_author = board.non_author_comments(post_ids[h.statement], author="analyst")
+        for h in hypotheses_to_review:
+            if self._durable_front_half is not None:
+                decision = await asyncio.to_thread(
+                    self._durable_front_half.settle_proposal,
+                    post_ids[h.claim_id],
+                    discard_score=CRITIQUE_DISCARD_SCORE,
+                )
+                queue_item = dict(decision["queue_item"])
+                decision_status = str(decision["status"])
+                score = float(decision["score"])
+                if decision_status != "discussion_pending":
+                    discussed += 1
+                status = "proposed" if decision_status == "discussion_pending" else decision_status
+                h_new = h.model_copy(
+                    update={
+                        "status": status,
+                        "score": score,
+                        "queue_item_id": str(queue_item["queue_item_id"]),
+                    }
+                )
+                if decision_status != "discarded":
+                    queue.add(
+                        QueueItem(
+                            id=str(queue_item["queue_item_id"]),
+                            statement=h.statement,
+                            proposed_by="analyst",
+                            discussion_pending=str(queue_item["status"]) != "ready",
+                            score=score,
+                            hypothesis=h_new,
+                        )
+                    )
+                else:
+                    queue.remove_pending(str(queue_item["queue_item_id"]))
+                hypotheses.append(h_new)
+                continue
+            non_author = board.non_author_comments(post_ids[h.claim_id], author="analyst")
             scores = [c.score for c in non_author if c.score is not None]
             if non_author:
                 discussed += 1
@@ -1098,7 +1211,7 @@ class ResearchLoopWorkflow(Workflow):
                     # 讨论门通过 → 入队（可被 compute claim）。
                     queue.add(
                         QueueItem(
-                            id=post_ids[h.statement],
+                            id=post_ids[h.claim_id],
                             statement=h.statement,
                             proposed_by="analyst",
                             discussion_pending=False,
@@ -1112,7 +1225,7 @@ class ResearchLoopWorkflow(Workflow):
                 h_new = h.model_copy(update={"status": "proposed", "score": 0.0})
                 queue.add(
                     QueueItem(
-                        id=post_ids[h.statement],
+                        id=post_ids[h.claim_id],
                         statement=h.statement,
                         proposed_by="analyst",
                         discussion_pending=True,
