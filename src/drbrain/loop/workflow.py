@@ -508,11 +508,13 @@ class ResearchLoopWorkflow(Workflow):
         except Exception as exc:  # noqa: BLE001 - optional retrieval must not stop the loop
             logger.warning("[loop] generation-pinned RAG retrieval failed: %s", exc)
             return [], None
-        evidence = [
-            Evidence.model_validate({**row, "snippet": str(row.get("text") or "")})
-            for row in records
-            if isinstance(row, Mapping)
-        ]
+        evidence: list[Evidence] = []
+        for row in records:
+            if not isinstance(row, Mapping):
+                continue
+            item = Evidence.model_validate({**row, "snippet": str(row.get("text") or "")})
+            if item.evidence_id:
+                evidence.append(item)
         if not evidence:
             return [], None
         evidence_ids = [item.evidence_id for item in evidence if item.evidence_id]
@@ -553,7 +555,9 @@ class ResearchLoopWorkflow(Workflow):
     def _append_evidence_bundle(state: ResearchState, bundle: EvidenceBundle) -> None:
         """Merge a retrieval bundle without losing the legacy ``state.evidence`` view."""
         known_ids = {item.evidence_id for item in state.evidence if item.evidence_id}
-        state.evidence.extend(item for item in bundle.records if item.evidence_id not in known_ids)
+        state.evidence.extend(
+            item for item in bundle.records if item.evidence_id and item.evidence_id not in known_ids
+        )
         if not any(item.bundle_id == bundle.bundle_id for item in state.evidence_bundles):
             state.evidence_bundles.append(bundle)
 
@@ -1147,7 +1151,9 @@ class ResearchLoopWorkflow(Workflow):
         mirroring ROLE-GPU Step 3's refusal to run an undiscussed proposal.
         """
         agent = self.build_node_agent(role="compute", step_name="compute")
-        candidates = [h for h in ev.hypotheses if h.status == "critiqued"]
+        candidates = [
+            h for h in ev.hypotheses if h.status == "critiqued" and h.statement.strip()
+        ]
         if agent is not None and self._has_compute_tools(agent):
             # Claim every queued, discussed hypothesis. Each claim is atomic
             # under the queue's lock (single-process If-Match equivalent).
@@ -1222,8 +1228,24 @@ class ResearchLoopWorkflow(Workflow):
                 raw_vs = data.get("verifications")
                 if isinstance(raw_vs, list):
                     handled = True
-                    vs_by_stmt = {h.statement: h for h in candidates}
-                    vs_by_claim_id = {h.claim_id: h for h in candidates if h.claim_id}
+                    statement_counts: dict[str, int] = {}
+                    claim_id_counts: dict[str, int] = {}
+                    for candidate in candidates:
+                        statement_counts[candidate.statement] = (
+                            statement_counts.get(candidate.statement, 0) + 1
+                        )
+                        if candidate.claim_id:
+                            claim_id_counts[candidate.claim_id] = (
+                                claim_id_counts.get(candidate.claim_id, 0) + 1
+                            )
+                    vs_by_stmt = {
+                        h.statement: h for h in candidates if statement_counts[h.statement] == 1
+                    }
+                    vs_by_claim_id = {
+                        h.claim_id: h
+                        for h in candidates
+                        if h.claim_id and claim_id_counts[h.claim_id] == 1
+                    }
                     known_evidence_ids = _known_evidence_ids(state)
                     # T4: the compute node's job evidence lives in the on-disk
                     # job directory the director points DRBRAIN_RUN_DIR at.

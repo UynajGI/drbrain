@@ -216,6 +216,21 @@ def test_brokerless_evidence_write_failure_is_fail_closed(monkeypatch):
     assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None)
 
 
+def test_brokerless_rag_ignores_unciteable_records(monkeypatch):
+    monkeypatch.setattr(rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [{"title": "No ID"}])
+    recorded: list[dict[str, object]] = []
+    workflow = ResearchLoopWorkflow(
+        cfg=object(),
+        db=object(),
+        graph=object(),
+        rag_generation="g-1",
+        evidence_recorder=recorded.append,
+    )
+
+    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None)
+    assert recorded == []
+
+
 def test_verifier_accepts_a_claim_id_when_the_model_omits_the_statement(monkeypatch):
     hypothesis = Hypothesis(claim_id="cl-1", statement="Canonical claim", status="critiqued")
     evidence = Evidence(evidence_id="ev-1", generation="g-1")
@@ -251,6 +266,45 @@ def test_verifier_accepts_a_claim_id_when_the_model_omits_the_statement(monkeypa
 
     assert result.verifications[0].claim_id == "cl-1"
     assert result.verifications[0].statement == "Canonical claim"
+
+
+def test_verifier_ignores_an_ambiguous_duplicate_hypothesis_statement(monkeypatch):
+    evidence = Evidence(evidence_id="ev-1", generation="g-1")
+    state = ResearchState(
+        evidence=[evidence],
+        evidence_bundles=[
+            EvidenceBundle(bundle_id="eb-1", records=[evidence], evidence_ids=["ev-1"])
+        ],
+    )
+
+    class Store:
+        async def get(self, key, default=None):
+            return state if key == "research_state" else default
+
+        async def set(self, _key, _value):
+            return None
+
+    workflow = ResearchLoopWorkflow()
+    monkeypatch.setattr(workflow, "build_node_agent", lambda **_kwargs: object())
+    monkeypatch.setattr(workflow, "_has_compute_tools", lambda _agent: False)
+
+    async def verifier_result(*_args, **_kwargs):
+        return {"verifications": [{"statement": "Duplicate", "evidence_ids": ["ev-1"]}]}
+
+    monkeypatch.setattr(workflow, "run_agent_json", verifier_result)
+    result = asyncio.run(
+        workflow.verify(
+            SimpleNamespace(store=Store()),
+            Computed(
+                hypotheses=[
+                    Hypothesis(claim_id="cl-1", statement="Duplicate", status="critiqued"),
+                    Hypothesis(claim_id="cl-2", statement="Duplicate", status="critiqued"),
+                ]
+            ),
+        )
+    )
+
+    assert result.verifications == []
 
 
 def test_pinned_generation_lookup_does_not_follow_a_new_active_pointer(tmp_path):

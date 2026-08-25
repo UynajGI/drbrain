@@ -401,6 +401,11 @@ def _redact(value: Any) -> Any:
     return _redact_text(str(value))
 
 
+def redact(value: Any) -> Any:
+    """Redact a durable payload at the shared loop trust boundary."""
+    return _redact(value)
+
+
 def _redact_text(value: str | None) -> str | None:
     if value is None:
         return None
