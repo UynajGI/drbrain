@@ -39,7 +39,12 @@ from typing import Any
 
 from drbrain.config import ApiConfig, Config, DBConfig, DirsConfig, EmbedConfig, LLMConfig
 from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
+from drbrain.rag.evidence import (
+    INSUFFICIENT_EVIDENCE_MESSAGE,
+    evidence_ids_from_records,
+)
 from drbrain.rag.llm import DrbrainLLM
+from drbrain.rag.status import RetrievalStatus
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -204,7 +209,7 @@ def _evidence_ids_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]
     (``search_concepts``, ``get_neighbors``, …) are reasoning steps, not
     answer evidence.
     """
-    ids: list[str] = []
+    records: list[dict[str, Any]] = []
     for tc in tool_calls or []:
         name = str(tc.get("name") or "").strip()
         if name not in ("search_documents", "search_tree"):
@@ -213,14 +218,20 @@ def _evidence_ids_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]
             pid = str(row.get("paper_id") or "").strip()
             nid = str(row.get("node_id") or "").strip()
             if pid or nid:
-                ids.append(f"{pid}:{nid}" if pid and nid else (pid or nid))
-    seen: set[str] = set()
-    out: list[str] = []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            out.append(i)
-    return out
+                records.append(row)
+    return evidence_ids_from_records(records)
+
+
+def _evidence_records_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return auditable rows from the agent's allowed retrieval tools only."""
+    records: list[dict[str, Any]] = []
+    for tc in tool_calls or []:
+        if str(tc.get("name") or "").strip() not in ("search_documents", "search_tree"):
+            continue
+        for row in _parse_tool_result(str(tc.get("result_summary") or "")):
+            if str(row.get("paper_id") or "").strip() or str(row.get("node_id") or "").strip():
+                records.append(row)
+    return records
 
 
 def _record_answer(
@@ -606,6 +617,7 @@ def build_agent(
     include_retrieval: bool = True,
     plugins_dir: str | Path | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
+    require_trusted_mcp: bool = False,
 ) -> Any | None:
     """Assemble the LlamaIndex :class:`FunctionAgent`.
 
@@ -637,7 +649,7 @@ def build_agent(
     if mcp_servers:
         from drbrain.rag.mcp_tools import load_mcp_tools
 
-        tools.extend(load_mcp_tools(mcp_servers))
+        tools.extend(load_mcp_tools(mcp_servers, require_trusted=require_trusted_mcp))
 
     system_prompt = BASE_SYSTEM_PROMPT
     if closure_context:
@@ -683,10 +695,31 @@ def _history_summary(messages: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _session_principal_matches(db: Any, session_id: str, principal: str | None) -> bool:
+    """Check a session owner when a caller supplies an authenticated principal.
+
+    ``principal=None`` deliberately preserves the historic local-CLI behavior.
+    Once a principal is supplied, unowned legacy sessions are denied rather
+    than silently claimed by the first caller.
+    """
+    if principal is not None and not str(principal).strip():
+        return False
+    checker = getattr(db, "session_principal_matches", None)
+    if callable(checker):
+        return bool(checker(session_id, principal))
+    row = db.conn.execute(
+        "SELECT owner_principal FROM agent_sessions WHERE session_id = ? AND status != 'deleted'",
+        (session_id,),
+    ).fetchone()
+    return row is not None and (principal is None or str(row[0] or "") == principal)
+
+
 def load_session_history(
     db: Any,
     session_id: str,
     token_budget: int = SESSION_TOKEN_BUDGET,
+    *,
+    principal: str | None = None,
 ) -> list[ChatMessage]:
     """Restore a session's prior turns as LlamaIndex ``ChatMessage``s (T9).
 
@@ -710,6 +743,8 @@ def load_session_history(
     """
     if db is None:
         return []
+    if principal is not None and not _session_principal_matches(db, session_id, principal):
+        raise PermissionError(f"Session access denied: {session_id}")
     rows = db.conn.execute(
         "SELECT role, content, tool_calls_json, tool_call_id, tool_name "
         "FROM agent_messages WHERE session_id = ? AND role != 'system' ORDER BY seq",
@@ -778,6 +813,8 @@ def _persist_reason_session(
     answer: str,
     tool_calls: list[dict[str, Any]],
     models: list[dict],
+    *,
+    principal: str | None = None,
 ) -> str | None:
     """Append one reasoning run to ``agent_sessions``/``agent_messages``.
 
@@ -798,14 +835,13 @@ def _persist_reason_session(
             title="reason",
             system_prompt=system_prompt,
             model_config=json.dumps(models, ensure_ascii=False),
+            owner_principal=principal or "",
         )
         created = True
     else:
-        row = db.conn.execute(
-            "SELECT 1 FROM agent_sessions WHERE session_id = ? AND status != 'deleted'",
-            (session_id,),
-        ).fetchone()
-        if row is None:
+        if not _session_principal_matches(db, session_id, principal):
+            if principal is not None:
+                raise PermissionError(f"Session access denied: {session_id}")
             raise ValueError(f"Session not found: {session_id}")
 
     seq_row = db.conn.execute(
@@ -860,6 +896,7 @@ def reason_llamaindex(
     *,
     graph: Any = None,
     closure_context: str = "",
+    principal: str | None = None,
 ) -> dict[str, Any]:
     """Run the LlamaIndex FunctionAgent over the drbrain graph tools.
 
@@ -880,6 +917,7 @@ def reason_llamaindex(
                 session_id=session_id,
                 graph=graph,
                 closure_context=closure_context,
+                principal=principal,
             )
         )
     except Exception as exc:
@@ -901,12 +939,15 @@ async def _areason_llamaindex(
     session_id: str | None,
     graph: Any,
     closure_context: str,
+    principal: str | None,
 ) -> dict[str, Any]:
-    agent = build_agent(cfg, db, session_id, graph=graph, closure_context=closure_context)
-    if agent is None:
+    if principal is not None and not str(principal).strip():
+        message = "Session access denied: principal must be non-empty"
         return {
-            "answer": "LlamaIndex is not available (llamaindex.enabled=false or "
-            "llama_index not installed). Use --engine legacy.",
+            "answer": message,
+            "message": message,
+            "status": RetrievalStatus.PERMISSION_DENIED.value,
+            "evidence_ids": [],
             "tool_calls": [],
             "turns": 0,
             "engine": "llamaindex",
@@ -935,7 +976,28 @@ async def _areason_llamaindex(
                 "turns": 0,
                 "engine": "llamaindex",
             }
-        chat_history = load_session_history(db, session_id)
+        if principal is not None and not _session_principal_matches(db, session_id, principal):
+            message = "Session access denied: " + str(session_id)
+            return {
+                "answer": message,
+                "message": message,
+                "status": RetrievalStatus.PERMISSION_DENIED.value,
+                "evidence_ids": [],
+                "tool_calls": [],
+                "turns": 0,
+                "engine": "llamaindex",
+            }
+        chat_history = load_session_history(db, session_id, principal=principal)
+
+    agent = build_agent(cfg, db, session_id, graph=graph, closure_context=closure_context)
+    if agent is None:
+        return {
+            "answer": "LlamaIndex is not available (llamaindex.enabled=false or "
+            "llama_index not installed). Use --engine legacy.",
+            "tool_calls": [],
+            "turns": 0,
+            "engine": "llamaindex",
+        }
 
     handler = agent.run(
         user_msg=question,
@@ -985,6 +1047,23 @@ async def _areason_llamaindex(
         "engine": "llamaindex",
     }
 
+    evidence_records = _evidence_records_from_tool_calls(tool_calls)
+    evidence_ids = evidence_ids_from_records(evidence_records)
+    if not evidence_ids:
+        answer = INSUFFICIENT_EVIDENCE_MESSAGE
+        out.update(
+            {
+                "answer": answer,
+                "message": answer,
+                "status": RetrievalStatus.INSUFFICIENT_EVIDENCE.value,
+                "sources": [],
+                "evidence_ids": [],
+            }
+        )
+    else:
+        out["sources"] = evidence_records
+        out["evidence_ids"] = evidence_ids
+
     resolved_session_id: str | None = None
     if session_id:
         resolved_session_id = _persist_reason_session(
@@ -1002,6 +1081,7 @@ async def _areason_llamaindex(
             answer,
             tool_calls,
             _cfg_models(cfg),
+            principal=principal,
         )
         out["session_id"] = resolved_session_id
 

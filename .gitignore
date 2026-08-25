@@ -56,7 +56,6 @@ docs/learn/
 .coverage.*
 
 # Local-only tooling directories (not for public repo)
-.trellis/
 .qoder/
 docs/superpowers/specs/
 

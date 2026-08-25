@@ -66,6 +66,14 @@ class _CountingEmbed(BaseEmbedding):
         return self._get_query_embedding(query)
 
 
+class _ShortEmbed(_CountingEmbed):
+    """Fault injector: returns fewer vectors than the builder requested."""
+
+    def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
+        vectors = super()._get_text_embeddings(texts)
+        return vectors[:1]
+
+
 class _PaperDB:
     """Minimal db stand-in exposing get_all_papers()."""
 
@@ -421,6 +429,56 @@ def test_build_index_incremental_no_changes_reembeds_nothing(tmp_path):
     assert len(embed.embedded_texts) == embedded_before  # nothing re-embedded
     assert stats["embedded"] == 0
     assert stats["unchanged"] == 2
+
+
+def test_build_index_publishes_complete_generation_then_switches_atomically(tmp_path):
+    """A reader only follows the pointer after a complete generation is ready."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+
+    first = build_index(cfg, db, embed_model=embed)
+    root = tmp_path / "li"
+    active_path = root / "active.json"
+    first_active = json.loads(active_path.read_text(encoding="utf-8"))
+    assert first_active["generation"] == first["generation"]
+    assert (root / "generations" / first["generation"] / "vector" / "docstore.json").exists()
+    assert (root / "generations" / first["generation"] / "bm25" / "corpus.jsonl").exists()
+
+    raw = papers_dir / "paper1" / "raw.md"
+    raw.write_text(raw.read_text(encoding="utf-8") + "new material\n", encoding="utf-8")
+    second = build_index(cfg, db, embed_model=embed)
+    second_active = json.loads(active_path.read_text(encoding="utf-8"))
+    assert second["generation"] != first["generation"]
+    assert second_active["generation"] == second["generation"]
+    assert (root / "generations" / first["generation"]).is_dir()  # never delete a live reader's gen
+    assert (root / "generations" / second["generation"] / MANIFEST_NAME).exists()
+
+    index, bm25 = load_index(cfg, embed_model=embed)
+    assert len(index.docstore.docs) == 2
+    assert len(bm25.corpus) == 2
+
+
+def test_build_index_failed_generation_keeps_previous_active_index(tmp_path):
+    """A partial embedding response cannot replace the last known-good generation."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    good = _CountingEmbed()
+    build_index(cfg, db, embed_model=good)
+    active_path = tmp_path / "li" / "active.json"
+    before = active_path.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="embedding batch returned"):
+        build_index(cfg, db, force=True, embed_model=_ShortEmbed())
+
+    assert active_path.read_text(encoding="utf-8") == before
+    index, bm25 = load_index(cfg, embed_model=good)
+    assert len(index.docstore.docs) == 2
+    assert len(bm25.corpus) == 2
 
 
 def test_build_index_force_reembeds_all(tmp_path):

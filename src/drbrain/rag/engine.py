@@ -46,6 +46,10 @@ from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.evidence import (
+    INSUFFICIENT_EVIDENCE_MESSAGE,
+    evidence_ids_from_records,
+)
 from drbrain.rag.status import RetrievalError, RetrievalStatus
 
 try:
@@ -77,6 +81,7 @@ __all__ = [
     "ENGINE_LEGACY",
     "ENGINE_LLAMAINDEX",
     "ENGINES",
+    "INSUFFICIENT_EVIDENCE_MESSAGE",
     "SimilarityCutoffPostprocessor",
     "ask_llamaindex",
     "build_hybrid_retriever",
@@ -101,6 +106,8 @@ _ENGINE_UNAVAILABLE_MSG = (
 _RETRIEVAL_FAILURE_MSG = "检索失败,无法回答"
 #: Abstention message when retrieval succeeded but matched nothing.
 _NO_RESULTS_MSG = "当前知识库中没有找到相关信息"
+#: Stable refusal text when result nodes cannot be tied to auditable evidence.
+_INSUFFICIENT_EVIDENCE_MSG = INSUFFICIENT_EVIDENCE_MESSAGE
 
 
 # ── engine resolution (CLI fallback rule, design §4.6) ──────────────────────
@@ -211,6 +218,13 @@ def build_query_engine(
         response_synthesizer=synth,
         node_postprocessors=postprocessors or None,
     )
+    # Private engine attachment: the public query-engine API and its return
+    # type stay unchanged, while ``ask_llamaindex`` can expose additive trace
+    # fields after the retriever and postprocessor chain has run.
+    engine._drbrain_observability = {  # type: ignore[attr-defined]
+        "fusion": fusion,
+        "postprocessors": postprocessors,
+    }
     return engine
 
 
@@ -369,13 +383,30 @@ def ask_llamaindex(
     try:
         response = engine.query(question)
     except RetrievalError:
-        return _abstain_answer(question, RetrievalStatus.RETRIEVAL_FAILURE, _RETRIEVAL_FAILURE_MSG)
+        return _abstain_answer(
+            question,
+            RetrievalStatus.RETRIEVAL_FAILURE,
+            _RETRIEVAL_FAILURE_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
     sources = _response_sources(response)
     if not sources:
-        return _abstain_answer(question, RetrievalStatus.NO_RESULTS, _NO_RESULTS_MSG)
+        return _abstain_answer(
+            question,
+            RetrievalStatus.NO_RESULTS,
+            _NO_RESULTS_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
+    if not _evidence_ids_from_sources(sources):
+        return _abstain_answer(
+            question,
+            RetrievalStatus.INSUFFICIENT_EVIDENCE,
+            _INSUFFICIENT_EVIDENCE_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
     answer = _response_text(response)
     _record_answer(cfg, db, question, answer, sources)
-    return _assemble_answer(question, answer, sources)
+    return _assemble_answer(question, answer, sources, telemetry=_engine_telemetry(engine))
 
 
 def _ask_llamaindex_stream(
@@ -395,17 +426,43 @@ def _ask_llamaindex_stream(
     try:
         response = engine.query(question)
     except RetrievalError:
-        yield _abstain_answer(question, RetrievalStatus.RETRIEVAL_FAILURE, _RETRIEVAL_FAILURE_MSG)
+        yield _abstain_answer(
+            question,
+            RetrievalStatus.RETRIEVAL_FAILURE,
+            _RETRIEVAL_FAILURE_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
         return
     if not _response_sources(response):
-        yield _abstain_answer(question, RetrievalStatus.NO_RESULTS, _NO_RESULTS_MSG)
+        yield _abstain_answer(
+            question,
+            RetrievalStatus.NO_RESULTS,
+            _NO_RESULTS_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
         return
-    yield from _iter_ask_results(cfg, db, question, response)
+    if not _evidence_ids_from_sources(_response_sources(response)):
+        yield _abstain_answer(
+            question,
+            RetrievalStatus.INSUFFICIENT_EVIDENCE,
+            _INSUFFICIENT_EVIDENCE_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
+        return
+    yield from _iter_ask_results(cfg, db, question, response, engine=engine)
 
 
-def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any):
+def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any, engine: Any = None):
     """Consume a (possibly streaming) response into chunk + final dict yields."""
     sources = _response_sources(response)
+    if not _evidence_ids_from_sources(sources):
+        yield _abstain_answer(
+            question,
+            RetrievalStatus.INSUFFICIENT_EVIDENCE,
+            _INSUFFICIENT_EVIDENCE_MSG,
+            telemetry=_engine_telemetry(engine),
+        )
+        return
     if isinstance(response, StreamingResponse):
         parts: list[str] = []
         for chunk in response.response_gen:
@@ -418,20 +475,63 @@ def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any):
     else:
         answer = _response_text(response)
     _record_answer(cfg, db, question, answer, sources)
-    yield _assemble_answer(question, answer, sources)
+    yield _assemble_answer(question, answer, sources, telemetry=_engine_telemetry(engine))
 
 
-def _assemble_answer(question: str, answer: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
+def _assemble_answer(
+    question: str,
+    answer: str,
+    sources: list[dict[str, Any]],
+    telemetry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Shape the compat-layer output dict."""
-    return {
+    result = {
         "question": question,
         "answer": answer or "",
         "sources": sources,
+        "evidence_ids": _evidence_ids_from_sources(sources),
         "engine": ENGINE_LLAMAINDEX,
     }
+    if telemetry:
+        result["telemetry"] = telemetry
+    return result
 
 
-def _abstain_answer(question: str, status: RetrievalStatus, message: str) -> dict[str, Any]:
+def _engine_telemetry(engine: Any) -> dict[str, Any] | None:
+    """Read JSON-safe retrieval/postprocessor traces from a drbrain engine.
+
+    Fakes and external LlamaIndex engines legitimately have no private
+    attachment, so observability is purely additive and never changes their
+    existing answer shape or failure behavior.
+    """
+    holder = getattr(engine, "_drbrain_observability", None)
+    if not isinstance(holder, dict):
+        return None
+    result: dict[str, Any] = {}
+    fusion = holder.get("fusion")
+    get_trace = getattr(fusion, "get_last_trace", None)
+    if callable(get_trace):
+        trace = get_trace()
+        if trace:
+            result["retrieval"] = trace
+    stages: list[dict[str, Any]] = []
+    for postprocessor in holder.get("postprocessors", []):
+        get_trace = getattr(postprocessor, "get_last_trace", None)
+        if callable(get_trace):
+            trace = get_trace()
+            if trace:
+                stages.append(trace)
+    if stages:
+        result["postprocessors"] = stages
+    return result or None
+
+
+def _abstain_answer(
+    question: str,
+    status: RetrievalStatus,
+    message: str,
+    telemetry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Shape a refusal-to-answer dict for a failed or empty retrieval.
 
     The ``answer`` field carries the abstention text (never a synthesized
@@ -439,14 +539,18 @@ def _abstain_answer(question: str, status: RetrievalStatus, message: str) -> dic
     so callers can distinguish ``retrieval_failure`` from ``no_results``
     without parsing prose.
     """
-    return {
+    result = {
         "question": question,
         "answer": message,
         "status": status.value,
         "message": message,
         "sources": [],
+        "evidence_ids": [],
         "engine": ENGINE_LLAMAINDEX,
     }
+    if telemetry:
+        result["telemetry"] = telemetry
+    return result
 
 
 # ── answer-evidence binding (auditability) ──────────────────────────────────
@@ -454,19 +558,7 @@ def _abstain_answer(question: str, status: RetrievalStatus, message: str) -> dic
 
 def _evidence_ids_from_sources(sources: list[dict[str, Any]]) -> list[str]:
     """Collapse ``extract_sources`` output into ``paper_id:node_id`` identifiers."""
-    ids: list[str] = []
-    for src in sources or []:
-        pid = str(src.get("paper_id") or "").strip()
-        nid = str(src.get("node_id") or "").strip()
-        if pid or nid:
-            ids.append(f"{pid}:{nid}" if pid and nid else (pid or nid))
-    seen: set[str] = set()
-    out: list[str] = []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            out.append(i)
-    return out
+    return evidence_ids_from_records(sources)
 
 
 def _llm_model_version(cfg: Config) -> str:

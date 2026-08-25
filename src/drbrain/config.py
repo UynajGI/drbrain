@@ -286,12 +286,12 @@ class Config(_ConfigBase):
         if not base.exists():
             raise FileNotFoundError(f"Config not found: {base}")
 
-        with open(base) as f:
+        with open(base, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
 
         local = Path(local_path) if local_path is not None else Path("config.local.yaml")
         if local.exists():
-            with open(local) as f:
+            with open(local, encoding="utf-8") as f:
                 overlay = yaml.safe_load(f) or {}
             cfg = merge_dicts(cfg, overlay)
 
