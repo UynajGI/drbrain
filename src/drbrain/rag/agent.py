@@ -41,7 +41,9 @@ from drbrain.config import ApiConfig, Config, DBConfig, DirsConfig, EmbedConfig,
 from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
 from drbrain.rag.evidence import (
     INSUFFICIENT_EVIDENCE_MESSAGE,
+    INSUFFICIENT_EVIDENCE_STATUS,
     evidence_ids_from_records,
+    has_retrieved_evidence,
 )
 from drbrain.rag.llm import DrbrainLLM
 from drbrain.rag.status import RetrievalStatus
@@ -223,14 +225,28 @@ def _evidence_ids_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[str]
 
 
 def _evidence_records_from_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return auditable rows from the agent's allowed retrieval tools only."""
+    """Return query-engine-shaped evidence rows from allowed retrieval tools only."""
     records: list[dict[str, Any]] = []
     for tc in tool_calls or []:
         if str(tc.get("name") or "").strip() not in ("search_documents", "search_tree"):
             continue
         for row in _parse_tool_result(str(tc.get("result_summary") or "")):
             if str(row.get("paper_id") or "").strip() or str(row.get("node_id") or "").strip():
-                records.append(row)
+                raw_sources = row.get("sources")
+                if isinstance(raw_sources, list):
+                    sources = raw_sources
+                else:
+                    source = row.get("source")
+                    sources = [source] if source else []
+                records.append(
+                    {
+                        "paper_id": str(row.get("paper_id") or "").strip(),
+                        "node_id": str(row.get("node_id") or "").strip(),
+                        "title": str(row.get("title") or ""),
+                        "score": row.get("score", 0.0),
+                        "sources": sources,
+                    }
+                )
     return records
 
 
@@ -920,6 +936,18 @@ def reason_llamaindex(
                 principal=principal,
             )
         )
+    except PermissionError as exc:
+        message = str(exc)
+        return {
+            "answer": message,
+            "message": message,
+            "status": RetrievalStatus.PERMISSION_DENIED.value,
+            "sources": [],
+            "evidence_ids": [],
+            "tool_calls": [],
+            "turns": 0,
+            "engine": "llamaindex",
+        }
     except Exception as exc:
         log.exception("[rag] reason_llamaindex failed")
         return {
@@ -989,7 +1017,14 @@ async def _areason_llamaindex(
             }
         chat_history = load_session_history(db, session_id, principal=principal)
 
-    agent = build_agent(cfg, db, session_id, graph=graph, closure_context=closure_context)
+    agent = build_agent(
+        cfg,
+        db,
+        session_id,
+        graph=graph,
+        closure_context=closure_context,
+        require_trusted_mcp=bool(getattr(cfg.llamaindex, "mcp_require_trusted", False)),
+    )
     if agent is None:
         return {
             "answer": "LlamaIndex is not available (llamaindex.enabled=false or "
@@ -1049,13 +1084,13 @@ async def _areason_llamaindex(
 
     evidence_records = _evidence_records_from_tool_calls(tool_calls)
     evidence_ids = evidence_ids_from_records(evidence_records)
-    if not evidence_ids:
+    if not has_retrieved_evidence(evidence_records):
         answer = INSUFFICIENT_EVIDENCE_MESSAGE
         out.update(
             {
                 "answer": answer,
                 "message": answer,
-                "status": RetrievalStatus.INSUFFICIENT_EVIDENCE.value,
+                "status": INSUFFICIENT_EVIDENCE_STATUS,
                 "sources": [],
                 "evidence_ids": [],
             }

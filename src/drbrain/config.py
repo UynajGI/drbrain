@@ -182,13 +182,16 @@ class LlamaIndexConfig(_ConfigBase):
         rerank_top_k: Candidate count fed to the reranker.
         similarity_cutoff: SimilarityPostProcessor threshold.
         streaming: Enable streaming responses.
-        max_node_tokens: Long PageIndex nodes above this size are split into
+         max_node_tokens: Long PageIndex nodes above this size are split into
             paragraph chunks (each chunk keeps the parent node_id + a
             ``#index`` suffix) so embedding stays bounded on GPU. Default 4000:
             measured Qwen3-Embedding-0.6B fp32 per-sample memory is quadratic
             (4096 tokens ≈ 3.6GB, 8192 ≈ 12.2GB) — 8000-token sequences OOM a
-            16GB V100 (T9 fix for the 39KB-node OOM; 4 chars ≈ 1 token).
-        eval: Evaluation settings (golden set + split).
+             16GB V100 (T9 fix for the 39KB-node OOM; 4 chars ≈ 1 token).
+         mcp_require_trusted: Require explicit ``trusted: true`` and a
+             non-empty MCP tool allowlist for the LlamaIndex agent path.
+             Defaults to ``False`` for existing local configurations.
+         eval: Evaluation settings (golden set + split).
     """
 
     enabled: bool = False
@@ -203,6 +206,7 @@ class LlamaIndexConfig(_ConfigBase):
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000
+    mcp_require_trusted: bool = False
     eval: LlamaIndexEvalConfig = field(default_factory=LlamaIndexEvalConfig)
 
     @classmethod

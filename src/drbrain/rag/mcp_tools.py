@@ -214,7 +214,9 @@ def load_mcp_tools(servers: list[dict[str, Any]] | None, *, require_trusted: boo
             descriptors = discover_mcp_tools(server, require_trusted=require_trusted)
         except Exception as exc:  # noqa: BLE001 — a bad server must not break assembly
             label = server.get("id") or server.get("name") or server.get("command")
-            log.warning("[mcp] trusted discovery failed for %r: %s", label, exc)
+            log.warning(
+                "[mcp] discovery failed (trusted=%s) for %r: %s", require_trusted, label, exc
+            )
             continue
         for descriptor in descriptors:
             tools.append(_to_function_tool(server, descriptor, FunctionTool, require_trusted))

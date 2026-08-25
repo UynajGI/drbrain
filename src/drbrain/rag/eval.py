@@ -113,11 +113,17 @@ def _write_text_atomically(path: Path, content: str) -> None:
     temporary = Path(temporary_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            fd = -1  # ownership moved to the context manager
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         temporary.unlink(missing_ok=True)
         raise
 

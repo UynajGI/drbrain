@@ -128,7 +128,17 @@ def test_agent_returns_answer_when_allowed_retrieval_tool_supplies_evidence(monk
         def __await__(self):
             async def _result():
                 tool_output = SimpleNamespace(
-                    content=json.dumps([{"paper_id": "paper-1", "node_id": "node-3"}]),
+                    content=json.dumps(
+                        [
+                            {
+                                "paper_id": "paper-1",
+                                "node_id": "node-3",
+                                "title": "Methods",
+                                "source": "paper.md",
+                                "score": 0.9,
+                            }
+                        ]
+                    ),
                     is_error=False,
                 )
                 tool_call = SimpleNamespace(
@@ -152,6 +162,15 @@ def test_agent_returns_answer_when_allowed_retrieval_tool_supplies_evidence(monk
 
     assert result["answer"] == "grounded answer"
     assert result["evidence_ids"] == ["paper-1:node-3"]
+    assert result["sources"] == [
+        {
+            "paper_id": "paper-1",
+            "node_id": "node-3",
+            "title": "Methods",
+            "score": 0.9,
+            "sources": ["paper.md"],
+        }
+    ]
 
 
 @pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
@@ -205,6 +224,71 @@ def test_session_rejects_an_empty_authenticated_principal():
 
     assert result["status"] == "permission_denied"
     assert result["evidence_ids"] == []
+
+
+def test_database_session_principal_rejects_empty_authenticated_identity(tmp_path):
+    db = Database(str(tmp_path / "db.sqlite"))
+    try:
+        db.insert_agent_session("legacy", "title", "prompt", "{}")
+        assert not db.session_principal_matches("legacy", "")
+        assert not db.session_principal_matches("legacy", "   ")
+        assert db.session_principal_matches("legacy", None)
+    finally:
+        db.close()
+
+
+@pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
+def test_public_agent_translates_late_session_permission_errors(monkeypatch):
+    from drbrain.rag import agent as agent_module
+
+    async def denied(*_args, **_kwargs):
+        raise PermissionError("Session access denied: late check")
+
+    monkeypatch.setattr(agent_module, "_areason_llamaindex", denied)
+
+    result = agent_module.reason_llamaindex(_cfg(), None, "question", principal="alice")
+
+    assert result["status"] == "permission_denied"
+    assert result["evidence_ids"] == []
+    assert result["message"] == "Session access denied: late check"
+
+
+@pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
+def test_agent_uses_opt_in_configured_trusted_mcp_policy(monkeypatch):
+    from drbrain.rag import agent as agent_module
+
+    class _Store:
+        async def get(self, key, default=None):
+            return 1
+
+    class _Handler:
+        ctx = SimpleNamespace(store=_Store())
+
+        def __await__(self):
+            async def _result():
+                return SimpleNamespace(
+                    response=SimpleNamespace(content="grounded answer"), tool_calls=[]
+                )
+
+            return _result().__await__()
+
+    observed: dict[str, object] = {}
+
+    class _Agent:
+        def run(self, **kwargs):
+            return _Handler()
+
+    def capture_build_agent(*_args, **kwargs):
+        observed.update(kwargs)
+        return _Agent()
+
+    cfg = _cfg()
+    cfg.llamaindex.mcp_require_trusted = True
+    monkeypatch.setattr(agent_module, "build_agent", capture_build_agent)
+
+    agent_module.reason_llamaindex(cfg, None, "question")
+
+    assert observed["require_trusted_mcp"] is True
 
 
 def test_config_loader_opens_base_and_overlay_as_utf8(monkeypatch, tmp_path):
