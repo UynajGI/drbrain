@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 5
+LEDGER_SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -337,6 +337,86 @@ class RunLedger:
 
                 CREATE INDEX IF NOT EXISTS idx_research_queue_items_run_status
                     ON research_queue_items(run_id, status, created_at);
+                """
+            )
+        if current < 6:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_execution_node_specs (
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    node_name TEXT NOT NULL,
+                    input_schema_json TEXT NOT NULL,
+                    output_schema_json TEXT NOT NULL,
+                    allowed_tools_json TEXT NOT NULL,
+                    max_attempts INTEGER NOT NULL,
+                    retry_class TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, node_name)
+                );
+
+                CREATE TABLE IF NOT EXISTS research_experiments (
+                    experiment_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    proposal_id TEXT,
+                    claim_id TEXT NOT NULL,
+                    producer_attempt_id TEXT,
+                    plan_json TEXT NOT NULL,
+                    environment_json TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    seed INTEGER,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE (run_id, claim_id),
+                    CHECK (status IN ('planned', 'computed', 'settled'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_research_experiments_run_created
+                    ON research_experiments(run_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS research_artifacts (
+                    artifact_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+                    producer_attempt_id TEXT,
+                    tool_call_id TEXT,
+                    kind TEXT NOT NULL,
+                    media_type TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    UNIQUE (experiment_id, kind, sha256, uri)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_research_artifacts_experiment
+                    ON research_artifacts(experiment_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS research_claim_settlements (
+                    settlement_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+                    claim_id TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_ids_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    expected_champion_version INTEGER,
+                    champion_version INTEGER,
+                    created_at REAL NOT NULL,
+                    UNIQUE (run_id, claim_id),
+                    CHECK (verdict IN ('keep', 'discard', 'insufficient'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_research_claim_settlements_run
+                    ON research_claim_settlements(run_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS research_champion_versions (
+                    run_id TEXT PRIMARY KEY REFERENCES research_runs(run_id),
+                    version INTEGER NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
         if current < LEDGER_SCHEMA_VERSION:

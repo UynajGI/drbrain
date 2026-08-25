@@ -7,6 +7,7 @@ understanding through the RAG layer (:mod:`drbrain.rag`).
 """
 
 from drbrain.loop.director import ResearchDirector
+from drbrain.loop.durable_execution import ChampionVersionConflictError, DurableExecution
 from drbrain.loop.events import (
     Evidence,
     EvidenceBundle,
@@ -20,6 +21,8 @@ from drbrain.loop.workflow import ResearchLoopWorkflow
 __all__ = [
     "Evidence",
     "EvidenceBundle",
+    "ChampionVersionConflictError",
+    "DurableExecution",
     "Hypothesis",
     "ResearchDirector",
     "ResearchLoopWorkflow",
