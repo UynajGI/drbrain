@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 import uuid
 from collections.abc import Mapping
@@ -589,7 +590,11 @@ class TransitionService:
                 else:
                     status, queue_status = "critiqued", "ready"
             previous_status = str(proposal["status"])
-            if previous_status != status or proposal["review_score"] != score:
+            stored_score = proposal["review_score"]
+            score_changed = stored_score is None or not math.isclose(
+                float(stored_score), score, rel_tol=0.0, abs_tol=1e-12
+            )
+            if previous_status != status or score_changed:
                 conn.execute(
                     """
                     UPDATE research_proposals
@@ -641,7 +646,9 @@ class TransitionService:
                 queue = conn.execute(
                     "SELECT * FROM research_queue_items WHERE queue_item_id = ?", (queue_item_id,)
                 ).fetchone()
-            elif str(queue["status"]) != queue_status or float(queue["score"]) != score:
+            elif str(queue["status"]) != queue_status or not math.isclose(
+                float(queue["score"]), score, rel_tol=0.0, abs_tol=1e-12
+            ):
                 conn.execute(
                     """
                     UPDATE research_queue_items SET status = ?, score = ?, updated_at = ?
