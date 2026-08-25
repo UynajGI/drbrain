@@ -16,6 +16,7 @@ import json
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -555,6 +556,51 @@ def test_generation_pruning_keeps_active_and_rollback_window(tmp_path):
     assert pruned == ["g-1"]
     assert not (generations / "g-1").exists()
     assert all((generations / name).is_dir() for name in ("g-2", "g-3", "g-4"))
+
+
+def test_generation_pruning_keeps_a_durably_referenced_snapshot(tmp_path):
+    root = tmp_path / "li"
+    generations = root / "generations"
+    generations.mkdir(parents=True)
+    for offset, name in enumerate(("g-1", "g-2", "g-3", "g-4")):
+        generation = generations / name
+        generation.mkdir()
+        os.utime(generation, (1_000_000 + offset, 1_000_000 + offset))
+    rag_indexer._write_json_atomically(
+        root / rag_indexer.GENERATION_REFERENCES_NAME,
+        {"references": {"run-1": "g-1"}},
+    )
+
+    pruned = rag_indexer._prune_inactive_generations(
+        root,
+        "g-4",
+        retain_count=3,
+        grace_seconds=0,
+        protected_generations=rag_indexer._referenced_generations(root),
+    )
+
+    assert pruned == ["g-2"]
+    assert all((generations / name).is_dir() for name in ("g-1", "g-3", "g-4"))
+
+
+def test_retain_index_generation_writes_an_isolated_run_reference(tmp_path, monkeypatch):
+    root = tmp_path / "li"
+    (root / "generations" / "g-1").mkdir(parents=True)
+    monkeypatch.setattr(
+        rag_indexer,
+        "get_llamaindex_config",
+        lambda _cfg: SimpleNamespace(storage_dir=str(root)),
+    )
+
+    assert rag_indexer.retain_index_generation(object(), "g-1", "run-1")
+
+    files = list((root / rag_indexer.GENERATION_REFERENCES_DIR_NAME).glob("*.json"))
+    assert len(files) == 1
+    assert json.loads(files[0].read_text(encoding="utf-8")) == {
+        "run_id": "run-1",
+        "generation": "g-1",
+    }
+    assert rag_indexer._referenced_generations(root) == {"g-1"}
 
 
 def test_manifest_mirror_failure_does_not_unpublish_a_valid_generation(tmp_path, monkeypatch):

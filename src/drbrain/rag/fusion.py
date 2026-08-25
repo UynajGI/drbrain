@@ -377,7 +377,14 @@ def build_fusion_retriever(
     )
 
 
-def get_retrievers(cfg: Config, db=None, graph=None) -> dict[str, Any]:
+def get_retrievers(
+    cfg: Config,
+    db=None,
+    graph=None,
+    *,
+    generation: str | None = None,
+    generation_backed_only: bool = False,
+) -> dict[str, Any]:
     """Assemble named retrievers per the ``llamaindex.retrievers`` config list.
 
     Legs: ``bm25`` (persisted ``BM25Retriever``), ``vector``
@@ -386,6 +393,11 @@ def get_retrievers(cfg: Config, db=None, graph=None) -> dict[str, Any]:
     (:class:`DrbrainGraphRetriever`). Only legs present in the
     config list AND available on disk are returned. T5's query engine combines
     the result with :func:`build_fusion_retriever` for fused retrieval.
+
+    ``generation`` is an additive snapshot selector for the persisted BM25 and
+    vector legs.  With ``generation_backed_only=True`` mutable filesystem/DB
+    legs are omitted, so a durable caller cannot accidentally blend a pinned
+    index with newer tree, RAPTOR, or graph state.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError("llama-index is not installed; cannot build retrievers")
@@ -402,11 +414,14 @@ def get_retrievers(cfg: Config, db=None, graph=None) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     if "bm25" in wanted or "vector" in wanted:
-        index, bm25 = load_index(cfg)
+        index, bm25 = load_index(cfg, generation=generation)
         if "bm25" in wanted and bm25 is not None:
             out["bm25"] = bm25
         if "vector" in wanted and index is not None:
             out["vector"] = index.as_retriever(similarity_top_k=top_k)
+
+    if generation_backed_only:
+        return out
 
     if "tree" in wanted:
         out["tree"] = DrbrainTreeRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))

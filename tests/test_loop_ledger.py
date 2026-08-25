@@ -11,8 +11,68 @@ import pytest
 from drbrain.loop.director import JANITOR_STALE_SECONDS, ResearchDirector, _default_state
 from drbrain.loop.events import ResearchState
 from drbrain.loop.state import InvalidTransitionError
-from drbrain.loop.store import RunLedger
+from drbrain.loop.store import LEDGER_SCHEMA_VERSION, RunLedger
 from drbrain.loop.transitions import TransitionService
+
+
+def test_ledger_adds_config_json_to_preexisting_run_table(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE research_runs (
+                run_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                budget_json TEXT NOT NULL DEFAULT '{}',
+                last_projected_event INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )
+            """
+        )
+
+    RunLedger(path).get_run("missing")
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
+    assert "config_json" in columns
+
+
+def test_ledger_rejects_a_newer_schema_before_altering_research_runs(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE ledger_schema_versions (version INTEGER PRIMARY KEY, applied_at REAL)"
+        )
+        conn.execute(
+            "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, 0)",
+            (LEDGER_SCHEMA_VERSION + 1,),
+        )
+        conn.execute(
+            """
+            CREATE TABLE research_runs (
+                run_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                budget_json TEXT NOT NULL DEFAULT '{}',
+                last_projected_event INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        RunLedger(path).get_run("missing")
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
+    assert "config_json" not in columns
 
 
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
@@ -27,6 +87,16 @@ def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
     transitions.pause_run(run.run_id, reason="bounded_session")
 
     assert ledger.get_run("durable topic").status == "paused"
+
+
+def test_ledger_records_a_fail_closed_rag_evidence_downgrade(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("RAG retention topic", config={"rag_generation": "g-1"})
+
+    event = ledger.record_rag_evidence_disabled(run.run_id, generation="g-1")
+
+    assert event.event_type == "rag_evidence_disabled"
+    assert event.payload == {"generation": "g-1", "reason": "retention_unavailable"}
 
 
 def test_interrupted_cycle_is_marked_unknown_for_a_later_resume(tmp_path):
@@ -129,12 +199,37 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
     assert run is not None
     resumed = [event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"]
     assert len(resumed) == 1
-    assert resumed[0].payload["config"] == {"n_critics": 2}
+    assert resumed[0].payload["config"] == {"n_critics": 2, "rag_generation": "legacy"}
     assert resumed[0].payload["budget"] == {
         "max_cycles": 0,
         "stagnation_cycles": 7,
         "max_adaptations": 4,
     }
+
+
+def test_resume_reuses_the_generation_pinned_when_the_run_was_created(tmp_path, monkeypatch):
+    """A later active-pointer change must not alter an existing run's evidence plane."""
+    from drbrain.rag import indexer
+
+    generations = iter(["g-original", "g-new-active"])
+    monkeypatch.setattr(indexer, "capture_index_generation", lambda _cfg: next(generations))
+    monkeypatch.setattr(indexer, "retain_index_generation", lambda *_args: True)
+    topic = "pinned topic"
+
+    first = ResearchDirector(cfg=object(), run_dir=tmp_path, n_critics=2)
+    asyncio.run(first.run(topic, max_cycles=0))
+    resumed = ResearchDirector(cfg=object(), run_dir=tmp_path, n_critics=2)
+    asyncio.run(resumed.run(topic, max_cycles=0))
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_run(topic)
+    assert run is not None
+    assert run.config["rag_generation"] == "g-original"
+    assert resumed._rag_generation == "g-original"
+    resume_event = [
+        event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"
+    ]
+    assert resume_event[0].payload["config"]["rag_generation"] == "g-original"
 
 
 def test_janitor_projection_replay_does_not_duplicate_audit_lines(tmp_path):

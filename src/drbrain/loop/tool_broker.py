@@ -256,6 +256,16 @@ class ToolBroker:
             attempts=attempts,
         )
 
+    def record_evidence_bundle(self, bundle: Mapping[str, Any]) -> None:
+        """Persist a safe RAG evidence bundle under this broker's active lease."""
+        self._ledger.record_evidence_bundle(
+            run_id=self.run_id,
+            step_id=self.step_id,
+            attempt_id=self.attempt_id,
+            worker_id=self.worker_id,
+            bundle=_redact(dict(bundle)),
+        )
+
     def _renew_lease(self) -> None:
         self._ledger.renew_lease(
             run_id=self.run_id,
@@ -389,6 +399,11 @@ def _redact(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
     return _redact_text(str(value))
+
+
+def redact(value: Any) -> Any:
+    """Redact a durable payload at the shared loop trust boundary."""
+    return _redact(value)
 
 
 def _redact_text(value: str | None) -> str | None:
