@@ -516,6 +516,145 @@ def test_run_ragas_eval_unavailable_without_llama_index(monkeypatch, tmp_path):
     assert "llama-index" in res["reason"]
 
 
+# ── run_semantic_eval (embedding cosine) ────────────────────────────────────
+
+
+def test_run_semantic_eval_scores_non_streaming_result_dict(monkeypatch, tmp_path):
+    """The public ask adapter returns a dict, not a bare answer string."""
+    from drbrain.rag.eval import run_semantic_eval
+
+    cfg = _golden_cfg(tmp_path)
+    _write_golden(
+        tmp_path,
+        [
+            {
+                "query": "q1",
+                "reference_answer": "matching answer",
+                "relevant_papers": [],
+                "relevant_nodes": [],
+                "split": "val",
+            }
+        ],
+    )
+    calls = []
+
+    def fake_ask(ask_cfg, ask_db, question, *, top_k=5, streaming=True):
+        calls.append((ask_cfg, ask_db, question, top_k, streaming))
+        return {"question": question, "answer": "matching answer", "sources": []}
+
+    monkeypatch.setattr("drbrain.rag.engine.ask_llamaindex", fake_ask)
+    monkeypatch.setattr(
+        "drbrain.services.embedding._embed_batch",
+        lambda texts, embed_cfg: [[1.0, 0.0], [1.0, 0.0]],
+    )
+
+    result = run_semantic_eval(cfg, db="db", split="val", n=1, top_k=7)
+
+    assert result["status"] == "ok"
+    assert result["queries"] == 1
+    assert result["scored"] == 1
+    assert result["missing"] == 0
+    assert result["mean_similarity"] == 1.0
+    assert len(calls) == 1
+    ask_cfg, ask_db, question, top_k, streaming = calls[0]
+    assert ask_cfg.llamaindex.enabled is True
+    assert (ask_db, question, top_k, streaming) == ("db", "q1", 7, False)
+
+
+def test_run_semantic_eval_does_not_score_retrieval_abstention(monkeypatch, tmp_path):
+    """A retrieval outage must not be reported as a low-quality answer."""
+    from drbrain.rag.eval import run_semantic_eval
+
+    _write_golden(
+        tmp_path,
+        [
+            {
+                "query": "q1",
+                "reference_answer": "reference",
+                "relevant_papers": [],
+                "relevant_nodes": [],
+                "split": "val",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "drbrain.rag.engine.ask_llamaindex",
+        lambda *args, **kwargs: {
+            "answer": "Retrieval is unavailable.",
+            "status": "retrieval_failure",
+            "sources": [],
+        },
+    )
+    monkeypatch.setattr(
+        "drbrain.services.embedding._embed_batch",
+        lambda *args, **kwargs: pytest.fail("abstentions must not be embedded"),
+    )
+
+    result = run_semantic_eval(_golden_cfg(tmp_path), db=None, split="val", n=1)
+
+    assert result["status"] == "empty"
+    assert result["missing"] == 1
+    assert result["failed_queries"] == 1
+    assert result["failure_counts"] == {"retrieval_failure": 1}
+
+
+def test_atomic_append_text_preserves_existing_artifact_on_replace_failure(monkeypatch, tmp_path):
+    """A failed report update must not corrupt the prior baseline."""
+    from drbrain.rag.eval import _append_text_atomically
+
+    path = tmp_path / "baseline.md"
+    path.write_text("previous baseline\n", encoding="utf-8")
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("drbrain.rag.eval.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        _append_text_atomically(path, "new baseline\n")
+
+    assert path.read_text(encoding="utf-8") == "previous baseline\n"
+    assert list(tmp_path.glob(".baseline.md.*.tmp")) == []
+
+
+def test_run_qagen_honors_out_path(monkeypatch, tmp_path):
+    """The documented out_path parameter must override the default golden set."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    cfg["llm"]["models"] = []
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    class FakeDatasetGenerator:
+        def __init__(self, nodes, llm, num_questions_per_chunk):
+            assert nodes == [node]
+            assert llm is None
+            assert num_questions_per_chunk == 1
+
+        def generate_questions_from_nodes(self):
+            return ["What is the result?"]
+
+    monkeypatch.setattr("llama_index.core.evaluation.DatasetGenerator", FakeDatasetGenerator)
+    custom_path = tmp_path / "custom-generated.jsonl"
+
+    result = run_qagen(cfg, n_nodes=1, num_questions_per_chunk=1, out_path=str(custom_path))
+
+    assert result["status"] == "ok"
+    assert result["golden_set"] == str(custom_path)
+    rows = [json.loads(line) for line in custom_path.read_text(encoding="utf-8").splitlines()]
+    assert rows == [
+        {
+            "query": "What is the result?",
+            "relevant_papers": [],
+            "relevant_nodes": ["node-1"],
+            "reference_answer": "",
+            "split": "generated",
+        }
+    ]
+    assert not (tmp_path / "golden.jsonl").exists()
+
+
 # ── score parsing / context assembly ─────────────────────────────────────────
 
 
@@ -705,6 +844,42 @@ def test_eval_cmd_structure_and_baseline_file(monkeypatch, tmp_path, capsys):
     assert "## LlamaIndex RAG 评估基线" in content
     assert "Retriever eval" in content
     assert "RAGAS-style eval" in content
+
+
+def test_eval_cmd_no_write_report_preserves_existing_baseline(monkeypatch, tmp_path, capsys):
+    from unittest import mock
+
+    from drbrain.cli.rag_commands import rag_eval_cmd
+
+    monkeypatch.setattr(
+        "drbrain.rag.eval.run_retriever_eval",
+        lambda *args, **kwargs: {
+            "status": "ok",
+            "split": "dev",
+            "queries": 1,
+            "ks": [5],
+            "hit_rate": {"paper": {"5": 1.0}, "node": {"5": 1.0}},
+            "mrr": {"paper": {"5": 1.0}, "node": {"5": 1.0}},
+        },
+    )
+    ctx = mock.MagicMock(spec=__import__("typer").Context)
+    ctx.obj = {"config": _golden_cfg(tmp_path)}
+    out_file = tmp_path / "baseline.md"
+    out_file.write_text("existing baseline\n", encoding="utf-8")
+
+    rag_eval_cmd(
+        ctx,
+        split="dev",
+        metrics="retriever",
+        k="5",
+        n=1,
+        json_output=True,
+        out=str(out_file),
+        no_write_report=True,
+    )
+
+    assert json.loads(capsys.readouterr().out)["retriever"]["status"] == "ok"
+    assert out_file.read_text(encoding="utf-8") == "existing baseline\n"
 
 
 def test_eval_cmd_validation_errors(tmp_path, capsys):

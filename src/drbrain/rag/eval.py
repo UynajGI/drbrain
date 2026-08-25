@@ -41,8 +41,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import re
+import tempfile
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -95,6 +97,41 @@ _CONTENT_TITLE_PREFIXES = (
 )
 #: Titles preferred as the ``reference_answer`` source (abstract first).
 _ABSTRACT_TITLE_PREFIXES = ("abstract", "summary")
+
+
+def _write_text_atomically(path: Path, content: str) -> None:
+    """Atomically replace ``path`` through same-directory staging.
+
+    ``os.replace`` is atomic on the local filesystem. Keeping the temporary
+    file beside its destination avoids cross-volume moves, so readers never
+    observe a partially rewritten baseline or golden set.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            fd = -1  # ownership moved to the context manager
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _append_text_atomically(path: Path, content: str) -> None:
+    """Append text through an atomic replace, retaining the old file on error."""
+    previous = path.read_text(encoding="utf-8") if path.exists() else ""
+    _write_text_atomically(path, previous + content)
 
 
 # ── golden set ───────────────────────────────────────────────────────────────
@@ -1097,6 +1134,26 @@ def format_eval_report(
 # ── Semantic similarity eval (zero-LLM, embedding cosine) ────────────────────
 
 
+def _semantic_answer_text(result: Any) -> tuple[str, str | None]:
+    """Extract a scorable answer from the stable ``ask_llamaindex`` result.
+
+    ``ask_llamaindex(..., streaming=False)`` has always returned a result
+    dictionary.  Retrieval abstentions deliberately keep explanatory prose in
+    ``answer``, so evaluators must consult their machine-readable ``status``
+    before embedding that text.  A bare string remains accepted for legacy
+    adapters used by downstream callers.
+    """
+    if isinstance(result, str):
+        return result.strip(), None
+    if not isinstance(result, dict):
+        return "", "invalid_answer"
+    status = result.get("status")
+    if status and str(status) != "ok":
+        return "", str(status)
+    answer = result.get("answer")
+    return (str(answer).strip() if answer is not None else ""), None
+
+
 def run_semantic_eval(
     cfg: Config | dict[str, Any],
     db: Any,
@@ -1129,13 +1186,24 @@ def run_semantic_eval(
     embed_cfg = getattr(cfg, "embed", None)
     scores: list[float] = []
     missing = 0
+    failed_queries = 0
+    failure_counts: dict[str, int] = {}
     for item in golden:
         try:
-            answer = ask_llamaindex(item["query"], cfg, db, top_k=top_k)
+            result = ask_llamaindex(cfg, db, item["query"], top_k=top_k, streaming=False)
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("[rag] semantic eval ask failed for %.60r: %s", item["query"], exc)
-            answer = None
-        text = (answer or "").strip() if isinstance(answer, str) else ""
+            missing += 1
+            failed_queries += 1
+            reason = f"ask:{type(exc).__name__}"
+            failure_counts[reason] = failure_counts.get(reason, 0) + 1
+            continue
+        text, failure = _semantic_answer_text(result)
+        if failure:
+            missing += 1
+            failed_queries += 1
+            failure_counts[failure] = failure_counts.get(failure, 0) + 1
+            continue
         if not text:
             missing += 1
             continue
@@ -1143,6 +1211,8 @@ def run_semantic_eval(
             vecs = _embed_batch([text, str(item["reference_answer"])], embed_cfg)
             if not vecs or len(vecs) != 2:
                 missing += 1
+                failed_queries += 1
+                failure_counts["embedding_invalid"] = failure_counts.get("embedding_invalid", 0) + 1
                 continue
             import numpy as np
 
@@ -1152,6 +1222,9 @@ def run_semantic_eval(
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("[rag] semantic eval embed failed: %s", exc)
             missing += 1
+            failed_queries += 1
+            reason = f"embedding:{type(exc).__name__}"
+            failure_counts[reason] = failure_counts.get(reason, 0) + 1
 
     if not scores:
         return {
@@ -1159,6 +1232,8 @@ def run_semantic_eval(
             "split": split,
             "reason": "no scorable answers",
             "missing": missing,
+            "failed_queries": failed_queries,
+            "failure_counts": failure_counts,
         }
     mean = sum(scores) / len(scores)
     return {
@@ -1167,6 +1242,8 @@ def run_semantic_eval(
         "queries": len(golden),
         "scored": len(scores),
         "missing": missing,
+        "failed_queries": failed_queries,
+        "failure_counts": failure_counts,
         "mean_similarity": round(mean, 4),
         "pass_rate": round(sum(1 for s in scores if s >= 0.8) / len(scores), 4),
         "threshold": 0.8,
@@ -1204,12 +1281,24 @@ def run_qagen(
     if not nodes:
         return {"status": "empty", "reason": "no nodes in index docstore"}
 
-    from llama_index.core.evaluation import DatasetGenerator
+    try:
+        from llama_index.core.evaluation import DatasetGenerator
+    except ImportError:
+        return {
+            "status": "unavailable",
+            "reason": "qagen dependency missing: install llama-index-core",
+        }
 
     models = list(getattr(cfg.llm, "models", []) or [])
     llm = None
     if models:
-        from llama_index.llms.openai import OpenAI as LIOpenAI
+        try:
+            from llama_index.llms.openai import OpenAI as LIOpenAI
+        except ImportError:
+            return {
+                "status": "unavailable",
+                "reason": "qagen dependency missing: install llama-index-llms-openai",
+            }
 
         m = models[0]
         llm = LIOpenAI(
@@ -1240,27 +1329,27 @@ def run_qagen(
         return {"status": "error", "reason": f"generation failed: {exc}"}
 
     li = get_llamaindex_config(cfg)
-    golden_path = Path(li.eval.golden_set)
-    golden_path.parent.mkdir(parents=True, exist_ok=True)
-    appended = 0
-    with open(golden_path, "a", encoding="utf-8") as f:
-        for q, ctx_ids in zip(queries.values(), relevant_docs.values()):
-            if not str(q).strip():
-                continue
-            f.write(
-                json.dumps(
-                    {
-                        "query": str(q).strip(),
-                        "relevant_papers": [],
-                        "relevant_nodes": [str(i) for i in ctx_ids],
-                        "reference_answer": "",
-                        "split": "generated",
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
+    golden_path = Path(out_path) if out_path else Path(li.eval.golden_set)
+    records: list[str] = []
+    for q, ctx_ids in zip(queries.values(), relevant_docs.values()):
+        if not str(q).strip():
+            continue
+        records.append(
+            json.dumps(
+                {
+                    "query": str(q).strip(),
+                    "relevant_papers": [],
+                    "relevant_nodes": [str(i) for i in ctx_ids],
+                    "reference_answer": "",
+                    "split": "generated",
+                },
+                ensure_ascii=False,
             )
-            appended += 1
+            + "\n"
+        )
+    if records:
+        _append_text_atomically(golden_path, "".join(records))
+    appended = len(records)
     return {
         "status": "ok",
         "generated": appended,

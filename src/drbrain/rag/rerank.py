@@ -43,6 +43,7 @@ Rank-comparison helpers (:func:`top_k_overlap`, :func:`mean_rank_displacement`,
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,11 +53,13 @@ from drbrain.rag.config import get_llamaindex_config
 try:
     from llama_index.core.postprocessor.node import BaseNodePostprocessor
     from llama_index.core.schema import NodeWithScore
+    from pydantic import PrivateAttr
 
     _LLAMA_INDEX_AVAILABLE = True
 except ImportError:  # pragma: no cover - envs without llama-index
     BaseNodePostprocessor = None  # type: ignore[assignment,misc]
     NodeWithScore = None  # type: ignore[assignment,misc]
+    PrivateAttr = None  # type: ignore[assignment,misc]
     _LLAMA_INDEX_AVAILABLE = False
 
 log = logging.getLogger(__name__)
@@ -278,6 +281,7 @@ if _LLAMA_INDEX_AVAILABLE:
         # Declared pydantic fields (BaseNodePostprocessor is a pydantic model).
         top_k: int = 20
         reranker: Any = None  # CrossEncoderReranker | mock | None
+        _last_trace: dict[str, Any] = PrivateAttr(default_factory=dict)
 
         def __init__(self, top_k: int = 20, reranker=None) -> None:
             # ``top_k``/``reranker`` are fields declared on *this* class;
@@ -292,18 +296,72 @@ if _LLAMA_INDEX_AVAILABLE:
         def class_name(cls) -> str:
             return "RerankPostprocessor"
 
+        def get_last_trace(self) -> dict[str, Any]:
+            """Return JSON-safe telemetry for the latest rerank pass."""
+            return dict(self._last_trace)
+
+        def _set_trace(
+            self,
+            status: str,
+            *,
+            started: float,
+            input_nodes: int,
+            candidates: int,
+            output_nodes: int,
+        ) -> None:
+            reranker = self.reranker
+            self._last_trace = {
+                "stage": "rerank",
+                "status": status,
+                "input_nodes": input_nodes,
+                "candidates": candidates,
+                "output_nodes": output_nodes,
+                "model": str(getattr(reranker, "model_name", "")) if reranker else None,
+                "duration_ms": (time.perf_counter() - started) * 1000.0,
+            }
+
         def _postprocess_nodes(self, nodes, query_bundle=None):
+            started = time.perf_counter()
+            input_nodes = len(nodes or [])
             if not nodes:
+                self._set_trace(
+                    "no_candidates",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=0,
+                    output_nodes=0,
+                )
                 return []
             reranker = self.reranker
             if reranker is None:
+                self._set_trace(
+                    "disabled",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=0,
+                    output_nodes=len(nodes),
+                )
                 return list(nodes)  # no reranker configured → Noop
             if not getattr(reranker, "available", False):
                 # load attempted and failed → Noop (warning already logged once
                 # by the reranker; don't spam per query)
+                self._set_trace(
+                    "unavailable",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=0,
+                    output_nodes=len(nodes),
+                )
                 return list(nodes)
             query = getattr(query_bundle, "query_str", None) if query_bundle else None
             if not query:
+                self._set_trace(
+                    "missing_query",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=0,
+                    output_nodes=len(nodes),
+                )
                 return list(nodes)  # nothing to rerank against → Noop
             top = list(nodes)[: self.top_k]
             passages = [_passage_text(nws.node) for nws in top]
@@ -311,12 +369,26 @@ if _LLAMA_INDEX_AVAILABLE:
                 scores = reranker.rerank(query, passages)
             except Exception as exc:  # noqa: BLE001 - degrade, never raise
                 log.warning("[rag] rerank failed (%s); falling back to coarse order", exc)
+                self._set_trace(
+                    "error",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=len(top),
+                    output_nodes=len(nodes),
+                )
                 return list(nodes)
             if not scores or len(scores) != len(top):
                 log.warning(
                     "[rag] rerank returned %s scores for %s passages; falling back to coarse order",
                     len(scores or []),
                     len(top),
+                )
+                self._set_trace(
+                    "invalid_scores",
+                    started=started,
+                    input_nodes=input_nodes,
+                    candidates=len(top),
+                    output_nodes=len(nodes),
                 )
                 return list(nodes)
             reranked = sorted(
@@ -327,6 +399,13 @@ if _LLAMA_INDEX_AVAILABLE:
                 ),
                 key=lambda x: x.score if x.score is not None else float("-inf"),
                 reverse=True,
+            )
+            self._set_trace(
+                "ok",
+                started=started,
+                input_nodes=input_nodes,
+                candidates=len(top),
+                output_nodes=len(reranked),
             )
             return reranked
 

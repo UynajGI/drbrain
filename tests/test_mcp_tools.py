@@ -20,7 +20,14 @@ _ECHO_SERVER = Path(__file__).parent / "fixtures" / "mcp_echo_server.py"
 
 
 def _server() -> dict:
-    return {"command": sys.executable, "args": [str(_ECHO_SERVER)]}
+    return {
+        "id": "test-echo",
+        "trusted": True,
+        "command": sys.executable,
+        "args": [str(_ECHO_SERVER)],
+        "allowed_tools": ["echo"],
+        "timeout_seconds": 5,
+    }
 
 
 def test_discover_mcp_tools():
