@@ -9,7 +9,9 @@ chooses a command, environment, server, or tool outside that host-owned policy.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -193,13 +195,22 @@ async def _call(policy: MCPServerPolicy, tool_name: str, arguments: dict[str, An
     return "\n".join(parts)
 
 
-def load_mcp_tools(servers: list[dict[str, Any]] | None, *, require_trusted: bool = False) -> list:
+def load_mcp_tools(
+    servers: list[dict[str, Any]] | None,
+    *,
+    require_trusted: bool = False,
+    call_override: Callable[[dict[str, Any], dict[str, Any], dict[str, Any], bool], Any]
+    | None = None,
+    include: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None,
+) -> list:
     """Bridge configured MCP tools, optionally requiring explicit trust.
 
     The default preserves historic local configuration behavior. Production
     hosts pass ``require_trusted=True``; then every server must use
     ``trusted: true`` plus a non-empty ``allowed_tools`` list. An allowlist,
-    when supplied, is enforced even in compatibility mode.
+    when supplied, is enforced even in compatibility mode. ``include`` and
+    ``call_override`` are optional durable-loop hooks; omitting them preserves
+    direct MCP execution.
     """
     if not servers:
         return []
@@ -219,7 +230,17 @@ def load_mcp_tools(servers: list[dict[str, Any]] | None, *, require_trusted: boo
             )
             continue
         for descriptor in descriptors:
-            tools.append(_to_function_tool(server, descriptor, FunctionTool, require_trusted))
+            if include is not None and not include(server, descriptor):
+                continue
+            tools.append(
+                _to_function_tool(
+                    server,
+                    descriptor,
+                    FunctionTool,
+                    require_trusted,
+                    call_override=call_override,
+                )
+            )
     return tools
 
 
@@ -228,17 +249,35 @@ def _to_function_tool(
     descriptor: dict[str, Any],
     function_tool_cls: Any,
     require_trusted: bool,
+    *,
+    call_override: Callable[[dict[str, Any], dict[str, Any], dict[str, Any], bool], Any]
+    | None = None,
 ) -> Any:
     schema = descriptor.get("inputSchema") or {}
     model = _schema_to_model(descriptor["name"], schema)
 
-    def _fn(**kwargs: Any) -> str:
-        return call_mcp_tool(
-            server, descriptor["name"], dict(kwargs), require_trusted=require_trusted
-        )
+    fn: Callable[..., Any]
+    if call_override is not None:
+
+        async def _brokered_fn(**kwargs: Any) -> str:
+            result = call_override(server, descriptor, dict(kwargs), require_trusted)
+            if inspect.isawaitable(result):
+                result = await result
+            return str(result)
+
+        fn = _brokered_fn
+
+    else:
+
+        def _direct_fn(**kwargs: Any) -> str:
+            return call_mcp_tool(
+                server, descriptor["name"], dict(kwargs), require_trusted=require_trusted
+            )
+
+        fn = _direct_fn
 
     return function_tool_cls.from_defaults(
-        fn=_fn,
+        fn=fn,
         name=descriptor["name"],
         description=descriptor.get("description") or "",
         fn_schema=model,

@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 2
+LEDGER_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,26 @@ class LedgerCheckpoint:
     workflow_state: dict[str, Any]
     manifest: dict[str, Any]
     created_at: float
+
+
+@dataclass(frozen=True)
+class LedgerToolCall:
+    """A durable tool proposal, intent, and final observation."""
+
+    tool_call_id: str
+    run_id: str
+    step_id: str
+    attempt_id: str
+    node_name: str
+    tool_name: str
+    source: str
+    side_effect: str
+    status: str
+    idempotency_key: str | None
+    proposal: dict[str, Any]
+    observation: dict[str, Any]
+    created_at: float
+    updated_at: float
 
 
 class LeaseOwnershipError(RuntimeError):
@@ -200,6 +220,33 @@ class RunLedger:
                 checkpoint_id TEXT REFERENCES research_checkpoints(checkpoint_id),
                 updated_at REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS research_tool_calls (
+                tool_call_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                step_id TEXT NOT NULL REFERENCES research_steps(step_id),
+                attempt_id TEXT NOT NULL REFERENCES research_attempts(attempt_id),
+                node_name TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                source TEXT NOT NULL,
+                side_effect TEXT NOT NULL,
+                status TEXT NOT NULL,
+                idempotency_key TEXT,
+                proposal_json TEXT NOT NULL DEFAULT '{}',
+                observation_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                CHECK (status IN (
+                    'intent', 'succeeded', 'failed', 'timed_out', 'unknown',
+                    'denied', 'waiting_approval'
+                ))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_research_tool_calls_run_created
+                ON research_tool_calls(run_id, created_at);
+
+            CREATE INDEX IF NOT EXISTS idx_research_tool_calls_idempotency
+                ON research_tool_calls(run_id, step_id, idempotency_key, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS research_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -405,6 +452,268 @@ class RunLedger:
                 (run_id,),
             ).fetchall()
             return [self._event_from_row(event) for event in rows]
+
+    def record_tool_intent(
+        self,
+        *,
+        tool_call_id: str,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        tool_name: str,
+        source: str,
+        side_effect: str,
+        node_name: str,
+        proposal: Mapping[str, Any],
+        idempotency_key: str | None,
+        lease_seconds: float | None = None,
+    ) -> LedgerToolCall:
+        """Durably record an authorized intent before an external handler runs."""
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            now = time.time()
+            call = LedgerToolCall(
+                tool_call_id=tool_call_id,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                node_name=node_name,
+                tool_name=tool_name,
+                source=source,
+                side_effect=side_effect,
+                status="intent",
+                idempotency_key=idempotency_key,
+                proposal=dict(proposal),
+                observation={},
+                created_at=now,
+                updated_at=now,
+            )
+            self._insert_tool_call(conn, call)
+            if lease_seconds is not None:
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_expires_at = ?, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now + max(1.0, float(lease_seconds)), now, step_id),
+                )
+            self.append_event(
+                conn,
+                run_id,
+                actor="tool_broker",
+                event_type="tool_intended",
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "node_name": node_name,
+                    "tool_name": tool_name,
+                    "source": source,
+                    "side_effect": side_effect,
+                    "idempotency_key": idempotency_key,
+                    "proposal": dict(proposal),
+                },
+            )
+            return call
+
+    def record_tool_decision(
+        self,
+        *,
+        tool_call_id: str,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        tool_name: str,
+        source: str,
+        side_effect: str,
+        node_name: str,
+        proposal: Mapping[str, Any],
+        idempotency_key: str | None,
+        status: str,
+        reason: str,
+    ) -> LedgerToolCall:
+        """Persist a denied or approval-waiting proposal that never reached a handler."""
+        if status not in {"denied", "waiting_approval"}:
+            raise ValueError(f"invalid non-execution tool status {status!r}")
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            now = time.time()
+            call = LedgerToolCall(
+                tool_call_id=tool_call_id,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                node_name=node_name,
+                tool_name=tool_name,
+                source=source,
+                side_effect=side_effect,
+                status=status,
+                idempotency_key=idempotency_key,
+                proposal=dict(proposal),
+                observation={"reason": reason},
+                created_at=now,
+                updated_at=now,
+            )
+            self._insert_tool_call(conn, call)
+            self.append_event(
+                conn,
+                run_id,
+                actor="tool_broker",
+                event_type="tool_denied" if status == "denied" else "tool_waiting_approval",
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "node_name": node_name,
+                    "tool_name": tool_name,
+                    "reason": reason,
+                    "proposal": dict(proposal),
+                },
+            )
+            return call
+
+    def record_tool_observation(
+        self,
+        *,
+        tool_call_id: str,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        status: str,
+        observation: Mapping[str, Any],
+        lease_seconds: float | None = None,
+    ) -> LedgerToolCall:
+        """Settle a prior intent with a durable observation under the same lease."""
+        if status not in {"succeeded", "failed", "timed_out", "unknown"}:
+            raise ValueError(f"invalid tool observation status {status!r}")
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            row = conn.execute(
+                """
+                SELECT * FROM research_tool_calls
+                WHERE tool_call_id = ? AND run_id = ? AND step_id = ? AND attempt_id = ?
+                """,
+                (tool_call_id, run_id, step_id, attempt_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown tool call {tool_call_id!r}")
+            if str(row["status"]) != "intent":
+                raise RuntimeError(f"tool call {tool_call_id!r} is not awaiting an observation")
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_tool_calls
+                SET status = ?, observation_json = ?, updated_at = ?
+                WHERE tool_call_id = ?
+                """,
+                (status, _as_json(dict(observation)), now, tool_call_id),
+            )
+            if lease_seconds is not None:
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_expires_at = ?, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now + max(1.0, float(lease_seconds)), now, step_id),
+                )
+            self.append_event(
+                conn,
+                run_id,
+                actor="tool_broker",
+                event_type="tool_observed",
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "status": status,
+                    "observation": dict(observation),
+                },
+            )
+            updated = conn.execute(
+                "SELECT * FROM research_tool_calls WHERE tool_call_id = ?", (tool_call_id,)
+            ).fetchone()
+            assert updated is not None  # protected by the update above
+            return self._tool_call_from_row(updated)
+
+    def renew_lease(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> None:
+        """Extend an owned running attempt lease without changing its progress."""
+        with self.transaction() as conn:
+            self._require_active_tool_attempt(
+                conn,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                worker_id=worker_id,
+            )
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now + max(1.0, float(lease_seconds)), now, step_id),
+            )
+
+    def tool_calls(self, run_id: str) -> list[LedgerToolCall]:
+        """Read the durable tool trail in issue order for one run."""
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM research_tool_calls WHERE run_id = ? ORDER BY created_at, tool_call_id",
+                (run_id,),
+            ).fetchall()
+            return [self._tool_call_from_row(row) for row in rows]
+
+    def latest_tool_call_for_idempotency(
+        self,
+        run_id: str,
+        *,
+        step_id: str,
+        idempotency_key: str,
+    ) -> LedgerToolCall | None:
+        """Return the latest durable result for one deterministic idempotency key."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM research_tool_calls
+                WHERE run_id = ? AND step_id = ? AND idempotency_key = ?
+                ORDER BY created_at DESC, tool_call_id DESC
+                LIMIT 1
+                """,
+                (run_id, step_id, idempotency_key),
+            ).fetchone()
+            return self._tool_call_from_row(row) if row is not None else None
 
     def mark_projected(self, run_id: str, event_seq: int) -> None:
         """Advance the compatibility-projection cursor after a complete file write."""
@@ -679,6 +988,66 @@ class RunLedger:
             return self._checkpoint_from_row(row)
 
     @staticmethod
+    def _require_active_tool_attempt(
+        conn: sqlite3.Connection,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+    ) -> None:
+        now = time.time()
+        step = conn.execute(
+            """
+            SELECT run_id, lease_owner, lease_expires_at
+            FROM research_steps WHERE step_id = ?
+            """,
+            (step_id,),
+        ).fetchone()
+        if step is None or str(step["run_id"]) != run_id:
+            raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+        if (
+            step["lease_owner"] != worker_id
+            or step["lease_expires_at"] is None
+            or float(step["lease_expires_at"]) <= now
+        ):
+            raise LeaseOwnershipError(f"worker {worker_id!r} does not own active lease")
+        attempt = conn.execute(
+            "SELECT status FROM research_attempts WHERE attempt_id = ? AND step_id = ?",
+            (attempt_id, step_id),
+        ).fetchone()
+        if attempt is None or str(attempt["status"]) != "running":
+            raise LeaseOwnershipError(f"attempt {attempt_id!r} is not running")
+
+    @staticmethod
+    def _insert_tool_call(conn: sqlite3.Connection, call: LedgerToolCall) -> None:
+        conn.execute(
+            """
+            INSERT INTO research_tool_calls(
+                tool_call_id, run_id, step_id, attempt_id, node_name, tool_name,
+                source, side_effect, status, idempotency_key, proposal_json,
+                observation_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                call.tool_call_id,
+                call.run_id,
+                call.step_id,
+                call.attempt_id,
+                call.node_name,
+                call.tool_name,
+                call.source,
+                call.side_effect,
+                call.status,
+                call.idempotency_key,
+                _as_json(call.proposal),
+                _as_json(call.observation),
+                call.created_at,
+                call.updated_at,
+            ),
+        )
+
+    @staticmethod
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
             return None
@@ -716,4 +1085,23 @@ class RunLedger:
             workflow_state=_from_json(row["workflow_state_json"], {}),
             manifest=_from_json(row["manifest_json"], {}),
             created_at=float(row["created_at"]),
+        )
+
+    @staticmethod
+    def _tool_call_from_row(row: sqlite3.Row) -> LedgerToolCall:
+        return LedgerToolCall(
+            tool_call_id=str(row["tool_call_id"]),
+            run_id=str(row["run_id"]),
+            step_id=str(row["step_id"]),
+            attempt_id=str(row["attempt_id"]),
+            node_name=str(row["node_name"]),
+            tool_name=str(row["tool_name"]),
+            source=str(row["source"]),
+            side_effect=str(row["side_effect"]),
+            status=str(row["status"]),
+            idempotency_key=(str(row["idempotency_key"]) if row["idempotency_key"] else None),
+            proposal=dict(_from_json(row["proposal_json"], {})),
+            observation=dict(_from_json(row["observation_json"], {})),
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
         )
