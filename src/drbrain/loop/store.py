@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 3
+LEDGER_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -266,6 +266,12 @@ class RunLedger:
                 ON research_events(run_id, event_seq);
             """
         )
+        row = conn.execute("SELECT MAX(version) AS version FROM ledger_schema_versions").fetchone()
+        current = int(row["version"] or 0)
+        if current > LEDGER_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"ledger schema {current} is newer than supported {LEDGER_SCHEMA_VERSION}"
+            )
         run_columns = {
             str(column["name"])
             for column in conn.execute("PRAGMA table_info(research_runs)").fetchall()
@@ -273,12 +279,6 @@ class RunLedger:
         if "config_json" not in run_columns:
             conn.execute(
                 "ALTER TABLE research_runs ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'"
-            )
-        row = conn.execute("SELECT MAX(version) AS version FROM ledger_schema_versions").fetchone()
-        current = int(row["version"] or 0)
-        if current > LEDGER_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"ledger schema {current} is newer than supported {LEDGER_SCHEMA_VERSION}"
             )
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(
