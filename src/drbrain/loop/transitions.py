@@ -557,6 +557,23 @@ class TransitionService:
                 raise ValueError(
                     "reviewer already reviewed this proposal under a different review_id"
                 )
+            if row is not None and (
+                not math.isclose(float(row["score"]), float(score), rel_tol=0.0, abs_tol=1e-12)
+                or str(row["verdict"]) != verdict
+                or str(row["content"]) != content
+            ):
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor=reviewer,
+                    event_type="critic_review_replay_ignored",
+                    payload={
+                        "proposal_id": proposal_id,
+                        "review_id": review_id,
+                        "stored_score": float(row["score"]),
+                        "replayed_score": float(score),
+                    },
+                )
             if row is None:
                 now = time.time()
                 conn.execute(
@@ -691,7 +708,7 @@ class TransitionService:
 
     def front_half_snapshot(self, run_id: str) -> dict[str, Any]:
         """Return canonical front-half facts so a crashed workflow can rebuild its view."""
-        with self._ledger.read_transaction() as conn:
+        with self._ledger.transaction() as conn:
             self._run_status(conn, run_id)
             specs = conn.execute(
                 "SELECT * FROM research_front_half_node_specs WHERE run_id = ? ORDER BY node_name",
@@ -705,14 +722,25 @@ class TransitionService:
                 "SELECT * FROM research_queue_items WHERE run_id = ? ORDER BY created_at, queue_item_id",
                 (run_id,),
             ).fetchall()
+            review_rows = conn.execute(
+                """
+                SELECT review.*
+                FROM research_critic_reviews AS review
+                JOIN research_proposals AS proposal ON proposal.proposal_id = review.proposal_id
+                WHERE proposal.run_id = ?
+                ORDER BY review.proposal_id, review.created_at, review.review_id
+                """,
+                (run_id,),
+            ).fetchall()
+            reviews_by_proposal: dict[str, list[dict[str, Any]]] = {}
+            for review in review_rows:
+                reviews_by_proposal.setdefault(str(review["proposal_id"]), []).append(
+                    self._review_dict(review)
+                )
             proposal_values = []
             for proposal in proposals:
                 value = self._proposal_dict(proposal)
-                reviews = conn.execute(
-                    "SELECT * FROM research_critic_reviews WHERE proposal_id = ? ORDER BY created_at, review_id",
-                    (proposal["proposal_id"],),
-                ).fetchall()
-                value["reviews"] = [self._review_dict(review) for review in reviews]
+                value["reviews"] = reviews_by_proposal.get(str(proposal["proposal_id"]), [])
                 proposal_values.append(value)
             return {
                 "node_specs": {str(row["node_name"]): self._node_spec_dict(row) for row in specs},

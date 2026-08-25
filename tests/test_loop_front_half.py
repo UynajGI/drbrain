@@ -122,3 +122,25 @@ def test_front_half_does_not_revive_a_discarded_proposal(tmp_path):
 
     assert first["status"] == replay["status"] == "discarded"
     assert replay["queue_item"]["status"] == "discarded"
+
+
+def test_front_half_audits_a_conflicting_canonical_review_replay(tmp_path):
+    front_half = _front_half(tmp_path)
+    proposal = front_half.record_proposal(_proposal(), author="analyst")
+    review = front_half.record_review(
+        proposal["proposal_id"], reviewer="critic-1", score=0.9, verdict="KEEP", content="sound"
+    )
+
+    canonical = front_half.transitions.record_front_half_review(
+        front_half.run_id,
+        proposal_id=proposal["proposal_id"],
+        review_id=review["review_id"],
+        reviewer="critic-1",
+        score=0.1,
+        verdict="DISCARD",
+        content="changed after retry",
+    )
+
+    assert canonical["score"] == 0.9
+    ledger = front_half.transitions._ledger  # noqa: SLF001 - inspect durable audit boundary
+    assert ledger.events(front_half.run_id)[-1].event_type == "critic_review_replay_ignored"
