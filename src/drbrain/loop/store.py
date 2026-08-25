@@ -616,6 +616,103 @@ class RunLedger:
             raise RunBudgetExceededError(exhaustion_message)
         return result
 
+    def consume_observed_budget(
+        self, run_id: str, amounts: Mapping[str, int | float]
+    ) -> dict[str, Any]:
+        """Record resource use that has already occurred at an external boundary.
+
+        Unlike :meth:`reserve_budget`, this method never pretends a completed
+        model or tool call did not happen.  It stores the reported usage first,
+        then makes an exceeded limit terminal so no later boundary is admitted.
+        """
+        normalized = {
+            str(kind): float(amount)
+            for kind, amount in amounts.items()
+            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+        }
+        if not normalized:
+            return self.budget_snapshot(run_id)
+        exhaustion_message: str | None = None
+        result: dict[str, Any] = {}
+        with self.transaction() as conn:
+            run = conn.execute(
+                "SELECT status, budget_json, created_at FROM research_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            row = conn.execute(
+                "SELECT usage_json, exhausted_at, exhausted_reason FROM research_budget_usage "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            usage = self._json_mapping(row["usage_json"] if row is not None else "{}")
+            for kind, amount in normalized.items():
+                usage[kind] = float(usage.get(kind, 0.0)) + amount
+            wall_seconds = max(0.0, time.time() - float(run["created_at"]))
+            usage["wall_seconds"] = wall_seconds
+            limits = self._json_mapping(run["budget_json"])
+            exceeded: tuple[str, float, float] | None = None
+            wall_limit = self._budget_limit(limits, "wall_seconds")
+            if wall_limit is not None and wall_seconds > wall_limit:
+                exceeded = ("wall_seconds", wall_seconds, wall_limit)
+            for kind in normalized:
+                limit = self._budget_limit(limits, kind)
+                actual = float(usage[kind])
+                if limit is not None and actual > limit:
+                    exceeded = (kind, actual, limit)
+                    break
+            now = time.time()
+            already_exhausted = row is not None and row["exhausted_at"] is not None
+            exhausted_at = row["exhausted_at"] if already_exhausted else None
+            exhausted_reason = row["exhausted_reason"] if already_exhausted else None
+            if exceeded is not None and not already_exhausted:
+                kind, actual, limit = exceeded
+                exhausted_at = now
+                exhausted_reason = f"{kind} exceeded configured limit {limit} after observation"
+                if str(run["status"]) == RUN_RUNNING:
+                    conn.execute(
+                        "UPDATE research_runs SET status = ?, updated_at = ?, completed_at = ? "
+                        "WHERE run_id = ?",
+                        (RUN_FAILED, now, now, run_id),
+                    )
+                self.append_event(
+                    conn,
+                    run_id,
+                    actor="budget",
+                    event_type="run_budget_exhausted",
+                    payload={"kind": kind, "actual": actual, "limit": limit, "phase": "observed"},
+                )
+                exhaustion_message = f"run {run_id} budget exhausted: {kind} was {actual} > {limit}"
+            conn.execute(
+                """
+                INSERT INTO research_budget_usage(run_id, usage_json, exhausted_at, exhausted_reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    usage_json = excluded.usage_json,
+                    exhausted_at = excluded.exhausted_at,
+                    exhausted_reason = excluded.exhausted_reason,
+                    updated_at = excluded.updated_at
+                """,
+                (run_id, _as_json(usage), exhausted_at, exhausted_reason, now),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="budget",
+                event_type="budget_consumed",
+                payload={"amounts": normalized, "usage": usage},
+            )
+            result = {
+                "limits": limits,
+                "usage": usage,
+                "exhausted": exhausted_at is not None,
+                "reason": str(exhausted_reason or ""),
+            }
+        if exhaustion_message is not None:
+            raise RunBudgetExceededError(exhaustion_message)
+        return result
+
     def release_budget(self, run_id: str, amounts: Mapping[str, int | float]) -> dict[str, Any]:
         """Compensate an unexecuted reservation when setup fails before intent.
 

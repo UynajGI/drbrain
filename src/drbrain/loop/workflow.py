@@ -290,6 +290,43 @@ def _parse_json_lenient(text: str) -> Any:
         return None
 
 
+def _reported_token_usage(result: Any) -> dict[str, int | float]:
+    """Extract provider-reported token totals without estimating missing data."""
+    response = getattr(result, "response", None)
+    message = getattr(response, "message", None)
+    candidates = (
+        getattr(result, "raw", None),
+        getattr(response, "raw", None),
+        getattr(response, "additional_kwargs", None),
+        getattr(message, "additional_kwargs", None),
+    )
+    for candidate in candidates:
+        usage = _usage_mapping(candidate)
+        if not usage:
+            continue
+        total = usage.get("total_tokens", usage.get("total_token_count"))
+        if not _positive_number(total):
+            prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+            completion = usage.get("completion_tokens", usage.get("output_tokens"))
+            if _positive_number(prompt) or _positive_number(completion):
+                total = float(prompt or 0) + float(completion or 0)
+        if _positive_number(total):
+            return {"tokens": float(total)}
+    return {}
+
+
+def _usage_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        nested = value.get("usage")
+        return nested if isinstance(nested, Mapping) else value
+    nested = getattr(value, "usage", None)
+    return nested if isinstance(nested, Mapping) else None
+
+
+def _positive_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+
+
 class ResearchLoopWorkflow(Workflow):
     """Deterministic research loop (P0 skeleton).
 
@@ -317,6 +354,7 @@ class ResearchLoopWorkflow(Workflow):
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
         budget_reserver: Callable[[dict[str, int | float]], Any] | None = None,
+        budget_consumer: Callable[[dict[str, int | float]], Any] | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -334,6 +372,7 @@ class ResearchLoopWorkflow(Workflow):
         self._durable_front_half = durable_front_half
         self._durable_execution = durable_execution
         self._budget_reserver = budget_reserver
+        self._budget_consumer = budget_consumer
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
@@ -820,7 +859,8 @@ class ResearchLoopWorkflow(Workflow):
                 await self._reserve_budget({"model_calls": 1})
                 result = original_take_step(*args, **kwargs)
                 if hasattr(result, "__await__"):
-                    return await result
+                    result = await result
+                await self._consume_budget(_reported_token_usage(result))
                 return result
 
             try:
@@ -880,6 +920,12 @@ class ResearchLoopWorkflow(Workflow):
         if self._budget_reserver is None:
             return
         await asyncio.to_thread(self._budget_reserver, amounts)
+
+    async def _consume_budget(self, amounts: dict[str, int | float]) -> None:
+        """Record actual post-boundary provider usage without fabricating estimates."""
+        if not amounts or self._budget_consumer is None:
+            return
+        await asyncio.to_thread(self._budget_consumer, amounts)
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)

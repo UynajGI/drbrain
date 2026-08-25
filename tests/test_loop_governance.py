@@ -13,6 +13,7 @@ from drbrain.loop.store import RunExecutionBlockedError, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, ToolCallStatus
 from drbrain.loop.transitions import TransitionService
 from drbrain.loop.workflow import ResearchLoopWorkflow
+from drbrain.plugins.protocol import PluginResult, ResultStatus
 
 
 def _running(tmp_path, *, budget: dict[str, int | float] | None = None):
@@ -407,6 +408,66 @@ def test_each_function_agent_turn_reserves_model_budget_before_calling_the_model
     assert budget["exhausted"] is True
 
 
+def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
+    ledger, run_id, _ = _running(tmp_path, budget={"max_tokens": 3})
+    model_turns = 0
+
+    class _Agent:
+        async def take_step(self):
+            nonlocal model_turns
+            model_turns += 1
+            return type("Step", (), {"raw": {"usage": {"total_tokens": 4}}})()
+
+        def run(self, **_kwargs):
+            async def result():
+                await self.take_step()
+                return type(
+                    "Result", (), {"response": type("Response", (), {"content": "done"})()}
+                )()
+
+            return result()
+
+    workflow = ResearchLoopWorkflow(
+        budget_reserver=lambda amounts: ledger.reserve_budget(run_id, amounts),
+        budget_consumer=lambda amounts: ledger.consume_observed_budget(run_id, amounts),
+    )
+    with pytest.raises(RunExecutionBlockedError):
+        asyncio.run(workflow.run_agent(_Agent(), "record provider tokens"))
+
+    budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
+    assert model_turns == 1
+    assert budget["usage"]["tokens"] == 4
+    assert budget["usage"]["model_calls"] == 1
+    assert budget["exhausted"] is True
+
+
+def test_observed_plugin_resources_remain_auditable_when_they_exhaust_budget(tmp_path):
+    ledger, run_id, broker = _running(tmp_path, budget={"max_gpu_seconds": 1})
+
+    with pytest.raises(RunExecutionBlockedError):
+        asyncio.run(
+            broker.execute(
+                node_name="compute",
+                definition=_compute_tool(),
+                arguments={"job": "gpu"},
+                executor=lambda: PluginResult(
+                    ResultStatus.OK,
+                    data={"job_id": "gpu"},
+                    resource_usage={"cpu_seconds": 0.25, "gpu_seconds": 1.5},
+                ),
+                approved=True,
+            )
+        )
+
+    budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
+    call = ledger.tool_calls(run_id)[0]
+    assert call.status == ToolCallStatus.SUCCEEDED
+    assert call.observation["resource_usage"] == {"cpu_seconds": 0.25, "gpu_seconds": 1.5}
+    assert budget["usage"]["cpu_seconds"] == 0.25
+    assert budget["usage"]["gpu_seconds"] == 1.5
+    assert budget["exhausted"] is True
+
+
 def test_agent_without_turn_hook_reserves_its_worst_case_trajectory(tmp_path):
     ledger, run_id, _ = _running(tmp_path, budget={"max_model_calls": 2})
     invoked = False
@@ -552,6 +613,24 @@ def test_director_accepts_unprefixed_budget_boundary_names(tmp_path):
     assert state["cycles"] == 0
     assert run.budget["max_attempts"] == 0
     assert run.status == "failed"
+
+
+def test_director_accepts_resource_budget_aliases_without_changing_old_names(tmp_path):
+    director = ResearchDirector(cfg=object(), run_dir=tmp_path / "runs")
+
+    asyncio.run(
+        director.run(
+            "resource budget names",
+            max_cycles=0,
+            budget={"tokens": 12, "cpu_seconds": 3, "gpu_seconds": 4},
+        )
+    )
+
+    run = RunLedger(tmp_path / "runs" / "ledger.sqlite3").get_run("resource budget names")
+    assert run is not None
+    assert run.budget["max_tokens"] == 12
+    assert run.budget["max_cpu_seconds"] == 3
+    assert run.budget["max_gpu_seconds"] == 4
 
 
 def test_director_rejects_unknown_budget_names(tmp_path):

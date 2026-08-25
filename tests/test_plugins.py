@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from drbrain.plugins import Plugin, PluginRegistry, ResultStatus
+from drbrain.plugins import Plugin, PluginRegistry, PluginResult, ResultStatus
 
 
 def _flatband_plugin(**overrides) -> Plugin:
@@ -90,6 +90,23 @@ def test_call_ok_with_evidence_and_summary():
     msg = result.to_llm_message(plugin)
     assert "结果(JSON)" in msg
     assert "S_bandwidth=0.99" in msg
+
+
+def test_call_preserves_additive_resource_usage_from_a_plugin_result():
+    reg = PluginRegistry()
+    reg.register(
+        _flatband_plugin(),
+        lambda _args: PluginResult(
+            ResultStatus.OK,
+            data={"S_bandwidth": 0.99},
+            resource_usage={"gpu_seconds": 1.25},
+        ),
+    )
+
+    result = reg.call("predict_flatband_score", {"composition": {"Cr": 1}})
+
+    assert result.ok
+    assert result.resource_usage == {"gpu_seconds": 1.25}
 
 
 def test_call_no_result():

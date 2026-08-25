@@ -179,7 +179,16 @@ class PluginRegistry:
         if data is None:
             return PluginResult(ResultStatus.NO_RESULT, evidence=evidence, error="插件无输出")
         evidence["output"] = data
-        return PluginResult(ResultStatus.OK, data=data, evidence=evidence)
+        # A handler may return the public envelope itself to attach additive
+        # resource measurements. Preserve the legacy nested ``data`` shape,
+        # while carrying that metadata to the durable broker.
+        resource_usage = data.resource_usage if isinstance(data, PluginResult) else {}
+        return PluginResult(
+            ResultStatus.OK,
+            data=data,
+            evidence=evidence,
+            resource_usage=resource_usage,
+        )
 
     def to_llamaindex_tools(
         self,

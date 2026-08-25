@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -53,6 +54,7 @@ class ToolObservation:
     attempts: int = 0
     reused: bool = False
     execution_blocked: bool = False
+    resource_usage: Mapping[str, float] | None = None
 
     @property
     def ok(self) -> bool:
@@ -81,6 +83,7 @@ class _ExecutionOutcome:
     output: Any = None
     error: str | None = None
     evidence: Mapping[str, Any] | None = None
+    resource_usage: Mapping[str, float] | None = None
 
 
 class ToolBroker:
@@ -352,6 +355,7 @@ class ToolBroker:
                 _redact(dict(outcome.evidence or {})), definition.max_output_bytes
             ),
             "attempts": attempts,
+            "resource_usage": dict(outcome.resource_usage or {}),
         }
         self._ledger.record_tool_observation(
             tool_call_id=tool_call_id,
@@ -363,12 +367,18 @@ class ToolBroker:
             observation=safe_observation,
             lease_seconds=self.lease_seconds,
         )
+        # Resource use is known only after a model/tool boundary completes.
+        # Persist the observation before charging it so an exceeded budget still
+        # leaves a complete, reconciliable record of the completed invocation.
+        if outcome.resource_usage:
+            self._ledger.consume_observed_budget(self.run_id, outcome.resource_usage)
         return ToolObservation(
             tool_call_id=tool_call_id,
             status=status,
             output=outcome.output,
             error=outcome.error,
             attempts=attempts,
+            resource_usage=outcome.resource_usage,
         )
 
     def record_evidence_bundle(self, bundle: Mapping[str, Any]) -> None:
@@ -426,6 +436,7 @@ class ToolBroker:
         executor: Callable[[], Any],
         definition: ToolDefinition,
     ) -> _ExecutionOutcome:
+        cpu_started = time.process_time()
         try:
             if definition.timeout_s is None:
                 result = executor()
@@ -440,11 +451,26 @@ class ToolBroker:
                 result = await asyncio.wait_for(asyncio.to_thread(executor), timeout=timeout)
                 if inspect.isawaitable(result):
                     result = await asyncio.wait_for(result, timeout=timeout)
-            return _normalize_result(result)
+            outcome = _normalize_result(result)
         except TimeoutError as exc:
-            return _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
+            outcome = _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
         except Exception as exc:  # noqa: BLE001 - normalize arbitrary tool failures
-            return _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+            outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+        resource_usage = _normalize_resource_usage(outcome.resource_usage)
+        # This is process CPU elapsed over the broker invocation. A plugin's
+        # own report takes precedence because it can attribute subprocess/GPU
+        # work more precisely than the host process can.
+        if "cpu_seconds" not in resource_usage:
+            cpu_seconds = max(0.0, time.process_time() - cpu_started)
+            if cpu_seconds > 0:
+                resource_usage["cpu_seconds"] = cpu_seconds
+        return _ExecutionOutcome(
+            status=outcome.status,
+            output=outcome.output,
+            error=outcome.error,
+            evidence=outcome.evidence,
+            resource_usage=resource_usage,
+        )
 
     @staticmethod
     def _safe_proposal(proposal: ToolProposal) -> dict[str, Any]:
@@ -511,18 +537,33 @@ def _normalize_result(result: Any) -> _ExecutionOutcome:
             output=getattr(result, "data", None),
             evidence=getattr(result, "evidence", None),
             error=getattr(result, "error", None),
+            resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
         )
     if status == "timeout":
         return _ExecutionOutcome(
             ToolCallStatus.TIMED_OUT,
             error=getattr(result, "error", None) or "tool timeout",
             evidence=getattr(result, "evidence", None),
+            resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
         )
     return _ExecutionOutcome(
         ToolCallStatus.FAILED,
         error=getattr(result, "error", None) or f"tool result status {status!r}",
         evidence=getattr(result, "evidence", None),
+        resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
     )
+
+
+def _normalize_resource_usage(value: Any) -> dict[str, float]:
+    """Keep only finite, additive resource measurements from trusted adapters."""
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, float] = {}
+    for kind in ("tokens", "cpu_seconds", "gpu_seconds"):
+        amount = value.get(kind)
+        if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0:
+            normalized[kind] = float(amount)
+    return normalized
 
 
 def _contains_value(value: Any, needle: str) -> bool:
