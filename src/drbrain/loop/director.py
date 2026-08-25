@@ -563,8 +563,28 @@ class ResearchDirector:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def _append_janitor_log(self, topic: str, entry: dict[str, Any]) -> None:
-        """Append one line to ``logs/janitor.jsonl`` (stale-job audit trail)."""
-        with open(self._logs_dir(topic) / "janitor.jsonl", "a", encoding="utf-8") as f:
+        """Append one distinct line to ``logs/janitor.jsonl``.
+
+        A committed cycle can be replayed after a process exits between its
+        workspace projection and ``mark_projected``.  ``stale_seconds`` varies
+        on replay, so deduplicate on the stable identity of a janitor finding
+        rather than on the complete serialized JSON object.
+        """
+        path = self._logs_dir(topic) / "janitor.jsonl"
+        identity_fields = ("event", "job_id", "statement", "cycle", "started_at")
+        identity = tuple(entry.get(field) for field in identity_fields)
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    existing = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(existing, dict)
+                    and tuple(existing.get(field) for field in identity_fields) == identity
+                ):
+                    return
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     # ── T-janitor: stale async-job re-claim (simplified monitor) ───────────────
@@ -803,16 +823,20 @@ class ResearchDirector:
 
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
+        config = {"n_critics": self._n_critics}
+        budget = {
+            "max_cycles": max_cycles,
+            "stagnation_cycles": stagnation_cycles,
+            "max_adaptations": max_adaptations,
+        }
         run = ledger.get_or_create_run(
             topic,
-            config={"n_critics": self._n_critics},
-            budget={
-                "max_cycles": max_cycles,
-                "stagnation_cycles": stagnation_cycles,
-                "max_adaptations": max_adaptations,
-            },
+            config=config,
+            budget=budget,
             legacy_snapshot=state if legacy_projection else None,
         )
+        if existing_run is not None:
+            ledger.record_resume(run.run_id, config=config, budget=budget)
         transitions = TransitionService(ledger)
         transitions.reconcile_incomplete_cycles(run.run_id)
         transitions.start_run(run.run_id)
