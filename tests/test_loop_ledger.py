@@ -11,7 +11,7 @@ import pytest
 from drbrain.loop.director import JANITOR_STALE_SECONDS, ResearchDirector, _default_state
 from drbrain.loop.events import ResearchState
 from drbrain.loop.state import InvalidTransitionError
-from drbrain.loop.store import RunLedger
+from drbrain.loop.store import LEDGER_SCHEMA_VERSION, RunLedger
 from drbrain.loop.transitions import TransitionService
 
 
@@ -39,6 +39,40 @@ def test_ledger_adds_config_json_to_preexisting_run_table(tmp_path):
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
     assert "config_json" in columns
+
+
+def test_ledger_rejects_a_newer_schema_before_altering_research_runs(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE ledger_schema_versions (version INTEGER PRIMARY KEY, applied_at REAL)"
+        )
+        conn.execute(
+            "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, 0)",
+            (LEDGER_SCHEMA_VERSION + 1,),
+        )
+        conn.execute(
+            """
+            CREATE TABLE research_runs (
+                run_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                budget_json TEXT NOT NULL DEFAULT '{}',
+                last_projected_event INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="newer than supported"):
+        RunLedger(path).get_run("missing")
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_runs)")}
+    assert "config_json" not in columns
 
 
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
