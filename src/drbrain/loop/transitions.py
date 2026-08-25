@@ -26,7 +26,7 @@ from drbrain.loop.state import (
     validate_run_transition,
     validate_step_transition,
 )
-from drbrain.loop.store import LedgerEvent, RunLedger
+from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
 
 
 class LeaseUnavailableError(RuntimeError):
@@ -68,19 +68,61 @@ class TransitionService:
             )
 
     def cancel_run(self, run_id: str, *, reason: str, actor: str = "operator") -> None:
-        """Terminally stop a run without deleting its evidence or audit trail."""
+        """Terminally stop a run and revoke every active cycle lease.
+
+        Cancellation cannot pre-empt arbitrary Python code already executing in
+        a worker. Revoking its lease prevents that worker from recording any
+        further intent, observation, checkpoint, or cycle completion.
+        """
         with self._ledger.transaction() as conn:
             current = self._run_status(conn, run_id)
             if current == RUN_CANCELLED:
                 return
             validate_run_transition(current, RUN_CANCELLED)
+            rows = conn.execute(
+                """
+                SELECT step_id, status FROM research_steps
+                WHERE run_id = ? AND status IN (?, ?)
+                """,
+                (run_id, STEP_RUNNING, STEP_RECONCILING),
+            ).fetchall()
+            now = time.time()
+            cancelled_steps: list[str] = []
+            for row in rows:
+                step_id = str(row["step_id"])
+                status = str(row["status"])
+                self._transition_step(conn, step_id, STEP_UNKNOWN)
+                conn.execute(
+                    """
+                    UPDATE research_attempts
+                    SET status = ?, completed_at = ?
+                    WHERE step_id = ? AND status = ?
+                    """,
+                    (STEP_UNKNOWN, now, step_id, STEP_RUNNING),
+                )
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now, step_id),
+                )
+                self._ledger.append_event(
+                    conn,
+                    run_id,
+                    actor=actor,
+                    event_type="cycle_cancelled",
+                    payload={"step_id": step_id, "from": status, "reason": reason},
+                )
+                cancelled_steps.append(step_id)
             self._set_run_status(conn, run_id, RUN_CANCELLED, completed=True)
             self._ledger.append_event(
                 conn,
                 run_id,
                 actor=actor,
                 event_type="run_cancelled",
-                payload={"reason": reason},
+                payload={"reason": reason, "cancelled_step_ids": cancelled_steps},
             )
 
     def fail_run(self, run_id: str, *, error: BaseException) -> None:
@@ -239,6 +281,11 @@ class TransitionService:
     ) -> LedgerEvent:
         """Commit a completed cycle and its replayable compatibility snapshot."""
         with self._ledger.transaction() as conn:
+            status = self._run_status(conn, run_id)
+            if status != RUN_RUNNING:
+                raise RunExecutionBlockedError(
+                    f"cannot complete cycle while run {run_id} is {status!r}"
+                )
             self._require_lease(conn, step_id=step_id, worker_id=worker_id)
             self._transition_step(conn, step_id, STEP_SUCCEEDED)
             conn.execute(

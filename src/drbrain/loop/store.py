@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED, RUN_FAILED, RUN_RUNNING
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 7
+LEDGER_SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -452,6 +452,20 @@ class RunLedger:
                 );
                 """
             )
+        if current < 8:
+            approval_columns = {
+                str(column["name"])
+                for column in conn.execute(
+                    "PRAGMA table_info(research_approval_decisions)"
+                ).fetchall()
+            }
+            if "consumed_at" not in approval_columns:
+                conn.execute("ALTER TABLE research_approval_decisions ADD COLUMN consumed_at REAL")
+            if "consumed_by_tool_call_id" not in approval_columns:
+                conn.execute(
+                    "ALTER TABLE research_approval_decisions "
+                    "ADD COLUMN consumed_by_tool_call_id TEXT"
+                )
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, ?)",
@@ -603,7 +617,12 @@ class RunLedger:
         return result
 
     def approval_decision(self, run_id: str, idempotency_key: str | None) -> str | None:
-        """Return the operator decision applicable to one deterministic tool retry."""
+        """Return the operator decision applicable to one deterministic tool retry.
+
+        An approved decision is a single-use grant.  Rejections intentionally
+        remain terminal for the proposal key, whereas consumed approvals no
+        longer bypass the policy gate in a later cycle.
+        """
         if not idempotency_key:
             return None
         with self.transaction() as conn:
@@ -611,10 +630,64 @@ class RunLedger:
                 """
                 SELECT decision FROM research_approval_decisions
                 WHERE run_id = ? AND idempotency_key = ?
+                  AND (decision = 'rejected' OR consumed_at IS NULL)
                 """,
                 (run_id, idempotency_key),
             ).fetchone()
             return str(row["decision"]) if row is not None else None
+
+    def consume_approval(
+        self, *, run_id: str, idempotency_key: str | None, tool_call_id: str
+    ) -> bool:
+        """Claim one approved retry grant before invoking its external handler."""
+        if not idempotency_key:
+            return False
+        with self.transaction() as conn:
+            now = time.time()
+            claimed = conn.execute(
+                """
+                UPDATE research_approval_decisions
+                SET consumed_at = ?, consumed_by_tool_call_id = ?
+                WHERE run_id = ? AND idempotency_key = ?
+                  AND decision = 'approved' AND consumed_at IS NULL
+                """,
+                (now, tool_call_id, run_id, idempotency_key),
+            ).rowcount
+            if not claimed:
+                return False
+            self.append_event(
+                conn,
+                run_id,
+                actor="broker",
+                event_type="tool_approval_consumed",
+                payload={"tool_call_id": tool_call_id, "idempotency_key": idempotency_key},
+            )
+            return True
+
+    def restore_approval(
+        self, *, run_id: str, idempotency_key: str | None, tool_call_id: str
+    ) -> None:
+        """Restore an unexecuted grant when setup fails before a tool intent exists."""
+        if not idempotency_key:
+            return
+        with self.transaction() as conn:
+            restored = conn.execute(
+                """
+                UPDATE research_approval_decisions
+                SET consumed_at = NULL, consumed_by_tool_call_id = NULL
+                WHERE run_id = ? AND idempotency_key = ?
+                  AND decision = 'approved' AND consumed_by_tool_call_id = ?
+                """,
+                (run_id, idempotency_key, tool_call_id),
+            ).rowcount
+            if restored:
+                self.append_event(
+                    conn,
+                    run_id,
+                    actor="broker",
+                    event_type="tool_approval_restored",
+                    payload={"tool_call_id": tool_call_id, "idempotency_key": idempotency_key},
+                )
 
     def record_approval_decision(
         self,
@@ -646,6 +719,42 @@ class RunLedger:
                 (run_id, key),
             ).fetchone()
             if existing is not None:
+                if (
+                    decision == "approved"
+                    and str(existing["decision"]) == "approved"
+                    and existing["consumed_at"] is not None
+                ):
+                    now = time.time()
+                    conn.execute(
+                        """
+                        UPDATE research_approval_decisions
+                        SET tool_call_id = ?, actor = ?, reason = ?, created_at = ?,
+                            consumed_at = NULL, consumed_by_tool_call_id = NULL
+                        WHERE run_id = ? AND idempotency_key = ?
+                        """,
+                        (tool_call_id, actor, reason, now, run_id, key),
+                    )
+                    self.append_event(
+                        conn,
+                        run_id,
+                        actor=actor,
+                        event_type="tool_approved",
+                        payload={
+                            "tool_call_id": tool_call_id,
+                            "idempotency_key": key,
+                            "reason": reason,
+                        },
+                    )
+                    refreshed = conn.execute(
+                        """
+                        SELECT * FROM research_approval_decisions
+                        WHERE run_id = ? AND idempotency_key = ?
+                        """,
+                        (run_id, key),
+                    ).fetchone()
+                    if refreshed is None:  # pragma: no cover - guarded update
+                        raise RuntimeError("approval decision was not refreshed")
+                    return self._approval_dict(refreshed)
                 if str(existing["decision"]) != decision:
                     raise ValueError("approval decision conflicts with its existing record")
                 return self._approval_dict(existing)
@@ -1507,6 +1616,7 @@ class RunLedger:
             "decision": str(row["decision"]),
             "actor": str(row["actor"]),
             "reason": str(row["reason"]),
+            "consumed": row["consumed_at"] is not None,
         }
 
     @staticmethod

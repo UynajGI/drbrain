@@ -14,7 +14,12 @@ from enum import StrEnum
 from typing import Any
 
 from drbrain.loop.policy import PolicyDisposition, ToolDefinition, ToolPolicy, ToolProposal
-from drbrain.loop.store import RunBudgetExceededError, RunExecutionBlockedError, RunLedger
+from drbrain.loop.store import (
+    LeaseOwnershipError,
+    RunBudgetExceededError,
+    RunExecutionBlockedError,
+    RunLedger,
+)
 
 _SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|authorization|cookie|password|secret|token)", re.I)
 _SENSITIVE_ASSIGNMENT = re.compile(
@@ -45,6 +50,7 @@ class ToolObservation:
     error: str | None = None
     attempts: int = 0
     reused: bool = False
+    execution_blocked: bool = False
 
     @property
     def ok(self) -> bool:
@@ -140,7 +146,17 @@ class ToolBroker:
         )
         safe_proposal = self._safe_proposal(proposal)
         decision = self.policy.evaluate(proposal)
-        self._renew_lease()
+        try:
+            self._renew_lease()
+        except LeaseOwnershipError as exc:
+            # Cancellation (or a reclaimed lease) wins over an in-flight broker
+            # instance. The handler must never run after it loses that lease.
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                status=ToolCallStatus.DENIED,
+                error=str(exc),
+                execution_blocked=True,
+            )
         if not decision.allowed:
             status = (
                 ToolCallStatus.WAITING_APPROVAL
@@ -164,18 +180,9 @@ class ToolBroker:
             )
             return ToolObservation(tool_call_id=tool_call_id, status=status, error=decision.reason)
 
-        try:
-            amounts: dict[str, int | float] = {"tool_calls": 1}
-            if definition.source == "rag":
-                amounts["rag_calls"] = 1
-            self._ledger.reserve_budget(self.run_id, amounts)
-        except (RunBudgetExceededError, RunExecutionBlockedError) as exc:
-            return ToolObservation(
-                tool_call_id=tool_call_id,
-                status=ToolCallStatus.DENIED,
-                error=str(exc),
-            )
-
+        # Replays carry no new external side effect, so resolve the cache before
+        # charging the durable tool/RAG boundary.  The cache is step-scoped:
+        # a later cycle still needs its own approval and execution record.
         if key:
             previous = self._ledger.latest_tool_call_for_idempotency(
                 self.run_id,
@@ -206,20 +213,60 @@ class ToolBroker:
                     reused=True,
                 )
 
-        self._ledger.record_tool_intent(
-            tool_call_id=tool_call_id,
-            run_id=self.run_id,
-            step_id=self.step_id,
-            attempt_id=self.attempt_id,
-            worker_id=self.worker_id,
-            tool_name=definition.name,
-            source=definition.source,
-            side_effect=definition.side_effect,
-            node_name=node_name,
-            proposal=safe_proposal,
-            idempotency_key=key,
-            lease_seconds=self.lease_seconds,
-        )
+        approval_claimed = False
+        if operator_decision == "approved":
+            approval_claimed = self._ledger.consume_approval(
+                run_id=self.run_id,
+                idempotency_key=key,
+                tool_call_id=tool_call_id,
+            )
+            if not approval_claimed:
+                return ToolObservation(
+                    tool_call_id=tool_call_id,
+                    status=ToolCallStatus.WAITING_APPROVAL,
+                    error="operator approval was already consumed; a fresh approval is required",
+                )
+
+        try:
+            amounts: dict[str, int | float] = {"tool_calls": 1}
+            if definition.source == "rag":
+                amounts["rag_calls"] = 1
+            self._ledger.reserve_budget(self.run_id, amounts)
+            self._ledger.record_tool_intent(
+                tool_call_id=tool_call_id,
+                run_id=self.run_id,
+                step_id=self.step_id,
+                attempt_id=self.attempt_id,
+                worker_id=self.worker_id,
+                tool_name=definition.name,
+                source=definition.source,
+                side_effect=definition.side_effect,
+                node_name=node_name,
+                proposal=safe_proposal,
+                idempotency_key=key,
+                lease_seconds=self.lease_seconds,
+            )
+        except (RunBudgetExceededError, RunExecutionBlockedError) as exc:
+            if approval_claimed:
+                self._ledger.restore_approval(
+                    run_id=self.run_id,
+                    idempotency_key=key,
+                    tool_call_id=tool_call_id,
+                )
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                status=ToolCallStatus.DENIED,
+                error=str(exc),
+                execution_blocked=True,
+            )
+        except Exception:
+            if approval_claimed:
+                self._ledger.restore_approval(
+                    run_id=self.run_id,
+                    idempotency_key=key,
+                    tool_call_id=tool_call_id,
+                )
+            raise
 
         keepalive = asyncio.create_task(self._maintain_lease())
         try:

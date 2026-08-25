@@ -58,7 +58,7 @@ STEP_TRANSITIONS: Mapping[str, frozenset[str]] = {
     ),
     STEP_WAITING_APPROVAL: frozenset({STEP_RUNNING}),
     STEP_UNKNOWN: frozenset({STEP_RECONCILING}),
-    STEP_RECONCILING: frozenset({STEP_SUCCEEDED, STEP_FAILED, STEP_MANUAL_REVIEW}),
+    STEP_RECONCILING: frozenset({STEP_SUCCEEDED, STEP_FAILED, STEP_MANUAL_REVIEW, STEP_UNKNOWN}),
     STEP_SUCCEEDED: frozenset(),
     STEP_FAILED: frozenset(),
     STEP_TIMED_OUT: frozenset(),

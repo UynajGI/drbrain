@@ -171,6 +171,41 @@ def test_ledger_migrates_v6_runs_to_governance_tables(tmp_path):
     assert version == LEDGER_SCHEMA_VERSION
 
 
+def test_ledger_migrates_v7_approval_decisions_to_consumable_grants(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = RunLedger(path)
+    ledger.get_or_create_run("v7 approvals")
+
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE research_approval_decisions")
+        conn.execute(
+            """
+            CREATE TABLE research_approval_decisions (
+                run_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (run_id, idempotency_key)
+            )
+            """
+        )
+        conn.execute(
+            "DELETE FROM ledger_schema_versions WHERE version = ?", (LEDGER_SCHEMA_VERSION,)
+        )
+        conn.execute("INSERT INTO ledger_schema_versions(version, applied_at) VALUES (7, 0)")
+
+    RunLedger(path).get_run("v7 approvals")
+
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(research_approval_decisions)")}
+        version = conn.execute("SELECT MAX(version) FROM ledger_schema_versions").fetchone()[0]
+    assert {"consumed_at", "consumed_by_tool_call_id"} <= columns
+    assert version == LEDGER_SCHEMA_VERSION
+
+
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("durable topic")
