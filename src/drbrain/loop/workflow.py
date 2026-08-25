@@ -1187,6 +1187,8 @@ class ResearchLoopWorkflow(Workflow):
                             hypothesis=h_new,
                         )
                     )
+                else:
+                    queue.remove_pending(str(queue_item["queue_item_id"]))
                 hypotheses.append(h_new)
                 continue
             non_author = board.non_author_comments(post_ids[h.claim_id], author="analyst")

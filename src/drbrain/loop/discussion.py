@@ -298,10 +298,25 @@ class ResearchQueue:
 
     def add(self, item: QueueItem) -> None:
         with self._lock:
-            if item.id in self._claims or any(pending.id == item.id for pending in self._pending):
+            if item.id in self._claims:
+                return
+            for index, pending in enumerate(self._pending):
+                if pending.id != item.id:
+                    continue
+                if pending.to_dict() != item.to_dict():
+                    self._pending[index] = item
+                    self._version += 1
                 return
             self._pending.append(item)
             self._version += 1
+
+    def remove_pending(self, item_id: str) -> None:
+        """Remove a no-longer-eligible pending item without touching active claims."""
+        with self._lock:
+            original_size = len(self._pending)
+            self._pending = [item for item in self._pending if item.id != item_id]
+            if len(self._pending) != original_size:
+                self._version += 1
 
     def claim(self, agent_name: str) -> QueueItem | None:
         """Claim the first non-``discussion_pending`` item, or ``None``.

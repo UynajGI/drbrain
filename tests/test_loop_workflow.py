@@ -101,6 +101,10 @@ def test_critique_rebuilds_the_compute_gate_from_durable_reviews(tmp_path, monke
             verdict="KEEP",
             content="durably reviewed",
         )
+        replayed_in_place = await workflow.critique(context, event)
+        assert replayed_in_place.hypotheses[0].status == "critiqued"
+        assert workflow._queue.claim("compute") is not None  # noqa: SLF001
+
         restored = ResearchLoopWorkflow(durable_front_half=front_half)
         monkeypatch.setattr(restored, "build_node_agent", lambda **_kwargs: None)
 

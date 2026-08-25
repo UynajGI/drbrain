@@ -425,7 +425,7 @@ class TransitionService:
         """Persist immutable node contracts for a run's durable front half."""
         with self._ledger.transaction() as conn:
             self._run_status(conn, run_id)
-            inserted = 0
+            inserted_nodes: list[str] = []
             for node_name, raw_spec in node_specs.items():
                 spec = dict(raw_spec)
                 max_attempts = int(spec.get("max_attempts", 0))
@@ -464,14 +464,15 @@ class TransitionService:
                         raise ValueError(
                             "front-half node contract conflicts with its existing record"
                         )
-                inserted += cursor.rowcount
-            if inserted:
+                if cursor.rowcount:
+                    inserted_nodes.append(node_name)
+            if inserted_nodes:
                 self._ledger.append_event(
                     conn,
                     run_id,
                     actor="workflow",
                     event_type="front_half_contracts_registered",
-                    payload={"nodes": sorted(node_specs)},
+                    payload={"nodes": sorted(inserted_nodes)},
                 )
 
     def record_front_half_proposal(
