@@ -390,6 +390,26 @@ class RunLedger:
                 },
             )
 
+    def record_rag_evidence_disabled(
+        self,
+        run_id: str,
+        *,
+        generation: str,
+        reason: str = "retention_unavailable",
+    ) -> LedgerEvent:
+        """Append a fail-closed RAG downgrade without rewriting the run specification."""
+        with self.transaction() as conn:
+            row = conn.execute("SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            return self.append_event(
+                conn,
+                run_id,
+                actor="director",
+                event_type="rag_evidence_disabled",
+                payload={"generation": generation, "reason": reason},
+            )
+
     def append_event(
         self,
         conn: sqlite3.Connection,

@@ -1069,6 +1069,7 @@ class ResearchDirector:
             else captured_generation
         )
         if self._rag_generation:
+            attempted_generation = self._rag_generation
             try:
                 from drbrain.rag.indexer import retain_index_generation
 
@@ -1077,6 +1078,13 @@ class ResearchDirector:
                 logger.warning(
                     "[director] cannot retain RAG generation; disabling RAG evidence: %s", exc
                 )
+                try:
+                    ledger.record_rag_evidence_disabled(
+                        run.run_id,
+                        generation=attempted_generation,
+                    )
+                except Exception as audit_exc:  # noqa: BLE001 - preserve optional RAG behavior
+                    logger.error("[director] cannot record RAG evidence downgrade: %s", audit_exc)
                 self._rag_generation = None
         effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
         if existing_run is not None:

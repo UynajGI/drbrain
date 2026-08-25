@@ -55,6 +55,16 @@ def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
     assert ledger.get_run("durable topic").status == "paused"
 
 
+def test_ledger_records_a_fail_closed_rag_evidence_downgrade(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("RAG retention topic", config={"rag_generation": "g-1"})
+
+    event = ledger.record_rag_evidence_disabled(run.run_id, generation="g-1")
+
+    assert event.event_type == "rag_evidence_disabled"
+    assert event.payload == {"generation": "g-1", "reason": "retention_unavailable"}
+
+
 def test_interrupted_cycle_is_marked_unknown_for_a_later_resume(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("interrupted topic")

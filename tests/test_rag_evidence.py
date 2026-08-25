@@ -270,6 +270,30 @@ def test_brokerless_rag_ignores_unciteable_records(monkeypatch):
     assert recorded == []
 
 
+def test_brokerless_rag_skips_a_malformed_record_without_dropping_valid_evidence(monkeypatch):
+    malformed = {**_pinned_record(), "rank": "not-an-integer"}
+    monkeypatch.setattr(
+        rag_agent,
+        "retrieve_documents",
+        lambda *_args, **_kwargs: [_pinned_record(), malformed],
+    )
+    recorded: list[dict[str, object]] = []
+    workflow = ResearchLoopWorkflow(
+        cfg=object(),
+        db=object(),
+        graph=object(),
+        rag_generation="g-1",
+        evidence_recorder=recorded.append,
+    )
+
+    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+
+    assert titles == ["Stability"]
+    assert bundle is not None
+    assert len(bundle.records) == 1
+    assert recorded == [bundle.model_dump(mode="json")]
+
+
 def test_verifier_accepts_a_claim_id_when_the_model_omits_the_statement(monkeypatch):
     hypothesis = Hypothesis(claim_id="cl-1", statement="Canonical claim", status="critiqued")
     evidence = Evidence(evidence_id="ev-1", generation="g-1")
