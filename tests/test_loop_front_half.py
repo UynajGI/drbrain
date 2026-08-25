@@ -66,3 +66,27 @@ def test_front_half_recovers_proposal_review_and_single_queue_item(tmp_path):
     assert snapshot["proposals"][0]["proposal_id"] == proposal["proposal_id"]
     assert snapshot["proposals"][0]["reviews"] == [review]
     assert snapshot["queue_items"] == [accepted["queue_item"]]
+
+
+def test_front_half_rejects_conflicting_proposal_or_review_replays(tmp_path):
+    front_half = _front_half(tmp_path)
+    proposal = front_half.record_proposal(_proposal(), author="analyst")
+
+    changed = _proposal()
+    changed["prediction"] = "a different experiment contract"
+    with pytest.raises(ValueError, match="conflicts"):
+        front_half.record_proposal(changed, author="analyst")
+
+    review = front_half.record_review(
+        proposal["proposal_id"], reviewer="critic-1", score=0.9, verdict="KEEP", content="sound"
+    )
+    with pytest.raises(ValueError, match="different review_id"):
+        front_half.transitions.record_front_half_review(
+            front_half.run_id,
+            proposal_id=proposal["proposal_id"],
+            review_id=f"{review['review_id']}-conflict",
+            reviewer="critic-1",
+            score=0.9,
+            verdict="KEEP",
+            content="sound",
+        )
