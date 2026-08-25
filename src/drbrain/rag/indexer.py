@@ -41,6 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -84,6 +86,10 @@ MANIFEST_NAME = "manifest.json"
 ACTIVE_POINTER_NAME = "active.json"
 #: Directory holding immutable, fully-built index generations.
 GENERATIONS_DIR_NAME = "generations"
+#: Completed generations retained for rollback and in-flight readers.
+GENERATION_RETAIN_COUNT = 3
+#: Minimum completed-generation age before automatic retention pruning.
+GENERATION_PRUNE_GRACE_SECONDS = 3600.0
 #: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
 #: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
 #: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
@@ -373,8 +379,14 @@ def _new_generation_id() -> str:
 
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
-    """Durably replace one small JSON control file without a torn read."""
+    """Atomically replace a small JSON control file without torn readers."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        # ``Path.write_text`` historically created these public index metadata
+        # files as shared-readable on the default deployment filesystem.
+        mode = 0o644
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
     )
@@ -384,6 +396,7 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
     except Exception:
         try:
@@ -411,6 +424,50 @@ def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
 
 def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
     _write_json_atomically(Path(storage_dir) / MANIFEST_NAME, manifest)
+
+
+def _prune_inactive_generations(
+    storage_root: Path,
+    active_generation: str,
+    *,
+    retain_count: int = GENERATION_RETAIN_COUNT,
+    grace_seconds: float = GENERATION_PRUNE_GRACE_SECONDS,
+) -> list[str]:
+    """Bound completed snapshots while retaining a reader/rollback window.
+
+    At least ``retain_count`` completed generations, including the active one,
+    are kept. Older snapshots are only removed after a grace period, allowing
+    in-flight readers that resolved a previous pointer to finish loading.
+    Staging directories are never considered completed snapshots.
+    """
+    generations_root = storage_root / GENERATIONS_DIR_NAME
+    if retain_count < 1 or not generations_root.is_dir():
+        return []
+
+    completed = [
+        child
+        for child in generations_root.iterdir()
+        if child.is_dir() and child.name.startswith("g-")
+    ]
+    completed.sort(key=lambda child: child.stat().st_mtime, reverse=True)
+    protected = {active_generation}
+    for child in completed:
+        if len(protected) >= retain_count:
+            break
+        protected.add(child.name)
+
+    cutoff = time.time() - max(0.0, grace_seconds)
+    pruned: list[str] = []
+    for child in completed:
+        if child.name in protected or child.stat().st_mtime > cutoff:
+            continue
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            logger.warning("[rag] could not prune stale generation %s: %s", child, exc)
+        else:
+            pruned.append(child.name)
+    return pruned
 
 
 def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
@@ -656,41 +713,43 @@ def build_index(
     generations_root.mkdir(parents=True, exist_ok=True)
     if stage_root.exists() or final_root.exists():  # never overwrite a generation
         raise RuntimeError(f"index generation collision: {generation}")
-    index = VectorStoreIndex(nodes=nodes, embed_model=embed)
-    index.storage_context.persist(str(stage_vector_dir))
-    logger.info(
-        "[rag] staged vector index (%d nodes) at %s",
-        len(nodes),
-        stage_vector_dir,
-    )
-
-    bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
-    bm25.persist(str(stage_bm25_dir))
-    stats["bm25_nodes"] = len(bm25.corpus)
-    logger.info("[rag] staged BM25 index (%d docs) at %s", len(bm25.corpus), stage_bm25_dir)
-
-    # 6. Update manifest: target papers replaced, others preserved.
-    new_papers: dict[str, dict[str, str]] = {
-        pid: {k: hashes[k] for k in keys if k in hashes} for pid, keys in paper_keys.items()
-    }
-    for pid, old_keys in old_papers.items():
-        if pid not in new_papers:
-            new_papers[pid] = dict(old_keys)
-    manifest = {
-        "generation": generation,
-        "embed_model": new_model,
-        "vector_store": li.vector_store,
-        "papers": new_papers,
-    }
-    _write_manifest(stage_root, manifest)
-
-    # Validate both staged artifacts before activation. A failed validation
-    # leaves the prior active generation untouched for readers and operators.
     try:
+        index = VectorStoreIndex(nodes=nodes, embed_model=embed)
+        index.storage_context.persist(str(stage_vector_dir))
+        logger.info(
+            "[rag] staged vector index (%d nodes) at %s",
+            len(nodes),
+            stage_vector_dir,
+        )
+
+        bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
+        bm25.persist(str(stage_bm25_dir))
+        stats["bm25_nodes"] = len(bm25.corpus)
+        logger.info("[rag] staged BM25 index (%d docs) at %s", len(bm25.corpus), stage_bm25_dir)
+
+        # 6. Update manifest: target papers replaced, others preserved.
+        new_papers: dict[str, dict[str, str]] = {
+            pid: {k: hashes[k] for k in keys if k in hashes}
+            for pid, keys in paper_keys.items()
+        }
+        for pid, old_keys in old_papers.items():
+            if pid not in new_papers:
+                new_papers[pid] = dict(old_keys)
+        manifest = {
+            "generation": generation,
+            "embed_model": new_model,
+            "vector_store": li.vector_store,
+            "papers": new_papers,
+        }
+        _write_manifest(stage_root, manifest)
+
+        # Validate both staged artifacts before activation. A failed validation
+        # leaves the prior active generation untouched for readers and operators.
         staged_context = StorageContext.from_defaults(persist_dir=str(stage_vector_dir))
         load_index_from_storage(staged_context, embed_model=embed)
         BM25Retriever.from_persist_dir(str(stage_bm25_dir))
     except Exception as exc:
+        shutil.rmtree(stage_root, ignore_errors=True)
         raise RuntimeError(
             f"staged generation validation failed; generation not published: {exc}"
         ) from exc
@@ -700,10 +759,13 @@ def build_index(
         _pointer_path(storage_root),
         {"generation": generation, "updated_at_ns": time.time_ns()},
     )
-    # Keep the historic root manifest readable for existing operational tools.
-    # Internal readers always resolve ``active.json`` first, so this mirror can
-    # never cause a mixed-generation query.
-    _write_manifest(storage_root, manifest)
+    # The root manifest is a non-authoritative compatibility mirror. A mirror
+    # failure must not report a published generation as a failed build.
+    try:
+        _write_manifest(storage_root, manifest)
+    except OSError as exc:
+        logger.warning("[rag] published generation %s but could not mirror manifest: %s", generation, exc)
+    stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
     stats["generation"] = generation
     logger.info("[rag] index build done: %s", stats)
     return stats
