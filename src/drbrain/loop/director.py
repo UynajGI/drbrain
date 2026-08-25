@@ -36,7 +36,7 @@ from drbrain.loop.checkpointing import (
 from drbrain.loop.events import ResearchState
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.store import LedgerEvent, RunLedger
-from drbrain.loop.tool_broker import ToolBroker, _redact
+from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
     CRITIQUE_DISCARD_SCORE,
@@ -891,7 +891,7 @@ class ResearchDirector:
                     step_id=checkpoint.step_id,
                     attempt_id=checkpoint.attempt_id,
                     worker_id=checkpoint.worker_id,
-                    bundle=_redact(dict(bundle)),
+                    bundle=redact(dict(bundle)),
                 )
 
         if self._tool_policy is not None:
