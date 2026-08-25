@@ -609,6 +609,10 @@ def retrieve_documents(
         from drbrain.rag.indexer import capture_index_generation
     except Exception:
         return []
+    resolved_generation = generation or capture_index_generation(cfg)
+    if resolved_generation is None:
+        log.warning("[rag] retrieval unavailable (invalid active index pointer)")
+        return []
     try:
         legs = get_retrievers(
             cfg,
@@ -631,7 +635,6 @@ def retrieve_documents(
         return []
     if fused is None:
         return []
-    resolved_generation = generation or capture_index_generation(cfg)
     nodes = fused.retrieve(QueryBundle(query_str=query))
     return _retrieval_rows(
         nodes,
@@ -689,7 +692,12 @@ def _build_retrieval_tool(
         from llama_index.core.schema import QueryBundle
 
         from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
+        from drbrain.rag.indexer import capture_index_generation
     except Exception:
+        return None
+    resolved_generation = rag_generation or capture_index_generation(cfg)
+    if resolved_generation is None:
+        log.warning("[rag] retrieval tool unavailable (invalid active index pointer)")
         return None
     try:
         legs = get_retrievers(
@@ -715,11 +723,10 @@ def _build_retrieval_tool(
 
     def _search_rows(query: str) -> list[dict[str, Any]]:
         nodes = fused.retrieve(QueryBundle(query_str=query))
-        from drbrain.rag.indexer import capture_index_generation
 
         return _retrieval_rows(
             nodes,
-            generation=rag_generation or capture_index_generation(cfg),
+            generation=resolved_generation,
             query=query,
         )
 
