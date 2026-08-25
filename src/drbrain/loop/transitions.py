@@ -508,6 +508,10 @@ class TransitionService:
                     payload={"proposal_id": proposal_id, "claim_id": claim_id},
                 )
                 row = self._proposal_row(conn, proposal_id)
+            elif str(row["author"]) != author or self._proposal_contract(
+                dict(payload)
+            ) != self._proposal_contract(self._json(row["payload_json"], {})):
+                raise ValueError("durable proposal replay conflicts with its existing contract")
             if row is None or str(row["run_id"]) != run_id:
                 raise KeyError(f"unknown proposal {proposal_id}")
             return self._proposal_dict(row)
@@ -534,6 +538,10 @@ class TransitionService:
                 "SELECT * FROM research_critic_reviews WHERE proposal_id = ? AND reviewer = ?",
                 (proposal_id, reviewer),
             ).fetchone()
+            if row is not None and str(row["review_id"]) != review_id:
+                raise ValueError(
+                    "reviewer already reviewed this proposal under a different review_id"
+                )
             if row is None:
                 now = time.time()
                 conn.execute(
@@ -706,6 +714,14 @@ class TransitionService:
             return json.loads(str(value)) if value else default
         except (TypeError, json.JSONDecodeError):
             return default
+
+    @staticmethod
+    def _proposal_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Exclude mutable workflow fields when validating an idempotent replay."""
+        return {
+            key: payload.get(key)
+            for key in ("claim_id", "statement", "conditions", "prediction", "falsification")
+        }
 
     @classmethod
     def _node_spec_dict(cls, row: Any) -> dict[str, Any]:

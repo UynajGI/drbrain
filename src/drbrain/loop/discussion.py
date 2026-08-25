@@ -138,7 +138,14 @@ class MessageBoard:
             raise ValueError(f"unknown post type {post_type!r}; expected one of {POST_TYPES}")
         pid = post_id or uuid.uuid4().hex[:12]
         with self._lock:
-            if pid in self._posts:
+            existing = self._posts.get(pid)
+            if existing is not None:
+                if (
+                    existing.post_type != post_type
+                    or existing.author != author
+                    or existing.content != content
+                ):
+                    raise ValueError("stable post_id conflicts with the existing post")
                 return pid
             self._posts[pid] = Post(id=pid, post_type=post_type, author=author, content=content)
             self._order.append(pid)

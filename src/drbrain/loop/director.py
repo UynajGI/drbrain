@@ -889,7 +889,7 @@ class ResearchDirector:
             durable_front_half = DurableFrontHalf(
                 TransitionService(checkpoint.ledger), checkpoint.run_id
             )
-            durable_front_half.ensure_node_contracts()
+            await asyncio.to_thread(durable_front_half.ensure_node_contracts)
 
             def evidence_recorder(bundle: Mapping[str, Any]) -> None:
                 checkpoint.ledger.record_evidence_bundle(

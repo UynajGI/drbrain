@@ -37,6 +37,11 @@ def test_post_and_comment_accept_stable_ids_without_replaying_them():
     board.comment(pid, author="critic", content="review", comment_id="rev-stable")
     board.comment(pid, author="critic", content="review", comment_id="rev-stable")
     assert len(board.get_post(pid).comments) == 1
+    try:
+        board.post(POST_PROPOSAL, author="analyst", content="changed", post_id="prp-stable")
+        raise AssertionError("expected conflicting stable post to fail")
+    except ValueError:
+        pass
 
 
 def test_post_rejects_unknown_type():
