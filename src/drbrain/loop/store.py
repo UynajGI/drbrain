@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from drbrain.loop.state import RUN_CREATED
+from drbrain.loop.state import RUN_CREATED, RUN_FAILED, RUN_RUNNING
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 6
+LEDGER_SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,7 @@ class LedgerRun:
     last_projected_event: int
     # Default preserves direct construction by older callers.
     config: dict[str, Any] = field(default_factory=dict)
+    budget: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,14 @@ class LedgerToolCall:
 
 class LeaseOwnershipError(RuntimeError):
     """Raised when a worker attempts to write after losing its SQLite lease."""
+
+
+class RunExecutionBlockedError(RuntimeError):
+    """Raised when an operator control or a budget blocks a new external call."""
+
+
+class RunBudgetExceededError(RunExecutionBlockedError):
+    """Raised once a configured durable run budget would be exceeded."""
 
 
 def _as_json(value: Any) -> str:
@@ -419,6 +428,44 @@ class RunLedger:
                 );
                 """
             )
+        if current < 7:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_approval_decisions (
+                    run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                    idempotency_key TEXT NOT NULL,
+                    tool_call_id TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (run_id, idempotency_key),
+                    CHECK (decision IN ('approved', 'rejected'))
+                );
+
+                CREATE TABLE IF NOT EXISTS research_budget_usage (
+                    run_id TEXT PRIMARY KEY REFERENCES research_runs(run_id),
+                    usage_json TEXT NOT NULL DEFAULT '{}',
+                    exhausted_at REAL,
+                    exhausted_reason TEXT,
+                    updated_at REAL NOT NULL
+                );
+                """
+            )
+        if current < 8:
+            approval_columns = {
+                str(column["name"])
+                for column in conn.execute(
+                    "PRAGMA table_info(research_approval_decisions)"
+                ).fetchall()
+            }
+            if "consumed_at" not in approval_columns:
+                conn.execute("ALTER TABLE research_approval_decisions ADD COLUMN consumed_at REAL")
+            if "consumed_by_tool_call_id" not in approval_columns:
+                conn.execute(
+                    "ALTER TABLE research_approval_decisions "
+                    "ADD COLUMN consumed_by_tool_call_id TEXT"
+                )
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, ?)",
@@ -429,12 +476,374 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event, config_json
+                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
             ).fetchone()
             return self._run_from_row(row)
+
+    def get_run_by_id(self, run_id: str) -> LedgerRun | None:
+        """Return one run by stable ID for read-only operational interfaces."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
+                FROM research_runs WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            return self._run_from_row(row)
+
+    def budget_snapshot(self, run_id: str) -> dict[str, Any]:
+        """Return configured limits and immutable usage facts without changing state."""
+        with self.transaction() as conn:
+            run = conn.execute(
+                "SELECT budget_json, created_at FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            usage = conn.execute(
+                "SELECT usage_json, exhausted_at, exhausted_reason FROM research_budget_usage WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            values = self._json_mapping(usage["usage_json"] if usage is not None else "{}")
+            values["wall_seconds"] = max(0.0, time.time() - float(run["created_at"]))
+            return {
+                "limits": self._json_mapping(run["budget_json"]),
+                "usage": values,
+                "exhausted": usage is not None and usage["exhausted_at"] is not None,
+                "reason": str(usage["exhausted_reason"] or "") if usage is not None else "",
+            }
+
+    def reserve_budget(self, run_id: str, amounts: Mapping[str, int | float]) -> dict[str, Any]:
+        """Atomically reserve budget before a model, RAG, or tool boundary runs."""
+        normalized = {
+            str(kind): float(amount)
+            for kind, amount in amounts.items()
+            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+        }
+        if not normalized:
+            return self.budget_snapshot(run_id)
+        exhaustion_message: str | None = None
+        result: dict[str, Any] = {}
+        with self.transaction() as conn:
+            run = conn.execute(
+                "SELECT status, budget_json, created_at FROM research_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            if str(run["status"]) != RUN_RUNNING:
+                raise RunExecutionBlockedError(
+                    f"run {run_id} is {str(run['status'])!r}; new external calls are blocked"
+                )
+            row = conn.execute(
+                "SELECT usage_json, exhausted_at FROM research_budget_usage WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            usage = self._json_mapping(row["usage_json"] if row is not None else "{}")
+            limits = self._json_mapping(run["budget_json"])
+            wall_seconds = max(0.0, time.time() - float(run["created_at"]))
+            exceeded: tuple[str, float, float] | None = None
+            wall_limit = self._budget_limit(limits, "wall_seconds")
+            if wall_limit is not None and wall_seconds > wall_limit:
+                exceeded = ("wall_seconds", wall_seconds, wall_limit)
+            for kind, amount in normalized.items():
+                limit = self._budget_limit(limits, kind)
+                projected = float(usage.get(kind, 0.0)) + amount
+                if limit is not None and projected > limit:
+                    exceeded = (kind, projected, limit)
+                    break
+            if exceeded is not None:
+                kind, projected, limit = exceeded
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_budget_usage(run_id, usage_json, exhausted_at, exhausted_reason, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        exhausted_at = excluded.exhausted_at,
+                        exhausted_reason = excluded.exhausted_reason,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        run_id,
+                        _as_json(usage),
+                        now,
+                        f"{kind} would exceed configured limit {limit}",
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE research_runs SET status = ?, updated_at = ?, completed_at = ? WHERE run_id = ?",
+                    (RUN_FAILED, now, now, run_id),
+                )
+                self.append_event(
+                    conn,
+                    run_id,
+                    actor="budget",
+                    event_type="run_budget_exhausted",
+                    payload={"kind": kind, "projected": projected, "limit": limit},
+                )
+                exhaustion_message = (
+                    f"run {run_id} budget exhausted: {kind} would be {projected} > {limit}"
+                )
+            else:
+                for kind, amount in normalized.items():
+                    usage[kind] = float(usage.get(kind, 0.0)) + amount
+                usage["wall_seconds"] = wall_seconds
+                now = time.time()
+                conn.execute(
+                    """
+                    INSERT INTO research_budget_usage(run_id, usage_json, exhausted_at, exhausted_reason, updated_at)
+                    VALUES (?, ?, NULL, NULL, ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        usage_json = excluded.usage_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (run_id, _as_json(usage), now),
+                )
+                self.append_event(
+                    conn,
+                    run_id,
+                    actor="budget",
+                    event_type="budget_reserved",
+                    payload={"amounts": normalized, "usage": usage},
+                )
+                result = {"limits": limits, "usage": usage, "exhausted": False, "reason": ""}
+        if exhaustion_message is not None:
+            raise RunBudgetExceededError(exhaustion_message)
+        return result
+
+    def release_budget(self, run_id: str, amounts: Mapping[str, int | float]) -> dict[str, Any]:
+        """Compensate an unexecuted reservation when setup fails before intent.
+
+        The release is deliberately append-only in the audit trail: it only
+        reduces counters committed by an earlier boundary reservation and never
+        changes a terminal run back to running.
+        """
+        normalized = {
+            str(kind): float(amount)
+            for kind, amount in amounts.items()
+            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+        }
+        if not normalized:
+            return self.budget_snapshot(run_id)
+        with self.transaction() as conn:
+            run = conn.execute(
+                "SELECT budget_json, created_at FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            row = conn.execute(
+                "SELECT usage_json, exhausted_at, exhausted_reason FROM research_budget_usage "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            usage = self._json_mapping(row["usage_json"] if row is not None else "{}")
+            for kind, amount in normalized.items():
+                usage[kind] = max(0.0, float(usage.get(kind, 0.0)) - amount)
+            usage["wall_seconds"] = max(0.0, time.time() - float(run["created_at"]))
+            now = time.time()
+            conn.execute(
+                """
+                INSERT INTO research_budget_usage(run_id, usage_json, exhausted_at, exhausted_reason, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    usage_json = excluded.usage_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    _as_json(usage),
+                    row["exhausted_at"] if row is not None else None,
+                    row["exhausted_reason"] if row is not None else None,
+                    now,
+                ),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="budget",
+                event_type="budget_released",
+                payload={"amounts": normalized, "usage": usage},
+            )
+            return {
+                "limits": self._json_mapping(run["budget_json"]),
+                "usage": usage,
+                "exhausted": row is not None and row["exhausted_at"] is not None,
+                "reason": str(row["exhausted_reason"] or "") if row is not None else "",
+            }
+
+    def approval_decision(self, run_id: str, idempotency_key: str | None) -> str | None:
+        """Return the operator decision applicable to one deterministic tool retry.
+
+        An approved decision is a single-use grant.  Rejections intentionally
+        remain terminal for the proposal key, whereas consumed approvals no
+        longer bypass the policy gate in a later cycle.
+        """
+        if not idempotency_key:
+            return None
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT decision FROM research_approval_decisions
+                WHERE run_id = ? AND idempotency_key = ?
+                  AND (decision = 'rejected' OR consumed_at IS NULL)
+                """,
+                (run_id, idempotency_key),
+            ).fetchone()
+            return str(row["decision"]) if row is not None else None
+
+    def consume_approval(
+        self, *, run_id: str, idempotency_key: str | None, tool_call_id: str
+    ) -> bool:
+        """Claim one approved retry grant before invoking its external handler."""
+        if not idempotency_key:
+            return False
+        with self.transaction() as conn:
+            now = time.time()
+            claimed = conn.execute(
+                """
+                UPDATE research_approval_decisions
+                SET consumed_at = ?, consumed_by_tool_call_id = ?
+                WHERE run_id = ? AND idempotency_key = ?
+                  AND decision = 'approved' AND consumed_at IS NULL
+                """,
+                (now, tool_call_id, run_id, idempotency_key),
+            ).rowcount
+            if not claimed:
+                return False
+            self.append_event(
+                conn,
+                run_id,
+                actor="broker",
+                event_type="tool_approval_consumed",
+                payload={"tool_call_id": tool_call_id, "idempotency_key": idempotency_key},
+            )
+            return True
+
+    def restore_approval(
+        self, *, run_id: str, idempotency_key: str | None, tool_call_id: str
+    ) -> None:
+        """Restore an unexecuted grant when setup fails before a tool intent exists."""
+        if not idempotency_key:
+            return
+        with self.transaction() as conn:
+            restored = conn.execute(
+                """
+                UPDATE research_approval_decisions
+                SET consumed_at = NULL, consumed_by_tool_call_id = NULL
+                WHERE run_id = ? AND idempotency_key = ?
+                  AND decision = 'approved' AND consumed_by_tool_call_id = ?
+                """,
+                (run_id, idempotency_key, tool_call_id),
+            ).rowcount
+            if restored:
+                self.append_event(
+                    conn,
+                    run_id,
+                    actor="broker",
+                    event_type="tool_approval_restored",
+                    payload={"tool_call_id": tool_call_id, "idempotency_key": idempotency_key},
+                )
+
+    def record_approval_decision(
+        self,
+        *,
+        tool_call_id: str,
+        decision: str,
+        actor: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Store one operator decision for a retried idempotent tool proposal."""
+        if decision not in {"approved", "rejected"}:
+            raise ValueError(f"unknown approval decision: {decision!r}")
+        with self.transaction() as conn:
+            call = conn.execute(
+                "SELECT run_id, idempotency_key FROM research_tool_calls WHERE tool_call_id = ?",
+                (tool_call_id,),
+            ).fetchone()
+            if call is None:
+                raise KeyError(f"unknown tool call: {tool_call_id}")
+            key = str(call["idempotency_key"] or "")
+            if not key:
+                raise ValueError("an approval requires an idempotent tool proposal")
+            run_id = str(call["run_id"])
+            existing = conn.execute(
+                """
+                SELECT * FROM research_approval_decisions
+                WHERE run_id = ? AND idempotency_key = ?
+                """,
+                (run_id, key),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    decision == "approved"
+                    and str(existing["decision"]) == "approved"
+                    and existing["consumed_at"] is not None
+                ):
+                    now = time.time()
+                    conn.execute(
+                        """
+                        UPDATE research_approval_decisions
+                        SET tool_call_id = ?, actor = ?, reason = ?, created_at = ?,
+                            consumed_at = NULL, consumed_by_tool_call_id = NULL
+                        WHERE run_id = ? AND idempotency_key = ?
+                        """,
+                        (tool_call_id, actor, reason, now, run_id, key),
+                    )
+                    self.append_event(
+                        conn,
+                        run_id,
+                        actor=actor,
+                        event_type="tool_approved",
+                        payload={
+                            "tool_call_id": tool_call_id,
+                            "idempotency_key": key,
+                            "reason": reason,
+                        },
+                    )
+                    refreshed = conn.execute(
+                        """
+                        SELECT * FROM research_approval_decisions
+                        WHERE run_id = ? AND idempotency_key = ?
+                        """,
+                        (run_id, key),
+                    ).fetchone()
+                    if refreshed is None:  # pragma: no cover - guarded update
+                        raise RuntimeError("approval decision was not refreshed")
+                    return self._approval_dict(refreshed)
+                if str(existing["decision"]) != decision:
+                    raise ValueError("approval decision conflicts with its existing record")
+                return self._approval_dict(existing)
+            now = time.time()
+            conn.execute(
+                """
+                INSERT INTO research_approval_decisions(
+                    run_id, idempotency_key, tool_call_id, decision, actor, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, key, tool_call_id, decision, actor, reason, now),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor=actor,
+                event_type=f"tool_{decision}",
+                payload={"tool_call_id": tool_call_id, "idempotency_key": key, "reason": reason},
+            )
+            row = conn.execute(
+                """
+                SELECT * FROM research_approval_decisions
+                WHERE run_id = ? AND idempotency_key = ?
+                """,
+                (run_id, key),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("approval decision was not persisted")
+            return self._approval_dict(row)
 
     def get_or_create_run(
         self,
@@ -448,7 +857,7 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event, config_json
+                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
@@ -493,7 +902,7 @@ class RunLedger:
                     event_type="legacy_snapshot_imported",
                     payload={"state": dict(legacy_snapshot)},
                 )
-            return LedgerRun(run_id, topic, RUN_CREATED, 0, dict(config or {}))
+            return LedgerRun(run_id, topic, RUN_CREATED, 0, dict(config or {}), dict(budget or {}))
 
     def record_resume(
         self,
@@ -1247,16 +1656,42 @@ class RunLedger:
         )
 
     @staticmethod
+    def _json_mapping(value: str | None) -> dict[str, Any]:
+        parsed = _from_json(value, {})
+        return dict(parsed) if isinstance(parsed, Mapping) else {}
+
+    @staticmethod
+    def _budget_limit(limits: Mapping[str, Any], kind: str) -> float | None:
+        value = limits.get(f"max_{kind}")
+        if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+            return float(value)
+        return None
+
+    @staticmethod
+    def _approval_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "run_id": str(row["run_id"]),
+            "tool_call_id": str(row["tool_call_id"]),
+            "idempotency_key": str(row["idempotency_key"]),
+            "decision": str(row["decision"]),
+            "actor": str(row["actor"]),
+            "reason": str(row["reason"]),
+            "consumed": row["consumed_at"] is not None,
+        }
+
+    @staticmethod
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
             return None
         config = _from_json(row["config_json"], {})
+        budget = _from_json(row["budget_json"], {})
         return LedgerRun(
             run_id=str(row["run_id"]),
             topic=str(row["topic"]),
             status=str(row["status"]),
             last_projected_event=int(row["last_projected_event"]),
             config=dict(config) if isinstance(config, Mapping) else {},
+            budget=dict(budget) if isinstance(budget, Mapping) else {},
         )
 
     @staticmethod
