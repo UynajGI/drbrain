@@ -485,7 +485,7 @@ def _assemble_answer(
     telemetry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shape the compat-layer output dict."""
-    result = {
+    result: dict[str, Any] = {
         "question": question,
         "answer": answer or "",
         "sources": sources,
@@ -539,7 +539,7 @@ def _abstain_answer(
     so callers can distinguish ``retrieval_failure`` from ``no_results``
     without parsing prose.
     """
-    result = {
+    result: dict[str, Any] = {
         "question": question,
         "answer": message,
         "status": status.value,
