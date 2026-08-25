@@ -461,6 +461,7 @@ def test_director_discards_an_active_cycle_when_a_runtime_budget_is_exhausted(tm
     event_types = [event.event_type for event in ledger.events(run.run_id)]
     assert state["cycles"] == 0
     assert run.status == "failed"
+    assert "run_budget_exhausted" in event_types
     assert "cycle_failed" in event_types
     assert "cycle_completed" not in event_types
 
@@ -494,6 +495,9 @@ def test_director_rejects_unknown_budget_names(tmp_path):
 
     with pytest.raises(ValueError, match="unknown budget"):
         asyncio.run(director.run("unknown budget", max_cycles=1, budget={"modelcalls": 1}))
+
+    with pytest.raises(ValueError, match="invalid budget"):
+        asyncio.run(director.run("invalid budget", max_cycles=1, budget={"attempts": -1}))
 
 
 def test_failed_cycle_setup_releases_its_unstarted_attempt_budget(tmp_path, monkeypatch):

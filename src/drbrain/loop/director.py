@@ -1104,12 +1104,16 @@ class ResearchDirector:
             )
             if unknown_budget_keys:
                 raise ValueError("unknown budget limit(s): " + ", ".join(unknown_budget_keys))
+            invalid_budget_values = {
+                str(name): value
+                for name, value in budget.items()
+                if not isinstance(value, int | float) or isinstance(value, bool) or value < 0
+            }
+            if invalid_budget_values:
+                name, value = next(iter(invalid_budget_values.items()))
+                raise ValueError(f"invalid budget limit for {name!r}: {value!r}")
             effective_budget.update(
-                {
-                    budget_aliases.get(str(name), str(name)): value
-                    for name, value in budget.items()
-                    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
-                }
+                {budget_aliases.get(str(name), str(name)): value for name, value in budget.items()}
             )
         run = ledger.get_or_create_run(
             topic,
