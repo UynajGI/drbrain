@@ -228,6 +228,7 @@ class ResearchDirector:
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
+        self._rag_generation: str | None = None
 
     def _ledger(self) -> RunLedger:
         """Return this director's isolated, SQLite-only run ledger."""
@@ -236,8 +237,9 @@ class ResearchDirector:
     def _checkpoint_manifest(self) -> CheckpointManifest:
         """Build a secret-free contract for safe Context restoration.
 
-        The RAG generation deliberately remains explicit ``None`` in this PR;
-        PR4 will populate it without changing the checkpoint wire format.
+        The RAG generation is frozen when the durable run is created and shared
+        with its workflow, so a later atomic RAG publication cannot redirect an
+        in-flight cycle or make a resumed checkpoint describe different data.
         """
         model_manifest: dict[str, Any] = {"config_type": type(self._cfg).__name__}
         for name in ("provider", "model", "model_name", "llm_model", "embedding_model"):
@@ -307,7 +309,7 @@ class ResearchDirector:
             workflow_version="research-loop-v1",
             model_manifest=model_manifest,
             tool_manifest=tool_manifest,
-            rag_generation=None,
+            rag_generation=self._rag_generation,
         )
 
     # ── workspace paths ───────────────────────────────────────────────────────
@@ -903,6 +905,7 @@ class ResearchDirector:
             jobs_dir=str(self._topic_dir(topic) / "jobs"),
             tool_broker=tool_broker,
             tool_policy=self._tool_policy,
+            rag_generation=self._rag_generation,
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it
@@ -1015,6 +1018,12 @@ class ResearchDirector:
         pivots does it stop.
         """
         ledger = self._ledger()
+        try:
+            from drbrain.rag.indexer import capture_index_generation
+
+            captured_generation = capture_index_generation(self._cfg)
+        except Exception:  # noqa: BLE001 - RAG is optional for existing loop users
+            captured_generation = None
         existing_run = ledger.get_run(topic)
         if existing_run is not None:
             # A prior process may have committed a cycle before its Markdown / JSONL
@@ -1024,7 +1033,7 @@ class ResearchDirector:
 
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
-        config = {"n_critics": self._n_critics}
+        config = {"n_critics": self._n_critics, "rag_generation": captured_generation}
         budget = {
             "max_cycles": max_cycles,
             "stagnation_cycles": stagnation_cycles,
@@ -1035,6 +1044,15 @@ class ResearchDirector:
             config=config,
             budget=budget,
             legacy_snapshot=state if legacy_projection else None,
+        )
+        run_config = getattr(run, "config", None)
+        stored_generation = (
+            run_config.get("rag_generation") if isinstance(run_config, dict) else None
+        )
+        self._rag_generation = (
+            str(stored_generation)
+            if isinstance(stored_generation, str) and stored_generation
+            else captured_generation
         )
         if existing_run is not None:
             ledger.record_resume(run.run_id, config=config, budget=budget)
@@ -1087,6 +1105,9 @@ class ResearchDirector:
                 )
                 transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
                 raise CheckpointRestoreError("interrupted cycle has no JSON checkpoint")
+            checkpoint_generation = checkpoint.manifest.get("rag_generation")
+            if isinstance(checkpoint_generation, str) and checkpoint_generation:
+                self._rag_generation = checkpoint_generation
             manifest = self._checkpoint_manifest()
             preview = WorkflowCheckpointService(
                 ledger=ledger,

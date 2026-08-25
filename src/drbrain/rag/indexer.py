@@ -70,8 +70,10 @@ except ImportError:  # pragma: no cover - envs without llama-index
 
 __all__ = [
     "_LLAMA_INDEX_AVAILABLE",
+    "LEGACY_INDEX_GENERATION",
     "MANIFEST_NAME",
     "build_index",
+    "capture_index_generation",
     "collect_tree_nodes",
     "get_active_index_generation",
     "get_index_health",
@@ -86,6 +88,8 @@ MANIFEST_NAME = "manifest.json"
 ACTIVE_POINTER_NAME = "active.json"
 #: Directory holding immutable, fully-built index generations.
 GENERATIONS_DIR_NAME = "generations"
+#: Explicit snapshot label for the pre-generation flat storage layout.
+LEGACY_INDEX_GENERATION = "legacy"
 #: Completed generations retained for rollback and in-flight readers.
 GENERATION_RETAIN_COUNT = 3
 #: Minimum completed-generation age before automatic retention pruning.
@@ -372,6 +376,34 @@ def get_active_index_generation(cfg: Config) -> str | None:
     """
     active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
     return active[1] if active is not None else None
+
+
+def capture_index_generation(cfg: Config) -> str | None:
+    """Capture the snapshot a long-running caller must keep using.
+
+    ``get_active_index_generation`` keeps its historic ``None`` return for both
+    a legacy flat index and an invalid pointer. Durable callers need to
+    distinguish them: only a missing pointer is the explicit ``"legacy"``
+    snapshot; a malformed or dangling pointer remains unavailable/fail-closed.
+    """
+    active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
+    if active is None:
+        return None
+    return active[1] or LEGACY_INDEX_GENERATION
+
+
+def _storage_root_for_generation(storage_dir: str | Path, generation: str | None) -> Path | None:
+    """Resolve an optional immutable snapshot without following a newer pointer."""
+    root = Path(storage_dir)
+    if generation is None:
+        active = _active_storage_root(root)
+        return active[0] if active is not None else None
+    if generation == LEGACY_INDEX_GENERATION:
+        return root
+    if not generation or Path(generation).name != generation:
+        return None
+    candidate = root / GENERATIONS_DIR_NAME / generation
+    return candidate if candidate.is_dir() else None
 
 
 def _new_generation_id() -> str:
@@ -813,22 +845,33 @@ def build_index(
 def load_index(
     cfg: Config,
     embed_model: Any | None = None,
+    *,
+    generation: str | None = None,
 ) -> tuple[Any | None, Any | None]:
     """Load the persisted ``(VectorStoreIndex, BM25Retriever)`` from disk.
 
     Returns ``(None, None)`` when llama-index is unavailable or no index has
     been built yet. The embed model defaults to the T1 DrbrainEmbedding
     adapter (lazy — no model load happens here unless a query embeds).
+
+    ``generation`` is additive.  When supplied it resolves that immutable
+    generation (or the explicit ``"legacy"`` snapshot) instead of following
+    ``active.json``; callers that omit it keep the historic active-pointer
+    behavior.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         return None, None
 
     li = get_llamaindex_config(cfg)
-    active_store = _active_storage_root(li.storage_dir)
-    if active_store is None:
-        logger.error("[rag] active generation pointer is invalid at %s", li.storage_dir)
+    active_root = _storage_root_for_generation(li.storage_dir, generation)
+    if active_root is None:
+        if generation is None:
+            logger.error("[rag] active generation pointer is invalid at %s", li.storage_dir)
+        else:
+            logger.error(
+                "[rag] requested generation %r is unavailable at %s", generation, li.storage_dir
+            )
         return None, None
-    active_root, _ = active_store
     _, vector_dir, bm25_dir = _storage_dirs(active_root)
     embed = embed_model or _default_embed_model(cfg)
     top_k = cfg.embed.top_k or 10

@@ -17,6 +17,17 @@ from pydantic import BaseModel, Field
 class Evidence(BaseModel):
     """A unit of provenance-backed evidence: paper → page → snippet → value."""
 
+    evidence_id: str = ""
+    generation: str = ""
+    document_locator: dict[str, Any] = Field(default_factory=dict)
+    chunk_locator: dict[str, Any] = Field(default_factory=dict)
+    content_checksum: str = ""
+    query: str = ""
+    filters: dict[str, Any] = Field(default_factory=dict)
+    retriever: str = ""
+    rank: int | None = None
+    score: float | None = None
+    tool_call_id: str = ""
     paper_id: str = ""
     page: int | None = None
     snippet: str = ""
@@ -25,6 +36,19 @@ class Evidence(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
     provenance: str = ""
     authority: str = ""
+
+
+class EvidenceBundle(BaseModel):
+    """One tool-backed retrieval result, with immutable evidence references."""
+
+    bundle_id: str = ""
+    generation: str = ""
+    query: str = ""
+    filters: dict[str, Any] = Field(default_factory=dict)
+    retriever: str = ""
+    tool_call_id: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    records: list[Evidence] = Field(default_factory=list)
 
 
 class Hypothesis(BaseModel):
@@ -37,6 +61,8 @@ class Hypothesis(BaseModel):
     hypotheses the critic filtered out at T5 — they never reach verification).
     """
 
+    claim_id: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
     statement: str
     conditions: dict[str, Any] = Field(default_factory=dict)
     prediction: str = ""  # 可观察预测：什么证据会支持该假设
@@ -61,6 +87,8 @@ class Verification(BaseModel):
     with a parseable number) must exist for the entry to be ``verified``.
     """
 
+    claim_id: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
     statement: str
     supports: int = 0  # 支持 prediction 的证据条数
     refutes: int = 0  # 反驳的证据条数
@@ -85,6 +113,7 @@ class ResearchState(BaseModel):
     parsed: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
+    evidence_bundles: list[EvidenceBundle] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     hypotheses: list[Hypothesis] = Field(default_factory=list)
     scores: Any = None  # 假设互评分数（list 或 dict）
