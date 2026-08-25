@@ -1,4 +1,4 @@
-"""Tests for first-class Claim/Evidence objects (schema v14-v15).
+"""Tests for first-class Claim/Evidence objects (schema v14+).
 
 Covers the ``evidence`` and ``claims`` tables, the ``record_evidence`` /
 ``record_claim`` write helpers, the answer-recording path that materializes
@@ -241,15 +241,16 @@ def _make_v13_db(path: Path) -> None:
 
 
 def test_migrate_v13_adds_claims_and_evidence(tmp_path):
-    """Opening a v13 database migrates it to v15 in place."""
+    """Opening a v13 database applies every later migration in place."""
     db_path = tmp_path / "old.db"
     _make_v13_db(db_path)
 
     db = Database(db_path)
 
-    assert _versions(db) == list(range(1, 16))
+    assert _versions(db) == list(range(1, 17))
     assert "evidence" in _table_names(db)
     assert "claims" in _table_names(db)
+    assert "owner_principal" in _cols(db, "agent_sessions")
 
     # Both tables are immediately writable.
     db.record_evidence("p1", "n1")
@@ -269,7 +270,7 @@ def test_migration_is_idempotent(tmp_path):
     db.close()
 
     db2 = Database(db_path)
-    assert _versions(db2) == list(range(1, 16))
+    assert _versions(db2) == list(range(1, 17))
     assert "evidence" in _table_names(db2)
     assert "claims" in _table_names(db2)
     db2.close()
