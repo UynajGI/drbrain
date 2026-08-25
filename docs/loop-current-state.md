@@ -1,6 +1,6 @@
-# DrBrain Research Loop — 现状总结（2026-08-14，以磁盘当前内容为准）
+# DrBrain Research Loop — 历史现状快照（2026-08-14）
 
-> ⚠️ **已过时（2026-08-15）**：本文写于讨论层（`loop/discussion.py` 消息板 MessageBoard + 非作者门 + queue claim）实现之前。所述「12 节点 + 同一个 system prompt 换 user_msg」已被「13 节点 + 4 角色（analyst/critic/compute/verifier 各自独立 system prompt）+ 多 critic 并发讨论层」取代。**现役权威见 [docs/drbrain-architecture.md](drbrain-architecture.md) 第 5 章。**
+> ⚠️ **历史材料，不是现役说明**：本文写于讨论层与 durable ledger 之前。所述「12 节点 + 同一个 system prompt 换 user_msg」已被「13 节点 + 4 角色（analyst/critic/compute/verifier 各自独立 system prompt）+ 多 critic 并发讨论层」取代；自 2026-08-25 起，新 run 还以 `workspace/autoresearch/ledger.sqlite3` 为 cycle 级事实源，旧文件只是兼容投影。现役权威见 [DrBrain Architecture](drbrain-architecture.md) 第 5 章和 [Autoresearch Loop 生产化实施计划](autoresearch-loop-production-plan.md)。
 
 > 本文只描述**代码现状**，不评判目标状态、不美化。所有结论带 `文件:行号` 证据。
 > 涉及四个文件：
