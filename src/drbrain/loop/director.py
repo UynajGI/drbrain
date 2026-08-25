@@ -1093,7 +1093,12 @@ class ResearchDirector:
         if budget is not None:
             effective_budget.update(
                 {
-                    str(name): value
+                    (
+                        f"max_{name}"
+                        if str(name)
+                        in {"attempts", "tool_calls", "rag_calls", "model_calls", "wall_seconds"}
+                        else str(name)
+                    ): value
                     for name, value in budget.items()
                     if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
                 }
