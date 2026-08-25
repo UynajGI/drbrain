@@ -242,6 +242,30 @@ class ResearchDirector:
         """Return this director's isolated, SQLite-only run ledger."""
         return RunLedger(self._run_dir / "ledger.sqlite3")
 
+    def _retain_rag_generation(self, ledger: RunLedger, run_id: str, generation: str) -> str | None:
+        """Retain one generation before allowing it into a durable evidence run."""
+        try:
+            from drbrain.rag.indexer import retain_index_generation
+
+            retain_index_generation(self._cfg, generation, run_id)
+        except Exception as exc:  # noqa: BLE001 - unavailable retention disables RAG evidence
+            logger.warning(
+                "[director] cannot retain RAG generation; disabling RAG evidence: %s", exc
+            )
+            try:
+                ledger.record_rag_evidence_disabled(run_id, generation=generation)
+            except Exception as audit_exc:  # noqa: BLE001 - preserve optional RAG behavior
+                logger.error("[director] cannot record RAG evidence downgrade: %s", audit_exc)
+            return None
+        return generation
+
+    def _adopt_checkpoint_rag_generation(
+        self, ledger: RunLedger, run_id: str, generation: str | None
+    ) -> None:
+        """Re-retain a checkpoint generation before it can re-enable RAG evidence."""
+        if isinstance(generation, str) and generation and generation != self._rag_generation:
+            self._rag_generation = self._retain_rag_generation(ledger, run_id, generation)
+
     def _checkpoint_manifest(self) -> CheckpointManifest:
         """Build a secret-free contract for safe Context restoration.
 
@@ -1141,23 +1165,9 @@ class ResearchDirector:
             else captured_generation
         )
         if self._rag_generation:
-            attempted_generation = self._rag_generation
-            try:
-                from drbrain.rag.indexer import retain_index_generation
-
-                retain_index_generation(self._cfg, self._rag_generation, run.run_id)
-            except Exception as exc:  # noqa: BLE001 - unavailable retention disables RAG evidence
-                logger.warning(
-                    "[director] cannot retain RAG generation; disabling RAG evidence: %s", exc
-                )
-                try:
-                    ledger.record_rag_evidence_disabled(
-                        run.run_id,
-                        generation=attempted_generation,
-                    )
-                except Exception as audit_exc:  # noqa: BLE001 - preserve optional RAG behavior
-                    logger.error("[director] cannot record RAG evidence downgrade: %s", audit_exc)
-                self._rag_generation = None
+            self._rag_generation = self._retain_rag_generation(
+                ledger, run.run_id, self._rag_generation
+            )
         effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
         if existing_run is not None:
             ledger.record_resume(run.run_id, config=effective_config, budget=effective_budget)
@@ -1211,8 +1221,7 @@ class ResearchDirector:
                 transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
                 raise CheckpointRestoreError("interrupted cycle has no JSON checkpoint")
             checkpoint_generation = checkpoint.manifest.get("rag_generation")
-            if isinstance(checkpoint_generation, str) and checkpoint_generation:
-                self._rag_generation = checkpoint_generation
+            self._adopt_checkpoint_rag_generation(ledger, run.run_id, checkpoint_generation)
             manifest = self._checkpoint_manifest()
             preview = WorkflowCheckpointService(
                 ledger=ledger,
