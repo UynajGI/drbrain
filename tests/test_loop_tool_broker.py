@@ -398,6 +398,27 @@ def test_broker_accumulates_reported_resource_usage_across_retries(tmp_path):
     assert ledger.tool_calls(run_id)[0].observation["resource_usage"]["gpu_seconds"] == 3.0
 
 
+def test_broker_ignores_non_finite_reported_resource_usage(tmp_path):
+    broker, ledger, run_id = _broker(tmp_path)
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=_read_tool(),
+            arguments={"query": "finite resources"},
+            executor=lambda: PluginResult(
+                ResultStatus.OK,
+                data={"answer": "completed"},
+                resource_usage={"gpu_seconds": float("inf")},
+            ),
+        )
+    )
+
+    assert observation.status is ToolCallStatus.SUCCEEDED
+    assert observation.resource_usage == {}
+    assert ledger.tool_calls(run_id)[0].observation["resource_usage"] == {}
+
+
 def test_workflow_direct_search_routes_classified_plugin_through_broker(tmp_path):
     broker, ledger, run_id = _broker(
         tmp_path,

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -308,8 +309,10 @@ def _reported_token_usage(result: Any) -> dict[str, int | float]:
         if not _positive_number(total):
             prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
             completion = usage.get("completion_tokens", usage.get("output_tokens"))
-            if _positive_number(prompt) or _positive_number(completion):
-                total = float(prompt or 0) + float(completion or 0)
+            prompt_value = float(prompt) if _positive_number(prompt) else 0.0
+            completion_value = float(completion) if _positive_number(completion) else 0.0
+            if prompt_value or completion_value:
+                total = prompt_value + completion_value
         if _positive_number(total):
             return {"tokens": float(total)}
     return {}
@@ -349,7 +352,12 @@ def _usage_object_mapping(value: Any) -> Mapping[str, Any] | None:
 
 
 def _positive_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
 
 
 class ResearchLoopWorkflow(Workflow):

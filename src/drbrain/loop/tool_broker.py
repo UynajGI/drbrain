@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -459,13 +460,9 @@ class ToolBroker:
         cpu_seconds = 0.0
         try:
             if definition.timeout_s is None:
-                cpu_started = time.thread_time()
                 result = executor()
-                cpu_seconds += max(0.0, time.thread_time() - cpu_started)
                 if inspect.isawaitable(result):
-                    cpu_started = time.thread_time()
                     result = await result
-                    cpu_seconds += max(0.0, time.thread_time() - cpu_started)
             else:
                 # A synchronous plugin/MCP adapter can block just as surely as
                 # an async one. Invoke it off-loop so the broker's timeout
@@ -476,18 +473,16 @@ class ToolBroker:
                     asyncio.to_thread(_call_with_thread_cpu, executor), timeout=timeout
                 )
                 if inspect.isawaitable(result):
-                    cpu_started = time.thread_time()
                     result = await asyncio.wait_for(result, timeout=timeout)
-                    cpu_seconds += max(0.0, time.thread_time() - cpu_started)
             outcome = _normalize_result(result)
         except TimeoutError as exc:
             outcome = _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
         except Exception as exc:  # noqa: BLE001 - normalize arbitrary tool failures
             outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
         resource_usage = _normalize_resource_usage(outcome.resource_usage)
-        # This is CPU consumed by the thread that invoked the executor. A
-        # plugin's own report takes precedence because it can attribute nested
-        # subprocess and GPU work more precisely than the broker can.
+        # This is CPU consumed by the isolated worker used for a bounded
+        # synchronous adapter. A plugin's own report takes precedence because
+        # it can attribute nested subprocess and GPU work more precisely.
         if "cpu_seconds" not in resource_usage:
             if cpu_seconds > 0:
                 resource_usage["cpu_seconds"] = cpu_seconds
@@ -588,7 +583,12 @@ def _normalize_resource_usage(value: Any) -> dict[str, float]:
     normalized: dict[str, float] = {}
     for kind in ("tokens", "cpu_seconds", "gpu_seconds"):
         amount = value.get(kind)
-        if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0:
+        if (
+            isinstance(amount, int | float)
+            and not isinstance(amount, bool)
+            and math.isfinite(amount)
+            and amount > 0
+        ):
             normalized[kind] = float(amount)
     return normalized
 

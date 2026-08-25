@@ -413,7 +413,8 @@ def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
     model_turns = 0
 
     class _Usage:
-        total_tokens = 4
+        prompt_tokens = 4
+        completion_tokens = "not-a-number"
 
     class _Agent:
         async def take_step(self):
