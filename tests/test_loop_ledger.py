@@ -146,6 +146,31 @@ def test_ledger_migrates_v5_runs_to_execution_artifact_tables(tmp_path):
     assert version == LEDGER_SCHEMA_VERSION
 
 
+def test_ledger_migrates_v6_runs_to_governance_tables(tmp_path):
+    path = tmp_path / "ledger.sqlite3"
+    ledger = RunLedger(path)
+    ledger.get_or_create_run("v6 governance")
+
+    governance_tables = {"research_approval_decisions", "research_budget_usage"}
+    with sqlite3.connect(path) as conn:
+        for table in governance_tables:
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute(
+            "DELETE FROM ledger_schema_versions WHERE version = ?", (LEDGER_SCHEMA_VERSION,)
+        )
+        conn.execute("INSERT INTO ledger_schema_versions(version, applied_at) VALUES (6, 0)")
+
+    RunLedger(path).get_run("v6 governance")
+
+    with sqlite3.connect(path) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        version = conn.execute("SELECT MAX(version) FROM ledger_schema_versions").fetchone()[0]
+    assert governance_tables <= tables
+    assert version == LEDGER_SCHEMA_VERSION
+
+
 def test_run_lifecycle_rejects_a_skipped_transition(tmp_path):
     ledger = RunLedger(tmp_path / "ledger.sqlite3")
     run = ledger.get_or_create_run("durable topic")

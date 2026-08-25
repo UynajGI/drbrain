@@ -36,8 +36,9 @@ from drbrain.loop.checkpointing import (
 from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.events import ResearchState
 from drbrain.loop.front_half import DurableFrontHalf
+from drbrain.loop.governance import RunGovernance
 from drbrain.loop.policy import ToolPolicy
-from drbrain.loop.store import LedgerEvent, RunLedger
+from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
@@ -891,7 +892,9 @@ class ResearchDirector:
         evidence_recorder = None
         durable_front_half = None
         durable_execution = None
+        governance = None
         if checkpoint is not None:
+            governance = RunGovernance(checkpoint.ledger)
             durable_front_half = DurableFrontHalf(
                 TransitionService(checkpoint.ledger), checkpoint.run_id
             )
@@ -945,6 +948,11 @@ class ResearchDirector:
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
             durable_execution=durable_execution,
+            budget_reserver=(
+                (lambda amounts: governance.reserve(checkpoint.run_id, amounts))
+                if governance is not None and checkpoint is not None
+                else None
+            ),
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it
@@ -1048,6 +1056,7 @@ class ResearchDirector:
         max_cycles: int = 10,
         stagnation_cycles: int = 3,
         max_adaptations: int = 2,
+        budget: Mapping[str, int | float] | None = None,
     ) -> dict[str, Any]:
         """Run research cycles until stagnation or ``max_cycles``; return the state.
 
@@ -1076,15 +1085,23 @@ class ResearchDirector:
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
         config = {"n_critics": self._n_critics, "rag_generation": captured_generation}
-        budget = {
+        effective_budget: dict[str, int | float] = {
             "max_cycles": max_cycles,
             "stagnation_cycles": stagnation_cycles,
             "max_adaptations": max_adaptations,
         }
+        if budget is not None:
+            effective_budget.update(
+                {
+                    str(name): value
+                    for name, value in budget.items()
+                    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
+                }
+            )
         run = ledger.get_or_create_run(
             topic,
             config=config,
-            budget=budget,
+            budget=effective_budget,
             legacy_snapshot=state if legacy_projection else None,
         )
         stored_generation = run.config.get("rag_generation")
@@ -1113,7 +1130,7 @@ class ResearchDirector:
                 self._rag_generation = None
         effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
         if existing_run is not None:
-            ledger.record_resume(run.run_id, config=effective_config, budget=budget)
+            ledger.record_resume(run.run_id, config=effective_config, budget=effective_budget)
         transitions = TransitionService(ledger)
         transitions.reconcile_incomplete_cycles(run.run_id)
         transitions.start_run(run.run_id)
@@ -1228,6 +1245,12 @@ class ResearchDirector:
                 checkpoint_service = resumed_checkpoint
                 resumed_checkpoint = None
             else:
+                try:
+                    ledger.reserve_budget(run.run_id, {"attempts": 1})
+                except RunExecutionBlockedError as exc:
+                    stop_status = "budget_exhausted"
+                    logger.info("[director] stop before a new cycle: %s", exc)
+                    break
                 step_id = transitions.begin_cycle(
                     run.run_id,
                     cycle=state["cycles"] + 1,
@@ -1350,7 +1373,9 @@ class ResearchDirector:
                     logger.info("[director] max adaptations reached — stop")
                     break
 
-        transitions.pause_run(run.run_id, reason=stop_status)
+        current_run = ledger.get_run_by_id(run.run_id)
+        if current_run is not None and current_run.status == "running":
+            transitions.pause_run(run.run_id, reason=stop_status)
         self._log_session(topic, state, stop_status, session_started)
         return state
 
