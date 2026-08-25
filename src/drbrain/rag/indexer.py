@@ -392,6 +392,7 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = -1  # ownership moved to the context manager
             json.dump(payload, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
             handle.flush()
@@ -399,6 +400,11 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
         os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
     except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         try:
             os.unlink(tmp_name)
         except OSError:
@@ -444,11 +450,8 @@ def _prune_inactive_generations(
     if retain_count < 1 or not generations_root.is_dir():
         return []
 
-    completed = [
-        child
-        for child in generations_root.iterdir()
-        if child.is_dir() and child.name.startswith("g-")
-    ]
+    entries = list(generations_root.iterdir())
+    completed = [child for child in entries if child.is_dir() and child.name.startswith("g-")]
     completed.sort(key=lambda child: child.stat().st_mtime, reverse=True)
     protected = {active_generation}
     for child in completed:
@@ -465,6 +468,17 @@ def _prune_inactive_generations(
             shutil.rmtree(child)
         except OSError as exc:
             logger.warning("[rag] could not prune stale generation %s: %s", child, exc)
+        else:
+            pruned.append(child.name)
+    for child in entries:
+        if not child.is_dir() or not child.name.startswith(".staging-g-"):
+            continue
+        if child.stat().st_mtime > cutoff:
+            continue
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            logger.warning("[rag] could not prune stale staging directory %s: %s", child, exc)
         else:
             pruned.append(child.name)
     return pruned
@@ -544,8 +558,8 @@ def build_index(
     paragraph chunks (each chunk = one indexed TextNode carrying the parent's
     metadata + ``#i`` suffix). Change detection stays per parent node — an
     unchanged node reuses all its chunk embeddings; only changed nodes (or
-    nodes with missing chunk embeddings) are re-embedded. Pass ``0`` to
-    disable chunking.
+    nodes with missing chunk embeddings) are re-embedded. Non-positive values
+    retain the safe default cap.
 
     ``db`` only needs ``get_all_papers() -> list[{"local_id": str}]``. Nodes
     whose embedding cannot be reused (no persisted store, or the configured
@@ -576,6 +590,13 @@ def build_index(
         max_node_tokens = int(getattr(li, "max_node_tokens", DEFAULT_MAX_NODE_TOKENS))
     else:
         max_node_tokens = int(max_node_tokens)
+    if max_node_tokens <= 0:
+        logger.warning(
+            "[rag] max_node_tokens=%s is unsafe; using default %d",
+            max_node_tokens,
+            DEFAULT_MAX_NODE_TOKENS,
+        )
+        max_node_tokens = DEFAULT_MAX_NODE_TOKENS
 
     target_ids = (
         list(paper_ids) if paper_ids is not None else [p["local_id"] for p in db.get_all_papers()]
@@ -753,7 +774,13 @@ def build_index(
             f"staged generation validation failed; generation not published: {exc}"
         ) from exc
 
-    stage_root.replace(final_root)
+    try:
+        stage_root.replace(final_root)
+    except Exception as exc:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise RuntimeError(
+            f"could not finalize staged generation; generation not published: {exc}"
+        ) from exc
     _write_json_atomically(
         _pointer_path(storage_root),
         {"generation": generation, "updated_at_ns": time.time_ns()},
@@ -766,7 +793,15 @@ def build_index(
         logger.warning(
             "[rag] published generation %s but could not mirror manifest: %s", generation, exc
         )
-    stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
+    try:
+        stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
+    except OSError as exc:
+        logger.warning(
+            "[rag] published generation %s but could not prune stale generations: %s",
+            generation,
+            exc,
+        )
+        stats["pruned_generations"] = []
     stats["generation"] = generation
     logger.info("[rag] index build done: %s", stats)
     return stats
@@ -823,7 +858,9 @@ def get_index_health(cfg: Config) -> dict[str, Any]:
     The existing :func:`load_index` tuple is intentionally unchanged for every
     caller. This additive report makes deployment automation able to distinguish
     a disabled feature, an unavailable dependency, broken artifacts, and a
-    deserialization failure before accepting retrieval traffic.
+    deserialization failure before accepting retrieval traffic. The final
+    validation deserializes persisted indexes, so this is a read-only but not
+    constant-time operation.
     """
     li = get_llamaindex_config(cfg)
     root = Path(li.storage_dir)

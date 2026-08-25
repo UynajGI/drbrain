@@ -21,7 +21,13 @@ import pytest
 
 from drbrain.config import Config, DirsConfig, EmbedConfig, LlamaIndexConfig
 from drbrain.rag import indexer as rag_indexer
-from drbrain.rag.indexer import MANIFEST_NAME, build_index, collect_tree_nodes, load_index
+from drbrain.rag.indexer import (
+    DEFAULT_MAX_NODE_TOKENS,
+    MANIFEST_NAME,
+    build_index,
+    collect_tree_nodes,
+    load_index,
+)
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 
@@ -306,6 +312,25 @@ def test_build_index_no_chunking_when_cap_disabled(tmp_path):
     assert stats["chunked"] == 0
 
 
+def test_build_index_nonpositive_chunk_cap_uses_safe_default(tmp_path, monkeypatch):
+    """Zero retains the historic OOM-protecting default instead of disabling chunking."""
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_B])
+    cfg = _make_cfg(tmp_path, papers_dir)
+    cfg.llamaindex.max_node_tokens = 0
+    seen_caps: list[int] = []
+    original_chunk = rag_indexer._chunk_document
+
+    def capture_cap(doc, max_node_tokens):
+        seen_caps.append(max_node_tokens)
+        return original_chunk(doc, max_node_tokens)
+
+    monkeypatch.setattr(rag_indexer, "_chunk_document", capture_cap)
+    build_index(cfg, _PaperDB([PAPER_B]), embed_model=_CountingEmbed())
+
+    assert seen_caps and set(seen_caps) == {DEFAULT_MAX_NODE_TOKENS}
+
+
 def test_build_index_chunk_metadata_and_sizes(tmp_path):
     papers_dir = tmp_path / "papers"
     _seed_real_like_papers(papers_dir, [PAPER_B])
@@ -552,6 +577,45 @@ def test_manifest_mirror_failure_does_not_unpublish_a_valid_generation(tmp_path,
 
     active = json.loads((storage_root / "active.json").read_text(encoding="utf-8"))
     assert active["generation"] == stats["generation"]
+
+
+def test_stage_promotion_failure_removes_staging_directory(tmp_path, monkeypatch):
+    """A failed final rename leaves neither a partial generation nor staging debris."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    build_index(cfg, db, embed_model=_CountingEmbed())
+    original_replace = Path.replace
+
+    def fail_staging_replace(self, target):
+        if self.name.startswith(".staging-"):
+            raise OSError("injected promotion failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_staging_replace)
+    with pytest.raises(RuntimeError, match="finalize staged generation"):
+        build_index(cfg, db, force=True, embed_model=_CountingEmbed())
+
+    assert not list((tmp_path / "li" / "generations").glob(".staging-*"))
+
+
+def test_prune_failure_does_not_unpublish_active_generation(tmp_path, monkeypatch):
+    """Post-publish retention errors are operational warnings, not build failures."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr(
+        rag_indexer,
+        "_prune_inactive_generations",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected prune failure")),
+    )
+
+    stats = build_index(cfg, _PaperDB(["paper1"]), embed_model=_CountingEmbed())
+
+    active = json.loads((tmp_path / "li" / "active.json").read_text(encoding="utf-8"))
+    assert active["generation"] == stats["generation"]
+    assert stats["pruned_generations"] == []
 
 
 def test_build_index_force_reembeds_all(tmp_path):

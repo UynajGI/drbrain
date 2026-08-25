@@ -1184,6 +1184,8 @@ class Database:
         ).fetchone()
         if row is None:
             return False
+        if principal is not None and not str(principal).strip():
+            return False
         return principal is None or str(row[0] or "") == principal
 
     def soft_delete_session(self, session_id: str) -> None:

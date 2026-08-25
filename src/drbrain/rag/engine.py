@@ -433,7 +433,8 @@ def _ask_llamaindex_stream(
             telemetry=_engine_telemetry(engine),
         )
         return
-    if not _response_sources(response):
+    sources = _response_sources(response)
+    if not sources:
         yield _abstain_answer(
             question,
             RetrievalStatus.NO_RESULTS,
@@ -441,7 +442,7 @@ def _ask_llamaindex_stream(
             telemetry=_engine_telemetry(engine),
         )
         return
-    if not _evidence_ids_from_sources(_response_sources(response)):
+    if not _evidence_ids_from_sources(sources):
         yield _abstain_answer(
             question,
             RetrievalStatus.INSUFFICIENT_EVIDENCE,

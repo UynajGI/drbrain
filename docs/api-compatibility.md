@@ -44,5 +44,7 @@ subset of the current API and permits only optional additions.
 - `load_mcp_tools(..., require_trusted=True)` and
   `build_agent(..., require_trusted_mcp=True)` opt into fail-closed MCP
   loading. A production MCP entry then requires `trusted: true`, a non-empty
-  `allowed_tools` list, and a bounded optional `timeout_seconds`. Existing
-  direct and local MCP calls keep their historic defaults.
+  `allowed_tools` list, and a bounded optional `timeout_seconds`.
+  `llamaindex.mcp_require_trusted: true` enables that policy for the standard
+  `reason_llamaindex` agent path; existing direct and local MCP calls keep
+  their historic defaults.
