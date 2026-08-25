@@ -14,7 +14,7 @@ from enum import StrEnum
 from typing import Any
 
 from drbrain.loop.policy import PolicyDisposition, ToolDefinition, ToolPolicy, ToolProposal
-from drbrain.loop.store import RunLedger
+from drbrain.loop.store import RunBudgetExceededError, RunExecutionBlockedError, RunLedger
 
 _SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|authorization|cookie|password|secret|token)", re.I)
 _SENSITIVE_ASSIGNMENT = re.compile(
@@ -123,13 +123,20 @@ class ToolBroker:
                 definition=definition,
                 arguments=normalized_arguments,
             )
+        operator_decision = self._ledger.approval_decision(self.run_id, key)
+        if operator_decision == "rejected":
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                status=ToolCallStatus.DENIED,
+                error="operator rejected this idempotent tool proposal",
+            )
         proposal = ToolProposal(
             tool_call_id=tool_call_id,
             node_name=node_name,
             definition=definition,
             arguments=normalized_arguments,
             idempotency_key=key,
-            approved=approved,
+            approved=approved or operator_decision == "approved",
         )
         safe_proposal = self._safe_proposal(proposal)
         decision = self.policy.evaluate(proposal)
@@ -156,6 +163,18 @@ class ToolBroker:
                 reason=decision.reason,
             )
             return ToolObservation(tool_call_id=tool_call_id, status=status, error=decision.reason)
+
+        try:
+            amounts: dict[str, int | float] = {"tool_calls": 1}
+            if definition.source == "rag":
+                amounts["rag_calls"] = 1
+            self._ledger.reserve_budget(self.run_id, amounts)
+        except (RunBudgetExceededError, RunExecutionBlockedError) as exc:
+            return ToolObservation(
+                tool_call_id=tool_call_id,
+                status=ToolCallStatus.DENIED,
+                error=str(exc),
+            )
 
         if key:
             previous = self._ledger.latest_tool_call_for_idempotency(

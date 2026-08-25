@@ -60,6 +60,7 @@ from drbrain.loop.events import (
 )
 from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
+from drbrain.loop.store import RunExecutionBlockedError
 from drbrain.loop.tool_broker import ToolBroker
 
 _STATE_KEY = "research_state"
@@ -316,6 +317,7 @@ class ResearchLoopWorkflow(Workflow):
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
+        budget_reserver: Callable[[dict[str, int | float]], Any] | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -332,6 +334,7 @@ class ResearchLoopWorkflow(Workflow):
         self._evidence_recorder = evidence_recorder
         self._durable_front_half = durable_front_half
         self._durable_execution = durable_execution
+        self._budget_reserver = budget_reserver
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
@@ -462,6 +465,8 @@ class ResearchLoopWorkflow(Workflow):
     ) -> tuple[list[str], EvidenceBundle | None]:
         """Retrieve generation-pinned documents and retain their audit links."""
         if self._cfg is None or not self._rag_generation:
+            return [], None
+        if self._tool_broker is None and not await self._reserve_budget({"rag_calls": 1}):
             return [], None
         try:
             from drbrain.rag.agent import retrieve_documents
@@ -774,6 +779,8 @@ class ResearchLoopWorkflow(Workflow):
         """
         if agent is None:
             return None
+        if not await self._reserve_budget({"model_calls": 1}):
+            return None
         handler = agent.run(user_msg=user_msg, max_iterations=max(1, int(max_iterations)))
         result = await handler
         response = getattr(result, "response", None)
@@ -808,6 +815,17 @@ class ResearchLoopWorkflow(Workflow):
                     "\n\n（上次没返回合法 JSON，这次务必只输出一个 JSON 对象，不要任何其他文字。）"
                 )
         return None
+
+    async def _reserve_budget(self, amounts: dict[str, int | float]) -> bool:
+        """Block a new model/RAG call once durable governance disallows it."""
+        if self._budget_reserver is None:
+            return True
+        try:
+            await asyncio.to_thread(self._budget_reserver, amounts)
+        except RunExecutionBlockedError as exc:
+            logger.warning("[loop] execution boundary blocked: %s", exc)
+            return False
+        return True
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from drbrain.loop.state import (
+    RUN_CANCELLED,
     RUN_FAILED,
     RUN_PAUSED,
     RUN_RUNNING,
@@ -64,6 +65,22 @@ class TransitionService:
             self._set_run_status(conn, run_id, RUN_PAUSED)
             self._ledger.append_event(
                 conn, run_id, actor="director", event_type="run_paused", payload={"reason": reason}
+            )
+
+    def cancel_run(self, run_id: str, *, reason: str, actor: str = "operator") -> None:
+        """Terminally stop a run without deleting its evidence or audit trail."""
+        with self._ledger.transaction() as conn:
+            current = self._run_status(conn, run_id)
+            if current == RUN_CANCELLED:
+                return
+            validate_run_transition(current, RUN_CANCELLED)
+            self._set_run_status(conn, run_id, RUN_CANCELLED, completed=True)
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor=actor,
+                event_type="run_cancelled",
+                payload={"reason": reason},
             )
 
     def fail_run(self, run_id: str, *, error: BaseException) -> None:
