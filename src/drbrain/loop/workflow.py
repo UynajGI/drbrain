@@ -556,7 +556,9 @@ class ResearchLoopWorkflow(Workflow):
         """Merge a retrieval bundle without losing the legacy ``state.evidence`` view."""
         known_ids = {item.evidence_id for item in state.evidence if item.evidence_id}
         state.evidence.extend(
-            item for item in bundle.records if item.evidence_id and item.evidence_id not in known_ids
+            item
+            for item in bundle.records
+            if item.evidence_id and item.evidence_id not in known_ids
         )
         if not any(item.bundle_id == bundle.bundle_id for item in state.evidence_bundles):
             state.evidence_bundles.append(bundle)
@@ -1151,9 +1153,7 @@ class ResearchLoopWorkflow(Workflow):
         mirroring ROLE-GPU Step 3's refusal to run an undiscussed proposal.
         """
         agent = self.build_node_agent(role="compute", step_name="compute")
-        candidates = [
-            h for h in ev.hypotheses if h.status == "critiqued" and h.statement.strip()
-        ]
+        candidates = [h for h in ev.hypotheses if h.status == "critiqued" and h.statement.strip()]
         if agent is not None and self._has_compute_tools(agent):
             # Claim every queued, discussed hypothesis. Each claim is atomic
             # under the queue's lock (single-process If-Match equivalent).

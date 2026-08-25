@@ -176,6 +176,7 @@ def test_brokerless_rag_evidence_is_durably_recorded(monkeypatch):
     monkeypatch.setattr(
         rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [_pinned_record()]
     )
+
     async def immediate_to_thread(func, *args, **kwargs):
         return func(*args, **kwargs)
 
@@ -217,7 +218,9 @@ def test_brokerless_evidence_write_failure_is_fail_closed(monkeypatch):
 
 
 def test_brokerless_rag_ignores_unciteable_records(monkeypatch):
-    monkeypatch.setattr(rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [{"title": "No ID"}])
+    monkeypatch.setattr(
+        rag_agent, "retrieve_documents", lambda *_args, **_kwargs: [{"title": "No ID"}]
+    )
     recorded: list[dict[str, object]] = []
     workflow = ResearchLoopWorkflow(
         cfg=object(),
