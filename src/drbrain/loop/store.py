@@ -250,6 +250,40 @@ class RunLedger:
                 )
             return LedgerRun(run_id, topic, RUN_CREATED, 0)
 
+    def record_resume(
+        self,
+        run_id: str,
+        *,
+        config: Mapping[str, Any],
+        budget: Mapping[str, Any],
+    ) -> LedgerEvent:
+        """Append the effective configuration for one resumed director session.
+
+        ``research_runs.config_json`` and ``budget_json`` preserve the original
+        run specification.  A resume can intentionally use a different budget,
+        so every later invocation is recorded as its own append-only audit
+        event instead of silently rewriting the original settings.
+        """
+        with self.transaction() as conn:
+            row = conn.execute("SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown research run: {run_id}")
+            conn.execute(
+                "UPDATE research_runs SET updated_at = ? WHERE run_id = ?",
+                (time.time(), run_id),
+            )
+            return self.append_event(
+                conn,
+                run_id,
+                actor="director",
+                event_type="run_resumed",
+                payload={
+                    "session_id": uuid.uuid4().hex,
+                    "config": dict(config),
+                    "budget": dict(budget),
+                },
+            )
+
     def append_event(
         self,
         conn: sqlite3.Connection,
