@@ -137,6 +137,27 @@ class RunLedger:
         finally:
             conn.close()
 
+    @contextmanager
+    def read_transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """Yield a schema-ready read transaction without taking the writer lease."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = connect_wal(self.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._ensure_schema(conn)
+            conn.commit()
+            conn.execute("BEGIN")
+            try:
+                yield conn
+            except Exception:
+                conn.rollback()
+                raise
+            else:
+                conn.commit()
+        finally:
+            conn.close()
+
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
             """

@@ -1053,7 +1053,6 @@ class ResearchLoopWorkflow(Workflow):
         # 1. 分析师（proposer）把每个假设作为 [PROPOSAL] 发到消息板。
         hypotheses_to_review: list[Hypothesis] = []
         post_ids: dict[str, str] = {}
-        durable_reviews: dict[str, list[dict[str, Any]]] = {}
         if self._durable_front_half is not None:
             await asyncio.to_thread(self._durable_front_half.ensure_node_contracts)
         for h in ev.hypotheses:
@@ -1074,12 +1073,19 @@ class ResearchLoopWorkflow(Workflow):
             hypotheses_to_review.append(h)
         if self._durable_front_half is not None:
             snapshot = await asyncio.to_thread(self._durable_front_half.snapshot)
-            durable_reviews = {
-                str(proposal["proposal_id"]): list(proposal["reviews"])
-                for proposal in snapshot["proposals"]
-            }
-            for post_id, reviews in durable_reviews.items():
-                for review in reviews:
+            for proposal in snapshot["proposals"]:
+                post_id = str(proposal["proposal_id"])
+                payload = proposal.get("payload", {})
+                if isinstance(payload, Mapping):
+                    statement = str(payload.get("statement", "")).strip()
+                    if statement:
+                        board.post(
+                            POST_PROPOSAL,
+                            author=str(proposal["author"]),
+                            content=statement,
+                            post_id=post_id,
+                        )
+                for review in proposal["reviews"]:
                     board.comment(
                         post_id,
                         author=str(review["reviewer"]),

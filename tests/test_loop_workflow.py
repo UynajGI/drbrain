@@ -116,6 +116,13 @@ def test_critique_rebuilds_the_compute_gate_from_durable_reviews(tmp_path, monke
             "queue_item_recorded",
         } <= set(event_types)
 
+        recovered_view = ResearchLoopWorkflow(durable_front_half=front_half)
+        monkeypatch.setattr(recovered_view, "build_node_agent", lambda **_kwargs: None)
+        await recovered_view.critique(context, GapsIdentified())
+        durable_post = recovered_view._board.get_post(proposal["proposal_id"])  # noqa: SLF001
+        assert durable_post is not None
+        assert [comment.content for comment in durable_post.comments] == ["durably reviewed"]
+
     asyncio.run(exercise())
 
 
