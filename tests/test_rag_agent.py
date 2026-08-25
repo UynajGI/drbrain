@@ -252,9 +252,10 @@ def test_reason_llamaindex_output_structure(monkeypatch):
     )
     result = reason_llamaindex(_cfg(), None, "What is perovskite?", max_turns=5)
 
-    assert set(result) == {"answer", "tool_calls", "turns", "engine"}
+    assert {"answer", "tool_calls", "turns", "engine"} <= set(result)
     assert result["engine"] == "llamaindex"
-    assert result["answer"] == "Perovskite solar cells dominate."
+    assert result["status"] == "insufficient_evidence"
+    assert result["evidence_ids"] == []
     assert result["turns"] == 2  # one tool step + final answer
     assert fake.calls == 2
 
@@ -279,7 +280,9 @@ def test_reason_llamaindex_direct_answer_no_tools(monkeypatch):
         [{"text": "Direct answer.", "tool_calls": None, "usage": None}],
     )
     result = reason_llamaindex(_cfg(), None, "hi", max_turns=5)
-    assert result["answer"] == "Direct answer."
+    assert result["answer"] == "证据不足，无法基于当前检索结果回答"
+    assert result["status"] == "insufficient_evidence"
+    assert result["evidence_ids"] == []
     assert result["tool_calls"] == []
     assert result["turns"] == 1
     assert fake.calls == 1
@@ -326,7 +329,7 @@ def test_reason_llamaindex_session_new_persists_to_agent_tables(tmp_path, monkey
     assert json.loads(rows[2][2])["function"]["name"] == "search_concepts"  # tool_call
     assert json.loads(rows[2][2])["id"] == rows[3][3]  # tool msg links the call id
     assert rows[3][4] == "search_concepts"
-    assert rows[4][1] == "Answer with tools."
+    assert rows[4][1] == "证据不足，无法基于当前检索结果回答"
 
 
 def test_reason_llamaindex_session_not_found(tmp_path, monkeypatch):
@@ -507,7 +510,8 @@ def test_reason_llamaindex_existing_session_injects_history(monkeypatch, tmp_pat
         monkeypatch.setattr(ra, "build_agent", _wrapped)
 
         result = reason_llamaindex(_cfg(tmp_path), db, "new q", max_turns=3, session_id=sid)
-        assert result["answer"] == "new a"
+        assert result["answer"] == "证据不足，无法基于当前检索结果回答"
+        assert result["status"] == "insufficient_evidence"
         assert captured["user_msg"] == "new q"
         assert captured["max_iterations"] == 3
         history = captured["chat_history"] or []

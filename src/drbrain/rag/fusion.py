@@ -34,6 +34,7 @@ Assembly helpers:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from drbrain.config import Config
@@ -185,11 +186,28 @@ if _LLAMA_INDEX_AVAILABLE:
             self.top_k = int(top_k)
             self.k = float(k)
             self._acl_filter = dict(acl_filter) if acl_filter else None
+            self._last_trace: dict[str, Any] = {}
+
+        def get_last_trace(self) -> dict[str, Any]:
+            """Return additive, JSON-safe telemetry for the most recent query.
+
+            The trace contains a row for every configured leg, including
+            degraded failures, but deliberately excludes query text and raw
+            exception strings. A query engine is assembled per request in the
+            normal path, so this is scoped to that engine's retrieval pass.
+            """
+            legs = [dict(item) for item in self._last_trace.get("legs", [])]
+            fusion = dict(self._last_trace.get("fusion", {}))
+            return {"legs": legs, "fusion": fusion}
 
         def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
+            started = time.perf_counter()
             ranked: list[tuple[str, list[NodeWithScore]]] = []
             failures: list[tuple[str, RetrievalStatus]] = []
+            leg_trace: list[dict[str, Any]] = []
             for retriever, source in zip(self._retrievers, self._sources):
+                leg_started = time.perf_counter()
+                status = RetrievalStatus.OK
                 try:
                     nodes = retriever.retrieve(query_bundle)
                 except RetrievalError:
@@ -206,8 +224,29 @@ if _LLAMA_INDEX_AVAILABLE:
                         exc,
                     )
                     nodes = []
-                ranked.append((source, list(nodes or [])))
+                materialized = list(nodes or [])
+                if not materialized and status == RetrievalStatus.OK:
+                    status = RetrievalStatus.NO_RESULTS
+                ranked.append((source, materialized))
+                leg_trace.append(
+                    {
+                        "source": source,
+                        "status": status.value,
+                        "returned": len(materialized),
+                        "duration_ms": (time.perf_counter() - leg_started) * 1000.0,
+                    }
+                )
             if self._retrievers and len(failures) == len(self._retrievers):
+                self._last_trace = {
+                    "legs": leg_trace,
+                    "fusion": {
+                        "status": RetrievalStatus.RETRIEVAL_FAILURE.value,
+                        "fused": 0,
+                        "acl_filtered": 0,
+                        "returned": 0,
+                        "duration_ms": (time.perf_counter() - started) * 1000.0,
+                    },
+                }
                 raise RetrievalError(
                     "all retrieval legs failed; refusing to synthesize",
                     failures=failures,
@@ -216,9 +255,23 @@ if _LLAMA_INDEX_AVAILABLE:
                 ranked,
                 k=self.k,
                 weights=self.weights if self.mode == "weighted" else None,
-                top_k=self.top_k,
+                top_k=None,
             )
-            return self._apply_acl(fused)
+            filtered = self._apply_acl(fused)
+            result = filtered[: self.top_k]
+            self._last_trace = {
+                "legs": leg_trace,
+                "fusion": {
+                    "status": RetrievalStatus.OK.value
+                    if result
+                    else RetrievalStatus.NO_RESULTS.value,
+                    "fused": len(fused),
+                    "acl_filtered": len(fused) - len(filtered),
+                    "returned": len(result),
+                    "duration_ms": (time.perf_counter() - started) * 1000.0,
+                },
+            }
+            return result
 
         def _apply_acl(self, nodes: list[NodeWithScore]) -> list[NodeWithScore]:
             """Post-filter *nodes* by the configured ACL context (default-deny).

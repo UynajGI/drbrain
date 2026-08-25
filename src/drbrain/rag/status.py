@@ -30,6 +30,7 @@ class RetrievalStatus(StrEnum):
     PERMISSION_DENIED = "permission_denied"
     TIMEOUT = "timeout"
     SOURCE_UNAVAILABLE = "source_unavailable"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
 class RetrievalError(Exception):
