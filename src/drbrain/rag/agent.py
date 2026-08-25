@@ -580,6 +580,7 @@ def _retrieval_rows(
                 score=float(score or 0.0),
                 source={**row, "text": full_text},
                 filters=filters,
+                excerpt=str(row["text"]),
             )
         )
         rows.append(row)
@@ -618,8 +619,8 @@ def retrieve_documents(
             cfg,
             db,
             graph,
-            generation=generation,
-            generation_backed_only=generation is not None,
+            generation=resolved_generation,
+            generation_backed_only=True,
         )
         if not legs:
             return []
@@ -704,8 +705,8 @@ def _build_retrieval_tool(
             cfg,
             db,
             graph,
-            generation=rag_generation,
-            generation_backed_only=rag_generation is not None,
+            generation=resolved_generation,
+            generation_backed_only=True,
         )
         if not legs:
             return None

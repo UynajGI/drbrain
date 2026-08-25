@@ -17,7 +17,8 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+import uuid
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,13 @@ FALSIFY_REFUTES = 2  # T3: refutes >= 2 and supports == 0 → falsified
 
 # T4: tool names that mark the environment as having compute capability.
 _COMPUTE_TOOL_NAMES = ("run_python", "check_job")
+
+
+class _UnsetRagGeneration:
+    """Distinguish an omitted selector from an explicit unavailable generation."""
+
+
+_RAG_GENERATION_UNSET = _UnsetRagGeneration()
 
 
 def _claim_id(statement: str) -> str:
@@ -302,7 +310,8 @@ class ResearchLoopWorkflow(Workflow):
         n_critics: int = DEFAULT_N_CRITICS,
         tool_broker: ToolBroker | None = None,
         tool_policy: ToolPolicy | None = None,
-        rag_generation: str | None = None,
+        rag_generation: str | None | _UnsetRagGeneration = _RAG_GENERATION_UNSET,
+        evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -316,19 +325,22 @@ class ResearchLoopWorkflow(Workflow):
         self._db = db
         self._graph = graph
         self._tool_broker = tool_broker
+        self._evidence_recorder = evidence_recorder
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
             else (tool_broker.policy if tool_broker is not None else None)
         )
-        self._rag_generation = rag_generation
-        if self._rag_generation is None and cfg is not None:
+        self._rag_generation: str | None = None
+        if rag_generation is _RAG_GENERATION_UNSET and cfg is not None:
             try:
                 from drbrain.rag.indexer import capture_index_generation
 
                 self._rag_generation = capture_index_generation(cfg)
             except Exception:  # noqa: BLE001 - RAG remains an optional loop capability
                 self._rag_generation = None
+        elif isinstance(rag_generation, str) and rag_generation:
+            self._rag_generation = rag_generation
         self._plugin_registry: Any = None
         # Discussion layer: an in-process message board + research queue shared
         # by the analyst/critic/compute nodes within this single run.
@@ -449,7 +461,7 @@ class ResearchLoopWorkflow(Workflow):
             from drbrain.rag.agent import retrieve_documents
 
             arguments = {"query": query, "limit": limit, "generation": self._rag_generation}
-            tool_call_id = ""
+            tool_call_id = f"rag-{uuid.uuid4().hex}"
             if self._tool_broker is not None:
                 definition = ToolDefinition(
                     name="search_documents",
@@ -518,8 +530,17 @@ class ResearchLoopWorkflow(Workflow):
             evidence_ids=evidence_ids,
             records=evidence,
         )
-        if self._tool_broker is not None:
-            self._tool_broker.record_evidence_bundle(bundle.model_dump(mode="json"))
+        try:
+            if self._tool_broker is not None:
+                self._tool_broker.record_evidence_bundle(bundle.model_dump(mode="json"))
+            elif self._evidence_recorder is not None:
+                self._evidence_recorder(bundle.model_dump(mode="json"))
+            else:
+                logger.warning("[loop] generation-pinned RAG evidence has no durable recorder")
+                return [], None
+        except Exception as exc:  # noqa: BLE001 - never expose non-durable evidence
+            logger.warning("[loop] could not record generation-pinned RAG evidence: %s", exc)
+            return [], None
         titles = [item.document_locator.get("title") or item.paper_id for item in evidence]
         return list(dict.fromkeys(str(title) for title in titles if title)), bundle
 
@@ -1197,17 +1218,21 @@ class ResearchLoopWorkflow(Workflow):
                 if isinstance(raw_vs, list):
                     handled = True
                     vs_by_stmt = {h.statement: h for h in candidates}
+                    vs_by_claim_id = {h.claim_id: h for h in candidates if h.claim_id}
                     known_evidence_ids = _known_evidence_ids(state)
                     # T4: the compute node's job evidence lives in the on-disk
                     # job directory the director points DRBRAIN_RUN_DIR at.
                     run_dir = self._jobs_dir or os.environ.get("DRBRAIN_RUN_DIR") or None
                     for raw in raw_vs:
-                        if not isinstance(raw, dict) or not str(raw.get("statement", "")).strip():
+                        if not isinstance(raw, dict):
                             continue
-                        stmt = str(raw["statement"]).strip()
-                        h = vs_by_stmt.get(stmt)
+                        stmt = str(raw.get("statement", "")).strip()
+                        claim_id = str(raw.get("claim_id", "")).strip()
+                        h = vs_by_stmt.get(stmt) if stmt else None
+                        h = h or vs_by_claim_id.get(claim_id)
                         if h is None:
                             continue  # not one of the proposed hypotheses — ignore
+                        stmt = h.statement
                         evidence_ids = _referenced_evidence_ids(
                             raw.get("evidence_ids"), known_evidence_ids
                         )

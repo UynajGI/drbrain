@@ -22,6 +22,9 @@ class Evidence(BaseModel):
     document_locator: dict[str, Any] = Field(default_factory=dict)
     chunk_locator: dict[str, Any] = Field(default_factory=dict)
     content_checksum: str = ""
+    excerpt_checksum: str = ""
+    content_length: int | None = None
+    excerpt_length: int | None = None
     query: str = ""
     filters: dict[str, Any] = Field(default_factory=dict)
     retriever: str = ""

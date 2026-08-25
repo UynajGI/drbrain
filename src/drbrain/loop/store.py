@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,8 @@ class LedgerRun:
     topic: str
     status: str
     last_projected_event: int
+    # Default preserves direct construction by older callers.
+    config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -280,7 +282,7 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event
+                SELECT run_id, topic, status, last_projected_event, config_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
@@ -299,7 +301,7 @@ class RunLedger:
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event
+                SELECT run_id, topic, status, last_projected_event, config_json
                 FROM research_runs WHERE topic = ?
                 """,
                 (topic,),
@@ -344,7 +346,7 @@ class RunLedger:
                     event_type="legacy_snapshot_imported",
                     payload={"state": dict(legacy_snapshot)},
                 )
-            return LedgerRun(run_id, topic, RUN_CREATED, 0)
+            return LedgerRun(run_id, topic, RUN_CREATED, 0, dict(config or {}))
 
     def record_resume(
         self,
@@ -1081,11 +1083,13 @@ class RunLedger:
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
             return None
+        config = _from_json(row["config_json"], {})
         return LedgerRun(
             run_id=str(row["run_id"]),
             topic=str(row["topic"]),
             status=str(row["status"]),
             last_projected_event=int(row["last_projected_event"]),
+            config=dict(config) if isinstance(config, Mapping) else {},
         )
 
     @staticmethod

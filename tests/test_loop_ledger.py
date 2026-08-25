@@ -129,12 +129,37 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
     assert run is not None
     resumed = [event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"]
     assert len(resumed) == 1
-    assert resumed[0].payload["config"] == {"n_critics": 2}
+    assert resumed[0].payload["config"] == {"n_critics": 2, "rag_generation": None}
     assert resumed[0].payload["budget"] == {
         "max_cycles": 0,
         "stagnation_cycles": 7,
         "max_adaptations": 4,
     }
+
+
+def test_resume_reuses_the_generation_pinned_when_the_run_was_created(tmp_path, monkeypatch):
+    """A later active-pointer change must not alter an existing run's evidence plane."""
+    from drbrain.rag import indexer
+
+    generations = iter(["g-original", "g-new-active"])
+    monkeypatch.setattr(indexer, "capture_index_generation", lambda _cfg: next(generations))
+    monkeypatch.setattr(indexer, "retain_index_generation", lambda *_args: True)
+    topic = "pinned topic"
+
+    first = ResearchDirector(cfg=object(), run_dir=tmp_path, n_critics=2)
+    asyncio.run(first.run(topic, max_cycles=0))
+    resumed = ResearchDirector(cfg=object(), run_dir=tmp_path, n_critics=2)
+    asyncio.run(resumed.run(topic, max_cycles=0))
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_run(topic)
+    assert run is not None
+    assert run.config["rag_generation"] == "g-original"
+    assert resumed._rag_generation == "g-original"
+    resume_event = [
+        event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"
+    ]
+    assert resume_event[0].payload["config"]["rag_generation"] == "g-original"
 
 
 def test_janitor_projection_replay_does_not_duplicate_audit_lines(tmp_path):

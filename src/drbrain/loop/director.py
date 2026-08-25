@@ -21,6 +21,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -881,6 +882,18 @@ class ResearchDirector:
     ) -> tuple[str, ResearchState | None]:
         checkpoint = self._active_checkpoint
         tool_broker = None
+        evidence_recorder = None
+        if checkpoint is not None:
+
+            def evidence_recorder(bundle: Mapping[str, Any]) -> None:
+                checkpoint.ledger.record_evidence_bundle(
+                    run_id=checkpoint.run_id,
+                    step_id=checkpoint.step_id,
+                    attempt_id=checkpoint.attempt_id,
+                    worker_id=checkpoint.worker_id,
+                    bundle=bundle,
+                )
+
         if self._tool_policy is not None:
             if checkpoint is None:
                 raise RuntimeError("durable tool policy requires an active checkpoint attempt")
@@ -906,6 +919,7 @@ class ResearchDirector:
             tool_broker=tool_broker,
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
+            evidence_recorder=evidence_recorder,
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it
@@ -1045,17 +1059,25 @@ class ResearchDirector:
             budget=budget,
             legacy_snapshot=state if legacy_projection else None,
         )
-        run_config = getattr(run, "config", None)
-        stored_generation = (
-            run_config.get("rag_generation") if isinstance(run_config, dict) else None
-        )
+        stored_generation = run.config.get("rag_generation")
         self._rag_generation = (
             str(stored_generation)
             if isinstance(stored_generation, str) and stored_generation
             else captured_generation
         )
+        if self._rag_generation:
+            try:
+                from drbrain.rag.indexer import retain_index_generation
+
+                retain_index_generation(self._cfg, self._rag_generation, run.run_id)
+            except Exception as exc:  # noqa: BLE001 - unavailable retention disables RAG evidence
+                logger.warning(
+                    "[director] cannot retain RAG generation; disabling RAG evidence: %s", exc
+                )
+                self._rag_generation = None
+        effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
         if existing_run is not None:
-            ledger.record_resume(run.run_id, config=config, budget=budget)
+            ledger.record_resume(run.run_id, config=effective_config, budget=budget)
         transitions = TransitionService(ledger)
         transitions.reconcile_incomplete_cycles(run.run_id)
         transitions.start_run(run.run_id)
