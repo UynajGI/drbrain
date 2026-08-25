@@ -128,6 +128,7 @@ Phase 1–4 只实现以下表，不提前增加搜索树或分布式调度表�
 | `research_attempts` | 重试次数、失败分类、checkpoint、环境与 seed |
 | `research_events` | run 内单调序号、actor、事件、payload、trace |
 | `research_checkpoints` | LlamaIndex Context 快照及兼容 manifest |
+| `research_attempt_progress` | 内部节点开始/安全边界；阻止中断外部副作用节点被自动重放 |
 | `research_tool_calls` | intent、policy、状态、外部 operation ID、usage |
 | `research_approvals` | 危险调用的请求与决定 |
 | `research_artifacts` | 文件路径、类型、大小、校验值、生产 attempt |
@@ -172,7 +173,7 @@ UNKNOWN → RECONCILING → SUCCEEDED | FAILED | MANUAL_REVIEW
 
 目标：建立可靠事实源，不改变现有 workflow 行为。
 
-**状态（2026-08-25）：已实现，待合入。** 实现范围严格停在 cycle 边界：`research_runs`、`research_steps`、`research_attempts`、`research_events` 进入独立 SQLite/WAL ledger；未完成 cycle 在下一次启动时记为 `unknown`，不会伪装成节点级 checkpoint/resume。
+**状态（2026-08-25）：已合入 PR #21。** 实现范围严格停在 cycle 边界：`research_runs`、`research_steps`、`research_attempts`、`research_events` 进入独立 SQLite/WAL ledger；未完成 cycle 在下一次启动时记为 `unknown`，不会伪装成节点级 checkpoint/resume。
 
 主要改动：
 
@@ -198,6 +199,8 @@ UNKNOWN → RECONCILING → SUCCEEDED | FAILED | MANUAL_REVIEW
 
 目标：从整轮恢复升级为步骤级恢复。
 
+**状态（2026-08-25）：已实现，待 CI 与 PR 审查。** Context 以 JSON 持久化到独立 ledger；内部节点开始与完成边界均留有审计。`compute` 中断会转入人工审查，而不会从旧 checkpoint 自动重放外部副作用。
+
 主要改动：
 
 - 新增 `loop/checkpointing.py`。
@@ -205,6 +208,7 @@ UNKNOWN → RECONCILING → SUCCEEDED | FAILED | MANUAL_REVIEW
 - checkpoint 绑定 run、step、attempt、workflow version、model manifest、tool manifest 和 RAG generation。
 - step 运行前写 attempt，成功后同事务结算 step/event/checkpoint metadata。
 - 增加 lease 领取、续租、过期回收和单 writer 约束。
+- 将 workflow 自身持有的 message board / research queue（含 hypothesis）一起纳入 checkpoint。
 - director 优先恢复未完成 run；无 ledger 时保持现有文件恢复路径。
 
 验收：

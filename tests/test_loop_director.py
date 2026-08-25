@@ -32,6 +32,30 @@ def _cfg() -> Config:
     return c
 
 
+def test_checkpoint_manifest_tracks_typed_and_dict_llm_fallback_chains():
+    """Resume rejects a changed CLI LLM chain without storing credentials."""
+    typed_cfg = _cfg()
+    typed_cfg.llm.models = [
+        {"provider": "openai", "model": "gpt-4o", "api_key": "secret", "base_url": "a"},
+        {"provider": "anthropic", "model": "claude-3-5-sonnet", "api_key": "secret-2"},
+    ]
+
+    typed_manifest = ResearchDirector(cfg=typed_cfg)._checkpoint_manifest()
+    assert typed_manifest.model_manifest["models"] == [
+        {"provider": "openai", "model": "gpt-4o", "base_url": "a"},
+        {"provider": "anthropic", "model": "claude-3-5-sonnet"},
+    ]
+    assert "api_key" not in str(typed_manifest.model_manifest)
+
+    dict_manifest = ResearchDirector(
+        cfg={"llm": {"models": [{"provider": "openai", "model": "gpt-4o-mini"}]}}
+    )._checkpoint_manifest()
+    assert dict_manifest.model_manifest["models"] == [
+        {"provider": "openai", "model": "gpt-4o-mini"}
+    ]
+    assert dict_manifest.model_manifest != typed_manifest.model_manifest
+
+
 def _cyclic_llm(monkeypatch, script):
     """Scripted LLM that cycles through ``script`` (one entry per agent call)."""
     calls = [0]
