@@ -412,11 +412,14 @@ def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
     ledger, run_id, _ = _running(tmp_path, budget={"max_tokens": 3})
     model_turns = 0
 
+    class _Usage:
+        total_tokens = 4
+
     class _Agent:
         async def take_step(self):
             nonlocal model_turns
             model_turns += 1
-            return type("Step", (), {"raw": {"usage": {"total_tokens": 4}}})()
+            return type("Step", (), {"raw": {"usage": _Usage()}})()
 
         def run(self, **_kwargs):
             async def result():
@@ -444,23 +447,24 @@ def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
 def test_observed_plugin_resources_remain_auditable_when_they_exhaust_budget(tmp_path):
     ledger, run_id, broker = _running(tmp_path, budget={"max_gpu_seconds": 1})
 
-    with pytest.raises(RunExecutionBlockedError):
-        asyncio.run(
-            broker.execute(
-                node_name="compute",
-                definition=_compute_tool(),
-                arguments={"job": "gpu"},
-                executor=lambda: PluginResult(
-                    ResultStatus.OK,
-                    data={"job_id": "gpu"},
-                    resource_usage={"cpu_seconds": 0.25, "gpu_seconds": 1.5},
-                ),
-                approved=True,
-            )
+    observation = asyncio.run(
+        broker.execute(
+            node_name="compute",
+            definition=_compute_tool(),
+            arguments={"job": "gpu"},
+            executor=lambda: PluginResult(
+                ResultStatus.OK,
+                data={"job_id": "gpu"},
+                resource_usage={"cpu_seconds": 0.25, "gpu_seconds": 1.5},
+            ),
+            approved=True,
         )
+    )
 
     budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
     call = ledger.tool_calls(run_id)[0]
+    assert observation.status is ToolCallStatus.SUCCEEDED
+    assert observation.execution_blocked is True
     assert call.status == ToolCallStatus.SUCCEEDED
     assert call.observation["resource_usage"] == {"cpu_seconds": 0.25, "gpu_seconds": 1.5}
     assert budget["usage"]["cpu_seconds"] == 0.25

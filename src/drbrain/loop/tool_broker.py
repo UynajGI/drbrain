@@ -326,13 +326,22 @@ class ToolBroker:
                 ToolCallStatus.FAILED, error="tool executor produced no result"
             )
             attempts = 0
+            cumulative_usage: dict[str, float] = {}
             for attempts in range(1, decision.max_attempts + 1):
                 outcome = await self._execute_once(executor, definition)
+                _accumulate_resource_usage(cumulative_usage, outcome.resource_usage)
                 if (
                     outcome.status is not ToolCallStatus.TIMED_OUT
                     or attempts >= decision.max_attempts
                 ):
                     break
+            outcome = _ExecutionOutcome(
+                status=outcome.status,
+                output=outcome.output,
+                error=outcome.error,
+                evidence=outcome.evidence,
+                resource_usage=cumulative_usage,
+            )
         finally:
             keepalive.cancel()
             try:
@@ -369,9 +378,20 @@ class ToolBroker:
         )
         # Resource use is known only after a model/tool boundary completes.
         # Persist the observation before charging it so an exceeded budget still
-        # leaves a complete, reconciliable record of the completed invocation.
+        # leaves a complete, reconcilable record of the completed invocation.
         if outcome.resource_usage:
-            self._ledger.consume_observed_budget(self.run_id, outcome.resource_usage)
+            try:
+                self._ledger.consume_observed_budget(self.run_id, outcome.resource_usage)
+            except RunBudgetExceededError as exc:
+                return ToolObservation(
+                    tool_call_id=tool_call_id,
+                    status=status,
+                    output=outcome.output,
+                    error=str(exc),
+                    attempts=attempts,
+                    execution_blocked=True,
+                    resource_usage=outcome.resource_usage,
+                )
         return ToolObservation(
             tool_call_id=tool_call_id,
             status=status,
@@ -436,32 +456,39 @@ class ToolBroker:
         executor: Callable[[], Any],
         definition: ToolDefinition,
     ) -> _ExecutionOutcome:
-        cpu_started = time.process_time()
+        cpu_seconds = 0.0
         try:
             if definition.timeout_s is None:
+                cpu_started = time.thread_time()
                 result = executor()
+                cpu_seconds += max(0.0, time.thread_time() - cpu_started)
                 if inspect.isawaitable(result):
+                    cpu_started = time.thread_time()
                     result = await result
+                    cpu_seconds += max(0.0, time.thread_time() - cpu_started)
             else:
                 # A synchronous plugin/MCP adapter can block just as surely as
                 # an async one. Invoke it off-loop so the broker's timeout
                 # policy remains real; cancellation cannot stop the underlying
                 # side effect, which is why write timeouts settle as UNKNOWN.
                 timeout = max(0.001, definition.timeout_s)
-                result = await asyncio.wait_for(asyncio.to_thread(executor), timeout=timeout)
+                result, cpu_seconds = await asyncio.wait_for(
+                    asyncio.to_thread(_call_with_thread_cpu, executor), timeout=timeout
+                )
                 if inspect.isawaitable(result):
+                    cpu_started = time.thread_time()
                     result = await asyncio.wait_for(result, timeout=timeout)
+                    cpu_seconds += max(0.0, time.thread_time() - cpu_started)
             outcome = _normalize_result(result)
         except TimeoutError as exc:
             outcome = _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
         except Exception as exc:  # noqa: BLE001 - normalize arbitrary tool failures
             outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
         resource_usage = _normalize_resource_usage(outcome.resource_usage)
-        # This is process CPU elapsed over the broker invocation. A plugin's
-        # own report takes precedence because it can attribute subprocess/GPU
-        # work more precisely than the host process can.
+        # This is CPU consumed by the thread that invoked the executor. A
+        # plugin's own report takes precedence because it can attribute nested
+        # subprocess and GPU work more precisely than the broker can.
         if "cpu_seconds" not in resource_usage:
-            cpu_seconds = max(0.0, time.process_time() - cpu_started)
             if cpu_seconds > 0:
                 resource_usage["cpu_seconds"] = cpu_seconds
         return _ExecutionOutcome(
@@ -564,6 +591,20 @@ def _normalize_resource_usage(value: Any) -> dict[str, float]:
         if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0:
             normalized[kind] = float(amount)
     return normalized
+
+
+def _accumulate_resource_usage(
+    total: dict[str, float], resource_usage: Mapping[str, float] | None
+) -> None:
+    for kind, amount in (resource_usage or {}).items():
+        total[kind] = float(total.get(kind, 0.0)) + float(amount)
+
+
+def _call_with_thread_cpu(executor: Callable[[], Any]) -> tuple[Any, float]:
+    """Invoke a synchronous adapter and return CPU used by its worker thread."""
+    started = time.thread_time()
+    result = executor()
+    return result, max(0.0, time.thread_time() - started)
 
 
 def _contains_value(value: Any, needle: str) -> bool:

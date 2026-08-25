@@ -318,9 +318,34 @@ def _reported_token_usage(result: Any) -> dict[str, int | float]:
 def _usage_mapping(value: Any) -> Mapping[str, Any] | None:
     if isinstance(value, Mapping):
         nested = value.get("usage")
-        return nested if isinstance(nested, Mapping) else value
-    nested = getattr(value, "usage", None)
-    return nested if isinstance(nested, Mapping) else None
+        return _usage_object_mapping(nested) if nested is not None else value
+    return _usage_object_mapping(getattr(value, "usage", None))
+
+
+def _usage_object_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if value is None:
+        return None
+    for method_name in ("model_dump", "dict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            try:
+                dumped = method()
+            except (TypeError, ValueError):
+                continue
+            if isinstance(dumped, Mapping):
+                return dumped
+    fields = (
+        "total_tokens",
+        "total_token_count",
+        "prompt_tokens",
+        "input_tokens",
+        "completion_tokens",
+        "output_tokens",
+    )
+    values = {name: getattr(value, name) for name in fields if hasattr(value, name)}
+    return values or None
 
 
 def _positive_number(value: Any) -> bool:

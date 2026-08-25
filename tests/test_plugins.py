@@ -106,7 +106,21 @@ def test_call_preserves_additive_resource_usage_from_a_plugin_result():
     result = reg.call("predict_flatband_score", {"composition": {"Cr": 1}})
 
     assert result.ok
+    assert result.data == {"S_bandwidth": 0.99}
     assert result.resource_usage == {"gpu_seconds": 1.25}
+
+
+def test_call_preserves_handler_result_failure_status():
+    reg = PluginRegistry()
+    reg.register(
+        _flatband_plugin(),
+        lambda _args: PluginResult(ResultStatus.MODEL_UNAVAILABLE, error="offline"),
+    )
+
+    result = reg.call("predict_flatband_score", {"composition": {"Cr": 1}})
+
+    assert result.status is ResultStatus.MODEL_UNAVAILABLE
+    assert result.error == "offline"
 
 
 def test_call_no_result():

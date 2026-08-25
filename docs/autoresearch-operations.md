@@ -79,8 +79,9 @@ resource limits are additionally charged from facts available only afterward:
 LlamaIndex agent turns use provider-reported `usage` metadata when present;
 they are never estimated from text. ToolBroker records
 `PluginResult.resource_usage` (`tokens`, `cpu_seconds`, `gpu_seconds`) and otherwise records
-the host process CPU time for its completed tool invocation. A provider-reported
-CPU value takes precedence, and GPU time must be reported by the plugin because
-the host cannot reliably attribute GPU work. If an observed amount crosses its
+CPU used by the executor's host thread. A provider-reported CPU value takes
+precedence because it can attribute subprocess work more precisely, and GPU time
+must be reported by the plugin because the host cannot reliably attribute GPU work.
+If an observed amount crosses its
 limit, that completed boundary stays in the audit trace and the run becomes
 terminal before any later model, RAG, or tool boundary is admitted.
