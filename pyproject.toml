@@ -52,6 +52,7 @@ dependencies = [
     "modelscope>=1.39.0",
     "llama-index-core>=0.14.23",
     "llama-index-llms-litellm>=0.7.1",
+    "llama-index-llms-openai>=0.6.0",
     "llama-index-retrievers-bm25>=0.7.1",
     "mcp>=2.0.0",
 ]
@@ -98,7 +99,6 @@ packages = ["src/drbrain"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-exclude = [".trellis/"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -118,7 +118,7 @@ disallow_untyped_defs = false
 check_untyped_defs = true
 ignore_missing_imports = true
 no_implicit_optional = true
-exclude = ["tests/", ".trellis/", "skills/"]
+exclude = ["tests/", "skills/"]
 
 [[tool.mypy.overrides]]
 module = "drbrain.*"

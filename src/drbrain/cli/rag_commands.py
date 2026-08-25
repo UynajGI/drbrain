@@ -92,6 +92,25 @@ def rag_index_cmd(
     console.print(table)
 
 
+@rag_app.command("health")
+def rag_health_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Output the readiness report as JSON"),
+):
+    """Check RAG index readiness without querying, embedding, or writing."""
+    from drbrain.rag.indexer import get_index_health
+
+    report = get_index_health(ctx.obj["config"])
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, default=str))
+    else:
+        typer.echo(f"RAG health: {report['status']} ({report['storage_dir']})")
+        if report["reasons"]:
+            typer.echo("Reasons: " + ", ".join(report["reasons"]))
+    if not report["ready"]:
+        raise typer.Exit(1)
+
+
 @rag_app.command("eval")
 def rag_eval_cmd(
     ctx: typer.Context,
@@ -107,6 +126,11 @@ def rag_eval_cmd(
         "docs/llamaindex-eval-baseline.md",
         "--out",
         help="Baseline markdown report path (timestamped section is appended)",
+    ),
+    no_write_report: bool = typer.Option(
+        False,
+        "--no-write-report",
+        help="Print evaluation results without modifying the markdown baseline report",
     ),
 ):
     """Run golden-set evaluation (retriever HitRate/MRR and/or RAGAS-style).
@@ -245,13 +269,22 @@ def rag_eval_cmd(
 
     report = format_eval_report(cfg, retriever_results, ragas_results)
     out_path = Path(out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        out_path.write_text(
-            out_path.read_text(encoding="utf-8").rstrip() + "\n\n---\n\n" + report,
-            encoding="utf-8",
-        )
-    else:
-        out_path.write_text(report, encoding="utf-8")
+    # Direct Python callers historically invoke Typer command functions too;
+    # an omitted option is then an OptionInfo object rather than its bool
+    # default. CLI invocation itself always supplies a bool.
+    skip_report = (
+        no_write_report
+        if isinstance(no_write_report, bool)
+        else bool(getattr(no_write_report, "default", False))
+    )
+    if not skip_report:
+        from drbrain.rag.eval import _write_text_atomically
+
+        existing = out_path.read_text(encoding="utf-8") if out_path.exists() else ""
+        content = existing.rstrip() + "\n\n---\n\n" + report if existing else report
+        _write_text_atomically(out_path, content)
     if not json_output:
-        typer.echo(f"Baseline appended to {out_path}")
+        if skip_report:
+            typer.echo("Baseline report not written (--no-write-report)")
+        else:
+            typer.echo(f"Baseline appended to {out_path}")

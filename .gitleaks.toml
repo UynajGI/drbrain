@@ -9,7 +9,6 @@ description = "Project allowlist"
 paths = [
     '''docs/learn/.*''',  # Third-party study materials
     '''docs/superpowers/.*''',  # Vendored docs
-    '''\.trellis/scripts/.*''',  # Trellis framework code
     '''tests/fixtures/.*''',  # Test fixtures may include sample tokens
 ]
 

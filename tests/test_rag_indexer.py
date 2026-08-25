@@ -13,12 +13,21 @@ needs no GPU/network. A real-model smoke test is marked ``integration``.
 
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from drbrain.config import Config, DirsConfig, EmbedConfig, LlamaIndexConfig
-from drbrain.rag.indexer import MANIFEST_NAME, build_index, collect_tree_nodes, load_index
+from drbrain.rag import indexer as rag_indexer
+from drbrain.rag.indexer import (
+    DEFAULT_MAX_NODE_TOKENS,
+    MANIFEST_NAME,
+    build_index,
+    collect_tree_nodes,
+    load_index,
+)
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 
@@ -64,6 +73,14 @@ class _CountingEmbed(BaseEmbedding):
 
     async def _aget_query_embedding(self, query: str) -> list[float]:
         return self._get_query_embedding(query)
+
+
+class _ShortEmbed(_CountingEmbed):
+    """Fault injector: returns fewer vectors than the builder requested."""
+
+    def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
+        vectors = super()._get_text_embeddings(texts)
+        return vectors[:1]
 
 
 class _PaperDB:
@@ -295,6 +312,25 @@ def test_build_index_no_chunking_when_cap_disabled(tmp_path):
     assert stats["chunked"] == 0
 
 
+def test_build_index_nonpositive_chunk_cap_uses_safe_default(tmp_path, monkeypatch):
+    """Zero retains the historic OOM-protecting default instead of disabling chunking."""
+    papers_dir = tmp_path / "papers"
+    _seed_real_like_papers(papers_dir, [PAPER_B])
+    cfg = _make_cfg(tmp_path, papers_dir)
+    cfg.llamaindex.max_node_tokens = 0
+    seen_caps: list[int] = []
+    original_chunk = rag_indexer._chunk_document
+
+    def capture_cap(doc, max_node_tokens):
+        seen_caps.append(max_node_tokens)
+        return original_chunk(doc, max_node_tokens)
+
+    monkeypatch.setattr(rag_indexer, "_chunk_document", capture_cap)
+    build_index(cfg, _PaperDB([PAPER_B]), embed_model=_CountingEmbed())
+
+    assert seen_caps and set(seen_caps) == {DEFAULT_MAX_NODE_TOKENS}
+
+
 def test_build_index_chunk_metadata_and_sizes(tmp_path):
     papers_dir = tmp_path / "papers"
     _seed_real_like_papers(papers_dir, [PAPER_B])
@@ -421,6 +457,165 @@ def test_build_index_incremental_no_changes_reembeds_nothing(tmp_path):
     assert len(embed.embedded_texts) == embedded_before  # nothing re-embedded
     assert stats["embedded"] == 0
     assert stats["unchanged"] == 2
+
+
+def test_build_index_publishes_complete_generation_then_switches_atomically(tmp_path):
+    """A reader only follows the pointer after a complete generation is ready."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+
+    first = build_index(cfg, db, embed_model=embed)
+    root = tmp_path / "li"
+    active_path = root / "active.json"
+    first_active = json.loads(active_path.read_text(encoding="utf-8"))
+    assert first_active["generation"] == first["generation"]
+    assert (root / "generations" / first["generation"] / "vector" / "docstore.json").exists()
+    assert (root / "generations" / first["generation"] / "bm25" / "corpus.jsonl").exists()
+
+    raw = papers_dir / "paper1" / "raw.md"
+    raw.write_text(raw.read_text(encoding="utf-8") + "new material\n", encoding="utf-8")
+    second = build_index(cfg, db, embed_model=embed)
+    second_active = json.loads(active_path.read_text(encoding="utf-8"))
+    assert second["generation"] != first["generation"]
+    assert second_active["generation"] == second["generation"]
+    assert (root / "generations" / first["generation"]).is_dir()  # never delete a live reader's gen
+    assert (root / "generations" / second["generation"] / MANIFEST_NAME).exists()
+
+    index, bm25 = load_index(cfg, embed_model=embed)
+    assert len(index.docstore.docs) == 2
+    assert len(bm25.corpus) == 2
+
+
+def test_build_index_failed_generation_keeps_previous_active_index(tmp_path):
+    """A partial embedding response cannot replace the last known-good generation."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    good = _CountingEmbed()
+    build_index(cfg, db, embed_model=good)
+    active_path = tmp_path / "li" / "active.json"
+    before = active_path.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="embedding batch returned"):
+        build_index(cfg, db, force=True, embed_model=_ShortEmbed())
+
+    assert active_path.read_text(encoding="utf-8") == before
+    index, bm25 = load_index(cfg, embed_model=good)
+    assert len(index.docstore.docs) == 2
+    assert len(bm25.corpus) == 2
+
+
+def test_failed_staged_validation_removes_orphaned_generation(tmp_path, monkeypatch):
+    """A validation failure must not leave an unbounded staging directory."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+    build_index(cfg, db, embed_model=embed)
+    active_path = tmp_path / "li" / "active.json"
+    before = active_path.read_text(encoding="utf-8")
+
+    def fail_validation(*_args, **_kwargs):
+        raise ValueError("injected staged validation failure")
+
+    monkeypatch.setattr(rag_indexer, "load_index_from_storage", fail_validation)
+    with pytest.raises(RuntimeError, match="staged generation validation failed"):
+        build_index(cfg, db, force=True, embed_model=embed)
+
+    assert active_path.read_text(encoding="utf-8") == before
+    assert not list((tmp_path / "li" / "generations").glob(".staging-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_atomic_control_files_remain_group_readable(tmp_path):
+    """Atomic replacement preserves the conventional shared-readable mode."""
+    control_file = tmp_path / "active.json"
+    rag_indexer._write_json_atomically(control_file, {"generation": "g-test"})
+    assert stat.S_IMODE(control_file.stat().st_mode) == 0o644
+
+
+def test_generation_pruning_keeps_active_and_rollback_window(tmp_path):
+    """Retention bounds old snapshots without touching the active generation."""
+    root = tmp_path / "li"
+    generations = root / "generations"
+    generations.mkdir(parents=True)
+    names = ["g-1", "g-2", "g-3", "g-4"]
+    for offset, name in enumerate(names):
+        generation = generations / name
+        generation.mkdir()
+        os.utime(generation, (1_000_000 + offset, 1_000_000 + offset))
+
+    pruned = rag_indexer._prune_inactive_generations(root, "g-4", retain_count=3, grace_seconds=0)
+
+    assert pruned == ["g-1"]
+    assert not (generations / "g-1").exists()
+    assert all((generations / name).is_dir() for name in ("g-2", "g-3", "g-4"))
+
+
+def test_manifest_mirror_failure_does_not_unpublish_a_valid_generation(tmp_path, monkeypatch):
+    """The compatibility mirror cannot turn a successful activation into failure."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    embed = _CountingEmbed()
+    original_write_manifest = rag_indexer._write_manifest
+    storage_root = tmp_path / "li"
+
+    def fail_root_mirror(storage_dir, manifest):
+        if Path(storage_dir) == storage_root:
+            raise OSError("injected root manifest failure")
+        return original_write_manifest(storage_dir, manifest)
+
+    monkeypatch.setattr(rag_indexer, "_write_manifest", fail_root_mirror)
+    stats = build_index(cfg, db, embed_model=embed)
+
+    active = json.loads((storage_root / "active.json").read_text(encoding="utf-8"))
+    assert active["generation"] == stats["generation"]
+
+
+def test_stage_promotion_failure_removes_staging_directory(tmp_path, monkeypatch):
+    """A failed final rename leaves neither a partial generation nor staging debris."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB(["paper1"])
+    build_index(cfg, db, embed_model=_CountingEmbed())
+    original_replace = Path.replace
+
+    def fail_staging_replace(self, target):
+        if self.name.startswith(".staging-"):
+            raise OSError("injected promotion failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_staging_replace)
+    with pytest.raises(RuntimeError, match="finalize staged generation"):
+        build_index(cfg, db, force=True, embed_model=_CountingEmbed())
+
+    assert not list((tmp_path / "li" / "generations").glob(".staging-*"))
+
+
+def test_prune_failure_does_not_unpublish_active_generation(tmp_path, monkeypatch):
+    """Post-publish retention errors are operational warnings, not build failures."""
+    papers_dir = tmp_path / "papers"
+    _write_synthetic_paper(papers_dir, "paper1")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr(
+        rag_indexer,
+        "_prune_inactive_generations",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected prune failure")),
+    )
+
+    stats = build_index(cfg, _PaperDB(["paper1"]), embed_model=_CountingEmbed())
+
+    active = json.loads((tmp_path / "li" / "active.json").read_text(encoding="utf-8"))
+    assert active["generation"] == stats["generation"]
+    assert stats["pruned_generations"] == []
 
 
 def test_build_index_force_reembeds_all(tmp_path):

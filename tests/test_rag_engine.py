@@ -239,6 +239,30 @@ def test_ask_llamaindex_result_json_serializable(monkeypatch):
     json.dumps(result)  # must not raise
 
 
+def test_ask_llamaindex_adds_retrieval_and_rerank_telemetry(monkeypatch):
+    class _Trace:
+        def __init__(self, trace):
+            self._trace = trace
+
+        def get_last_trace(self):
+            return self._trace
+
+    engine = _FakeEngine(_fake_response())
+    engine._drbrain_observability = {
+        "fusion": _Trace({"legs": [{"source": "vector", "status": "ok"}]}),
+        "postprocessors": [_Trace({"stage": "rerank", "status": "ok"})],
+    }
+    monkeypatch.setattr(
+        "drbrain.rag.engine.build_query_engine",
+        lambda cfg, db, streaming=False, top_k=None: engine,
+    )
+
+    result = ask_llamaindex(_cfg(enabled=True), db=None, question="q?", streaming=False)
+
+    assert result["telemetry"]["retrieval"]["legs"][0]["source"] == "vector"
+    assert result["telemetry"]["postprocessors"] == [{"stage": "rerank", "status": "ok"}]
+
+
 def test_ask_llamaindex_streaming_yields_chunks_then_final(monkeypatch):
     monkeypatch.setattr(
         "drbrain.rag.engine.build_query_engine",

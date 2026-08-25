@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active','archived','deleted')),
     model_config TEXT DEFAULT '{}',
+    owner_principal TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -384,6 +385,7 @@ class Database:
             (13, "answer_records", self._migrate_add_answer_records),
             (14, "evidence", self._migrate_add_evidence),
             (15, "claims", self._migrate_add_claims),
+            (16, "agent_session_principal", self._migrate_add_agent_session_principal),
         ]
 
         for version, name, fn in migrations:
@@ -447,6 +449,17 @@ class Database:
     def _migrate_add_agent_sessions(self) -> None:
         """Add agent_sessions and agent_messages tables (created via SCHEMA_SQL IF NOT EXISTS)."""
         pass  # Tables created by SCHEMA_SQL on init; this migration marks v6 as applied.
+
+    def _migrate_add_agent_session_principal(self) -> None:
+        """Bind agent sessions to an optional authenticated principal."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(agent_sessions)").fetchall()]
+        if "owner_principal" not in cols:
+            self.conn.execute(
+                "ALTER TABLE agent_sessions ADD COLUMN owner_principal TEXT DEFAULT ''"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_owner ON agent_sessions(owner_principal)"
+        )
 
     def _migrate_add_indexes_v2(self) -> None:
         """Create performance indexes that reference columns added in earlier migrations."""
@@ -1147,13 +1160,33 @@ class Database:
         title: str = "",
         system_prompt: str = "",
         model_config: str = "{}",
+        owner_principal: str = "",
     ) -> None:
         """Create a new agent session row."""
         self.conn.execute(
-            "INSERT INTO agent_sessions (session_id, title, system_prompt, model_config) "
-            "VALUES (?, ?, ?, ?)",
-            (session_id, title, system_prompt, model_config),
+            "INSERT INTO agent_sessions "
+            "(session_id, title, system_prompt, model_config, owner_principal) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (session_id, title, system_prompt, model_config, owner_principal),
         )
+
+    def session_principal_matches(self, session_id: str, principal: str | None) -> bool:
+        """Return whether an active session belongs to ``principal``.
+
+        ``principal=None`` retains the historic local-CLI behavior.  Supplying
+        a principal is fail-closed: unowned legacy sessions and other owners
+        do not match.
+        """
+        row = self.conn.execute(
+            "SELECT owner_principal FROM agent_sessions "
+            "WHERE session_id = ? AND status != 'deleted'",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if principal is not None and not str(principal).strip():
+            return False
+        return principal is None or str(row[0] or "") == principal
 
     def soft_delete_session(self, session_id: str) -> None:
         """Mark an agent session as deleted (soft delete)."""

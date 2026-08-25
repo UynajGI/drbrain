@@ -8,17 +8,28 @@ LlamaIndex objects:
 * :func:`collect_tree_nodes` — one :class:`~llama_index.core.schema.Document`
   per tree node (``paper_id:node_id`` unique key, PageIndex metadata).
 * :func:`build_index` — incremental ``VectorStoreIndex`` build (embeds only
-  nodes whose ``content_hash`` changed) + persistent BM25 inverted index,
-  both persisted under ``llamaindex.storage_dir``.
+  nodes whose ``content_hash`` changed) + persistent BM25 inverted index.
+  New builds are staged as a complete generation, validated, then activated by
+  an atomic pointer swap so readers never observe mixed vector/BM25 artifacts.
 * :func:`load_index` — restore ``(VectorStoreIndex, BM25Retriever)`` from disk
   without rebuilding.
 
-Persistence layout under ``storage_dir``::
+Legacy persistence layout under ``storage_dir``::
 
     storage_dir/
       manifest.json      # embed_model + {paper_id: {node_key: content_hash}}
       vector/            # StorageContext.persist (docstore, index_store, SimpleVectorStore)
       bm25/              # BM25Retriever.persist (bm25s index + corpus)
+
+New builds preserve the legacy files for migration compatibility but read from
+the active generation::
+
+    storage_dir/
+      active.json         # atomically swapped {"generation": "..."}
+      generations/<id>/
+        manifest.json
+        vector/
+        bm25/
 
 Everything degrades gracefully when llama-index is not installed: the CLI
 fails with a clear message instead of a traceback, and importing the module
@@ -29,6 +40,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import stat
+import tempfile
+import time
+import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -56,6 +73,8 @@ __all__ = [
     "MANIFEST_NAME",
     "build_index",
     "collect_tree_nodes",
+    "get_active_index_generation",
+    "get_index_health",
     "load_index",
 ]
 
@@ -63,6 +82,14 @@ __all__ = [
 TREE_LAYER_PAGEINDEX = "pageindex"
 #: Filename of the incremental-update manifest under ``storage_dir``.
 MANIFEST_NAME = "manifest.json"
+#: Atomically swapped pointer to the complete index generation readers use.
+ACTIVE_POINTER_NAME = "active.json"
+#: Directory holding immutable, fully-built index generations.
+GENERATIONS_DIR_NAME = "generations"
+#: Completed generations retained for rollback and in-flight readers.
+GENERATION_RETAIN_COUNT = 3
+#: Minimum completed-generation age before automatic retention pruning.
+GENERATION_PRUNE_GRACE_SECONDS = 3600.0
 #: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
 #: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
 #: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
@@ -306,8 +333,91 @@ def _storage_dirs(storage_dir: str | Path) -> tuple[Path, Path, Path]:
     return root, root / "vector", root / "bm25"
 
 
+def _pointer_path(storage_root: Path) -> Path:
+    return storage_root / ACTIVE_POINTER_NAME
+
+
+def _active_storage_root(storage_dir: str | Path) -> tuple[Path, str | None] | None:
+    """Return the physical active store and its generation, if one is active.
+
+    A storage directory without ``active.json`` is a pre-generation legacy
+    index and remains readable. A malformed or dangling pointer is never
+    silently redirected to that legacy index: serving stale data is safer than
+    combining generations, but serving an explicitly invalid active pointer is
+    not safe at all, so callers receive ``None`` and can surface health failure.
+    """
+    storage_root = Path(storage_dir)
+    pointer = _pointer_path(storage_root)
+    if not pointer.exists():
+        return storage_root, None
+    try:
+        raw = json.loads(pointer.read_text(encoding="utf-8"))
+        generation = raw.get("generation") if isinstance(raw, dict) else None
+        if not isinstance(generation, str) or not generation.strip():
+            return None
+        generation = generation.strip()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    active_root = storage_root / GENERATIONS_DIR_NAME / generation
+    if not active_root.is_dir():
+        return None
+    return active_root, generation
+
+
+def get_active_index_generation(cfg: Config) -> str | None:
+    """Return the active generation id, or ``None`` for legacy/no active index.
+
+    This is additive operational metadata. ``load_index`` keeps its historic
+    two-item return value so callers do not need to migrate.
+    """
+    active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
+    return active[1] if active is not None else None
+
+
+def _new_generation_id() -> str:
+    return f"g-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+
+
+def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically replace a small JSON control file without torn readers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        # ``Path.write_text`` historically created these public index metadata
+        # files as shared-readable on the default deployment filesystem.
+        mode = 0o644
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = -1  # ownership moved to the context manager
+            json.dump(payload, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+    except Exception:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
-    root, _, _ = _storage_dirs(storage_dir)
+    active = _active_storage_root(storage_dir)
+    if active is None:
+        logger.warning("[rag] active generation pointer is invalid at %s", storage_dir)
+        return {}
+    root, _ = active
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.exists():
         return {}
@@ -319,11 +429,59 @@ def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
 
 
 def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
-    root, _, _ = _storage_dirs(storage_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    tmp = root / f"{MANIFEST_NAME}.tmp"
-    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", "utf-8")
-    tmp.replace(root / MANIFEST_NAME)
+    _write_json_atomically(Path(storage_dir) / MANIFEST_NAME, manifest)
+
+
+def _prune_inactive_generations(
+    storage_root: Path,
+    active_generation: str,
+    *,
+    retain_count: int = GENERATION_RETAIN_COUNT,
+    grace_seconds: float = GENERATION_PRUNE_GRACE_SECONDS,
+) -> list[str]:
+    """Bound completed snapshots while retaining a reader/rollback window.
+
+    At least ``retain_count`` completed generations, including the active one,
+    are kept. Older snapshots are only removed after a grace period, allowing
+    in-flight readers that resolved a previous pointer to finish loading.
+    Staging directories are never considered completed snapshots.
+    """
+    generations_root = storage_root / GENERATIONS_DIR_NAME
+    if retain_count < 1 or not generations_root.is_dir():
+        return []
+
+    entries = list(generations_root.iterdir())
+    completed = [child for child in entries if child.is_dir() and child.name.startswith("g-")]
+    completed.sort(key=lambda child: child.stat().st_mtime, reverse=True)
+    protected = {active_generation}
+    for child in completed:
+        if len(protected) >= retain_count:
+            break
+        protected.add(child.name)
+
+    cutoff = time.time() - max(0.0, grace_seconds)
+    pruned: list[str] = []
+    for child in completed:
+        if child.name in protected or child.stat().st_mtime > cutoff:
+            continue
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            logger.warning("[rag] could not prune stale generation %s: %s", child, exc)
+        else:
+            pruned.append(child.name)
+    for child in entries:
+        if not child.is_dir() or not child.name.startswith(".staging-g-"):
+            continue
+        if child.stat().st_mtime > cutoff:
+            continue
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            logger.warning("[rag] could not prune stale staging directory %s: %s", child, exc)
+        else:
+            pruned.append(child.name)
+    return pruned
 
 
 def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
@@ -395,21 +553,20 @@ def build_index(
     everything), persists ``VectorStoreIndex`` + ``BM25Retriever`` under
     ``llamaindex.storage_dir``, and records hashes in ``manifest.json``.
 
-    ``max_node_tokens`` (default :data:`DEFAULT_MAX_NODE_TOKENS` = 8000) caps
+    ``max_node_tokens`` (default ``llamaindex.max_node_tokens``) caps
     the size of a single embedded sequence: nodes above the cap are split into
     paragraph chunks (each chunk = one indexed TextNode carrying the parent's
     metadata + ``#i`` suffix). Change detection stays per parent node — an
     unchanged node reuses all its chunk embeddings; only changed nodes (or
-    nodes with missing chunk embeddings) are re-embedded. Pass
-    ``max_node_tokens=None``-equivalent large values (or 0) to disable
-    chunking.
+    nodes with missing chunk embeddings) are re-embedded. Non-positive values
+    retain the safe default cap.
 
     ``db`` only needs ``get_all_papers() -> list[{"local_id": str}]``. Nodes
     whose embedding cannot be reused (no persisted store, or the configured
     embed model changed) are re-embedded automatically.
 
-    Returns a stats dict: ``{"papers", "nodes", "chunked", "embedded",
-    "unchanged", "removed", "bm25_nodes", "storage_dir"}``.
+    Returns historic stats plus additive ``generation`` and
+    ``previous_generation`` after a successful publish.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError(
@@ -417,10 +574,29 @@ def build_index(
         )
 
     li = get_llamaindex_config(cfg)
-    storage_root, vector_dir, bm25_dir = _storage_dirs(li.storage_dir)
+    storage_root = Path(li.storage_dir)
+    active_store = _active_storage_root(li.storage_dir)
+    if active_store is None:
+        # A broken pointer must not be used as a cache source. A successful
+        # rebuild below can still recover by publishing a fresh generation.
+        logger.warning("[rag] active generation pointer is invalid; rebuilding without reuse")
+        source_root, previous_generation = storage_root, None
+    else:
+        source_root, previous_generation = active_store
+    _, vector_dir, bm25_dir = _storage_dirs(source_root)
     papers_root = Path(cfg.dirs.papers)
     top_k = cfg.embed.top_k or 10
-    max_node_tokens = max_node_tokens or DEFAULT_MAX_NODE_TOKENS
+    if max_node_tokens is None:
+        max_node_tokens = int(getattr(li, "max_node_tokens", DEFAULT_MAX_NODE_TOKENS))
+    else:
+        max_node_tokens = int(max_node_tokens)
+    if max_node_tokens <= 0:
+        logger.warning(
+            "[rag] max_node_tokens=%s is unsafe; using default %d",
+            max_node_tokens,
+            DEFAULT_MAX_NODE_TOKENS,
+        )
+        max_node_tokens = DEFAULT_MAX_NODE_TOKENS
 
     target_ids = (
         list(paper_ids) if paper_ids is not None else [p["local_id"] for p in db.get_all_papers()]
@@ -447,7 +623,7 @@ def build_index(
         paper_keys[pid] = [doc.id_ for doc in docs]
         docs_by_key.update((doc.id_, doc) for doc in docs)
         for doc in docs:
-            chunks = _chunk_document(doc, max_node_tokens)
+            chunks = _chunk_document(doc, max_node_tokens) if max_node_tokens > 0 else [doc]
             parent_chunks[doc.id_] = [c.id_ for c in chunks]
             chunk_docs.update((c.id_, c) for c in chunks)
 
@@ -490,10 +666,18 @@ def build_index(
     embedded_texts = [chunk_docs[k].text for k in embed_keys]
     new_embeddings: dict[str, list[float]] = {}
     if embedded_texts:
-        vectors = embed.get_text_embedding_batch(embedded_texts)
+        vectors = list(embed.get_text_embedding_batch(embedded_texts))
+        if len(vectors) != len(embed_keys):
+            raise RuntimeError(
+                "embedding batch returned "
+                f"{len(vectors)} vectors for {len(embed_keys)} requested nodes; generation not published"
+            )
         for key, vec in zip(embed_keys, vectors):
-            if vec:
-                new_embeddings[key] = vec
+            if not vec:
+                raise RuntimeError(
+                    f"embedding batch returned an empty vector for {key}; generation not published"
+                )
+            new_embeddings[key] = vec
 
     # 3b. For a --paper subset rebuild, carry over non-target papers' already
     #     indexed nodes so the persisted index keeps covering the whole library.
@@ -534,37 +718,91 @@ def build_index(
         "removed": len(removed),
         "bm25_nodes": 0,
         "storage_dir": str(storage_root),
+        "previous_generation": previous_generation,
     }
     if not nodes:
         logger.warning("[rag] nothing to index; leaving existing indexes untouched")
         return stats
 
-    # 5. Persist vector index + BM25.
-    storage_root.mkdir(parents=True, exist_ok=True)
-    index = VectorStoreIndex(nodes=nodes, embed_model=embed)
-    index.storage_context.persist(str(vector_dir))
-    logger.info(
-        "[rag] persisted vector index (%d nodes) to %s",
-        len(nodes),
-        vector_dir,
-    )
+    # 5. Build a complete new generation. Nothing below the active pointer is
+    # touched until both artifacts deserialize successfully.
+    generations_root = storage_root / GENERATIONS_DIR_NAME
+    generation = _new_generation_id()
+    stage_root = generations_root / f".staging-{generation}"
+    final_root = generations_root / generation
+    _, stage_vector_dir, stage_bm25_dir = _storage_dirs(stage_root)
+    generations_root.mkdir(parents=True, exist_ok=True)
+    if stage_root.exists() or final_root.exists():  # never overwrite a generation
+        raise RuntimeError(f"index generation collision: {generation}")
+    try:
+        index = VectorStoreIndex(nodes=nodes, embed_model=embed)
+        index.storage_context.persist(str(stage_vector_dir))
+        logger.info(
+            "[rag] staged vector index (%d nodes) at %s",
+            len(nodes),
+            stage_vector_dir,
+        )
 
-    bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
-    bm25.persist(str(bm25_dir))
-    stats["bm25_nodes"] = len(bm25.corpus)
-    logger.info("[rag] persisted BM25 index (%d docs) to %s", len(bm25.corpus), bm25_dir)
+        bm25 = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=top_k)
+        bm25.persist(str(stage_bm25_dir))
+        stats["bm25_nodes"] = len(bm25.corpus)
+        logger.info("[rag] staged BM25 index (%d docs) at %s", len(bm25.corpus), stage_bm25_dir)
 
-    # 6. Update manifest: target papers replaced, others preserved.
-    new_papers: dict[str, dict[str, str]] = {
-        pid: {k: hashes[k] for k in keys if k in hashes} for pid, keys in paper_keys.items()
-    }
-    for pid, old_keys in old_papers.items():
-        if pid not in new_papers:
-            new_papers[pid] = dict(old_keys)
-    _write_manifest(
-        li.storage_dir,
-        {"embed_model": new_model, "vector_store": li.vector_store, "papers": new_papers},
+        # 6. Update manifest: target papers replaced, others preserved.
+        new_papers: dict[str, dict[str, str]] = {
+            pid: {k: hashes[k] for k in keys if k in hashes} for pid, keys in paper_keys.items()
+        }
+        for pid, old_keys in old_papers.items():
+            if pid not in new_papers:
+                new_papers[pid] = dict(old_keys)
+        manifest = {
+            "generation": generation,
+            "embed_model": new_model,
+            "vector_store": li.vector_store,
+            "papers": new_papers,
+        }
+        _write_manifest(stage_root, manifest)
+
+        # Validate both staged artifacts before activation. A failed validation
+        # leaves the prior active generation untouched for readers and operators.
+        staged_context = StorageContext.from_defaults(persist_dir=str(stage_vector_dir))
+        load_index_from_storage(staged_context, embed_model=embed)
+        BM25Retriever.from_persist_dir(str(stage_bm25_dir))
+    except Exception as exc:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise RuntimeError(
+            f"staged generation validation failed; generation not published: {exc}"
+        ) from exc
+
+    try:
+        stage_root.replace(final_root)
+    except Exception as exc:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise RuntimeError(
+            f"could not finalize staged generation; generation not published: {exc}"
+        ) from exc
+    _write_json_atomically(
+        _pointer_path(storage_root),
+        {"generation": generation, "updated_at_ns": time.time_ns()},
     )
+    # The root manifest is a non-authoritative compatibility mirror. A mirror
+    # failure must not report a published generation as a failed build.
+    try:
+        _write_manifest(storage_root, manifest)
+    except OSError as exc:
+        logger.warning(
+            "[rag] published generation %s but could not mirror manifest: %s", generation, exc
+        )
+    try:
+        stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
+    except OSError as exc:
+        logger.warning(
+            "[rag] published generation %s but could not prune stale generations: %s",
+            generation,
+            exc,
+        )
+        stats["pruned_generations"] = []
+    stats["generation"] = generation
     logger.info("[rag] index build done: %s", stats)
     return stats
 
@@ -586,7 +824,12 @@ def load_index(
         return None, None
 
     li = get_llamaindex_config(cfg)
-    _, vector_dir, bm25_dir = _storage_dirs(li.storage_dir)
+    active_store = _active_storage_root(li.storage_dir)
+    if active_store is None:
+        logger.error("[rag] active generation pointer is invalid at %s", li.storage_dir)
+        return None, None
+    active_root, _ = active_store
+    _, vector_dir, bm25_dir = _storage_dirs(active_root)
     embed = embed_model or _default_embed_model(cfg)
     top_k = cfg.embed.top_k or 10
 
@@ -607,3 +850,150 @@ def load_index(
             logger.warning("[rag] failed to load BM25 index from %s: %s", bm25_dir, exc)
 
     return index, bm25
+
+
+def get_index_health(cfg: Config) -> dict[str, Any]:
+    """Inspect persisted RAG readiness without querying, embedding, or writing.
+
+    The existing :func:`load_index` tuple is intentionally unchanged for every
+    caller. This additive report makes deployment automation able to distinguish
+    a disabled feature, an unavailable dependency, broken artifacts, and a
+    deserialization failure before accepting retrieval traffic. The final
+    validation deserializes persisted indexes, so this is a read-only but not
+    constant-time operation.
+    """
+    li = get_llamaindex_config(cfg)
+    root = Path(li.storage_dir)
+    pointer_path = _pointer_path(root)
+    active_store = _active_storage_root(li.storage_dir)
+    active_root = active_store[0] if active_store is not None else root
+    active_generation = active_store[1] if active_store is not None else None
+    _, vector_dir, bm25_dir = _storage_dirs(active_root)
+    manifest_path = active_root / MANIFEST_NAME
+    vector_docstore = vector_dir / "docstore.json"
+    vector_store = vector_dir / "default__vector_store.json"
+    bm25_corpus = bm25_dir / "corpus.jsonl"
+    checks: dict[str, Any] = {
+        "config_enabled": bool(li.enabled),
+        "llama_index_available": _LLAMA_INDEX_AVAILABLE,
+        "generation": {
+            "pointer_path": str(pointer_path),
+            "pointer_exists": pointer_path.exists(),
+            "active": active_generation,
+            "active_path": str(active_root),
+            "valid": active_store is not None,
+        },
+        "manifest": {
+            "path": str(manifest_path),
+            "exists": manifest_path.exists(),
+            "valid": False,
+            "embed_model": None,
+            "embed_model_matches_config": False,
+            "vector_store": None,
+            "vector_store_matches_config": False,
+            "paper_count": 0,
+            "parent_node_count": 0,
+        },
+        "vector": {
+            "path": str(vector_dir),
+            "docstore_exists": vector_docstore.exists(),
+            "vector_store_exists": vector_store.exists(),
+            "loadable": None,
+        },
+        "bm25": {
+            "path": str(bm25_dir),
+            "corpus_exists": bm25_corpus.exists(),
+            "loadable": None,
+        },
+    }
+    reasons: list[str] = []
+
+    if not li.enabled:
+        reasons.append("config_disabled")
+    if not _LLAMA_INDEX_AVAILABLE:
+        reasons.append("llama_index_unavailable")
+    if pointer_path.exists() and active_store is None:
+        reasons.append("active_generation_invalid")
+    if reasons:
+        return {
+            "ready": False,
+            "status": "not_ready",
+            "storage_dir": str(root),
+            "checks": checks,
+            "reasons": reasons,
+        }
+
+    manifest: dict[str, Any] | None = None
+    if manifest_path.exists():
+        try:
+            raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("manifest must be an object")
+            papers = raw.get("papers")
+            valid_papers = isinstance(papers, dict) and all(
+                isinstance(paper_id, str)
+                and isinstance(nodes, dict)
+                and all(
+                    isinstance(node_id, str) and isinstance(content_hash, str)
+                    for node_id, content_hash in nodes.items()
+                )
+                for paper_id, nodes in papers.items()
+            )
+            if (
+                not isinstance(raw.get("embed_model"), str)
+                or not isinstance(raw.get("vector_store"), str)
+                or not valid_papers
+            ):
+                raise ValueError("manifest has an unsupported shape")
+            manifest = raw
+        except (OSError, ValueError, json.JSONDecodeError):
+            reasons.append("manifest_invalid")
+    else:
+        reasons.append("manifest_missing")
+
+    if manifest is not None:
+        papers = manifest["papers"]
+        parent_node_count = sum(len(nodes) for nodes in papers.values() if isinstance(nodes, dict))
+        embed_model_matches = manifest["embed_model"] == cfg.embed.model
+        vector_store_matches = manifest["vector_store"] == li.vector_store
+        checks["manifest"].update(
+            {
+                "valid": True,
+                "embed_model": manifest["embed_model"],
+                "embed_model_matches_config": embed_model_matches,
+                "vector_store": manifest["vector_store"],
+                "vector_store_matches_config": vector_store_matches,
+                "paper_count": len(papers),
+                "parent_node_count": parent_node_count,
+            }
+        )
+        if not embed_model_matches:
+            reasons.append("embed_model_mismatch")
+        if not vector_store_matches:
+            reasons.append("vector_store_mismatch")
+
+    if not vector_docstore.exists():
+        reasons.append("vector_docstore_missing")
+    if not vector_store.exists():
+        reasons.append("vector_store_missing")
+    if not bm25_corpus.exists():
+        reasons.append("bm25_corpus_missing")
+
+    static_ready = not reasons
+    if static_ready:
+        index, bm25 = load_index(cfg)
+        checks["vector"]["loadable"] = index is not None
+        checks["bm25"]["loadable"] = bm25 is not None
+        if index is None:
+            reasons.append("vector_unloadable")
+        if bm25 is None:
+            reasons.append("bm25_unloadable")
+
+    ready = not reasons
+    return {
+        "ready": ready,
+        "status": "ready" if ready else "not_ready",
+        "storage_dir": str(root),
+        "checks": checks,
+        "reasons": reasons,
+    }
