@@ -220,6 +220,12 @@ class QueueItem:
     hypothesis: Any = None  # runtime Hypothesis object (workflow bridges it in)
 
     def to_dict(self) -> dict[str, Any]:
+        hypothesis = self.hypothesis
+        if hasattr(hypothesis, "model_dump"):
+            try:
+                hypothesis = hypothesis.model_dump(mode="json")
+            except TypeError:
+                hypothesis = hypothesis.model_dump()
         return {
             "id": self.id,
             "statement": self.statement,
@@ -228,6 +234,10 @@ class QueueItem:
             "claimed_by": self.claimed_by,
             "claimed_at": self.claimed_at,
             "score": self.score,
+            # The queue can sit between critique and compute when a process is
+            # interrupted. Keep the structured hypothesis so restored compute
+            # work does not silently lose its prediction/falsification contract.
+            "hypothesis": hypothesis,
         }
 
     @classmethod
@@ -240,6 +250,7 @@ class QueueItem:
             claimed_by=d.get("claimed_by"),
             claimed_at=d.get("claimed_at"),
             score=float(d.get("score", 0.0)),
+            hypothesis=d.get("hypothesis"),
         )
 
 

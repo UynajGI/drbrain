@@ -13,8 +13,10 @@ from drbrain.loop.state import (
     RUN_RUNNING,
     STEP_CLAIMED,
     STEP_FAILED,
+    STEP_MANUAL_REVIEW,
     STEP_PENDING,
     STEP_READY,
+    STEP_RECONCILING,
     STEP_RUNNING,
     STEP_SUCCEEDED,
     STEP_UNKNOWN,
@@ -22,6 +24,10 @@ from drbrain.loop.state import (
     validate_step_transition,
 )
 from drbrain.loop.store import LedgerEvent, RunLedger
+
+
+class LeaseUnavailableError(RuntimeError):
+    """Raised when another worker still owns an in-flight cycle lease."""
 
 
 class TransitionService:
@@ -71,69 +77,129 @@ class TransitionService:
             )
 
     def reconcile_incomplete_cycles(self, run_id: str) -> None:
-        """Turn abandoned in-flight cycles into auditable ``unknown`` records.
+        """Reclaim only expired in-flight leases for checkpoint recovery.
 
-        PR 1 deliberately does not resume the LlamaIndex Context mid-node.  It
-        instead leaves the interrupted cycle visible and lets a later cycle run
-        from the last compatible projection; checkpoint resume belongs to PR 2.
+        A live worker is never pre-empted.  An absent lease is treated as a
+        PR1-compatible interrupted cycle, while an expired lease leaves a clear
+        audit trail and lets exactly one later worker create a resumed attempt.
         """
         with self._ledger.transaction() as conn:
+            now = time.time()
             rows = conn.execute(
-                "SELECT step_id, status FROM research_steps WHERE run_id = ? AND status = ?",
-                (run_id, STEP_RUNNING),
+                """
+                SELECT step_id, status FROM research_steps
+                WHERE run_id = ?
+                  AND status IN (?, ?)
+                  AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+                """,
+                (run_id, STEP_RUNNING, STEP_RECONCILING, now),
             ).fetchall()
             for row in rows:
                 step_id = str(row["step_id"])
-                validate_step_transition(str(row["status"]), STEP_UNKNOWN)
-                self._set_step_status(conn, step_id, STEP_UNKNOWN)
+                status = str(row["status"])
+                if status == STEP_RUNNING:
+                    validate_step_transition(status, STEP_UNKNOWN)
+                    self._set_step_status(conn, step_id, STEP_UNKNOWN)
                 conn.execute(
                     """
                     UPDATE research_attempts
                     SET status = ?, completed_at = ?
                     WHERE step_id = ? AND status = ?
                     """,
-                    (STEP_UNKNOWN, time.time(), step_id, STEP_RUNNING),
+                    (STEP_UNKNOWN, now, step_id, STEP_RUNNING),
+                )
+                conn.execute(
+                    """
+                    UPDATE research_steps
+                    SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                    WHERE step_id = ?
+                    """,
+                    (now, step_id),
                 )
                 self._ledger.append_event(
                     conn,
                     run_id,
                     actor="recovery",
-                    event_type="cycle_interrupted",
+                    event_type=(
+                        "cycle_interrupted"
+                        if status == STEP_RUNNING
+                        else "cycle_resume_interrupted"
+                    ),
                     payload={"step_id": step_id},
                 )
 
-    def begin_cycle(self, run_id: str, *, cycle: int) -> str:
+    def begin_cycle(
+        self,
+        run_id: str,
+        *,
+        cycle: int,
+        worker_id: str | None = None,
+        lease_seconds: float | None = None,
+    ) -> str:
         """Create and start one durable cycle step with its first attempt."""
         with self._ledger.transaction() as conn:
             if self._run_status(conn, run_id) != RUN_RUNNING:
                 raise RuntimeError("cannot begin a cycle while the run is not running")
             now = time.time()
+            if worker_id is not None:
+                active = conn.execute(
+                    """
+                    SELECT step_id FROM research_steps
+                    WHERE run_id = ?
+                      AND status IN (?, ?)
+                      AND lease_owner IS NOT NULL
+                      AND lease_expires_at > ?
+                    LIMIT 1
+                    """,
+                    (run_id, STEP_RUNNING, STEP_RECONCILING, now),
+                ).fetchone()
+                if active is not None:
+                    raise LeaseUnavailableError("a cycle already holds an active lease")
             step_id = uuid.uuid4().hex
+            lease_expires_at = (
+                now + max(1.0, float(lease_seconds or 0.0)) if worker_id is not None else None
+            )
             conn.execute(
                 """
                 INSERT INTO research_steps(
-                    step_id, run_id, step_name, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    step_id, run_id, step_name, status, lease_owner, lease_expires_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (step_id, run_id, f"cycle:{cycle}", STEP_PENDING, now, now),
+                (
+                    step_id,
+                    run_id,
+                    f"cycle:{cycle}",
+                    STEP_PENDING,
+                    worker_id,
+                    lease_expires_at,
+                    now,
+                    now,
+                ),
             )
             self._transition_step(conn, step_id, STEP_READY)
             self._transition_step(conn, step_id, STEP_CLAIMED)
             self._transition_step(conn, step_id, STEP_RUNNING)
+            attempt_id = uuid.uuid4().hex
             conn.execute(
                 """
                 INSERT INTO research_attempts(
                     attempt_id, step_id, attempt_no, status, started_at
                 ) VALUES (?, ?, 1, ?, ?)
                 """,
-                (uuid.uuid4().hex, step_id, STEP_RUNNING, now),
+                (attempt_id, step_id, STEP_RUNNING, now),
             )
             self._ledger.append_event(
                 conn,
                 run_id,
                 actor="director",
                 event_type="cycle_started",
-                payload={"cycle": cycle, "step_id": step_id},
+                payload={
+                    "cycle": cycle,
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "worker_id": worker_id,
+                },
             )
             return step_id
 
@@ -145,9 +211,12 @@ class TransitionService:
         cycle_result: Mapping[str, Any],
         state_snapshot: Mapping[str, Any],
         research_state: Mapping[str, Any] | None,
+        checkpoint_id: str | None = None,
+        worker_id: str | None = None,
     ) -> LedgerEvent:
         """Commit a completed cycle and its replayable compatibility snapshot."""
         with self._ledger.transaction() as conn:
+            self._require_lease(conn, step_id=step_id, worker_id=worker_id)
             self._transition_step(conn, step_id, STEP_SUCCEEDED)
             conn.execute(
                 """
@@ -156,6 +225,14 @@ class TransitionService:
                 WHERE step_id = ? AND status = ?
                 """,
                 (STEP_SUCCEEDED, time.time(), step_id, STEP_RUNNING),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (time.time(), step_id),
             )
             return self._ledger.append_event(
                 conn,
@@ -167,6 +244,7 @@ class TransitionService:
                     "cycle_result": dict(cycle_result),
                     "state": dict(state_snapshot),
                     "research_state": dict(research_state) if research_state else None,
+                    "checkpoint_id": checkpoint_id,
                 },
             )
 
@@ -183,9 +261,17 @@ class TransitionService:
                 payload={"reason": reason, "state": dict(state_snapshot)},
             )
 
-    def fail_cycle(self, run_id: str, *, step_id: str, error: BaseException) -> None:
+    def fail_cycle(
+        self,
+        run_id: str,
+        *,
+        step_id: str,
+        error: BaseException,
+        worker_id: str | None = None,
+    ) -> None:
         """Commit a failed workflow cycle before the exception propagates."""
         with self._ledger.transaction() as conn:
+            self._require_lease(conn, step_id=step_id, worker_id=worker_id)
             self._transition_step(conn, step_id, STEP_FAILED)
             conn.execute(
                 """
@@ -194,6 +280,14 @@ class TransitionService:
                 WHERE step_id = ? AND status = ?
                 """,
                 (STEP_FAILED, type(error).__name__, time.time(), step_id, STEP_RUNNING),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (time.time(), step_id),
             )
             self._ledger.append_event(
                 conn,
@@ -205,6 +299,122 @@ class TransitionService:
                     "error_type": type(error).__name__,
                     "message": str(error),
                 },
+            )
+
+    def resume_cycle(
+        self,
+        run_id: str,
+        *,
+        step_id: str,
+        checkpoint_id: str,
+        worker_id: str,
+        lease_seconds: float,
+    ) -> str:
+        """Claim an interrupted cycle and attach a fresh attempt to its checkpoint."""
+        with self._ledger.transaction() as conn:
+            if self._run_status(conn, run_id) != RUN_RUNNING:
+                raise RuntimeError("cannot resume a cycle while the run is not running")
+            row = conn.execute(
+                "SELECT run_id, status FROM research_steps WHERE step_id = ?", (step_id,)
+            ).fetchone()
+            if row is None or str(row["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            status = str(row["status"])
+            if status == STEP_UNKNOWN:
+                self._transition_step(conn, step_id, STEP_RECONCILING)
+            elif status != STEP_RECONCILING:
+                raise RuntimeError(f"cannot resume cycle from step state {status!r}")
+
+            now = time.time()
+            active = conn.execute(
+                """
+                SELECT attempt_id FROM research_attempts
+                WHERE step_id = ? AND status = ?
+                LIMIT 1
+                """,
+                (step_id, STEP_RUNNING),
+            ).fetchone()
+            if active is not None:
+                raise LeaseUnavailableError("a cycle already holds an active lease")
+            attempt_no = int(
+                conn.execute(
+                    "SELECT COALESCE(MAX(attempt_no), 0) + 1 AS next_no "
+                    "FROM research_attempts WHERE step_id = ?",
+                    (step_id,),
+                ).fetchone()["next_no"]
+            )
+            attempt_id = uuid.uuid4().hex
+            conn.execute(
+                """
+                INSERT INTO research_attempts(
+                    attempt_id, step_id, attempt_no, status, checkpoint_ref, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (attempt_id, step_id, attempt_no, STEP_RUNNING, checkpoint_id, now),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (worker_id, now + max(1.0, float(lease_seconds)), now, step_id),
+            )
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor="recovery",
+                event_type="cycle_resumed",
+                payload={
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "checkpoint_id": checkpoint_id,
+                    "worker_id": worker_id,
+                },
+            )
+            return attempt_id
+
+    def mark_manual_review(self, run_id: str, *, step_id: str, reason: str) -> None:
+        """Stop an unsafe recovery without silently starting a fresh cycle."""
+        with self._ledger.transaction() as conn:
+            row = conn.execute(
+                "SELECT status FROM research_steps WHERE step_id = ?", (step_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"unknown research step {step_id}")
+            status = str(row["status"])
+            if status == STEP_RUNNING:
+                self._transition_step(conn, step_id, STEP_UNKNOWN)
+                status = STEP_UNKNOWN
+            if status == STEP_UNKNOWN:
+                self._transition_step(conn, step_id, STEP_RECONCILING)
+                status = STEP_RECONCILING
+            if status != STEP_RECONCILING:
+                raise RuntimeError(f"cannot mark step {step_id!r} manual from {status!r}")
+            self._transition_step(conn, step_id, STEP_MANUAL_REVIEW)
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_attempts
+                SET status = ?, completed_at = ?
+                WHERE step_id = ? AND status = ?
+                """,
+                (STEP_UNKNOWN, now, step_id, STEP_RUNNING),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now, step_id),
+            )
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor="recovery",
+                event_type="cycle_manual_review",
+                payload={"step_id": step_id, "reason": reason},
             )
 
     @staticmethod
@@ -235,6 +445,22 @@ class TransitionService:
             raise KeyError(f"unknown research step {step_id}")
         validate_step_transition(str(row["status"]), target)
         self._set_step_status(conn, step_id, target)
+
+    @staticmethod
+    def _require_lease(conn: Any, *, step_id: str, worker_id: str | None) -> None:
+        """Keep legacy callers working while enforcing leases for new workers."""
+        if worker_id is None:
+            return
+        row = conn.execute(
+            "SELECT lease_owner, lease_expires_at FROM research_steps WHERE step_id = ?", (step_id,)
+        ).fetchone()
+        if (
+            row is None
+            or row["lease_owner"] != worker_id
+            or row["lease_expires_at"] is None
+            or float(row["lease_expires_at"]) <= time.time()
+        ):
+            raise LeaseUnavailableError(f"worker {worker_id!r} does not own active lease")
 
     @staticmethod
     def _set_step_status(conn: Any, step_id: str, status: str) -> None:

@@ -20,7 +20,7 @@ from typing import Any
 from drbrain.loop.state import RUN_CREATED
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 1
+LEDGER_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,26 @@ class LedgerEvent:
     payload: dict[str, Any]
     trace_id: str | None
     created_at: float
+
+
+@dataclass(frozen=True)
+class LedgerCheckpoint:
+    """One JSON-only workflow checkpoint bound to a durable attempt."""
+
+    checkpoint_id: str
+    run_id: str
+    step_id: str
+    attempt_id: str
+    checkpoint_seq: int
+    step_name: str
+    context_payload: dict[str, Any]
+    workflow_state: dict[str, Any]
+    manifest: dict[str, Any]
+    created_at: float
+
+
+class LeaseOwnershipError(RuntimeError):
+    """Raised when a worker attempts to write after losing its SQLite lease."""
 
 
 def _as_json(value: Any) -> str:
@@ -150,6 +170,35 @@ class RunLedger:
                 started_at REAL NOT NULL,
                 completed_at REAL,
                 UNIQUE(step_id, attempt_no)
+            );
+
+            CREATE TABLE IF NOT EXISTS research_checkpoints (
+                checkpoint_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES research_runs(run_id),
+                step_id TEXT NOT NULL REFERENCES research_steps(step_id),
+                attempt_id TEXT NOT NULL REFERENCES research_attempts(attempt_id),
+                checkpoint_seq INTEGER NOT NULL,
+                step_name TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                workflow_state_json TEXT NOT NULL DEFAULT '{}',
+                manifest_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE(step_id, attempt_id, checkpoint_seq)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_research_checkpoints_step_seq
+                ON research_checkpoints(step_id, checkpoint_seq DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_research_checkpoints_run_created
+                ON research_checkpoints(run_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS research_attempt_progress (
+                step_id TEXT PRIMARY KEY REFERENCES research_steps(step_id),
+                attempt_id TEXT NOT NULL REFERENCES research_attempts(attempt_id),
+                node_name TEXT NOT NULL,
+                boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('started', 'checkpointed')),
+                checkpoint_id TEXT REFERENCES research_checkpoints(checkpoint_id),
+                updated_at REAL NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS research_events (
@@ -369,6 +418,266 @@ class RunLedger:
                 (event_seq, time.time(), run_id),
             )
 
+    def active_attempt_id(self, step_id: str) -> str | None:
+        """Return the current running attempt for ``step_id``, if any."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT attempt_id FROM research_attempts
+                WHERE step_id = ? AND status = 'running'
+                ORDER BY attempt_no DESC
+                LIMIT 1
+                """,
+                (step_id,),
+            ).fetchone()
+            return str(row["attempt_id"]) if row is not None else None
+
+    def active_leased_steps(self, run_id: str) -> list[str]:
+        """Return in-flight steps still protected by an unexpired worker lease."""
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT step_id FROM research_steps
+                WHERE run_id = ?
+                  AND status IN ('running', 'reconciling')
+                  AND lease_owner IS NOT NULL
+                  AND lease_expires_at > ?
+                ORDER BY created_at
+                """,
+                (run_id, time.time()),
+            ).fetchall()
+            return [str(row["step_id"]) for row in rows]
+
+    def recoverable_step_ids(self, run_id: str) -> list[str]:
+        """Return interrupted steps that require a checkpoint or manual review."""
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT step_id FROM research_steps
+                WHERE run_id = ? AND status IN ('unknown', 'reconciling')
+                ORDER BY created_at
+                """,
+                (run_id,),
+            ).fetchall()
+            return [str(row["step_id"]) for row in rows]
+
+    def record_checkpoint(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        lease_seconds: float,
+        step_name: str,
+        context_payload: Mapping[str, Any],
+        workflow_state: Mapping[str, Any],
+        manifest: Mapping[str, Any],
+    ) -> LedgerCheckpoint:
+        """Atomically persist a JSON checkpoint and renew its worker lease."""
+        with self.transaction() as conn:
+            now = time.time()
+            step = conn.execute(
+                """
+                SELECT run_id, lease_owner, lease_expires_at
+                FROM research_steps WHERE step_id = ?
+                """,
+                (step_id,),
+            ).fetchone()
+            if step is None or str(step["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            if (
+                step["lease_owner"] != worker_id
+                or step["lease_expires_at"] is None
+                or float(step["lease_expires_at"]) <= now
+            ):
+                raise LeaseOwnershipError(f"worker {worker_id!r} does not own active lease")
+            attempt = conn.execute(
+                "SELECT status FROM research_attempts WHERE attempt_id = ? AND step_id = ?",
+                (attempt_id, step_id),
+            ).fetchone()
+            if attempt is None or str(attempt["status"]) != "running":
+                raise LeaseOwnershipError(f"attempt {attempt_id!r} is not running")
+
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(checkpoint_seq), 0) + 1 AS next_seq
+                FROM research_checkpoints WHERE step_id = ? AND attempt_id = ?
+                """,
+                (step_id, attempt_id),
+            ).fetchone()
+            checkpoint_seq = int(row["next_seq"])
+            checkpoint_id = uuid.uuid4().hex
+            checkpoint = LedgerCheckpoint(
+                checkpoint_id=checkpoint_id,
+                run_id=run_id,
+                step_id=step_id,
+                attempt_id=attempt_id,
+                checkpoint_seq=checkpoint_seq,
+                step_name=step_name,
+                context_payload=dict(context_payload),
+                workflow_state=dict(workflow_state),
+                manifest=dict(manifest),
+                created_at=now,
+            )
+            conn.execute(
+                """
+                INSERT INTO research_checkpoints(
+                    checkpoint_id, run_id, step_id, attempt_id, checkpoint_seq,
+                    step_name, context_json, workflow_state_json, manifest_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint.checkpoint_id,
+                    checkpoint.run_id,
+                    checkpoint.step_id,
+                    checkpoint.attempt_id,
+                    checkpoint.checkpoint_seq,
+                    checkpoint.step_name,
+                    _as_json(checkpoint.context_payload),
+                    _as_json(checkpoint.workflow_state),
+                    _as_json(checkpoint.manifest),
+                    checkpoint.created_at,
+                ),
+            )
+            conn.execute(
+                "UPDATE research_attempts SET checkpoint_ref = ? WHERE attempt_id = ?",
+                (checkpoint_id, attempt_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO research_attempt_progress(
+                    step_id, attempt_id, node_name, boundary_kind, checkpoint_id, updated_at
+                ) VALUES (?, ?, ?, 'checkpointed', ?, ?)
+                ON CONFLICT(step_id) DO UPDATE SET
+                    attempt_id = excluded.attempt_id,
+                    node_name = excluded.node_name,
+                    boundary_kind = excluded.boundary_kind,
+                    checkpoint_id = excluded.checkpoint_id,
+                    updated_at = excluded.updated_at
+                """,
+                (step_id, attempt_id, step_name, checkpoint_id, now),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now + max(1.0, float(lease_seconds)), now, step_id),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="checkpoint",
+                event_type="workflow_checkpointed",
+                payload={
+                    "checkpoint_id": checkpoint_id,
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "checkpoint_seq": checkpoint_seq,
+                    "step_name": step_name,
+                    "manifest": dict(manifest),
+                },
+            )
+            return checkpoint
+
+    def record_workflow_step_started(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        attempt_id: str,
+        worker_id: str,
+        lease_seconds: float,
+        node_name: str,
+    ) -> None:
+        """Record an internal node's start before it can issue an external tool."""
+        with self.transaction() as conn:
+            now = time.time()
+            step = conn.execute(
+                """
+                SELECT run_id, lease_owner, lease_expires_at
+                FROM research_steps WHERE step_id = ?
+                """,
+                (step_id,),
+            ).fetchone()
+            if step is None or str(step["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            if (
+                step["lease_owner"] != worker_id
+                or step["lease_expires_at"] is None
+                or float(step["lease_expires_at"]) <= now
+            ):
+                raise LeaseOwnershipError(f"worker {worker_id!r} does not own active lease")
+            attempt = conn.execute(
+                "SELECT status FROM research_attempts WHERE attempt_id = ? AND step_id = ?",
+                (attempt_id, step_id),
+            ).fetchone()
+            if attempt is None or str(attempt["status"]) != "running":
+                raise LeaseOwnershipError(f"attempt {attempt_id!r} is not running")
+
+            conn.execute(
+                """
+                INSERT INTO research_attempt_progress(
+                    step_id, attempt_id, node_name, boundary_kind, checkpoint_id, updated_at
+                ) VALUES (?, ?, ?, 'started', NULL, ?)
+                ON CONFLICT(step_id) DO UPDATE SET
+                    attempt_id = excluded.attempt_id,
+                    node_name = excluded.node_name,
+                    boundary_kind = excluded.boundary_kind,
+                    checkpoint_id = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (step_id, attempt_id, node_name, now),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now + max(1.0, float(lease_seconds)), now, step_id),
+            )
+            self.append_event(
+                conn,
+                run_id,
+                actor="checkpoint",
+                event_type="workflow_step_started",
+                payload={
+                    "step_id": step_id,
+                    "attempt_id": attempt_id,
+                    "node_name": node_name,
+                },
+            )
+
+    def inflight_workflow_step(self, step_id: str) -> str | None:
+        """Return the node that started after the last safe checkpoint, if any."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT node_name FROM research_attempt_progress
+                WHERE step_id = ? AND boundary_kind = 'started'
+                """,
+                (step_id,),
+            ).fetchone()
+            return str(row["node_name"]) if row is not None else None
+
+    def latest_checkpoint_for_step(self, step_id: str) -> LedgerCheckpoint | None:
+        """Return the newest checkpoint for one logical cycle step."""
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT checkpoint_id, run_id, step_id, attempt_id, checkpoint_seq,
+                       step_name, context_json, workflow_state_json, manifest_json, created_at
+                FROM research_checkpoints WHERE step_id = ?
+                ORDER BY created_at DESC, checkpoint_seq DESC
+                LIMIT 1
+                """,
+                (step_id,),
+            ).fetchone()
+            return self._checkpoint_from_row(row)
+
     @staticmethod
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
@@ -389,5 +698,22 @@ class RunLedger:
             event_type=str(row["event_type"]),
             payload=_from_json(row["payload_json"], {}),
             trace_id=row["trace_id"],
+            created_at=float(row["created_at"]),
+        )
+
+    @staticmethod
+    def _checkpoint_from_row(row: sqlite3.Row | None) -> LedgerCheckpoint | None:
+        if row is None:
+            return None
+        return LedgerCheckpoint(
+            checkpoint_id=str(row["checkpoint_id"]),
+            run_id=str(row["run_id"]),
+            step_id=str(row["step_id"]),
+            attempt_id=str(row["attempt_id"]),
+            checkpoint_seq=int(row["checkpoint_seq"]),
+            step_name=str(row["step_name"]),
+            context_payload=_from_json(row["context_json"], {}),
+            workflow_state=_from_json(row["workflow_state_json"], {}),
+            manifest=_from_json(row["manifest_json"], {}),
             created_at=float(row["created_at"]),
         )

@@ -20,14 +20,21 @@ import json
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from drbrain.loop.checkpointing import (
+    CheckpointError,
+    CheckpointManifest,
+    CheckpointRestoreError,
+    WorkflowCheckpointService,
+)
 from drbrain.loop.events import ResearchState
 from drbrain.loop.store import LedgerEvent, RunLedger
-from drbrain.loop.transitions import TransitionService
+from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
     CRITIQUE_DISCARD_SCORE,
     ResearchLoopWorkflow,
@@ -129,6 +136,7 @@ class ResearchDirector:
         mcp_servers: list[dict[str, Any]] | None = None,
         run_dir: str | Path = "workspace/autoresearch",
         n_critics: int = 3,
+        lease_seconds: float = 900.0,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -137,10 +145,93 @@ class ResearchDirector:
         self._mcp_servers = mcp_servers
         self._run_dir = Path(run_dir)
         self._n_critics = max(1, int(n_critics))
+        self._lease_seconds = max(1.0, float(lease_seconds))
+        self._worker_id = uuid.uuid4().hex
+        self._active_checkpoint: WorkflowCheckpointService | None = None
+        self._active_checkpoint_id: str | None = None
 
     def _ledger(self) -> RunLedger:
         """Return this director's isolated, SQLite-only run ledger."""
         return RunLedger(self._run_dir / "ledger.sqlite3")
+
+    def _checkpoint_manifest(self) -> CheckpointManifest:
+        """Build a secret-free contract for safe Context restoration.
+
+        The RAG generation deliberately remains explicit ``None`` in this PR;
+        PR4 will populate it without changing the checkpoint wire format.
+        """
+        model_manifest: dict[str, Any] = {"config_type": type(self._cfg).__name__}
+        for name in ("provider", "model", "model_name", "llm_model", "embedding_model"):
+            value = getattr(self._cfg, name, None)
+            if isinstance(value, str | int | float | bool) or value is None:
+                if value is not None:
+                    model_manifest[name] = value
+        # The normal CLI passes ``Config`` whose fallback chain lives at
+        # ``cfg.llm.models``.  Keep the historical top-level ``models`` shape
+        # for lightweight callers, and accept the equivalent dict form used by
+        # tests and integrations.  The chain order is part of the execution
+        # contract: a resumed hypothesis must not silently switch to a
+        # different fallback model.
+        if isinstance(self._cfg, dict):
+            llm_cfg = self._cfg.get("llm")
+            models = llm_cfg.get("models") if isinstance(llm_cfg, dict) else None
+            if not isinstance(models, list):
+                models = self._cfg.get("models")
+        else:
+            llm_cfg = getattr(self._cfg, "llm", None)
+            models = getattr(llm_cfg, "models", None)
+            if not isinstance(models, list):
+                models = getattr(self._cfg, "models", None)
+        if isinstance(models, list):
+            public_models: list[dict[str, Any]] = []
+            for item in models:
+                fields: dict[str, Any] = {}
+                # Preserve model identity and routing without persisting
+                # credentials.  These are the stable, non-secret fields used
+                # by the project's LLM fallback configuration.
+                for name in (
+                    "provider",
+                    "model",
+                    "model_name",
+                    "base_url",
+                    "api_base",
+                    "deployment",
+                    "api_version",
+                    "temperature",
+                    "max_tokens",
+                    "max_output_tokens",
+                ):
+                    value = getattr(item, name, None)
+                    if isinstance(item, dict):
+                        value = item.get(name)
+                    if isinstance(value, str | int | float | bool):
+                        fields[name] = value
+                if fields:
+                    public_models.append(fields)
+            if public_models:
+                model_manifest["models"] = public_models
+
+        servers: list[dict[str, str]] = []
+        for server in self._mcp_servers or []:
+            if not isinstance(server, dict):
+                continue
+            public = {
+                key: str(server[key])
+                for key in ("name", "command", "url")
+                if server.get(key) is not None
+            }
+            if public:
+                servers.append(public)
+        tool_manifest = {
+            "plugins_dir": str(Path(self._plugins_dir).resolve()) if self._plugins_dir else None,
+            "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
+        }
+        return CheckpointManifest(
+            workflow_version="research-loop-v1",
+            model_manifest=model_manifest,
+            tool_manifest=tool_manifest,
+            rag_generation=None,
+        )
 
     # ── workspace paths ───────────────────────────────────────────────────────
 
@@ -720,17 +811,35 @@ class ResearchDirector:
             # different topics keep their own compute evidence (review P1).
             jobs_dir=str(self._topic_dir(topic) / "jobs"),
         )
-        # T6: pass structured prior champion/dead-ends so the proposal gate can
-        # reject duplicates in code (not just via prompt text).
-        # T7: pass the knowledge/ dir so the critic/verifier nodes can inject
-        # their own cross-cycle history into the prompt.
-        handler = wf.run(
-            task=topic,
-            prior_context=prior_context,
-            prior_champion=prior_champion or [],
-            prior_rejected=prior_rejected or [],
-            role_memory_dir=str(self._topic_dir(topic) / "knowledge"),
-        )
+        checkpoint = self._active_checkpoint
+        if checkpoint is not None and checkpoint.checkpoint is not None:
+            # Restoring Context replays only the scheduler's pending events; it
+            # does not invent a new StartEvent or rerun successful prior nodes.
+            handler = wf.run(ctx=checkpoint.restore_context(wf))
+        else:
+            # T6: pass structured prior champion/dead-ends so the proposal gate can
+            # reject duplicates in code (not just via prompt text).
+            # T7: pass the knowledge/ dir so the critic/verifier nodes can inject
+            # their own cross-cycle history into the prompt.
+            handler = wf.run(
+                task=topic,
+                prior_context=prior_context,
+                prior_champion=prior_champion or [],
+                prior_rejected=prior_rejected or [],
+                role_memory_dir=str(self._topic_dir(topic) / "knowledge"),
+            )
+        if checkpoint is not None:
+            async for event in handler.stream_events(expose_internal=True):
+                try:
+                    captured = checkpoint.capture_if_safe(ctx=handler.ctx, workflow=wf, event=event)
+                except Exception:
+                    # A failed durable write must not let the in-memory workflow
+                    # keep issuing tools after the director has lost its recovery
+                    # boundary. The handler performs a graceful cancellation.
+                    await handler.cancel_run()
+                    raise
+                if captured is not None:
+                    self._active_checkpoint_id = captured.checkpoint_id
         report = await handler
         rs = await handler.ctx.store.get("research_state", default=None)
         return report, rs
@@ -840,6 +949,90 @@ class ResearchDirector:
         transitions = TransitionService(ledger)
         transitions.reconcile_incomplete_cycles(run.run_id)
         transitions.start_run(run.run_id)
+        active_steps = ledger.active_leased_steps(run.run_id)
+        if active_steps:
+            # Another director is still working. Do not pause its run or start a
+            # second cycle: the SQLite lease is the single-writer boundary.
+            raise LeaseUnavailableError(
+                f"run {run.run_id} is active under another worker: {active_steps[0]}"
+            )
+
+        resumed_checkpoint: WorkflowCheckpointService | None = None
+        recovery_steps = (
+            ledger.recoverable_step_ids(run.run_id) if state["cycles"] < max_cycles else []
+        )
+        if len(recovery_steps) > 1:
+            for stale_step_id in recovery_steps:
+                transitions.mark_manual_review(
+                    run.run_id,
+                    step_id=stale_step_id,
+                    reason="multiple interrupted cycles require operator reconciliation",
+                )
+            transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
+            raise CheckpointRestoreError("multiple interrupted cycles require manual review")
+        if recovery_steps:
+            recovery_step_id = recovery_steps[0]
+            inflight_node = ledger.inflight_workflow_step(recovery_step_id)
+            if WorkflowCheckpointService.requires_manual_recovery(inflight_node):
+                transitions.mark_manual_review(
+                    run.run_id,
+                    step_id=recovery_step_id,
+                    reason=(
+                        "interrupted external-side-effect node requires operator reconciliation: "
+                        f"{inflight_node}"
+                    ),
+                )
+                transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
+                raise CheckpointRestoreError(
+                    f"interrupted external-side-effect node requires manual review: {inflight_node}"
+                )
+            checkpoint = ledger.latest_checkpoint_for_step(recovery_step_id)
+            if checkpoint is None:
+                transitions.mark_manual_review(
+                    run.run_id,
+                    step_id=recovery_step_id,
+                    reason="interrupted cycle has no JSON checkpoint",
+                )
+                transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
+                raise CheckpointRestoreError("interrupted cycle has no JSON checkpoint")
+            manifest = self._checkpoint_manifest()
+            preview = WorkflowCheckpointService(
+                ledger=ledger,
+                run_id=run.run_id,
+                step_id=recovery_step_id,
+                attempt_id=checkpoint.attempt_id,
+                worker_id=self._worker_id,
+                manifest=manifest,
+                lease_seconds=self._lease_seconds,
+                checkpoint=checkpoint,
+            )
+            try:
+                preview.validate_checkpoint()
+            except CheckpointError as exc:
+                transitions.mark_manual_review(
+                    run.run_id,
+                    step_id=recovery_step_id,
+                    reason=str(exc),
+                )
+                transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
+                raise
+            resumed_attempt_id = transitions.resume_cycle(
+                run.run_id,
+                step_id=recovery_step_id,
+                checkpoint_id=checkpoint.checkpoint_id,
+                worker_id=self._worker_id,
+                lease_seconds=self._lease_seconds,
+            )
+            resumed_checkpoint = WorkflowCheckpointService(
+                ledger=ledger,
+                run_id=run.run_id,
+                step_id=recovery_step_id,
+                attempt_id=resumed_attempt_id,
+                worker_id=self._worker_id,
+                manifest=manifest,
+                lease_seconds=self._lease_seconds,
+                checkpoint=checkpoint,
+            )
         session_started = time.time()
         # Agent 自写的后台作业（run_python mode=async）落进本课题工作区，check_job
         # 从同一目录轮询——长 DFT/计算因此随课题一起沉淀、可审计、可续跑。
@@ -859,7 +1052,38 @@ class ResearchDirector:
         while state["cycles"] < max_cycles:
             prior = self._build_prior_context(state)
             cycle_started = time.time()
-            step_id = transitions.begin_cycle(run.run_id, cycle=state["cycles"] + 1)
+            if resumed_checkpoint is not None:
+                step_id = resumed_checkpoint.step_id
+                checkpoint_service = resumed_checkpoint
+                resumed_checkpoint = None
+            else:
+                step_id = transitions.begin_cycle(
+                    run.run_id,
+                    cycle=state["cycles"] + 1,
+                    worker_id=self._worker_id,
+                    lease_seconds=self._lease_seconds,
+                )
+                active_attempt_id = ledger.active_attempt_id(step_id)
+                if (
+                    active_attempt_id is None
+                ):  # pragma: no cover - protected by begin_cycle transaction
+                    raise RuntimeError(f"cycle {step_id} was created without an active attempt")
+                checkpoint_service = WorkflowCheckpointService(
+                    ledger=ledger,
+                    run_id=run.run_id,
+                    step_id=step_id,
+                    attempt_id=active_attempt_id,
+                    worker_id=self._worker_id,
+                    manifest=self._checkpoint_manifest(),
+                    lease_seconds=self._lease_seconds,
+                )
+            self._active_checkpoint = checkpoint_service
+            self._active_checkpoint_id = (
+                checkpoint_service.checkpoint.checkpoint_id
+                if checkpoint_service.checkpoint is not None
+                else None
+            )
+            checkpoint_id: str | None = None
             try:
                 report, rs = await self._run_cycle(
                     topic,
@@ -867,10 +1091,23 @@ class ResearchDirector:
                     prior_champion=[c["statement"] for c in state["champion"]],
                     prior_rejected=list(state["rejected"]),
                 )
+                checkpoint_id = self._active_checkpoint_id
+            except CheckpointError as exc:
+                transitions.mark_manual_review(run.run_id, step_id=step_id, reason=str(exc))
+                transitions.pause_run(run.run_id, reason="checkpoint_manual_review")
+                raise
             except Exception as exc:
-                transitions.fail_cycle(run.run_id, step_id=step_id, error=exc)
+                transitions.fail_cycle(
+                    run.run_id,
+                    step_id=step_id,
+                    error=exc,
+                    worker_id=self._worker_id,
+                )
                 transitions.pause_run(run.run_id, reason="cycle_failed")
                 raise
+            finally:
+                self._active_checkpoint = None
+                self._active_checkpoint_id = None
             champion_before = len(state["champion"])
             cycle_result = self._absorb(state, report, rs)
             # Mode Selector: hypotheses the critic left undiscussed
@@ -898,6 +1135,8 @@ class ResearchDirector:
                 cycle_result=cycle_result,
                 state_snapshot=state,
                 research_state=rs.model_dump() if rs is not None else None,
+                checkpoint_id=checkpoint_id,
+                worker_id=self._worker_id,
             )
             # SQLite is the durable source of truth. Only after its transaction
             # commits do we update the pre-existing file workspace.
