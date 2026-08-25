@@ -256,23 +256,28 @@ def _to_function_tool(
     schema = descriptor.get("inputSchema") or {}
     model = _schema_to_model(descriptor["name"], schema)
 
+    fn: Callable[..., Any]
     if call_override is not None:
 
-        async def _fn(**kwargs: Any) -> str:
+        async def _brokered_fn(**kwargs: Any) -> str:
             result = call_override(server, descriptor, dict(kwargs), require_trusted)
             if inspect.isawaitable(result):
                 result = await result
             return str(result)
 
+        fn = _brokered_fn
+
     else:
 
-        def _fn(**kwargs: Any) -> str:
+        def _direct_fn(**kwargs: Any) -> str:
             return call_mcp_tool(
                 server, descriptor["name"], dict(kwargs), require_trusted=require_trusted
             )
 
+        fn = _direct_fn
+
     return function_tool_cls.from_defaults(
-        fn=_fn,
+        fn=fn,
         name=descriptor["name"],
         description=descriptor.get("description") or "",
         fn_schema=model,

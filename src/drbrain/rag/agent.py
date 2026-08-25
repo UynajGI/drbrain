@@ -35,7 +35,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from drbrain.config import ApiConfig, Config, DBConfig, DirsConfig, EmbedConfig, LLMConfig
 from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
@@ -358,7 +358,7 @@ def _durable_tool_definition(
     name: str,
     source: str,
     input_schema: dict[str, Any],
-    side_effect: str = "read",
+    side_effect: Literal["pure", "read", "write", "irreversible", "unspecified"] = "read",
     required_capabilities: tuple[str, ...],
     code_digest: str = "",
     version: str = "",
@@ -378,12 +378,11 @@ def _durable_tool_definition(
     """Build a loop ``ToolDefinition`` lazily to avoid a package import cycle."""
     from drbrain.loop.policy import ToolDefinition
 
-    known_effects = {"pure", "read", "write", "irreversible", "unspecified"}
     return ToolDefinition(
         name=name,
         source=source,
         input_schema=input_schema,
-        side_effect=side_effect if side_effect in known_effects else "unspecified",
+        side_effect=side_effect,
         required_capabilities=required_capabilities,
         code_digest=code_digest,
         version=version,
