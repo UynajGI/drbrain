@@ -729,8 +729,7 @@ def build_index(
 
         # 6. Update manifest: target papers replaced, others preserved.
         new_papers: dict[str, dict[str, str]] = {
-            pid: {k: hashes[k] for k in keys if k in hashes}
-            for pid, keys in paper_keys.items()
+            pid: {k: hashes[k] for k in keys if k in hashes} for pid, keys in paper_keys.items()
         }
         for pid, old_keys in old_papers.items():
             if pid not in new_papers:
@@ -764,7 +763,9 @@ def build_index(
     try:
         _write_manifest(storage_root, manifest)
     except OSError as exc:
-        logger.warning("[rag] published generation %s but could not mirror manifest: %s", generation, exc)
+        logger.warning(
+            "[rag] published generation %s but could not mirror manifest: %s", generation, exc
+        )
     stats["pruned_generations"] = _prune_inactive_generations(storage_root, generation)
     stats["generation"] = generation
     logger.info("[rag] index build done: %s", stats)
