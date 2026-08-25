@@ -56,6 +56,42 @@ def test_checkpoint_manifest_tracks_typed_and_dict_llm_fallback_chains():
     assert dict_manifest.model_manifest != typed_manifest.model_manifest
 
 
+def test_checkpoint_manifest_fingerprints_plugin_source_and_mcp_policy(tmp_path):
+    """A resume must reject changed executable tools without storing secrets."""
+    plugins_dir = _write_search_plugin(tmp_path)
+    mcp_server = {
+        "name": "paper-search",
+        "command": "python",
+        "args": ["server.py"],
+        "trusted": True,
+        "allowed_tools": ["search"],
+        "required_capabilities": ["mcp:paper-search:search"],
+        "side_effect": "read",
+        "env": {"API_KEY": "must-not-persist"},
+    }
+
+    initial = ResearchDirector(
+        cfg=_cfg(), plugins_dir=plugins_dir, mcp_servers=[mcp_server]
+    )._checkpoint_manifest()
+    assert "must-not-persist" not in str(initial.tool_manifest)
+
+    plugin_path = tmp_path / "search_papers.py"
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+    )
+    changed_plugin = ResearchDirector(
+        cfg=_cfg(), plugins_dir=plugins_dir, mcp_servers=[mcp_server]
+    )._checkpoint_manifest()
+    assert changed_plugin.tool_manifest != initial.tool_manifest
+
+    changed_mcp = ResearchDirector(
+        cfg=_cfg(),
+        plugins_dir=plugins_dir,
+        mcp_servers=[{**mcp_server, "allowed_tools": ["search", "fetch"]}],
+    )._checkpoint_manifest()
+    assert changed_mcp.tool_manifest != changed_plugin.tool_manifest
+
+
 def _cyclic_llm(monkeypatch, script):
     """Scripted LLM that cycles through ``script`` (one entry per agent call)."""
     calls = [0]

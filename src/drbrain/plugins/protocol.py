@@ -33,6 +33,7 @@ from typing import Any, Literal
 PluginType = Literal["model", "software", "data", "formula", "other"]
 Backend = Literal["subprocess", "inprocess", "static"]
 OnFailure = Literal["abstain", "stale", "none"]
+PluginSideEffect = Literal["pure", "read", "write", "irreversible", "unspecified"]
 
 
 class ResultStatus(StrEnum):
@@ -77,6 +78,21 @@ class Plugin:
     timeout_s: float = 60.0
     summary_fields: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Durable-loop metadata is additive.  ``unspecified`` keeps legacy direct
+    # registry calls working, but a ToolBroker rejects it until the host has
+    # explicitly classified the external capability.
+    side_effect: PluginSideEffect = "unspecified"
+    required_capabilities: tuple[str, ...] = ()
+    code_digest: str = ""
+    resource_scope: dict[str, Any] = field(default_factory=dict)
+    secret_refs: tuple[str, ...] = ()
+    max_output_bytes: int | None = None
+    cost_hint: float | None = None
+    supports_idempotency: bool = False
+    supports_reconcile: bool = False
+    supports_cancel: bool = False
+    sandbox_profile: str = ""
+    approval_policy: str = "default"
 
 
 @dataclass

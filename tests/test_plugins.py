@@ -44,6 +44,27 @@ def test_plugin_fields():
     assert d.version == ""
     assert d.resource is None
     assert d.metadata == {}
+    assert d.side_effect == "unspecified"
+    assert d.required_capabilities == ()
+    assert not d.supports_idempotency
+
+
+def test_plugin_durable_metadata_is_optional_and_additive():
+    plugin = _flatband_plugin(
+        side_effect="read",
+        required_capabilities=("plugin:predict_flatband_score",),
+        code_digest="sha256:abc",
+        resource_scope={"datasets": ["materials"]},
+        supports_idempotency=True,
+        supports_reconcile=True,
+    )
+
+    assert plugin.side_effect == "read"
+    assert plugin.required_capabilities == ("plugin:predict_flatband_score",)
+    assert plugin.code_digest == "sha256:abc"
+    assert plugin.resource_scope == {"datasets": ["materials"]}
+    assert plugin.supports_idempotency
+    assert plugin.supports_reconcile
 
 
 def test_register_and_list():

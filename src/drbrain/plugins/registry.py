@@ -13,6 +13,7 @@ only this interface abstraction, never a concrete plugin.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -180,12 +181,19 @@ class PluginRegistry:
         evidence["output"] = data
         return PluginResult(ResultStatus.OK, data=data, evidence=evidence)
 
-    def to_llamaindex_tools(self) -> list:
+    def to_llamaindex_tools(
+        self,
+        *,
+        call_override: Callable[[Plugin, dict[str, Any]], Any] | None = None,
+        include: Callable[[Plugin], bool] | None = None,
+    ) -> list:
         """Bridge every registered plugin to a LlamaIndex ``FunctionTool``.
 
         Returns ``[]`` when llama-index is unavailable. Each plugin's handler
         calls back into :meth:`call` so degradation semantics and evidence
-        provenance are preserved end-to-end.
+        provenance are preserved end-to-end.  ``call_override`` is an additive
+        durable-loop hook: it receives the descriptor plus JSON arguments and
+        may route the call through a ToolBroker without changing legacy callers.
         """
         try:
             from llama_index.core.tools import FunctionTool
@@ -194,8 +202,20 @@ class PluginRegistry:
 
         tools = []
         for plugin in self._plugins.values():
+            if include is not None and not include(plugin):
+                continue
 
             def _make_fn(p: Plugin) -> Any:
+                if call_override is not None:
+
+                    async def _brokered_fn(**kwargs: Any) -> str:
+                        result = call_override(p, dict(kwargs))
+                        if inspect.isawaitable(result):
+                            result = await result
+                        return str(result)
+
+                    return _brokered_fn
+
                 def _fn(**kwargs: Any) -> str:
                     result = self.call(p.name, dict(kwargs))
                     return result.to_llm_message(p)
