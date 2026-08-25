@@ -525,9 +525,7 @@ def test_generation_pruning_keeps_active_and_rollback_window(tmp_path):
         generation.mkdir()
         os.utime(generation, (1_000_000 + offset, 1_000_000 + offset))
 
-    pruned = rag_indexer._prune_inactive_generations(
-        root, "g-4", retain_count=3, grace_seconds=0
-    )
+    pruned = rag_indexer._prune_inactive_generations(root, "g-4", retain_count=3, grace_seconds=0)
 
     assert pruned == ["g-1"]
     assert not (generations / "g-1").exists()
