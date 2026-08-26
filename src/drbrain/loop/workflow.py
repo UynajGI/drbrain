@@ -103,9 +103,14 @@ def _referenced_evidence_ids(raw: Any, known_ids: set[str]) -> list[str]:
     return list(dict.fromkeys(str(item) for item in raw if str(item) in known_ids))
 
 
-def _has_required_evidence(state: ResearchState, evidence_ids: list[str]) -> bool:
+def _has_required_evidence(
+    state: ResearchState,
+    evidence_ids: list[str],
+    *,
+    evidence_required: bool = False,
+) -> bool:
     """Preserve legacy runs while making evidence-aware runs fail closed."""
-    return not state.evidence_bundles or bool(evidence_ids)
+    return bool(evidence_ids) if (state.evidence_bundles or evidence_required) else True
 
 
 # T7: per-role cross-cycle memory. The director appends one line per judgment to
@@ -693,6 +698,18 @@ class ResearchLoopWorkflow(Workflow):
         )
         if not any(item.bundle_id == bundle.bundle_id for item in state.evidence_bundles):
             state.evidence_bundles.append(bundle)
+
+    def _requires_evidence_ids(self, state: ResearchState) -> bool:
+        """Return whether this execution mode must reject ungrounded verifier output."""
+        return bool(state.evidence_bundles) or any(
+            item is not None
+            for item in (
+                self._tool_broker,
+                self._evidence_recorder,
+                self._durable_front_half,
+                self._durable_execution,
+            )
+        )
 
     @staticmethod
     def _fallback_query(task: str) -> str:
@@ -1574,7 +1591,7 @@ class ResearchLoopWorkflow(Workflow):
                     candidates,
                     verifier_history,
                     evidence=state.evidence,
-                    require_evidence_ids=bool(state.evidence_bundles),
+                    require_evidence_ids=self._requires_evidence_ids(state),
                 ),
             )
             if isinstance(data, dict):
@@ -1634,7 +1651,11 @@ class ResearchLoopWorkflow(Workflow):
                         h.evidence_ids = list(evidence_ids)
                         ver.status = (
                             _classify_verification(ver, h.score, has_compute, run_dir)
-                            if _has_required_evidence(state, evidence_ids)
+                            if _has_required_evidence(
+                                state,
+                                evidence_ids,
+                                evidence_required=self._requires_evidence_ids(state),
+                            )
                             else "prediction"
                         )
                         verifications.append(ver)
@@ -1780,56 +1801,83 @@ class ResearchLoopWorkflow(Workflow):
         if self._db is None:
             return
         try:
-            for statement in state.verified:
-                self._db.record_claim(
-                    state.task or "research-loop",
-                    statement,
-                    claim_type="Conclusion",
-                    authority="research-loop",
-                    provenance="research-loop",
-                    confidence=1.0,
-                )
-                self._record_evidence_for(statement)
-            for statement in state.falsified:
-                self._db.record_claim(
-                    state.task or "research-loop",
-                    statement,
-                    claim_type="Rejected",
-                    authority="research-loop",
-                    provenance="research-loop",
-                    confidence=1.0,
-                )
-                self._record_evidence_for(statement)
-            for prediction in state.predictions:
-                self._db.record_claim(
-                    state.task or "research-loop",
-                    prediction,
-                    claim_type="Prediction",
-                    authority="research-loop",
-                    provenance="research-loop",
-                    confidence=1.0,
-                )
-                self._record_evidence_for(prediction)
+            evidence_by_id = {item.evidence_id: item for item in state.evidence if item.evidence_id}
+            verification_by_statement = {
+                item.statement: item for item in state.verifications if item.statement
+            }
+            for statements, claim_type, confidence in (
+                (state.verified, "Conclusion", 1.0),
+                (state.falsified, "Rejected", 1.0),
+                (state.predictions, "Prediction", 1.0),
+            ):
+                for statement in statements:
+                    claim_id = self._db.record_claim(
+                        state.task or "research-loop",
+                        statement,
+                        claim_type=claim_type,
+                        authority="research-loop",
+                        provenance="research-loop",
+                        confidence=confidence,
+                    )
+                    self._record_claim_evidence(
+                        claim_id,
+                        verification_by_statement.get(statement),
+                        evidence_by_id,
+                    )
         except Exception as exc:  # noqa: BLE001 — persistence must not break the loop
             logger.warning("[loop] settle persist failed: %s", exc)
 
-    def _record_evidence_for(self, statement: str) -> None:
-        """闭环沉淀：给一条结论写 first-class 证据行（可追溯）。
-
-        ``evidence_id`` 由 statement 哈希而来（幂等）；paper/node 留空（结论是
-        跨文献综合，非单篇摘录），snippet 记录结论原文，provenance 标记来源。
-        """
-        import hashlib
-
-        eid = "evidence_" + hashlib.sha1(statement.encode()).hexdigest()[:16]
-        self._db.record_evidence(
-            paper_id="",
-            snippet=statement,
-            value="1.0",
-            provenance="research-loop",
-            authority="research-loop",
-            evidence_id=eid,
-        )
+    def _record_claim_evidence(
+        self,
+        claim_id: str,
+        verification: Verification | None,
+        evidence_by_id: Mapping[str, Evidence],
+    ) -> None:
+        """Persist verified retrieval groundings and bind them to one claim."""
+        if self._db is None or verification is None:
+            return
+        record_relation = getattr(self._db, "record_claim_evidence", None)
+        if record_relation is None:
+            return
+        persisted_ids: list[str] = []
+        for evidence_id in verification.evidence_ids:
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is None:
+                continue
+            metadata = {
+                "generation": evidence.generation,
+                "document_locator": evidence.document_locator,
+                "chunk_locator": evidence.chunk_locator,
+                "content_checksum": evidence.content_checksum,
+                "excerpt_checksum": evidence.excerpt_checksum,
+                "query": evidence.query,
+                "filters": evidence.filters,
+                "retriever": evidence.retriever,
+                "rank": evidence.rank,
+                "score": evidence.score,
+                "tool_call_id": evidence.tool_call_id,
+                "conditions": evidence.conditions,
+            }
+            persisted_ids.append(
+                self._db.record_evidence(
+                    evidence.paper_id or str(evidence.document_locator.get("paper_id", "")),
+                    str(
+                        evidence.chunk_locator.get("node_id")
+                        or evidence.chunk_locator.get("chunk_id")
+                        or ""
+                    ),
+                    page=str(evidence.page or evidence.document_locator.get("page") or ""),
+                    snippet=evidence.snippet,
+                    value="" if evidence.value is None else str(evidence.value),
+                    unit=evidence.unit,
+                    conditions=json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                    provenance=evidence.provenance or "research-loop",
+                    authority=evidence.authority or "research-loop",
+                    evidence_id=evidence.evidence_id,
+                )
+            )
+        if persisted_ids:
+            record_relation(claim_id, persisted_ids)
 
     # 13. 报告生成（agent-backed：把整条链路的累积状态写成结构化报告）
     @step

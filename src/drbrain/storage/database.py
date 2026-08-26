@@ -324,6 +324,15 @@ CREATE TABLE IF NOT EXISTS claims (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
+
+-- Claim/evidence bindings (v17): preserve the actual groundings behind an
+-- assertion rather than relying on a synthetic statement-level evidence row.
+CREATE TABLE IF NOT EXISTS claim_evidence (
+    claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+    evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id) ON DELETE CASCADE,
+    PRIMARY KEY (claim_id, evidence_id)
+);
+CREATE INDEX IF NOT EXISTS idx_claim_evidence_evidence ON claim_evidence(evidence_id);
 """
 
 
@@ -386,6 +395,7 @@ class Database:
             (14, "evidence", self._migrate_add_evidence),
             (15, "claims", self._migrate_add_claims),
             (16, "agent_session_principal", self._migrate_add_agent_session_principal),
+            (17, "claim_evidence", self._migrate_add_claim_evidence),
         ]
 
         for version, name, fn in migrations:
@@ -694,6 +704,20 @@ class Database:
                 valid_to INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
+
+    def _migrate_add_claim_evidence(self) -> None:
+        """Add the many-to-many relationship between first-class claims and evidence."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS claim_evidence (
+                claim_id TEXT NOT NULL REFERENCES claims(claim_id) ON DELETE CASCADE,
+                evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id) ON DELETE CASCADE,
+                PRIMARY KEY (claim_id, evidence_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_claim_evidence_evidence
+                ON claim_evidence(evidence_id);
             """
         )
 
@@ -1302,10 +1326,15 @@ class Database:
                 f"{paper_id}:{node_id}" if (paper_id and node_id) else (paper_id or node_id)
             )
         self.conn.execute(
-            "INSERT OR REPLACE INTO evidence "
+            "INSERT INTO evidence "
             "(evidence_id, paper_id, node_id, page, snippet, value, unit, "
             " conditions, provenance, authority) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(evidence_id) DO UPDATE SET "
+            "paper_id = excluded.paper_id, node_id = excluded.node_id, "
+            "page = excluded.page, snippet = excluded.snippet, value = excluded.value, "
+            "unit = excluded.unit, conditions = excluded.conditions, "
+            "provenance = excluded.provenance, authority = excluded.authority",
             (
                 evidence_id,
                 paper_id,
@@ -1321,6 +1350,22 @@ class Database:
         )
         self.conn.commit()
         return evidence_id
+
+    def record_claim_evidence(self, claim_id: str, evidence_ids: list[str]) -> list[str]:
+        """Bind a persisted claim to existing first-class evidence rows.
+
+        The relation is additive and idempotent. SQLite foreign keys prevent
+        unknown claim/evidence identifiers from becoming dangling provenance.
+        """
+        unique_ids = list(dict.fromkeys(str(value) for value in evidence_ids if str(value)))
+        if not unique_ids:
+            return []
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?)",
+            [(claim_id, evidence_id) for evidence_id in unique_ids],
+        )
+        self.conn.commit()
+        return unique_ids
 
     def record_claim(
         self,

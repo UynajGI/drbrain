@@ -20,6 +20,7 @@ from drbrain.loop.workflow import (
 from drbrain.rag import agent as rag_agent
 from drbrain.rag import indexer
 from drbrain.rag.evidence import build_evidence_record
+from drbrain.storage.database import Database
 
 
 def test_evidence_record_binds_generation_locator_and_content():
@@ -422,3 +423,67 @@ def test_report_keeps_claim_to_evidence_links_and_rejects_unknown_ids():
     assert _referenced_evidence_ids(["ev-1", "unknown", "ev-1"], {"ev-1"}) == ["ev-1"]
     assert _has_required_evidence(state, ["ev-1"])
     assert not _has_required_evidence(state, [])
+    assert not _has_required_evidence(ResearchState(), [], evidence_required=True)
+
+
+def test_loop_persists_verified_claim_with_its_real_retrieval_evidence(tmp_path):
+    db = Database(tmp_path / "knowledge.sqlite3")
+    evidence = Evidence(
+        evidence_id="ev-real",
+        generation="g-20260826-a",
+        document_locator={"paper_id": "paper-1", "title": "Evidence paper"},
+        chunk_locator={"node_id": "section-2", "chunk_id": "chunk-2"},
+        content_checksum="a" * 64,
+        excerpt_checksum="b" * 64,
+        query="Does A support B?",
+        retriever="fusion",
+        rank=1,
+        score=0.9,
+        paper_id="paper-1",
+        page=3,
+        snippet="A supports B under controlled conditions.",
+        value=0.9,
+        unit="score",
+        conditions={"temperature": "300K"},
+        provenance="retrieval",
+        authority="source",
+    )
+    state = ResearchState(
+        task="autoresearch",
+        evidence=[evidence],
+        evidence_bundles=[EvidenceBundle(bundle_id="eb-1", evidence_ids=["ev-real"])],
+        verifications=[
+            Verification(
+                claim_id="cl-1",
+                statement="A supports B",
+                evidence_ids=["ev-real"],
+                status="verified",
+            )
+        ],
+        verified=["A supports B"],
+    )
+
+    ResearchLoopWorkflow(db=db)._persist_claims(state)
+
+    claim_id, evidence_id = db.conn.execute(
+        "SELECT claim_id, evidence_id FROM claim_evidence"
+    ).fetchone()
+    assert evidence_id == "ev-real"
+    evidence_row = db.conn.execute(
+        "SELECT paper_id, node_id, page, snippet, conditions FROM evidence WHERE evidence_id = ?",
+        (evidence_id,),
+    ).fetchone()
+    assert evidence_row[:4] == (
+        "paper-1",
+        "section-2",
+        "3",
+        "A supports B under controlled conditions.",
+    )
+    persisted = json.loads(evidence_row[4])
+    assert persisted["generation"] == "g-20260826-a"
+    assert persisted["content_checksum"] == "a" * 64
+    assert persisted["chunk_locator"]["chunk_id"] == "chunk-2"
+    assert db.conn.execute(
+        "SELECT claim_text FROM claims WHERE claim_id = ?", (claim_id,)
+    ).fetchone() == ("A supports B",)
+    db.close()
