@@ -53,6 +53,16 @@ def mcp_server_id(server: Mapping[str, Any], *, fallback: str = "mcp") -> str:
     return str(server.get("id") or server.get("name") or server.get("command") or fallback).strip()
 
 
+def normalize_mcp_strings(value: Any) -> tuple[str, ...]:
+    """Normalize host-owned MCP metadata while making unordered inputs stable."""
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    values = [str(item).strip() for item in value if str(item).strip()]
+    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
+
+
 def _policy_from_server(
     server: dict[str, Any], *, require_trusted: bool = False
 ) -> MCPServerPolicy:
