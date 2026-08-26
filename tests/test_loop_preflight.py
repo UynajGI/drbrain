@@ -68,3 +68,20 @@ def test_mcp_preflight_sorts_set_capabilities_in_its_diagnostic_report():
     )
 
     assert report["servers"][0]["tools"][0]["required_capabilities"] == ["alpha", "beta"]
+
+
+def test_mcp_preflight_uses_runtime_fallback_id_for_invalid_server_config():
+    report = preflight_mcp_servers(
+        [{"trusted": True, "allowed_tools": ["search"], "side_effect": "read"}],
+        tool_policy=ToolPolicy(step_capabilities={}),
+    )
+
+    assert report["servers"] == [
+        {
+            "server_id": "mcp",
+            "status": "blocked",
+            "side_effect": "read",
+            "issues": ["MCP server command is required"],
+            "tools": [],
+        }
+    ]

@@ -970,12 +970,9 @@ def _load_plugin_tools(
 
 def _string_tuple(value: Any) -> tuple[str, ...]:
     """Normalize host-owned list metadata without exposing arbitrary objects."""
-    if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
-    if not isinstance(value, (list, tuple, set, frozenset)):
-        return ()
-    values = [str(item).strip() for item in value if str(item).strip()]
-    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
+    from drbrain.rag.mcp_tools import normalize_mcp_strings
+
+    return normalize_mcp_strings(value)
 
 
 def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> Any:

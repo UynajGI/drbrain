@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from drbrain.loop.policy import ToolDefinition, ToolPolicy, ToolSideEffect
-from drbrain.rag.mcp_tools import mcp_server_id, validate_mcp_server
+from drbrain.rag.mcp_tools import mcp_server_id, normalize_mcp_strings, validate_mcp_server
 
 _DURABLE_SIDE_EFFECTS = frozenset({"pure", "read", "write", "irreversible"})
 
@@ -32,7 +32,7 @@ def preflight_mcp_servers(
                 }
             )
             continue
-        server_id = mcp_server_id(server, fallback=f"server-{index + 1}")
+        server_id = mcp_server_id(server)
         try:
             policy = validate_mcp_server(server, require_trusted=True)
         except ValueError as exc:
@@ -60,7 +60,7 @@ def preflight_mcp_servers(
             )
             continue
 
-        common_capabilities = _string_tuple(server.get("required_capabilities"))
+        common_capabilities = normalize_mcp_strings(server.get("required_capabilities"))
         tool_reports: list[dict[str, Any]] = []
         for tool_name in sorted(policy.allowed_tools or ()):
             capabilities = common_capabilities or (f"mcp:{policy.server_id}:{tool_name}",)
@@ -104,12 +104,3 @@ def preflight_mcp_servers(
         "blocked_servers": sum(report["status"] == "blocked" for report in reports),
         "servers": reports,
     }
-
-
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
-    if not isinstance(value, (list, tuple, set, frozenset)):
-        return ()
-    values = [str(item).strip() for item in value if str(item).strip()]
-    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
