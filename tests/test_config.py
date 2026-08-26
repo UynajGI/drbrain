@@ -6,6 +6,7 @@ from pathlib import Path
 
 from drbrain.config import (
     ApiConfig,
+    AutoresearchConfig,
     BackupConfig,
     BM25Config,
     Config,
@@ -95,6 +96,16 @@ def test_queue_config_defaults():
     assert c.auto_accept == 0.9
 
 
+def test_autoresearch_config_defaults():
+    c = AutoresearchConfig()
+    assert c.enabled is False
+    assert c.run_dir == "workspace/autoresearch"
+    assert c.plugins_dir == ""
+    assert c.mcp_servers == []
+    assert c.step_capabilities == {}
+    assert c.require_rag_evidence is False
+
+
 def test_config_defaults():
     c = Config()
     assert isinstance(c.llm, LLMConfig)
@@ -107,6 +118,7 @@ def test_config_defaults():
     assert isinstance(c.queue, QueueConfig)
     assert isinstance(c.embed, EmbedConfig)
     assert isinstance(c.backup, BackupConfig)
+    assert isinstance(c.autoresearch, AutoresearchConfig)
     assert c.embed.provider == "local"
     assert c.embed.device == "auto"
 
@@ -223,6 +235,26 @@ db:
         assert c.dirs.inbox == "data/spool/inbox"
         assert c.bm25.b == 0.75
         assert c.extract.max_concurrent == 10
+
+
+def test_from_yaml_loads_autoresearch_settings():
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td) / "config.yaml"
+        base.write_text(
+            """
+autoresearch:
+  enabled: true
+  run_dir: workspace/runs
+  max_cycles: 2
+  require_rag_evidence: true
+""",
+            encoding="utf-8",
+        )
+        c = Config.from_yaml(base, local_path=Path(td) / "missing.yaml")
+        assert c.autoresearch.enabled is True
+        assert c.autoresearch.run_dir == "workspace/runs"
+        assert c.autoresearch.max_cycles == 2
+        assert c.autoresearch.require_rag_evidence is True
 
 
 def test_from_yaml_with_local_overlay():

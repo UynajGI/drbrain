@@ -221,6 +221,7 @@ class ResearchDirector:
         tool_policy: ToolPolicy | None = None,
         noise_band: float = 0.0,
         required_repeats: int = 2,
+        require_rag_evidence: bool = False,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -233,6 +234,7 @@ class ResearchDirector:
         self._tool_policy = tool_policy
         self._noise_band = max(0.0, float(noise_band))
         self._required_repeats = max(1, int(required_repeats))
+        self._require_rag_evidence = bool(require_rag_evidence)
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
@@ -342,6 +344,7 @@ class ResearchDirector:
             model_manifest=model_manifest,
             tool_manifest=tool_manifest,
             rag_generation=self._rag_generation,
+            require_rag_evidence=self._require_rag_evidence,
         )
 
     # ── workspace paths ───────────────────────────────────────────────────────
@@ -969,6 +972,7 @@ class ResearchDirector:
             tool_broker=tool_broker,
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
+            require_rag_evidence=self._require_rag_evidence,
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
             durable_execution=durable_execution,
@@ -1113,7 +1117,11 @@ class ResearchDirector:
 
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
-        config = {"n_critics": self._n_critics, "rag_generation": captured_generation}
+        config = {
+            "n_critics": self._n_critics,
+            "rag_generation": captured_generation,
+            "require_rag_evidence": self._require_rag_evidence,
+        }
         effective_budget: dict[str, int | float] = {
             "max_cycles": max_cycles,
             "stagnation_cycles": stagnation_cycles,
@@ -1167,6 +1175,9 @@ class ResearchDirector:
             legacy_snapshot=state if legacy_projection else None,
         )
         stored_generation = run.config.get("rag_generation")
+        stored_evidence_requirement = run.config.get("require_rag_evidence")
+        if isinstance(stored_evidence_requirement, bool):
+            self._require_rag_evidence = stored_evidence_requirement
         self._rag_generation = (
             str(stored_generation)
             if isinstance(stored_generation, str) and stored_generation
@@ -1176,7 +1187,11 @@ class ResearchDirector:
             self._rag_generation = self._retain_rag_generation(
                 ledger, run.run_id, self._rag_generation
             )
-        effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
+        effective_config = {
+            "n_critics": self._n_critics,
+            "rag_generation": self._rag_generation,
+            "require_rag_evidence": self._require_rag_evidence,
+        }
         if existing_run is not None:
             ledger.record_resume(run.run_id, config=effective_config, budget=effective_budget)
         transitions = TransitionService(ledger)

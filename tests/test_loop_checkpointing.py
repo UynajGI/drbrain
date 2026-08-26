@@ -93,12 +93,13 @@ def _started_cycle_for_run(
     return run.run_id, step_id, attempt_id
 
 
-def _manifest(*, model: str = "model-a") -> CheckpointManifest:
+def _manifest(*, model: str = "model-a", require_rag_evidence: bool = False) -> CheckpointManifest:
     return CheckpointManifest(
         workflow_version="research-loop-v1",
         model_manifest={"model": model},
         tool_manifest={"plugins": []},
         rag_generation=None,
+        require_rag_evidence=require_rag_evidence,
     )
 
 
@@ -397,6 +398,65 @@ def test_incompatible_checkpoint_moves_the_cycle_to_manual_review(tmp_path):
         ).fetchone()[0]
     assert status == "manual_review"
     assert ledger.events(run_id)[-1].event_type == "cycle_manual_review"
+
+
+def test_checkpoint_rejects_changed_strict_rag_evidence_mode(tmp_path):
+    ledger, run_id, _, step_id, attempt_id = _started_cycle(tmp_path)
+    checkpoint = WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
+        worker_id="worker-a",
+        manifest=_manifest(require_rag_evidence=True),
+        lease_seconds=60,
+    ).capture(
+        ctx=_FakeContext({"globals": {"cursor": 1}}),
+        workflow=_FakeWorkflow(),
+        step_name="retrieve",
+    )
+
+    incompatible = WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
+        worker_id="worker-a",
+        manifest=_manifest(require_rag_evidence=False),
+        lease_seconds=60,
+        checkpoint=checkpoint,
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="manifest"):
+        incompatible.validate_checkpoint()
+
+
+def test_legacy_checkpoint_without_strict_evidence_field_remains_compatible(tmp_path):
+    ledger, run_id, _, step_id, attempt_id = _started_cycle(tmp_path)
+    checkpoint = WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
+        worker_id="worker-a",
+        manifest=_manifest(require_rag_evidence=False),
+        lease_seconds=60,
+    ).capture(
+        ctx=_FakeContext({"globals": {"cursor": 1}}),
+        workflow=_FakeWorkflow(),
+        step_name="retrieve",
+    )
+    checkpoint.manifest.pop("require_rag_evidence")
+
+    WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
+        worker_id="worker-a",
+        manifest=_manifest(require_rag_evidence=False),
+        lease_seconds=60,
+        checkpoint=checkpoint,
+    ).validate_checkpoint()
 
 
 def test_workflow_checkpoint_state_round_trips_discussion_and_queue():

@@ -256,6 +256,28 @@ class BackupConfig(_ConfigBase):
 
 
 @dataclass
+class AutoresearchConfig(_ConfigBase):
+    """Operator settings for durable autoresearch runs.
+
+    The feature remains opt-in so existing deployments do not start research
+    loops accidentally.  ``require_rag_evidence`` enables strict evidence
+    gating for operators that intentionally run against the RAG corpus.
+    """
+
+    enabled: bool = False
+    run_dir: str = "workspace/autoresearch"
+    plugins_dir: str = ""
+    mcp_servers: list[dict] = field(default_factory=list)
+    step_capabilities: dict[str, list[str]] = field(default_factory=dict)
+    n_critics: int = 3
+    max_cycles: int = 10
+    stagnation_cycles: int = 3
+    max_adaptations: int = 2
+    lease_seconds: float = 900.0
+    require_rag_evidence: bool = False
+
+
+@dataclass
 class Config(_ConfigBase):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
@@ -269,6 +291,7 @@ class Config(_ConfigBase):
     embed: EmbedConfig = field(default_factory=EmbedConfig)
     llamaindex: LlamaIndexConfig = field(default_factory=LlamaIndexConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
+    autoresearch: AutoresearchConfig = field(default_factory=AutoresearchConfig)
     admin: dict = field(default_factory=dict)
 
     @classmethod
@@ -321,6 +344,7 @@ class Config(_ConfigBase):
                 rsync_bin=backup_raw.get("rsync_bin", "rsync"),
                 targets=backup_targets,
             ),
+            autoresearch=AutoresearchConfig(**cfg.get("autoresearch", {})),
         )
 
 

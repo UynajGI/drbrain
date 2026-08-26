@@ -46,6 +46,7 @@ class CheckpointManifest:
     model_manifest: Mapping[str, Any]
     tool_manifest: Mapping[str, Any]
     rag_generation: str | None
+    require_rag_evidence: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +54,7 @@ class CheckpointManifest:
             "model_manifest": dict(self.model_manifest),
             "tool_manifest": dict(self.tool_manifest),
             "rag_generation": self.rag_generation,
+            "require_rag_evidence": self.require_rag_evidence,
         }
 
     @classmethod
@@ -64,6 +66,7 @@ class CheckpointManifest:
             rag_generation=(
                 str(value["rag_generation"]) if value.get("rag_generation") is not None else None
             ),
+            require_rag_evidence=bool(value.get("require_rag_evidence", False)),
         )
 
 
@@ -156,7 +159,13 @@ class WorkflowCheckpointService:
                 "checkpoint belongs to a different run/step than this resume attempt"
             )
         expected = self.manifest.to_dict()
-        if self.checkpoint.manifest != expected:
+        actual = dict(self.checkpoint.manifest)
+        # ``require_rag_evidence`` was added after the initial checkpoint
+        # contract.  Its absent legacy value has always meant the compatible,
+        # non-strict mode; normalize only that additive field and continue to
+        # reject all other manifest drift exactly.
+        actual.setdefault("require_rag_evidence", False)
+        if actual != expected:
             raise CheckpointCompatibilityError(
                 "checkpoint manifest is incompatible with this director session"
             )
