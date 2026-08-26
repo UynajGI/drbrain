@@ -31,6 +31,8 @@ def _settings(cfg: Any) -> AutoresearchConfig:
         raise ValueError("autoresearch.mcp_servers must be a list")
     if not isinstance(settings.step_capabilities, dict):
         raise ValueError("autoresearch.step_capabilities must be a mapping")
+    if not isinstance(settings.budget, dict):
+        raise ValueError("autoresearch.budget must be a mapping")
     return settings
 
 
@@ -81,6 +83,7 @@ def run_cmd(
                 max_cycles=effective_max_cycles,
                 stagnation_cycles=settings.stagnation_cycles,
                 max_adaptations=settings.max_adaptations,
+                budget=dict(settings.budget),
             )
     except Exception as exc:  # noqa: BLE001 - CLI reports the durable-run failure
         typer.echo(f"[autoresearch] durable run failed ({type(exc).__name__}): {exc}", err=True)
@@ -92,11 +95,13 @@ def run_cmd(
         "champion": state.get("champion", []),
         "rejected": state.get("rejected", []),
         "workspace": settings.run_dir,
+        "budget": settings.budget,
     }
     if json_output:
         typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))
         return
     typer.echo(
         f"Autoresearch returned: topic={summary['topic']!r}; cycles={summary['cycles']}; "
-        f"champion={len(summary['champion'])}; workspace={summary['workspace']}"
+        f"champion={len(summary['champion'])}; workspace={summary['workspace']}; "
+        f"budget={summary['budget']}"
     )

@@ -92,6 +92,9 @@ boundary.
 ## Budgets
 
 `ResearchDirector.run()` accepts an additive `budget=` mapping for a new run.
+The supported CLI forwards the additive `autoresearch.budget` mapping unchanged;
+the JSON summary reports the configured mapping so an operator can retain it with
+the run output.
 Supported enforced limits are `max_attempts`, `max_tool_calls`,
 `max_rag_calls`, `max_model_calls`, `max_wall_seconds`, `max_tokens`,
 `max_cpu_seconds`, and `max_gpu_seconds`.

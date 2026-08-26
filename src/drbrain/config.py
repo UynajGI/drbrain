@@ -274,6 +274,9 @@ class AutoresearchConfig(_ConfigBase):
     stagnation_cycles: int = 3
     max_adaptations: int = 2
     lease_seconds: float = 900.0
+    # Passed through to ResearchDirector, which validates supported limit names
+    # and numeric values before a durable run is created or resumed.
+    budget: dict[str, int | float] = field(default_factory=dict)
     require_rag_evidence: bool = False
 
 

@@ -61,6 +61,7 @@ def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
         "stagnation_cycles": 2,
         "max_adaptations": 1,
         "lease_seconds": 30,
+        "budget": {"max_model_calls": 5, "max_tokens": 1000},
         "require_rag_evidence": True,
     }
     captured: dict = {}
@@ -83,6 +84,7 @@ def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["cycles"] == 1
+    assert json.loads(result.stdout)["budget"] == {"max_model_calls": 5, "max_tokens": 1000}
     assert captured["topic"] == "test topic"
     assert captured["run_dir"] == str(tmp_path / "runs")
     assert captured["n_critics"] == 2
@@ -95,6 +97,7 @@ def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
         "max_cycles": 3,
         "stagnation_cycles": 2,
         "max_adaptations": 1,
+        "budget": {"max_model_calls": 5, "max_tokens": 1000},
     }
 
 
@@ -115,6 +118,17 @@ def test_autoresearch_run_rejects_non_mapping_settings(tmp_path):
 
     assert result.exit_code == 1
     assert "invalid config" in result.stderr
+
+
+def test_autoresearch_run_rejects_non_mapping_budget(tmp_path):
+    cfg = _make_config(str(tmp_path / "test.db"), str(tmp_path / "reports"))
+    cfg["autoresearch"] = {"enabled": True, "budget": ["not", "a", "mapping"]}
+    with mock_cfg(str(tmp_path / "test.db"), str(tmp_path / "reports")) as load_config:
+        load_config.return_value = cfg
+        result = runner.invoke(app, ["autoresearch", "run", "test topic"])
+
+    assert result.exit_code == 1
+    assert "autoresearch.budget" in result.stderr
 
 
 def test_app_stats():
