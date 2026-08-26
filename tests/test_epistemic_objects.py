@@ -10,6 +10,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from drbrain.storage.database import Database
 
 EVIDENCE_COLS = [
@@ -293,6 +295,15 @@ def test_record_claim_evidence_preserves_many_to_many_links(tmp_db):
     assert tmp_db.conn.execute("SELECT claim_id, evidence_id FROM claim_evidence").fetchall() == [
         (claim_id, "ev-real")
     ]
+
+    # Re-recording an idempotent claim must not cascade-delete its evidence link.
+    tmp_db.record_claim("research", "Verified claim", claim_type="Conclusion")
+    assert tmp_db.conn.execute("SELECT claim_id, evidence_id FROM claim_evidence").fetchall() == [
+        (claim_id, "ev-real")
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        tmp_db.record_claim_evidence(claim_id, ["unknown-evidence"])
 
     # Updating the evidence must not delete an existing claim relationship.
     tmp_db.record_evidence(

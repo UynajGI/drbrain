@@ -702,11 +702,11 @@ class ResearchLoopWorkflow(Workflow):
             state.evidence_bundles.append(bundle)
 
     def _requires_evidence_ids(self, state: ResearchState) -> bool:
-        """Require citations only for a pinned RAG run or retrieved RAG evidence.
+        """Require citations for retrieved RAG evidence or strict RAG mode.
 
         Durable compute-only loops remain governed by their numeric-artifact
-        gate. A retained RAG generation, on the other hand, must fail closed if
-        retrieval did not yield a durable, referenced evidence record.
+        gate. Strict RAG mode fails closed when retrieval did not yield a
+        durable, referenced evidence record.
         """
         return bool(state.evidence_bundles) or self._rag_evidence_required
 
@@ -1801,9 +1801,12 @@ class ResearchLoopWorkflow(Workflow):
             return
         try:
             evidence_by_id = {item.evidence_id: item for item in state.evidence if item.evidence_id}
-            verification_by_statement = {
-                item.statement: item for item in state.verifications if item.statement
-            }
+            verification_by_statement: dict[str, list[Verification]] = {}
+            for verification in state.verifications:
+                if verification.statement:
+                    verification_by_statement.setdefault(verification.statement, []).append(
+                        verification
+                    )
             for statements, claim_type, confidence in (
                 (state.verified, "Conclusion", 1.0),
                 (state.falsified, "Rejected", 1.0),
@@ -1820,7 +1823,7 @@ class ResearchLoopWorkflow(Workflow):
                     )
                     self._record_claim_evidence(
                         claim_id,
-                        verification_by_statement.get(statement),
+                        verification_by_statement.get(statement, []),
                         evidence_by_id,
                     )
         except Exception as exc:  # noqa: BLE001 — persistence must not break the loop
@@ -1829,17 +1832,22 @@ class ResearchLoopWorkflow(Workflow):
     def _record_claim_evidence(
         self,
         claim_id: str,
-        verification: Verification | None,
+        verifications: list[Verification],
         evidence_by_id: Mapping[str, Evidence],
     ) -> None:
         """Persist verified retrieval groundings and bind them to one claim."""
-        if self._db is None or verification is None:
+        if self._db is None or not verifications:
             return
         record_relation = getattr(self._db, "record_claim_evidence", None)
-        if record_relation is None:
-            return
         persisted_ids: list[str] = []
-        for evidence_id in verification.evidence_ids:
+        evidence_ids = list(
+            dict.fromkeys(
+                evidence_id
+                for verification in verifications
+                for evidence_id in verification.evidence_ids
+            )
+        )
+        for evidence_id in evidence_ids:
             evidence = evidence_by_id.get(evidence_id)
             if evidence is None:
                 continue
@@ -1876,7 +1884,10 @@ class ResearchLoopWorkflow(Workflow):
                 )
             )
         if persisted_ids:
-            record_relation(claim_id, persisted_ids)
+            if record_relation is None:
+                logger.debug("[loop] database backend does not support claim/evidence links")
+            else:
+                record_relation(claim_id, persisted_ids)
 
     # 13. 报告生成（agent-backed：把整条链路的累积状态写成结构化报告）
     @step

@@ -451,30 +451,48 @@ def test_loop_persists_verified_claim_with_its_real_retrieval_evidence(tmp_path)
         provenance="retrieval",
         authority="source",
     )
+    additional_evidence = Evidence(
+        evidence_id="ev-additional",
+        generation="g-20260826-a",
+        document_locator={"paper_id": "paper-2"},
+        chunk_locator={"node_id": "section-3"},
+        content_checksum="c" * 64,
+        paper_id="paper-2",
+        snippet="A second source independently supports B.",
+    )
     state = ResearchState(
         task="autoresearch",
-        evidence=[evidence],
-        evidence_bundles=[EvidenceBundle(bundle_id="eb-1", evidence_ids=["ev-real"])],
+        evidence=[evidence, additional_evidence],
+        evidence_bundles=[
+            EvidenceBundle(bundle_id="eb-1", evidence_ids=["ev-real", "ev-additional"])
+        ],
         verifications=[
             Verification(
                 claim_id="cl-1",
                 statement="A supports B",
                 evidence_ids=["ev-real"],
                 status="verified",
-            )
+            ),
+            Verification(
+                claim_id="cl-2",
+                statement="A supports B",
+                evidence_ids=["ev-additional"],
+                status="verified",
+            ),
         ],
         verified=["A supports B"],
     )
 
     ResearchLoopWorkflow(db=db)._persist_claims(state)
 
-    claim_id, evidence_id = db.conn.execute(
-        "SELECT claim_id, evidence_id FROM claim_evidence"
-    ).fetchone()
-    assert evidence_id == "ev-real"
+    claim_links = db.conn.execute(
+        "SELECT claim_id, evidence_id FROM claim_evidence ORDER BY evidence_id"
+    ).fetchall()
+    claim_id = claim_links[0][0]
+    assert claim_links == [(claim_id, "ev-additional"), (claim_id, "ev-real")]
     evidence_row = db.conn.execute(
         "SELECT paper_id, node_id, page, snippet, conditions FROM evidence WHERE evidence_id = ?",
-        (evidence_id,),
+        ("ev-real",),
     ).fetchone()
     assert evidence_row[:4] == (
         "paper-1",

@@ -1361,7 +1361,8 @@ class Database:
         if not unique_ids:
             return []
         self.conn.executemany(
-            "INSERT OR IGNORE INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?)",
+            "INSERT INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?) "
+            "ON CONFLICT(claim_id, evidence_id) DO NOTHING",
             [(claim_id, evidence_id) for evidence_id in unique_ids],
         )
         self.conn.commit()
@@ -1380,11 +1381,11 @@ class Database:
         valid_to: int | None = None,
         claim_id: str | None = None,
     ) -> str:
-        """Insert (or replace) a first-class claim row. Returns ``claim_id``.
+        """Insert or update a first-class claim row. Returns ``claim_id``.
 
         ``claim_id`` defaults to a stable hash of ``label`` + ``claim_text`` so
-        re-recording the same assertion is idempotent (INSERT OR REPLACE keys
-        on the same id).
+        re-recording the same assertion is idempotent without replacing the
+        row, preserving claim-to-evidence foreign-key relationships.
         """
         import hashlib
 
@@ -1392,10 +1393,15 @@ class Database:
             digest = hashlib.sha1(f"{label}\x00{claim_text}".encode()).hexdigest()
             claim_id = f"claim_{digest[:16]}"
         self.conn.execute(
-            "INSERT OR REPLACE INTO claims "
+            "INSERT INTO claims "
             "(claim_id, label, claim_text, claim_type, authority, provenance, "
             " confidence, valid_from, valid_to) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(claim_id) DO UPDATE SET "
+            "label = excluded.label, claim_text = excluded.claim_text, "
+            "claim_type = excluded.claim_type, authority = excluded.authority, "
+            "provenance = excluded.provenance, confidence = excluded.confidence, "
+            "valid_from = excluded.valid_from, valid_to = excluded.valid_to",
             (
                 claim_id,
                 label,
