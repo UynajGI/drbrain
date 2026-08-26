@@ -60,6 +60,41 @@ def test_trace_and_audit_commands_read_the_existing_run(tmp_path):
     assert json.loads(audit.output)["run_id"] == run_id
 
 
+def test_evidence_command_reads_the_existing_run_without_starting_it(tmp_path):
+    cfg, run_id, _ = _manual_review_run(tmp_path)
+
+    result = runner.invoke(autoresearch_app, ["evidence", run_id], obj={"config": cfg})
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["run_id"] == run_id
+    assert payload["claims"] == []
+
+
+def test_preflight_reports_mcp_tools_that_would_be_hidden(tmp_path):
+    cfg = {
+        "autoresearch": {
+            "run_dir": str(tmp_path / "autoresearch"),
+            "mcp_servers": [
+                {
+                    "id": "catalog",
+                    "command": "catalog-mcp",
+                    "trusted": True,
+                    "allowed_tools": ["search"],
+                }
+            ],
+            "step_capabilities": {"retrieve": ["mcp:catalog:search"]},
+        }
+    }
+
+    result = runner.invoke(autoresearch_app, ["preflight", "--json"], obj={"config": cfg})
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["servers"][0]["status"] == "blocked"
+    assert payload["servers"][0]["issues"] == ["side_effect must be classified for durable use"]
+
+
 def test_pause_and_cancel_commands_change_the_existing_run(tmp_path):
     cfg, run_id, _ = _manual_review_run(tmp_path)
 
