@@ -62,7 +62,7 @@ STEP_TRANSITIONS: Mapping[str, frozenset[str]] = {
     STEP_SUCCEEDED: frozenset(),
     STEP_FAILED: frozenset(),
     STEP_TIMED_OUT: frozenset(),
-    STEP_MANUAL_REVIEW: frozenset(),
+    STEP_MANUAL_REVIEW: frozenset({STEP_FAILED}),
 }
 
 

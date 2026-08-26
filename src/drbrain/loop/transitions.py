@@ -496,6 +496,39 @@ class TransitionService:
                 payload={"step_id": step_id, "reason": reason},
             )
 
+    def resolve_manual_review(
+        self, run_id: str, *, step_id: str, reason: str, actor: str = "operator"
+    ) -> None:
+        """Abandon a reviewed step without retrying its external side effect."""
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("manual-review resolution requires a reason")
+        with self._ledger.transaction() as conn:
+            row = conn.execute(
+                "SELECT run_id, status FROM research_steps WHERE step_id = ?", (step_id,)
+            ).fetchone()
+            if row is None or str(row["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            if str(row["status"]) != STEP_MANUAL_REVIEW:
+                raise RuntimeError(f"step {step_id!r} is not awaiting manual review")
+            self._transition_step(conn, step_id, STEP_FAILED)
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now, step_id),
+            )
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor=actor,
+                event_type="cycle_manual_review_resolved",
+                payload={"step_id": step_id, "resolution": "abandoned", "reason": reason},
+            )
+
     def register_front_half_node_contracts(
         self, run_id: str, node_specs: Mapping[str, Mapping[str, Any]]
     ) -> None:
