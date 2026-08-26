@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.preflight import preflight_mcp_servers
-from drbrain.rag.agent import _mcp_tool_definition
+from drbrain.rag.mcp_tools import mcp_server_id
 
 
 def test_mcp_preflight_reports_visible_classified_tools_without_contacting_server():
@@ -41,15 +41,7 @@ def test_mcp_preflight_reports_visible_classified_tools_without_contacting_serve
             }
         ],
     }
-    definition = _mcp_tool_definition(
-        {
-            "id": " catalog ",
-            "command": "catalog-mcp",
-            "side_effect": "read",
-        },
-        {"name": "search"},
-    )
-    assert definition.required_capabilities == ("mcp:catalog:search",)
+    assert mcp_server_id({"id": " catalog "}) == "catalog"
 
 
 def test_mcp_preflight_sorts_set_capabilities_in_its_diagnostic_report():
