@@ -95,7 +95,7 @@ def run_cmd(
         "champion": state.get("champion", []),
         "rejected": state.get("rejected", []),
         "workspace": settings.run_dir,
-        "budget": settings.budget,
+        "budget": dict(settings.budget),
     }
     if json_output:
         typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))

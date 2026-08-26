@@ -1025,18 +1025,22 @@ class RunLedger:
     ) -> LedgerEvent:
         """Append the effective configuration for one resumed director session.
 
-        ``research_runs.config_json`` and ``budget_json`` preserve the original
-        run specification.  A resume can intentionally use a different budget,
-        so every later invocation is recorded as its own append-only audit
-        event instead of silently rewriting the original settings.
+        ``research_runs.config_json`` preserves the original run specification.
+        A resume can intentionally apply a different budget, so ``budget_json``
+        stores the currently enforced limits while the append-only audit event
+        retains both the prior and effective mappings.
         """
         with self.transaction() as conn:
-            row = conn.execute("SELECT 1 FROM research_runs WHERE run_id = ?", (run_id,)).fetchone()
+            row = conn.execute(
+                "SELECT budget_json FROM research_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(f"unknown research run: {run_id}")
+            previous_budget = self._json_mapping(row["budget_json"])
+            effective_budget = dict(budget)
             conn.execute(
-                "UPDATE research_runs SET updated_at = ? WHERE run_id = ?",
-                (time.time(), run_id),
+                "UPDATE research_runs SET budget_json = ?, updated_at = ? WHERE run_id = ?",
+                (_as_json(effective_budget), time.time(), run_id),
             )
             return self.append_event(
                 conn,
@@ -1046,7 +1050,8 @@ class RunLedger:
                 payload={
                     "session_id": uuid.uuid4().hex,
                     "config": dict(config),
-                    "budget": dict(budget),
+                    "previous_budget": previous_budget,
+                    "budget": effective_budget,
                 },
             )
 

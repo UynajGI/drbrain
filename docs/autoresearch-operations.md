@@ -95,6 +95,8 @@ boundary.
 The supported CLI forwards the additive `autoresearch.budget` mapping unchanged;
 the JSON summary reports the configured mapping so an operator can retain it with
 the run output.
+When a topic resumes, that mapping becomes the currently enforced ledger budget;
+the `run_resumed` audit event retains both the prior and effective limits.
 Supported enforced limits are `max_attempts`, `max_tool_calls`,
 `max_rag_calls`, `max_model_calls`, `max_wall_seconds`, `max_tokens`,
 `max_cpu_seconds`, and `max_gpu_seconds`.
