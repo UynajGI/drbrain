@@ -151,6 +151,10 @@ class WorkflowCheckpointService:
         """Reject mismatched workflow/model/tool/RAG environments explicitly."""
         if self.checkpoint is None:
             raise CheckpointRestoreError("no checkpoint is bound to this resume attempt")
+        if self.checkpoint.run_id != self.run_id or self.checkpoint.step_id != self.step_id:
+            raise CheckpointCompatibilityError(
+                "checkpoint belongs to a different run/step than this resume attempt"
+            )
         expected = self.manifest.to_dict()
         if self.checkpoint.manifest != expected:
             raise CheckpointCompatibilityError(

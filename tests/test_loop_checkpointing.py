@@ -77,6 +77,22 @@ def _started_cycle(tmp_path):
     return ledger, run.run_id, transitions, step_id, attempt_id
 
 
+def _started_cycle_for_run(
+    ledger: RunLedger, transitions: TransitionService, topic: str, worker_id: str
+) -> tuple[str, str, str]:
+    run = ledger.get_or_create_run(topic)
+    transitions.start_run(run.run_id)
+    step_id = transitions.begin_cycle(
+        run.run_id,
+        cycle=1,
+        worker_id=worker_id,
+        lease_seconds=60,
+    )
+    attempt_id = ledger.active_attempt_id(step_id)
+    assert attempt_id is not None
+    return run.run_id, step_id, attempt_id
+
+
 def _manifest(*, model: str = "model-a") -> CheckpointManifest:
     return CheckpointManifest(
         workflow_version="research-loop-v1",
@@ -84,6 +100,92 @@ def _manifest(*, model: str = "model-a") -> CheckpointManifest:
         tool_manifest={"plugins": []},
         rag_generation=None,
     )
+
+
+@pytest.mark.parametrize("operation", ["complete", "fail", "manual_review"])
+def test_transition_rejects_step_owned_by_another_run(tmp_path, operation: str):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    transitions = TransitionService(ledger)
+    run_a, step_a, _attempt_a = _started_cycle_for_run(ledger, transitions, "run A", "worker-a")
+    run_b, _step_b, _attempt_b = _started_cycle_for_run(ledger, transitions, "run B", "worker-b")
+
+    with pytest.raises(KeyError, match="unknown step"):
+        if operation == "complete":
+            transitions.complete_cycle(
+                run_b,
+                step_id=step_a,
+                cycle_result={},
+                state_snapshot={},
+                research_state=None,
+                worker_id="worker-a",
+            )
+        elif operation == "fail":
+            transitions.fail_cycle(
+                run_b,
+                step_id=step_a,
+                error=RuntimeError("cross-run failure"),
+                worker_id="worker-a",
+            )
+        else:
+            transitions.mark_manual_review(
+                run_b,
+                step_id=step_a,
+                reason="cross-run manual review",
+            )
+
+    with sqlite3.connect(ledger.path) as conn:
+        status = conn.execute(
+            "SELECT status FROM research_steps WHERE step_id = ?", (step_a,)
+        ).fetchone()[0]
+    assert status == "running"
+    assert not any(event.payload.get("step_id") == step_a for event in ledger.events(run_b))
+    assert ledger.get_run("run A").status == "running"
+
+
+def test_resume_and_restore_reject_a_checkpoint_from_another_run_or_step(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    transitions = TransitionService(ledger)
+    run_a, step_a, attempt_a = _started_cycle_for_run(ledger, transitions, "run A", "worker-a")
+    checkpoint = WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_a,
+        step_id=step_a,
+        attempt_id=attempt_a,
+        worker_id="worker-a",
+        manifest=_manifest(),
+        lease_seconds=60,
+    ).capture(
+        ctx=_FakeContext({"globals": {"cursor": "from-run-a"}}),
+        workflow=_FakeWorkflow(),
+        step_name="retrieve",
+    )
+    run_b, step_b, attempt_b = _started_cycle_for_run(ledger, transitions, "run B", "worker-b")
+    with ledger.transaction() as conn:
+        conn.execute("UPDATE research_steps SET lease_expires_at = 0 WHERE step_id = ?", (step_b,))
+    transitions.reconcile_incomplete_cycles(run_b)
+
+    with pytest.raises(KeyError, match="checkpoint"):
+        transitions.resume_cycle(
+            run_b,
+            step_id=step_b,
+            checkpoint_id=checkpoint.checkpoint_id,
+            worker_id="worker-c",
+            lease_seconds=60,
+        )
+    assert ledger.active_attempt_id(step_b) is None
+
+    foreign_checkpoint = WorkflowCheckpointService(
+        ledger=ledger,
+        run_id=run_b,
+        step_id=step_b,
+        attempt_id=attempt_b,
+        worker_id="worker-c",
+        manifest=_manifest(),
+        lease_seconds=60,
+        checkpoint=checkpoint,
+    )
+    with pytest.raises(CheckpointCompatibilityError, match="run/step"):
+        foreign_checkpoint.validate_checkpoint()
 
 
 def test_checkpoint_is_json_and_renews_the_worker_lease(tmp_path):
