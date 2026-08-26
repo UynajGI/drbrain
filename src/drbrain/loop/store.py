@@ -1495,6 +1495,19 @@ class RunLedger:
             ).fetchall()
             return [str(row["step_id"]) for row in rows]
 
+    def manual_review_step_ids(self, run_id: str) -> list[str]:
+        """Return steps awaiting an explicit operator disposition."""
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT step_id FROM research_steps
+                WHERE run_id = ? AND status = 'manual_review'
+                ORDER BY created_at
+                """,
+                (run_id,),
+            ).fetchall()
+            return [str(row["step_id"]) for row in rows]
+
     def record_checkpoint(
         self,
         *,

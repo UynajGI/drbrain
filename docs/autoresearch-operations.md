@@ -55,6 +55,39 @@ retain their historical `false` semantics.
 
 ## Read and control a run
 
+The CLI is the supported operator surface. It opens only an existing ledger,
+so a typo in `run_dir` cannot create an empty control-plane database:
+
+```bash
+drbrain autoresearch status "research topic" --json
+drbrain autoresearch trace "research topic"
+drbrain autoresearch audit "research topic"
+drbrain autoresearch pause "research topic" --reason "operator maintenance"
+drbrain autoresearch cancel "research topic" --reason "outside experiment scope"
+```
+
+Use the stable `run_id` from `status` instead of the topic whenever the topic
+is ambiguous in an operator transcript. To resume a paused run, explicitly run
+`drbrain autoresearch run "research topic"`; there is no detached CLI resume
+that could imply a background worker was started.
+
+When an interrupted external-side-effect step enters `manual_review`, inspect
+the trace and the external system first. The only CLI resolution is an explicit
+abandon decision; it never retries that step:
+
+```bash
+drbrain autoresearch resolve-manual-review "research topic" \
+  --step <step_id> \
+  --reason "remote job was checked; start a fresh cycle" \
+  --json
+```
+
+This records `cycle_manual_review_resolved` with the reason and marks only the
+old step failed. Run the normal `autoresearch run` command afterward if a new
+cycle is desired.
+
+The Python API remains available for integrations:
+
 ```python
 from drbrain.loop import RunGovernance
 from drbrain.loop.store import RunLedger
@@ -65,14 +98,12 @@ trace = control.trace(status["run_id"])       # read-only event and tool trace
 audit = control.audit_summary(status["run_id"])
 
 control.pause(status["run_id"], reason="operator_pause")
-control.resume(status["run_id"])
 control.cancel(status["run_id"], reason="operator_cancel")
 ```
 
 `pause` and `cancel` never remove evidence or artifacts. New ToolBroker calls
-are denied while a run is paused, cancelled, or budget-exhausted. `resume`
-reopens only a paused run; checkpoint recovery remains owned by
-`ResearchDirector`.
+are denied while a run is paused, cancelled, or budget-exhausted. Checkpoint
+recovery remains owned by `ResearchDirector`.
 
 ## Tool approvals
 

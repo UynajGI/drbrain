@@ -55,8 +55,8 @@ class TransitionService:
                 conn, run_id, actor="director", event_type="run_started", payload={"from": current}
             )
 
-    def pause_run(self, run_id: str, *, reason: str) -> None:
-        """Persist a bounded director session as a resumable run."""
+    def pause_run(self, run_id: str, *, reason: str, actor: str = "director") -> None:
+        """Persist a bounded director or operator pause as a resumable run."""
         with self._ledger.transaction() as conn:
             current = self._run_status(conn, run_id)
             if current == RUN_PAUSED:
@@ -64,7 +64,7 @@ class TransitionService:
             validate_run_transition(current, RUN_PAUSED)
             self._set_run_status(conn, run_id, RUN_PAUSED)
             self._ledger.append_event(
-                conn, run_id, actor="director", event_type="run_paused", payload={"reason": reason}
+                conn, run_id, actor=actor, event_type="run_paused", payload={"reason": reason}
             )
 
     def cancel_run(self, run_id: str, *, reason: str, actor: str = "operator") -> None:
@@ -494,6 +494,47 @@ class TransitionService:
                 actor="recovery",
                 event_type="cycle_manual_review",
                 payload={"step_id": step_id, "reason": reason},
+            )
+
+    def resolve_manual_review(
+        self, run_id: str, *, step_id: str, reason: str, actor: str = "operator"
+    ) -> None:
+        """Abandon a reviewed step without retrying its external side effect."""
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("manual-review resolution requires a reason")
+        with self._ledger.transaction() as conn:
+            row = conn.execute(
+                "SELECT run_id, status FROM research_steps WHERE step_id = ?", (step_id,)
+            ).fetchone()
+            if row is None or str(row["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            if str(row["status"]) != STEP_MANUAL_REVIEW:
+                raise RuntimeError(f"step {step_id!r} is not awaiting manual review")
+            self._transition_step(conn, step_id, STEP_FAILED)
+            now = time.time()
+            conn.execute(
+                """
+                UPDATE research_attempts
+                SET status = ?, failure_category = ?, completed_at = ?
+                WHERE step_id = ? AND status = ?
+                """,
+                (STEP_FAILED, "manual_review_abandoned", now, step_id, STEP_UNKNOWN),
+            )
+            conn.execute(
+                """
+                UPDATE research_steps
+                SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+                WHERE step_id = ?
+                """,
+                (now, step_id),
+            )
+            self._ledger.append_event(
+                conn,
+                run_id,
+                actor=actor,
+                event_type="cycle_manual_review_resolved",
+                payload={"step_id": step_id, "resolution": "abandoned", "reason": reason},
             )
 
     def register_front_half_node_contracts(
