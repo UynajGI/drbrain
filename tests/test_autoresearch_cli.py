@@ -48,6 +48,34 @@ def test_status_never_creates_a_ledger_for_an_unknown_run_dir(tmp_path):
     assert not (run_dir / "ledger.sqlite3").exists()
 
 
+def test_trace_and_audit_commands_read_the_existing_run(tmp_path):
+    cfg, run_id, _ = _manual_review_run(tmp_path)
+
+    trace = runner.invoke(autoresearch_app, ["trace", run_id], obj={"config": cfg})
+    audit = runner.invoke(autoresearch_app, ["audit", run_id], obj={"config": cfg})
+
+    assert trace.exit_code == 0, trace.output
+    assert json.loads(trace.output)["run_id"] == run_id
+    assert audit.exit_code == 0, audit.output
+    assert json.loads(audit.output)["run_id"] == run_id
+
+
+def test_pause_and_cancel_commands_change_the_existing_run(tmp_path):
+    cfg, run_id, _ = _manual_review_run(tmp_path)
+
+    paused = runner.invoke(autoresearch_app, ["pause", run_id, "--json"], obj={"config": cfg})
+    cancelled = runner.invoke(
+        autoresearch_app,
+        ["cancel", run_id, "--reason", "operator ended the topic", "--json"],
+        obj={"config": cfg},
+    )
+
+    assert paused.exit_code == 0, paused.output
+    assert json.loads(paused.output)["status"] == "paused"
+    assert cancelled.exit_code == 0, cancelled.output
+    assert json.loads(cancelled.output)["status"] == "cancelled"
+
+
 def test_resolve_manual_review_is_explicit_and_auditable(tmp_path):
     cfg, run_id, step_id = _manual_review_run(tmp_path)
 
