@@ -700,16 +700,13 @@ class ResearchLoopWorkflow(Workflow):
             state.evidence_bundles.append(bundle)
 
     def _requires_evidence_ids(self, state: ResearchState) -> bool:
-        """Return whether this execution mode must reject ungrounded verifier output."""
-        return bool(state.evidence_bundles) or any(
-            item is not None
-            for item in (
-                self._tool_broker,
-                self._evidence_recorder,
-                self._durable_front_half,
-                self._durable_execution,
-            )
-        )
+        """Require citations only for a pinned RAG run or retrieved RAG evidence.
+
+        Durable compute-only loops remain governed by their numeric-artifact
+        gate. A retained RAG generation, on the other hand, must fail closed if
+        retrieval did not yield a durable, referenced evidence record.
+        """
+        return bool(state.evidence_bundles) or bool(self._rag_generation)
 
     @staticmethod
     def _fallback_query(task: str) -> str:
