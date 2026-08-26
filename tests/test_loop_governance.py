@@ -76,6 +76,37 @@ def test_operator_can_cancel_a_created_run(tmp_path):
     assert status["status"] == "cancelled"
 
 
+def test_operator_can_abandon_manual_review_with_a_durable_reason(tmp_path):
+    ledger, run_id, _ = _running(tmp_path)
+    step_id = ledger.active_leased_steps(run_id)[0]
+
+    transitions = TransitionService(ledger)
+    transitions.mark_manual_review(run_id, step_id=step_id, reason="external write was interrupted")
+    control = RunGovernance(ledger)
+
+    assert control.status(run_id)["manual_review_steps"] == [step_id]
+
+    resolved = control.resolve_manual_review(
+        run_id,
+        step_id=step_id,
+        reason="operator verified the external state and will start a new cycle",
+    )
+
+    assert resolved["manual_review_steps"] == []
+    with ledger.transaction() as conn:
+        status = conn.execute(
+            "SELECT status FROM research_steps WHERE step_id = ?", (step_id,)
+        ).fetchone()["status"]
+    assert status == "failed"
+    event = ledger.events(run_id)[-1]
+    assert event.event_type == "cycle_manual_review_resolved"
+    assert event.payload == {
+        "step_id": step_id,
+        "resolution": "abandoned",
+        "reason": "operator verified the external state and will start a new cycle",
+    }
+
+
 def test_pause_blocks_new_broker_side_effects_and_resume_restores_execution(tmp_path):
     ledger, run_id, broker = _running(tmp_path)
     control = RunGovernance(ledger)

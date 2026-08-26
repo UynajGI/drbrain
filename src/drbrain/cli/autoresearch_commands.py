@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, NoReturn
 
 import typer
 
 from drbrain.cli._common import open_db
 from drbrain.config import AutoresearchConfig
-from drbrain.loop import ResearchDirector
+from drbrain.loop import ResearchDirector, RunGovernance
 from drbrain.loop.policy import ToolPolicy
+from drbrain.loop.store import RunLedger
 
 autoresearch_app = typer.Typer(help="Durable autoresearch operations")
 
@@ -34,6 +36,30 @@ def _settings(cfg: Any) -> AutoresearchConfig:
     if not isinstance(settings.budget, dict):
         raise ValueError("autoresearch.budget must be a mapping")
     return settings
+
+
+def _control(cfg: Any) -> RunGovernance:
+    """Open an existing ledger without creating a misleading empty operator view."""
+    settings = _settings(cfg)
+    ledger_path = Path(settings.run_dir) / "ledger.sqlite3"
+    if not ledger_path.is_file():
+        raise FileNotFoundError(f"autoresearch ledger does not exist: {ledger_path}")
+    return RunGovernance(RunLedger(ledger_path))
+
+
+def _emit_operator_result(payload: dict[str, Any], *, json_output: bool, label: str) -> None:
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(
+        f"Autoresearch {label}: topic={payload['topic']!r}; status={payload['status']}; "
+        f"manual_review_steps={len(payload['manual_review_steps'])}"
+    )
+
+
+def _operator_error(exc: Exception) -> NoReturn:
+    typer.echo(f"[autoresearch] operator command failed ({type(exc).__name__}): {exc}", err=True)
+    raise typer.Exit(1) from exc
 
 
 @autoresearch_app.command("run")
@@ -105,3 +131,91 @@ def run_cmd(
         f"champion={len(summary['champion'])}; workspace={summary['workspace']}; "
         f"budget={summary['budget']}"
     )
+
+
+@autoresearch_app.command("status")
+def status_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON"),
+) -> None:
+    """Inspect a durable run without starting it."""
+    try:
+        payload = _control(ctx.obj["config"]).status(identifier)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    _emit_operator_result(payload, json_output=json_output, label="status")
+
+
+@autoresearch_app.command("pause")
+def pause_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+    reason: str = typer.Option("operator_pause", "--reason", help="Recorded pause reason"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON"),
+) -> None:
+    """Pause a run without deleting evidence or artifacts."""
+    try:
+        payload = _control(ctx.obj["config"]).pause(identifier, reason=reason)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    _emit_operator_result(payload, json_output=json_output, label="pause")
+
+
+@autoresearch_app.command("cancel")
+def cancel_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+    reason: str = typer.Option("operator_cancel", "--reason", help="Recorded cancellation reason"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON"),
+) -> None:
+    """Cancel a run and revoke future durable work."""
+    try:
+        payload = _control(ctx.obj["config"]).cancel(identifier, reason=reason)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    _emit_operator_result(payload, json_output=json_output, label="cancel")
+
+
+@autoresearch_app.command("trace")
+def trace_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+) -> None:
+    """Print the immutable event and tool-call trace as JSON."""
+    try:
+        payload = _control(ctx.obj["config"]).trace(identifier)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@autoresearch_app.command("audit")
+def audit_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+) -> None:
+    """Print the aggregate audit summary as JSON."""
+    try:
+        payload = _control(ctx.obj["config"]).audit_summary(identifier)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@autoresearch_app.command("resolve-manual-review")
+def resolve_manual_review_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+    step_id: str = typer.Option(..., "--step", help="Manual-review step to abandon"),
+    reason: str = typer.Option(..., "--reason", help="Recorded operator disposition"),
+    json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON"),
+) -> None:
+    """Abandon one reviewed step; run again explicitly to begin a new cycle."""
+    try:
+        payload = _control(ctx.obj["config"]).resolve_manual_review(
+            identifier, step_id=step_id, reason=reason
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    _emit_operator_result(payload, json_output=json_output, label="manual-review resolution")
