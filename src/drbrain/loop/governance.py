@@ -82,9 +82,11 @@ class RunGovernance:
             and run.status in {"paused", "succeeded", "failed", "cancelled"},
         }
 
-    def pause(self, identifier: str, *, reason: str = "operator_pause") -> dict[str, Any]:
+    def pause(
+        self, identifier: str, *, reason: str = "operator_pause", actor: str = "operator"
+    ) -> dict[str, Any]:
         run = self._resolve(identifier)
-        self._transitions.pause_run(run.run_id, reason=reason)
+        self._transitions.pause_run(run.run_id, reason=reason, actor=actor)
         return self.status(run.run_id)
 
     def resume(self, identifier: str) -> dict[str, Any]:

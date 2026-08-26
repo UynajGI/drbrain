@@ -72,6 +72,9 @@ def test_pause_and_cancel_commands_change_the_existing_run(tmp_path):
 
     assert paused.exit_code == 0, paused.output
     assert json.loads(paused.output)["status"] == "paused"
+    pause_trace = runner.invoke(autoresearch_app, ["trace", run_id], obj={"config": cfg})
+    assert pause_trace.exit_code == 0, pause_trace.output
+    assert json.loads(pause_trace.output)["events"][-1]["actor"] == "operator"
     assert cancelled.exit_code == 0, cancelled.output
     assert json.loads(cancelled.output)["status"] == "cancelled"
 

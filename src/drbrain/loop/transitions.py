@@ -55,8 +55,8 @@ class TransitionService:
                 conn, run_id, actor="director", event_type="run_started", payload={"from": current}
             )
 
-    def pause_run(self, run_id: str, *, reason: str) -> None:
-        """Persist a bounded director session as a resumable run."""
+    def pause_run(self, run_id: str, *, reason: str, actor: str = "director") -> None:
+        """Persist a bounded director or operator pause as a resumable run."""
         with self._ledger.transaction() as conn:
             current = self._run_status(conn, run_id)
             if current == RUN_PAUSED:
@@ -64,7 +64,7 @@ class TransitionService:
             validate_run_transition(current, RUN_PAUSED)
             self._set_run_status(conn, run_id, RUN_PAUSED)
             self._ledger.append_event(
-                conn, run_id, actor="director", event_type="run_paused", payload={"reason": reason}
+                conn, run_id, actor=actor, event_type="run_paused", payload={"reason": reason}
             )
 
     def cancel_run(self, run_id: str, *, reason: str, actor: str = "operator") -> None:
@@ -513,6 +513,14 @@ class TransitionService:
                 raise RuntimeError(f"step {step_id!r} is not awaiting manual review")
             self._transition_step(conn, step_id, STEP_FAILED)
             now = time.time()
+            conn.execute(
+                """
+                UPDATE research_attempts
+                SET status = ?, failure_category = ?, completed_at = ?
+                WHERE step_id = ? AND status = ?
+                """,
+                (STEP_FAILED, "manual_review_abandoned", now, step_id, STEP_UNKNOWN),
+            )
             conn.execute(
                 """
                 UPDATE research_steps
