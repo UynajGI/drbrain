@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,28 @@ class MCPServerPolicy:
     env: dict[str, str] | None
     allowed_tools: frozenset[str] | None
     timeout_seconds: float
+
+
+def validate_mcp_server(
+    server: dict[str, Any], *, require_trusted: bool = False
+) -> MCPServerPolicy:
+    """Validate one host-owned MCP server configuration without contacting it."""
+    return _policy_from_server(server, require_trusted=require_trusted)
+
+
+def mcp_server_id(server: Mapping[str, Any], *, fallback: str = "mcp") -> str:
+    """Normalize the host-owned identifier used in MCP tool capabilities."""
+    return str(server.get("id") or server.get("name") or server.get("command") or fallback).strip()
+
+
+def normalize_mcp_strings(value: Any) -> tuple[str, ...]:
+    """Normalize host-owned MCP metadata while making unordered inputs stable."""
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    values = [str(item).strip() for item in value if str(item).strip()]
+    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
 
 
 def _policy_from_server(
@@ -92,7 +114,7 @@ def _policy_from_server(
         if not allowed_tools:
             raise MCPTrustError("Trusted MCP servers require a non-empty allowed_tools list")
 
-    server_id = str(server.get("id") or server.get("name") or command).strip()
+    server_id = mcp_server_id(server, fallback=command)
     return MCPServerPolicy(
         server_id=server_id,
         command=command,

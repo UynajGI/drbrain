@@ -12,6 +12,7 @@ from drbrain.cli._common import open_db
 from drbrain.config import AutoresearchConfig
 from drbrain.loop import ResearchDirector, RunGovernance
 from drbrain.loop.policy import ToolPolicy
+from drbrain.loop.preflight import preflight_mcp_servers
 from drbrain.loop.store import RunLedger
 
 autoresearch_app = typer.Typer(help="Durable autoresearch operations")
@@ -201,6 +202,42 @@ def audit_cmd(
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
         _operator_error(exc)
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@autoresearch_app.command("evidence")
+def evidence_cmd(
+    ctx: typer.Context,
+    identifier: str = typer.Argument(..., help="Durable run ID or topic"),
+) -> None:
+    """Print settled claim-to-evidence locator lineage as JSON."""
+    try:
+        payload = _control(ctx.obj["config"]).evidence_lineage(identifier)
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+@autoresearch_app.command("preflight")
+def preflight_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Emit the static diagnostics as JSON"),
+) -> None:
+    """Diagnose static durable MCP visibility without contacting MCP servers."""
+    try:
+        settings = _settings(ctx.obj["config"])
+        payload = preflight_mcp_servers(
+            settings.mcp_servers,
+            tool_policy=ToolPolicy(step_capabilities=settings.step_capabilities),
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
+        _operator_error(exc)
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo(
+        f"Autoresearch preflight: configured={payload['configured_servers']}; "
+        f"ready={payload['ready_servers']}; blocked={payload['blocked_servers']}"
+    )
 
 
 @autoresearch_app.command("resolve-manual-review")
