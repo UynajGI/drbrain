@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any, cast, get_args
 
 from drbrain.loop.policy import ToolDefinition, ToolPolicy, ToolSideEffect
-from drbrain.rag.mcp_tools import mcp_server_id, normalize_mcp_strings, validate_mcp_server
+from drbrain.rag.mcp_tools import (
+    MCPTrustError,
+    mcp_server_id,
+    normalize_mcp_strings,
+    validate_mcp_server,
+)
 
 _DURABLE_SIDE_EFFECTS = frozenset(get_args(ToolSideEffect)) - {"unspecified"}
 
@@ -35,7 +40,7 @@ def preflight_mcp_servers(
         server_id = mcp_server_id(server)
         try:
             policy = validate_mcp_server(server, require_trusted=True)
-        except ValueError as exc:
+        except MCPTrustError as exc:
             reports.append(
                 {
                     "server_id": server_id,
