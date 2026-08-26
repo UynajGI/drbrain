@@ -404,6 +404,7 @@ class ResearchLoopWorkflow(Workflow):
         tool_broker: ToolBroker | None = None,
         tool_policy: ToolPolicy | None = None,
         rag_generation: str | None | _UnsetRagGeneration = _RAG_GENERATION_UNSET,
+        require_rag_evidence: bool = False,
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
@@ -432,7 +433,7 @@ class ResearchLoopWorkflow(Workflow):
             if tool_policy is not None
             else (tool_broker.policy if tool_broker is not None else None)
         )
-        self._rag_evidence_required = isinstance(rag_generation, str) and bool(rag_generation)
+        self._rag_evidence_required = bool(require_rag_evidence)
         self._rag_generation: str | None = None
         if rag_generation is _RAG_GENERATION_UNSET and cfg is not None:
             try:

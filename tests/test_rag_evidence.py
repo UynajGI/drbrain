@@ -424,7 +424,9 @@ def test_report_keeps_claim_to_evidence_links_and_rejects_unknown_ids():
     assert _has_required_evidence(state, ["ev-1"])
     assert not _has_required_evidence(state, [])
     assert not _has_required_evidence(ResearchState(), [], evidence_required=True)
-    assert ResearchLoopWorkflow(rag_generation="g-1")._requires_evidence_ids(ResearchState())
+    assert ResearchLoopWorkflow(
+        rag_generation="g-1", require_rag_evidence=True
+    )._requires_evidence_ids(ResearchState())
 
 
 def test_loop_persists_verified_claim_with_its_real_retrieval_evidence(tmp_path):
