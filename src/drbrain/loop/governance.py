@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 from drbrain.loop.store import LedgerRun, RunLedger
@@ -82,6 +83,92 @@ class RunGovernance:
             and run.status in {"paused", "succeeded", "failed", "cancelled"},
         }
 
+    def evidence_lineage(self, identifier: str) -> dict[str, Any]:
+        """Resolve settled claim IDs to the durable RAG records that support them."""
+        run = self._resolve(identifier)
+        bundles: list[dict[str, Any]] = []
+        known_bundle_ids: set[str] = set()
+        evidence_by_id: dict[str, dict[str, Any]] = {}
+        for event in self._ledger.events(run.run_id):
+            if event.event_type != "rag_evidence_recorded":
+                continue
+            bundle = event.payload.get("bundle")
+            if not isinstance(bundle, Mapping):
+                continue
+            bundle_id = str(bundle.get("bundle_id") or "")
+            bundle_summary = {
+                "bundle_id": bundle_id,
+                "generation": str(bundle.get("generation") or ""),
+                "query": str(bundle.get("query") or ""),
+                "retriever": str(bundle.get("retriever") or ""),
+                "tool_call_id": str(bundle.get("tool_call_id") or ""),
+            }
+            if not bundle_id or bundle_id not in known_bundle_ids:
+                bundles.append(bundle_summary)
+                known_bundle_ids.add(bundle_id)
+            records = bundle.get("records")
+            if not isinstance(records, list):
+                continue
+            for record in records:
+                if not isinstance(record, Mapping):
+                    continue
+                evidence_id = str(record.get("evidence_id") or "")
+                if not evidence_id:
+                    continue
+                entry = evidence_by_id.setdefault(
+                    evidence_id,
+                    {
+                        "evidence_id": evidence_id,
+                        "bundle_ids": [],
+                        "generation": bundle_summary["generation"],
+                        "document_locator": _mapping(record.get("document_locator")),
+                        "chunk_locator": _mapping(record.get("chunk_locator")),
+                        "content_checksum": str(record.get("content_checksum") or ""),
+                        "excerpt_checksum": str(record.get("excerpt_checksum") or ""),
+                    },
+                )
+                if bundle_id and bundle_id not in entry["bundle_ids"]:
+                    entry["bundle_ids"].append(bundle_id)
+
+        settlements = self._transitions.execution_snapshot(run.run_id)["settlements"]
+        claims: list[dict[str, Any]] = []
+        referenced_ids: set[str] = set()
+        for settlement in settlements:
+            raw_evidence_ids = settlement.get("evidence_ids", [])
+            evidence_ids = (
+                [str(value) for value in raw_evidence_ids]
+                if isinstance(raw_evidence_ids, list)
+                else []
+            )
+            referenced_ids.update(evidence_ids)
+            evidence = [
+                evidence_by_id[evidence_id]
+                for evidence_id in evidence_ids
+                if evidence_id in evidence_by_id
+            ]
+            claims.append(
+                {
+                    "claim_id": settlement["claim_id"],
+                    "settlement_id": settlement["settlement_id"],
+                    "verdict": settlement["verdict"],
+                    "reason": settlement["reason"],
+                    "evidence_ids": evidence_ids,
+                    "evidence": evidence,
+                    "missing_evidence_ids": [
+                        evidence_id
+                        for evidence_id in evidence_ids
+                        if evidence_id not in evidence_by_id
+                    ],
+                }
+            )
+        return {
+            "run_id": run.run_id,
+            "topic": run.topic,
+            "bundles": bundles,
+            "claims": claims,
+            "unclaimed_evidence_ids": sorted(set(evidence_by_id) - referenced_ids),
+        }
+
     def pause(
         self, identifier: str, *, reason: str = "operator_pause", actor: str = "operator"
     ) -> dict[str, Any]:
@@ -155,6 +242,10 @@ class RunGovernance:
             "trace_id": event.trace_id,
             "created_at": event.created_at,
         }
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 __all__ = ["RunGovernance"]

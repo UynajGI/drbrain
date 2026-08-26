@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from drbrain.loop.director import ResearchDirector
+from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.governance import RunGovernance
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
 from drbrain.loop.store import RunExecutionBlockedError, RunLedger
@@ -113,6 +114,98 @@ def test_operator_can_abandon_manual_review_with_a_durable_reason(tmp_path):
         "step_id": step_id,
         "resolution": "abandoned",
         "reason": "operator verified the external state and will start a new cycle",
+    }
+
+
+def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path):
+    ledger, run_id, _ = _running(tmp_path)
+    bundle = {
+        "bundle_id": "eb-fixture",
+        "generation": "gen-fixture",
+        "query": "fixture query",
+        "retriever": "fusion",
+        "tool_call_id": "rag-fixture",
+        "records": [
+            {
+                "evidence_id": "ev-fixture",
+                "document_locator": {"paper_id": "paper-fixture"},
+                "chunk_locator": {"node_id": "node-fixture"},
+                "content_checksum": "content-fixture",
+                "excerpt_checksum": "excerpt-fixture",
+            }
+        ],
+    }
+    with ledger.transaction() as conn:
+        for _ in range(2):
+            ledger.append_event(
+                conn,
+                run_id,
+                actor="rag_evidence",
+                event_type="rag_evidence_recorded",
+                payload={"bundle": bundle},
+            )
+    execution = DurableExecution(TransitionService(ledger), run_id)
+    execution.ensure_node_contracts()
+    experiment = execution.record_experiment(
+        {
+            "claim_id": "cl-fixture",
+            "statement": "Fixture claim",
+            "prediction": "Fixture prediction",
+            "falsification": "Fixture falsification",
+        },
+        environment={},
+        config={},
+    )
+    execution.settle_verification(
+        experiment["experiment_id"],
+        verification={
+            "claim_id": "cl-fixture",
+            "status": "falsified",
+            "evidence_ids": ["ev-fixture"],
+        },
+        expected_champion_version=None,
+    )
+
+    lineage = RunGovernance(ledger).evidence_lineage(run_id)
+
+    assert lineage["bundles"] == [
+        {
+            "bundle_id": "eb-fixture",
+            "generation": "gen-fixture",
+            "query": "fixture query",
+            "retriever": "fusion",
+            "tool_call_id": "rag-fixture",
+        }
+    ]
+    assert len(lineage["claims"]) == 1
+    claim = lineage["claims"][0]
+    assert claim["settlement_id"]
+    assert set(claim) == {
+        "claim_id",
+        "settlement_id",
+        "verdict",
+        "reason",
+        "evidence_ids",
+        "evidence",
+        "missing_evidence_ids",
+    }
+    assert {key: value for key, value in claim.items() if key != "settlement_id"} == {
+        "claim_id": "cl-fixture",
+        "verdict": "discard",
+        "reason": "falsified_by_evidence",
+        "evidence_ids": ["ev-fixture"],
+        "evidence": [
+            {
+                "evidence_id": "ev-fixture",
+                "bundle_ids": ["eb-fixture"],
+                "generation": "gen-fixture",
+                "document_locator": {"paper_id": "paper-fixture"},
+                "chunk_locator": {"node_id": "node-fixture"},
+                "content_checksum": "content-fixture",
+                "excerpt_checksum": "excerpt-fixture",
+            }
+        ],
+        "missing_evidence_ids": [],
     }
 
 

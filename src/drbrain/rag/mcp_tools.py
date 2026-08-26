@@ -41,6 +41,13 @@ class MCPServerPolicy:
     timeout_seconds: float
 
 
+def validate_mcp_server(
+    server: dict[str, Any], *, require_trusted: bool = False
+) -> MCPServerPolicy:
+    """Validate one host-owned MCP server configuration without contacting it."""
+    return _policy_from_server(server, require_trusted=require_trusted)
+
+
 def _policy_from_server(
     server: dict[str, Any], *, require_trusted: bool = False
 ) -> MCPServerPolicy:

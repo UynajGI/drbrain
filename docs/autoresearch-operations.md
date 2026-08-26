@@ -62,6 +62,7 @@ so a typo in `run_dir` cannot create an empty control-plane database:
 drbrain autoresearch status "research topic" --json
 drbrain autoresearch trace "research topic"
 drbrain autoresearch audit "research topic"
+drbrain autoresearch evidence "research topic"
 drbrain autoresearch pause "research topic" --reason "operator maintenance"
 drbrain autoresearch cancel "research topic" --reason "outside experiment scope"
 ```
@@ -104,6 +105,26 @@ control.cancel(status["run_id"], reason="operator_cancel")
 `pause` and `cancel` never remove evidence or artifacts. New ToolBroker calls
 are denied while a run is paused, cancelled, or budget-exhausted. Checkpoint
 recovery remains owned by `ResearchDirector`.
+
+## Evidence lineage and MCP preflight
+
+`autoresearch evidence` provides the run-local evidence plane in a directly
+queryable form. It resolves each settled claim's persisted `evidence_ids` to
+the generation-pinned RAG bundle's document/chunk locators and checksums. An
+unknown evidence ID remains explicit in `missing_evidence_ids`; the command
+never invents a citation or silently substitutes a newer index generation.
+
+Before starting a run that enables MCP, inspect the static durable contract:
+
+```bash
+drbrain autoresearch preflight --json
+```
+
+It does not start an MCP process or discover remote tools. It reports whether
+each configured server is trusted and allowlisted, has a classified
+`side_effect`, and has at least one allowed tool visible to a workflow step.
+For example, an otherwise trusted server without `side_effect: read` is shown
+as blocked instead of being silently omitted from the durable agent surface.
 
 ## Tool approvals
 
