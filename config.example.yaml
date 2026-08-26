@@ -131,6 +131,20 @@ queue:
   weak_threshold: 0.7 # confidence below this → review queue
   auto_accept: 0.9 # confidence above this → auto-accept
 
+# ── Autoresearch ──────────────────────────────────────────────────
+# `drbrain autoresearch run "topic"`; repeat a topic to resume its durable run.
+autoresearch:
+  enabled: false # explicit opt-in for the operator command
+  run_dir: "workspace/autoresearch"
+  plugins_dir: "" # optional external Model-as-Tool plugin directory
+  mcp_servers: [] # optional MCP server definitions
+  n_critics: 3
+  max_cycles: 10
+  stagnation_cycles: 3
+  max_adaptations: 2
+  lease_seconds: 900
+  require_rag_evidence: false # true = RAG-grounded claims require evidence IDs
+
 # ── Rsync Backup ──────────────────────────────────────────────────
 # Remote targets for `drbrain backup --target <name>`.
 # Local tar.gz backups (`drbrain backup`) are always available.

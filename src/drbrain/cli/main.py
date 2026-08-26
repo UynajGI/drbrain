@@ -20,6 +20,7 @@ from drbrain.cli.analysis_commands import (
     survey_cmd,
     transfers_cmd,
 )
+from drbrain.cli.autoresearch_commands import autoresearch_app
 from drbrain.cli.build_commands import (
     build_cmd,
     embed_cmd,
@@ -172,6 +173,7 @@ app.add_typer(graph_app, name="graph")
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
 app.add_typer(rag_app, name="rag")
+app.add_typer(autoresearch_app, name="autoresearch")
 
 if __name__ == "__main__":
     app()

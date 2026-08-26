@@ -90,3 +90,17 @@ llamaindex:
     golden_set: "data/llamaindex/golden.jsonl"
     split: ["dev", "val", "test"]   # 三集防泄露
 
+# ── Autoresearch ─────────────────────────────────────────────────────
+# `drbrain autoresearch run "topic"` 读取此区；重复 topic 自动恢复已有 durable run。
+autoresearch:
+  enabled: false
+  run_dir: "workspace/autoresearch"
+  plugins_dir: ""
+  mcp_servers: []
+  n_critics: 3
+  max_cycles: 10
+  stagnation_cycles: 3
+  max_adaptations: 2
+  lease_seconds: 900
+  require_rag_evidence: false  # true = 已启用 RAG 时无可引用证据即降为 prediction
+

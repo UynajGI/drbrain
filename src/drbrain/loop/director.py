@@ -221,6 +221,7 @@ class ResearchDirector:
         tool_policy: ToolPolicy | None = None,
         noise_band: float = 0.0,
         required_repeats: int = 2,
+        require_rag_evidence: bool = False,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -233,6 +234,7 @@ class ResearchDirector:
         self._tool_policy = tool_policy
         self._noise_band = max(0.0, float(noise_band))
         self._required_repeats = max(1, int(required_repeats))
+        self._require_rag_evidence = bool(require_rag_evidence)
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
@@ -969,6 +971,7 @@ class ResearchDirector:
             tool_broker=tool_broker,
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
+            require_rag_evidence=self._require_rag_evidence,
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
             durable_execution=durable_execution,

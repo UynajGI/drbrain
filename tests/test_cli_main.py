@@ -1,5 +1,6 @@
 """Tests for CLI entry point (cli/main.py) via typer CliRunner."""
 
+import json
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -44,6 +45,61 @@ def test_app_help():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "DrBrain" in result.stdout
+
+
+def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
+    db_path = tmp_path / "test.db"
+    cfg = _make_config(str(db_path), str(tmp_path / "reports"))
+    cfg["autoresearch"] = {
+        "enabled": True,
+        "run_dir": str(tmp_path / "runs"),
+        "plugins_dir": str(tmp_path / "plugins"),
+        "mcp_servers": [{"name": "papers"}],
+        "n_critics": 2,
+        "max_cycles": 3,
+        "stagnation_cycles": 2,
+        "max_adaptations": 1,
+        "lease_seconds": 30,
+        "require_rag_evidence": True,
+    }
+    captured: dict = {}
+
+    class FakeDirector:
+        def __init__(self, _cfg, **kwargs):
+            captured.update(kwargs)
+
+        def run_sync(self, topic, **kwargs):
+            captured["topic"] = topic
+            captured["run_kwargs"] = kwargs
+            return {"topic": topic, "cycles": 1, "champion": [{"statement": "kept"}]}
+
+    with (
+        mock_cfg(str(db_path), str(tmp_path / "reports")) as load_config,
+        mock.patch("drbrain.cli.autoresearch_commands.ResearchDirector", FakeDirector),
+    ):
+        load_config.return_value = cfg
+        result = runner.invoke(app, ["autoresearch", "run", "test topic", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["cycles"] == 1
+    assert captured["topic"] == "test topic"
+    assert captured["run_dir"] == str(tmp_path / "runs")
+    assert captured["n_critics"] == 2
+    assert captured["lease_seconds"] == 30
+    assert captured["require_rag_evidence"] is True
+    assert captured["run_kwargs"] == {
+        "max_cycles": 3,
+        "stagnation_cycles": 2,
+        "max_adaptations": 1,
+    }
+
+
+def test_autoresearch_run_requires_explicit_enable(tmp_path):
+    with mock_cfg(str(tmp_path / "test.db"), str(tmp_path / "reports")):
+        result = runner.invoke(app, ["autoresearch", "run", "test topic"])
+
+    assert result.exit_code == 1
+    assert "autoresearch.enabled" in result.stderr
 
 
 def test_app_stats():
