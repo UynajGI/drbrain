@@ -977,6 +977,11 @@ class ResearchDirector:
                 if governance is not None and checkpoint is not None
                 else None
             ),
+            budget_consumer=(
+                (lambda amounts: governance.consume_observed(checkpoint.run_id, amounts))
+                if governance is not None and checkpoint is not None
+                else None
+            ),
         )
         if checkpoint is not None and checkpoint.checkpoint is not None:
             # Restoring Context replays only the scheduler's pending events; it
@@ -1121,6 +1126,9 @@ class ResearchDirector:
                 "rag_calls": "max_rag_calls",
                 "model_calls": "max_model_calls",
                 "wall_seconds": "max_wall_seconds",
+                "tokens": "max_tokens",
+                "cpu_seconds": "max_cpu_seconds",
+                "gpu_seconds": "max_gpu_seconds",
             }
             supported_budget_keys = set(budget_aliases) | set(budget_aliases.values())
             unknown_budget_keys = sorted(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
@@ -97,12 +98,18 @@ class Plugin:
 
 @dataclass
 class PluginResult:
-    """Result envelope returned by every plugin call."""
+    """Result envelope returned by every plugin call.
+
+    ``resource_usage`` is additive, provider-reported accounting for a completed
+    invocation.  Plugins may report ``tokens``, ``cpu_seconds``, and/or
+    ``gpu_seconds``; consumers ignore unrecognised or invalid values.
+    """
 
     status: ResultStatus
     data: Any = None
     evidence: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    resource_usage: Mapping[str, int | float] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:

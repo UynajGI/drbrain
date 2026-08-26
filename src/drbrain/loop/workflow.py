@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import re
 from collections.abc import Callable, Mapping
@@ -59,7 +60,7 @@ from drbrain.loop.events import (
 )
 from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
-from drbrain.loop.store import RunExecutionBlockedError
+from drbrain.loop.store import RunBudgetExceededError, RunExecutionBlockedError
 from drbrain.loop.tool_broker import ToolBroker
 
 _STATE_KEY = "research_state"
@@ -290,6 +291,91 @@ def _parse_json_lenient(text: str) -> Any:
         return None
 
 
+def _reported_token_usage(result: Any) -> dict[str, int | float]:
+    """Extract provider-reported token totals without estimating missing data."""
+    response = getattr(result, "response", None)
+    message = getattr(response, "message", None)
+    candidates = (
+        getattr(result, "raw", None),
+        getattr(response, "raw", None),
+        getattr(response, "additional_kwargs", None),
+        getattr(message, "additional_kwargs", None),
+    )
+    for candidate in candidates:
+        usage = _usage_mapping(candidate)
+        if not usage:
+            continue
+        total = _first_positive(usage.get("total_tokens"), usage.get("total_token_count"))
+        if not _positive_number(total):
+            prompt = _first_positive(usage.get("prompt_tokens"), usage.get("input_tokens"))
+            completion = _first_positive(usage.get("completion_tokens"), usage.get("output_tokens"))
+            prompt_value = _positive_float(prompt)
+            completion_value = _positive_float(completion)
+            if prompt_value or completion_value:
+                total = prompt_value + completion_value
+        total_value = _positive_float(total)
+        if total_value:
+            return {"tokens": total_value}
+    return {}
+
+
+def _usage_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        nested = value.get("usage")
+        return _usage_object_mapping(nested) if nested is not None else value
+    return _usage_object_mapping(getattr(value, "usage", None))
+
+
+def _usage_object_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        return value
+    if value is None:
+        return None
+    for method_name in ("model_dump", "dict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            try:
+                dumped = method()
+            except (TypeError, ValueError):
+                continue
+            if isinstance(dumped, Mapping):
+                return dumped
+    fields = (
+        "total_tokens",
+        "total_token_count",
+        "prompt_tokens",
+        "input_tokens",
+        "completion_tokens",
+        "output_tokens",
+    )
+    values = {name: getattr(value, name) for name in fields if hasattr(value, name)}
+    return values or None
+
+
+def _positive_number(value: Any) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    )
+
+
+def _positive_float(value: Any) -> float:
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    ):
+        return float(value)
+    return 0.0
+
+
+def _first_positive(*values: Any) -> Any | None:
+    return next((value for value in values if _positive_number(value)), None)
+
+
 class ResearchLoopWorkflow(Workflow):
     """Deterministic research loop (P0 skeleton).
 
@@ -317,6 +403,7 @@ class ResearchLoopWorkflow(Workflow):
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
         budget_reserver: Callable[[dict[str, int | float]], Any] | None = None,
+        budget_consumer: Callable[[dict[str, int | float]], Any] | None = None,
         **kwargs: Any,
     ) -> None:
         # Agent-backed nodes make several LLM round-trips (2–15s each) inside a
@@ -334,6 +421,7 @@ class ResearchLoopWorkflow(Workflow):
         self._durable_front_half = durable_front_half
         self._durable_execution = durable_execution
         self._budget_reserver = budget_reserver
+        self._budget_consumer = budget_consumer
         self._tool_policy = (
             tool_policy
             if tool_policy is not None
@@ -811,16 +899,26 @@ class ResearchLoopWorkflow(Workflow):
         previous_override = agent_dict.get("take_step")
         had_override = "take_step" in agent_dict
         wrapped = False
+        observed_budget_error: RunBudgetExceededError | None = None
         if callable(original_take_step):
 
             async def budgeted_take_step(*args: Any, **kwargs: Any) -> Any:
+                nonlocal observed_budget_error
                 # FunctionAgent.take_step performs exactly one LLM request. A
                 # local wrapper keeps accounting scoped to this workflow rather
                 # than registering a process-global LlamaIndex event handler.
                 await self._reserve_budget({"model_calls": 1})
                 result = original_take_step(*args, **kwargs)
                 if hasattr(result, "__await__"):
-                    return await result
+                    result = await result
+                try:
+                    await self._consume_budget(_reported_token_usage(result))
+                except RunBudgetExceededError as exc:
+                    # Keep the already-completed turn visible to the agent.
+                    # The durable run is already terminal; after the agent
+                    # returns control, re-raise at this workflow boundary to
+                    # prevent any later node from scheduling external work.
+                    observed_budget_error = exc
                 return result
 
             try:
@@ -842,6 +940,8 @@ class ResearchLoopWorkflow(Workflow):
                     object.__setattr__(agent, "take_step", previous_override)
                 else:
                     object.__delattr__(agent, "take_step")
+        if observed_budget_error is not None:
+            raise observed_budget_error
         response = getattr(result, "response", None)
         answer = ""
         if response is not None:
@@ -880,6 +980,12 @@ class ResearchLoopWorkflow(Workflow):
         if self._budget_reserver is None:
             return
         await asyncio.to_thread(self._budget_reserver, amounts)
+
+    async def _consume_budget(self, amounts: dict[str, int | float]) -> None:
+        """Record actual post-boundary provider usage without fabricating estimates."""
+        if not amounts or self._budget_consumer is None:
+            return
+        await asyncio.to_thread(self._budget_consumer, amounts)
 
     async def _get_state(self, ctx: Context) -> ResearchState:
         state = await ctx.store.get(_STATE_KEY, default=None)

@@ -7,7 +7,9 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import re
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -53,6 +55,7 @@ class ToolObservation:
     attempts: int = 0
     reused: bool = False
     execution_blocked: bool = False
+    resource_usage: Mapping[str, float] | None = None
 
     @property
     def ok(self) -> bool:
@@ -81,6 +84,7 @@ class _ExecutionOutcome:
     output: Any = None
     error: str | None = None
     evidence: Mapping[str, Any] | None = None
+    resource_usage: Mapping[str, float] | None = None
 
 
 class ToolBroker:
@@ -323,13 +327,22 @@ class ToolBroker:
                 ToolCallStatus.FAILED, error="tool executor produced no result"
             )
             attempts = 0
+            cumulative_usage: dict[str, float] = {}
             for attempts in range(1, decision.max_attempts + 1):
                 outcome = await self._execute_once(executor, definition)
+                _accumulate_resource_usage(cumulative_usage, outcome.resource_usage)
                 if (
                     outcome.status is not ToolCallStatus.TIMED_OUT
                     or attempts >= decision.max_attempts
                 ):
                     break
+            outcome = _ExecutionOutcome(
+                status=outcome.status,
+                output=outcome.output,
+                error=outcome.error,
+                evidence=outcome.evidence,
+                resource_usage=cumulative_usage,
+            )
         finally:
             keepalive.cancel()
             try:
@@ -352,6 +365,7 @@ class ToolBroker:
                 _redact(dict(outcome.evidence or {})), definition.max_output_bytes
             ),
             "attempts": attempts,
+            "resource_usage": dict(outcome.resource_usage or {}),
         }
         self._ledger.record_tool_observation(
             tool_call_id=tool_call_id,
@@ -363,12 +377,29 @@ class ToolBroker:
             observation=safe_observation,
             lease_seconds=self.lease_seconds,
         )
+        # Resource use is known only after a model/tool boundary completes.
+        # Persist the observation before charging it so an exceeded budget still
+        # leaves a complete, reconcilable record of the completed invocation.
+        if outcome.resource_usage:
+            try:
+                self._ledger.consume_observed_budget(self.run_id, outcome.resource_usage)
+            except RunBudgetExceededError as exc:
+                return ToolObservation(
+                    tool_call_id=tool_call_id,
+                    status=status,
+                    output=outcome.output,
+                    error=str(exc),
+                    attempts=attempts,
+                    execution_blocked=True,
+                    resource_usage=outcome.resource_usage,
+                )
         return ToolObservation(
             tool_call_id=tool_call_id,
             status=status,
             output=outcome.output,
             error=outcome.error,
             attempts=attempts,
+            resource_usage=outcome.resource_usage,
         )
 
     def record_evidence_bundle(self, bundle: Mapping[str, Any]) -> None:
@@ -426,6 +457,8 @@ class ToolBroker:
         executor: Callable[[], Any],
         definition: ToolDefinition,
     ) -> _ExecutionOutcome:
+        cpu_seconds = 0.0
+        timeout_seconds: float | None = None
         try:
             if definition.timeout_s is None:
                 result = executor()
@@ -436,15 +469,40 @@ class ToolBroker:
                 # an async one. Invoke it off-loop so the broker's timeout
                 # policy remains real; cancellation cannot stop the underlying
                 # side effect, which is why write timeouts settle as UNKNOWN.
-                timeout = max(0.001, definition.timeout_s)
-                result = await asyncio.wait_for(asyncio.to_thread(executor), timeout=timeout)
+                timeout_seconds = max(0.001, definition.timeout_s)
+                result, cpu_seconds = await asyncio.wait_for(
+                    asyncio.to_thread(_call_with_thread_cpu, executor), timeout=timeout_seconds
+                )
                 if inspect.isawaitable(result):
-                    result = await asyncio.wait_for(result, timeout=timeout)
-            return _normalize_result(result)
+                    result = await asyncio.wait_for(result, timeout=timeout_seconds)
+            outcome = _normalize_result(result)
         except TimeoutError as exc:
-            return _ExecutionOutcome(ToolCallStatus.TIMED_OUT, error=str(exc) or "tool timeout")
+            # Cancellation cannot stop ``to_thread`` work. Its exact CPU time
+            # is no longer observable, but one worker thread cannot consume
+            # more CPU than its elapsed timeout; debit that conservative upper
+            # bound so retries cannot evade the CPU budget with timeouts.
+            timed_out_cpu = max(cpu_seconds, timeout_seconds or 0.0)
+            outcome = _ExecutionOutcome(
+                ToolCallStatus.TIMED_OUT,
+                error=str(exc) or "tool timeout",
+                resource_usage={"cpu_seconds": timed_out_cpu} if timed_out_cpu else {},
+            )
         except Exception as exc:  # noqa: BLE001 - normalize arbitrary tool failures
-            return _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+            outcome = _ExecutionOutcome(ToolCallStatus.FAILED, error=f"{type(exc).__name__}: {exc}")
+        resource_usage = _normalize_resource_usage(outcome.resource_usage)
+        # This is CPU consumed by the isolated worker used for a bounded
+        # synchronous adapter. A plugin's own report takes precedence because
+        # it can attribute nested subprocess and GPU work more precisely.
+        if "cpu_seconds" not in resource_usage:
+            if cpu_seconds > 0:
+                resource_usage["cpu_seconds"] = cpu_seconds
+        return _ExecutionOutcome(
+            status=outcome.status,
+            output=outcome.output,
+            error=outcome.error,
+            evidence=outcome.evidence,
+            resource_usage=resource_usage,
+        )
 
     @staticmethod
     def _safe_proposal(proposal: ToolProposal) -> dict[str, Any]:
@@ -511,18 +569,52 @@ def _normalize_result(result: Any) -> _ExecutionOutcome:
             output=getattr(result, "data", None),
             evidence=getattr(result, "evidence", None),
             error=getattr(result, "error", None),
+            resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
         )
     if status == "timeout":
         return _ExecutionOutcome(
             ToolCallStatus.TIMED_OUT,
             error=getattr(result, "error", None) or "tool timeout",
             evidence=getattr(result, "evidence", None),
+            resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
         )
     return _ExecutionOutcome(
         ToolCallStatus.FAILED,
         error=getattr(result, "error", None) or f"tool result status {status!r}",
         evidence=getattr(result, "evidence", None),
+        resource_usage=_normalize_resource_usage(getattr(result, "resource_usage", None)),
     )
+
+
+def _normalize_resource_usage(value: Any) -> dict[str, float]:
+    """Keep only finite, additive resource measurements from trusted adapters."""
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, float] = {}
+    for kind in ("tokens", "cpu_seconds", "gpu_seconds"):
+        amount = value.get(kind)
+        if (
+            isinstance(amount, int | float)
+            and not isinstance(amount, bool)
+            and math.isfinite(amount)
+            and amount > 0
+        ):
+            normalized[kind] = float(amount)
+    return normalized
+
+
+def _accumulate_resource_usage(
+    total: dict[str, float], resource_usage: Mapping[str, float] | None
+) -> None:
+    for kind, amount in (resource_usage or {}).items():
+        total[kind] = float(total.get(kind, 0.0)) + float(amount)
+
+
+def _call_with_thread_cpu(executor: Callable[[], Any]) -> tuple[Any, float]:
+    """Invoke a synchronous adapter and return CPU used by its worker thread."""
+    started = time.thread_time()
+    result = executor()
+    return result, max(0.0, time.thread_time() - started)
 
 
 def _contains_value(value: Any, needle: str) -> bool:

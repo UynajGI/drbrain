@@ -364,6 +364,87 @@ def test_broker_renews_lease_during_a_long_tool_call(tmp_path):
     assert ledger.tool_calls(run_id)[0].status == ToolCallStatus.SUCCEEDED
 
 
+def test_broker_accumulates_reported_resource_usage_across_retries(tmp_path):
+    broker, ledger, run_id = _broker(tmp_path)
+    attempts = 0
+
+    def handler():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return PluginResult(
+                ResultStatus.TIMEOUT,
+                error="retry once",
+                resource_usage={"gpu_seconds": 1.0},
+            )
+        return PluginResult(
+            ResultStatus.OK,
+            data={"answer": "completed"},
+            resource_usage={"gpu_seconds": 2.0},
+        )
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=_read_tool(),
+            arguments={"query": "retry resources"},
+            executor=handler,
+        )
+    )
+
+    assert attempts == 2
+    assert observation.status is ToolCallStatus.SUCCEEDED
+    assert observation.resource_usage["gpu_seconds"] == 3.0
+    assert ledger.tool_calls(run_id)[0].observation["resource_usage"]["gpu_seconds"] == 3.0
+
+
+def test_broker_ignores_non_finite_reported_resource_usage(tmp_path):
+    broker, ledger, run_id = _broker(tmp_path)
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=_read_tool(),
+            arguments={"query": "finite resources"},
+            executor=lambda: PluginResult(
+                ResultStatus.OK,
+                data={"answer": "completed"},
+                resource_usage={"gpu_seconds": float("inf")},
+            ),
+        )
+    )
+
+    assert observation.status is ToolCallStatus.SUCCEEDED
+    assert observation.resource_usage == {}
+    assert ledger.tool_calls(run_id)[0].observation["resource_usage"] == {}
+
+
+def test_timed_out_sync_retries_charge_conservative_cpu_budget(tmp_path):
+    broker, ledger, run_id = _broker(tmp_path)
+    timed_tool = ToolDefinition(
+        name="slow_search",
+        source="graph",
+        input_schema={"type": "object"},
+        side_effect="read",
+        required_capabilities=("graph:read",),
+        timeout_s=0.01,
+    )
+
+    observation = asyncio.run(
+        broker.execute(
+            node_name="retrieve",
+            definition=timed_tool,
+            arguments={"query": "timeout cpu"},
+            executor=lambda: time.sleep(0.1),
+        )
+    )
+
+    assert observation.status is ToolCallStatus.TIMED_OUT
+    assert observation.attempts == 2
+    assert observation.resource_usage["cpu_seconds"] >= 0.02
+    assert ledger.tool_calls(run_id)[0].observation["resource_usage"]["cpu_seconds"] >= 0.02
+
+
 def test_workflow_direct_search_routes_classified_plugin_through_broker(tmp_path):
     broker, ledger, run_id = _broker(
         tmp_path,
