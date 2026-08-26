@@ -6,6 +6,20 @@
 >
 > 约束：SQLite-only；公共 API、CLI、配置和现有持久化文件只增不改。
 
+## 实现进度（2026-08-26）
+
+本计划下列代码路径现已合入主线：run/step/checkpoint 的跨 run 归属
+约束；generation-pinned RAG evidence 与 `claim_evidence` 真实关联；受控
+`ToolBroker`/`ToolPolicy` 工具边界；以及 additive `autoresearch` 配置和
+`drbrain autoresearch run "topic"` operator 入口。严格 RAG evidence 模式
+已进入 run 配置、resume 审计和 checkpoint manifest；旧 checkpoint 缺少该
+新增字段时按非严格模式兼容。
+
+这不是“完成定义”已达成的声明：尚未在带真实模型、RAG 索引、外部插件和
+MCP 的内测环境执行一次有界 live acceptance。该环境具备后，按
+[Autoresearch durable-run operations](autoresearch-operations.md#internal-beta-live-acceptance)
+执行一次定向验收；不要为此启动全面测试或安全专项。
+
 ## 1. 目标
 
 把现有单进程、整轮落盘的 research loop 升级为可长期运行的可靠闭环：
