@@ -432,6 +432,7 @@ class ResearchLoopWorkflow(Workflow):
             if tool_policy is not None
             else (tool_broker.policy if tool_broker is not None else None)
         )
+        self._rag_evidence_required = isinstance(rag_generation, str) and bool(rag_generation)
         self._rag_generation: str | None = None
         if rag_generation is _RAG_GENERATION_UNSET and cfg is not None:
             try:
@@ -706,7 +707,7 @@ class ResearchLoopWorkflow(Workflow):
         gate. A retained RAG generation, on the other hand, must fail closed if
         retrieval did not yield a durable, referenced evidence record.
         """
-        return bool(state.evidence_bundles) or bool(self._rag_generation)
+        return bool(state.evidence_bundles) or self._rag_evidence_required
 
     @staticmethod
     def _fallback_query(task: str) -> str:
