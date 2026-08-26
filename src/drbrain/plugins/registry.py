@@ -178,8 +178,27 @@ class PluginRegistry:
 
         if data is None:
             return PluginResult(ResultStatus.NO_RESULT, evidence=evidence, error="插件无输出")
+        if isinstance(data, PluginResult):
+            # Handlers may opt into the public envelope to report precise
+            # resource use. Preserve its result semantics while ensuring the
+            # registry-owned provenance cannot be replaced by plugin output.
+            result_evidence = dict(data.evidence)
+            result_evidence.update(evidence)
+            if data.data is not None:
+                result_evidence["output"] = data.data
+            return PluginResult(
+                data.status,
+                data=data.data,
+                evidence=result_evidence,
+                error=data.error,
+                resource_usage=data.resource_usage,
+            )
         evidence["output"] = data
-        return PluginResult(ResultStatus.OK, data=data, evidence=evidence)
+        return PluginResult(
+            ResultStatus.OK,
+            data=data,
+            evidence=evidence,
+        )
 
     def to_llamaindex_tools(
         self,

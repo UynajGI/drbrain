@@ -122,6 +122,10 @@ class RunGovernance:
         """Expose the same pre-execution budget guard used by runtime boundaries."""
         return self._ledger.reserve_budget(run_id, amounts)
 
+    def consume_observed(self, run_id: str, amounts: dict[str, int | float]) -> dict[str, Any]:
+        """Record provider-reported usage after an external boundary completes."""
+        return self._ledger.consume_observed_budget(run_id, amounts)
+
     def _resolve(self, identifier: str) -> LedgerRun:
         run = self._ledger.get_run_by_id(identifier) or self._ledger.get_run(identifier)
         if run is None:

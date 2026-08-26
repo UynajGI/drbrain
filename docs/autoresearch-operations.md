@@ -44,15 +44,22 @@ boundary.
 
 `ResearchDirector.run()` accepts an additive `budget=` mapping for a new run.
 Supported enforced limits are `max_attempts`, `max_tool_calls`,
-`max_rag_calls`, `max_model_calls`, and `max_wall_seconds`.
+`max_rag_calls`, `max_model_calls`, `max_wall_seconds`, `max_tokens`,
+`max_cpu_seconds`, and `max_gpu_seconds`.
 The shorter boundary names (`attempts`, `tool_calls`, `rag_calls`,
-`model_calls`, and `wall_seconds`) are accepted as additive aliases and are
-stored canonically with the `max_` prefix.
+`model_calls`, `wall_seconds`, `tokens`, `cpu_seconds`, and `gpu_seconds`) are
+accepted as additive aliases and are stored canonically with the `max_` prefix.
 
 ```python
 await director.run(
     "topic",
-    budget={"max_attempts": 6, "max_tool_calls": 20, "max_model_calls": 12},
+    budget={
+        "max_attempts": 6,
+        "max_tool_calls": 20,
+        "max_model_calls": 12,
+        "max_tokens": 100_000,
+        "max_gpu_seconds": 3_600,
+    },
 )
 ```
 
@@ -66,3 +73,18 @@ ceiling rather than a pause. Start a new run with a higher limit after auditing
 the exhausted run. For an opaque agent that cannot expose per-turn callbacks,
 the loop reserves its configured maximum trajectory up front; failed model
 requests still count as attempted external calls.
+
+Call and attempt limits are reserved before their boundary executes. Token and
+resource limits are additionally charged from facts available only afterward:
+LlamaIndex agent turns use provider-reported `usage` metadata when present;
+they are never estimated from text. ToolBroker records
+`PluginResult.resource_usage` (`tokens`, `cpu_seconds`, `gpu_seconds`) and otherwise records
+CPU only for bounded synchronous adapters running in an isolated worker thread.
+A provider-reported CPU value takes precedence because it can attribute
+subprocess work more precisely, and GPU time must be reported by the plugin
+because the host cannot reliably attribute GPU work. If a bounded synchronous
+adapter times out, its worker may continue after cancellation; the broker
+conservatively charges its timeout duration as a single-thread CPU upper bound,
+so retries cannot evade the CPU cap. If an observed amount crosses its
+limit, that completed boundary stays in the audit trace and the run becomes
+terminal before any later model, RAG, or tool boundary is admitted.
