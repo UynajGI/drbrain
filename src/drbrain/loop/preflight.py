@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 from drbrain.loop.policy import ToolDefinition, ToolPolicy, ToolSideEffect
 from drbrain.rag.mcp_tools import mcp_server_id, normalize_mcp_strings, validate_mcp_server
 
-_DURABLE_SIDE_EFFECTS = frozenset({"pure", "read", "write", "irreversible"})
+_DURABLE_SIDE_EFFECTS = frozenset(get_args(ToolSideEffect)) - {"unspecified"}
 
 
 def preflight_mcp_servers(
