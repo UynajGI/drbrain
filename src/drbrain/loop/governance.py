@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Mapping
 from typing import Any
@@ -123,6 +124,7 @@ class RunGovernance:
                         "evidence_id": evidence_id,
                         "bundle_ids": [],
                         "bundle_refs": [],
+                        "record_variants": [],
                         "document_locator": _mapping(record.get("document_locator")),
                         "chunk_locator": _mapping(record.get("chunk_locator")),
                         "content_checksum": str(record.get("content_checksum") or ""),
@@ -137,6 +139,34 @@ class RunGovernance:
                     entry["bundle_ids"].append(bundle_id)
                 if bundle_ref not in entry["bundle_refs"]:
                     entry["bundle_refs"].append(bundle_ref)
+                record_variant = {
+                    **bundle_ref,
+                    "document_locator": _mapping(record.get("document_locator")),
+                    "chunk_locator": _mapping(record.get("chunk_locator")),
+                    "content_checksum": str(record.get("content_checksum") or ""),
+                    "excerpt_checksum": str(record.get("excerpt_checksum") or ""),
+                }
+                if record_variant not in entry["record_variants"]:
+                    entry["record_variants"].append(record_variant)
+
+        for entry in evidence_by_id.values():
+            record_signatures = {
+                json.dumps(
+                    {
+                        key: variant[key]
+                        for key in (
+                            "document_locator",
+                            "chunk_locator",
+                            "content_checksum",
+                            "excerpt_checksum",
+                        )
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                for variant in entry["record_variants"]
+            }
+            entry["has_conflicting_records"] = len(record_signatures) > 1
 
         settlements = self._transitions.execution_snapshot(run.run_id)["settlements"]
         claims: list[dict[str, Any]] = []
