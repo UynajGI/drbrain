@@ -98,6 +98,15 @@ def test_operator_can_abandon_manual_review_with_a_durable_reason(tmp_path):
             "SELECT status FROM research_steps WHERE step_id = ?", (step_id,)
         ).fetchone()["status"]
     assert status == "failed"
+    with ledger.transaction() as conn:
+        attempt = conn.execute(
+            "SELECT status, failure_category, completed_at FROM research_attempts WHERE step_id = ?",
+            (step_id,),
+        ).fetchone()
+    assert attempt is not None
+    assert attempt["status"] == "failed"
+    assert attempt["failure_category"] == "manual_review_abandoned"
+    assert attempt["completed_at"] is not None
     event = ledger.events(run_id)[-1]
     assert event.event_type == "cycle_manual_review_resolved"
     assert event.payload == {
@@ -111,6 +120,7 @@ def test_pause_blocks_new_broker_side_effects_and_resume_restores_execution(tmp_
     ledger, run_id, broker = _running(tmp_path)
     control = RunGovernance(ledger)
     control.pause(run_id, reason="operator_pause")
+    assert control.trace(run_id)["events"][-1]["actor"] == "operator"
     invoked = False
 
     def handler():
