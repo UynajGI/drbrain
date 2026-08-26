@@ -286,7 +286,7 @@ class TransitionService:
                 raise RunExecutionBlockedError(
                     f"cannot complete cycle while run {run_id} is {status!r}"
                 )
-            self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+            self._require_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id)
             self._transition_step(conn, step_id, STEP_SUCCEEDED)
             conn.execute(
                 """
@@ -341,7 +341,7 @@ class TransitionService:
     ) -> None:
         """Commit a failed workflow cycle before the exception propagates."""
         with self._ledger.transaction() as conn:
-            self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+            self._require_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id)
             self._transition_step(conn, step_id, STEP_FAILED)
             conn.execute(
                 """
@@ -389,6 +389,15 @@ class TransitionService:
             ).fetchone()
             if row is None or str(row["run_id"]) != run_id:
                 raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
+            checkpoint = conn.execute(
+                """
+                SELECT checkpoint_id FROM research_checkpoints
+                WHERE checkpoint_id = ? AND run_id = ? AND step_id = ?
+                """,
+                (checkpoint_id, run_id, step_id),
+            ).fetchone()
+            if checkpoint is None:
+                raise KeyError(f"unknown checkpoint {checkpoint_id!r} for step {step_id!r}")
             status = str(row["status"])
             if status == STEP_UNKNOWN:
                 self._transition_step(conn, step_id, STEP_RECONCILING)
@@ -448,10 +457,10 @@ class TransitionService:
         """Stop an unsafe recovery without silently starting a fresh cycle."""
         with self._ledger.transaction() as conn:
             row = conn.execute(
-                "SELECT status FROM research_steps WHERE step_id = ?", (step_id,)
+                "SELECT run_id, status FROM research_steps WHERE step_id = ?", (step_id,)
             ).fetchone()
-            if row is None:
-                raise KeyError(f"unknown research step {step_id}")
+            if row is None or str(row["run_id"]) != run_id:
+                raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
             status = str(row["status"])
             if status == STEP_RUNNING:
                 self._transition_step(conn, step_id, STEP_UNKNOWN)
@@ -893,7 +902,7 @@ class TransitionService:
         with self._ledger.transaction() as conn:
             self._run_status(conn, run_id)
             if step_id:
-                self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+                self._require_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id)
             row = conn.execute(
                 "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
             ).fetchone()
@@ -980,7 +989,7 @@ class TransitionService:
             if experiment is None or str(experiment["run_id"]) != run_id:
                 raise KeyError(f"unknown experiment {experiment_id!r}")
             if step_id:
-                self._require_lease(conn, step_id=step_id, worker_id=worker_id)
+                self._require_lease(conn, run_id=run_id, step_id=step_id, worker_id=worker_id)
             row = conn.execute(
                 "SELECT * FROM research_artifacts WHERE artifact_id = ?", (artifact_id,)
             ).fetchone()
@@ -1391,16 +1400,18 @@ class TransitionService:
         self._set_step_status(conn, step_id, target)
 
     @staticmethod
-    def _require_lease(conn: Any, *, step_id: str, worker_id: str | None) -> None:
-        """Keep legacy callers working while enforcing leases for new workers."""
+    def _require_lease(conn: Any, *, run_id: str, step_id: str, worker_id: str | None) -> None:
+        """Require a step to belong to its run and, for new workers, hold its lease."""
+        row = conn.execute(
+            "SELECT run_id, lease_owner, lease_expires_at FROM research_steps WHERE step_id = ?",
+            (step_id,),
+        ).fetchone()
+        if row is None or str(row["run_id"]) != run_id:
+            raise KeyError(f"unknown step {step_id!r} for run {run_id!r}")
         if worker_id is None:
             return
-        row = conn.execute(
-            "SELECT lease_owner, lease_expires_at FROM research_steps WHERE step_id = ?", (step_id,)
-        ).fetchone()
         if (
-            row is None
-            or row["lease_owner"] != worker_id
+            row["lease_owner"] != worker_id
             or row["lease_expires_at"] is None
             or float(row["lease_expires_at"]) <= time.time()
         ):
