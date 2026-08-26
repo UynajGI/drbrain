@@ -60,7 +60,7 @@ from drbrain.loop.events import (
 )
 from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
-from drbrain.loop.store import RunExecutionBlockedError
+from drbrain.loop.store import RunBudgetExceededError, RunExecutionBlockedError
 from drbrain.loop.tool_broker import ToolBroker
 
 _STATE_KEY = "research_state"
@@ -305,17 +305,10 @@ def _reported_token_usage(result: Any) -> dict[str, int | float]:
         usage = _usage_mapping(candidate)
         if not usage:
             continue
-        total = next(
-            (
-                value
-                for value in (usage.get("total_tokens"), usage.get("total_token_count"))
-                if _positive_number(value)
-            ),
-            None,
-        )
+        total = _first_positive(usage.get("total_tokens"), usage.get("total_token_count"))
         if not _positive_number(total):
-            prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
-            completion = usage.get("completion_tokens", usage.get("output_tokens"))
+            prompt = _first_positive(usage.get("prompt_tokens"), usage.get("input_tokens"))
+            completion = _first_positive(usage.get("completion_tokens"), usage.get("output_tokens"))
             prompt_value = _positive_float(prompt)
             completion_value = _positive_float(completion)
             if prompt_value or completion_value:
@@ -377,6 +370,10 @@ def _positive_float(value: Any) -> float:
     ):
         return float(value)
     return 0.0
+
+
+def _first_positive(*values: Any) -> Any | None:
+    return next((value for value in values if _positive_number(value)), None)
 
 
 class ResearchLoopWorkflow(Workflow):
@@ -902,9 +899,11 @@ class ResearchLoopWorkflow(Workflow):
         previous_override = agent_dict.get("take_step")
         had_override = "take_step" in agent_dict
         wrapped = False
+        observed_budget_error: RunBudgetExceededError | None = None
         if callable(original_take_step):
 
             async def budgeted_take_step(*args: Any, **kwargs: Any) -> Any:
+                nonlocal observed_budget_error
                 # FunctionAgent.take_step performs exactly one LLM request. A
                 # local wrapper keeps accounting scoped to this workflow rather
                 # than registering a process-global LlamaIndex event handler.
@@ -912,7 +911,14 @@ class ResearchLoopWorkflow(Workflow):
                 result = original_take_step(*args, **kwargs)
                 if hasattr(result, "__await__"):
                     result = await result
-                await self._consume_budget(_reported_token_usage(result))
+                try:
+                    await self._consume_budget(_reported_token_usage(result))
+                except RunBudgetExceededError as exc:
+                    # Keep the already-completed turn visible to the agent.
+                    # The durable run is already terminal; after the agent
+                    # returns control, re-raise at this workflow boundary to
+                    # prevent any later node from scheduling external work.
+                    observed_budget_error = exc
                 return result
 
             try:
@@ -934,6 +940,8 @@ class ResearchLoopWorkflow(Workflow):
                     object.__setattr__(agent, "take_step", previous_override)
                 else:
                     object.__delattr__(agent, "take_step")
+        if observed_budget_error is not None:
+            raise observed_budget_error
         response = getattr(result, "response", None)
         answer = ""
         if response is not None:

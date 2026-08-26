@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +13,7 @@ from drbrain.loop.policy import ToolDefinition, ToolPolicy
 from drbrain.loop.store import RunExecutionBlockedError, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, ToolCallStatus
 from drbrain.loop.transitions import TransitionService
-from drbrain.loop.workflow import ResearchLoopWorkflow
+from drbrain.loop.workflow import ResearchLoopWorkflow, _reported_token_usage
 from drbrain.plugins.protocol import PluginResult, ResultStatus
 
 
@@ -411,6 +412,7 @@ def test_each_function_agent_turn_reserves_model_budget_before_calling_the_model
 def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
     ledger, run_id, _ = _running(tmp_path, budget={"max_tokens": 3})
     model_turns = 0
+    agent_received_turn_result = False
 
     class _Usage:
         prompt_tokens = 4
@@ -424,7 +426,9 @@ def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
 
         def run(self, **_kwargs):
             async def result():
+                nonlocal agent_received_turn_result
                 await self.take_step()
+                agent_received_turn_result = True
                 return type(
                     "Result", (), {"response": type("Response", (), {"content": "done"})()}
                 )()
@@ -440,6 +444,7 @@ def test_reported_model_tokens_are_recorded_after_a_completed_turn(tmp_path):
 
     budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
     assert model_turns == 1
+    assert agent_received_turn_result is True
     assert budget["usage"]["tokens"] == 4
     assert budget["usage"]["model_calls"] == 1
     assert budget["exhausted"] is True
@@ -511,6 +516,16 @@ def test_total_token_count_falls_back_from_empty_total_tokens(tmp_path):
         asyncio.run(workflow.run_agent(_Agent(), "record token count fallback"))
 
     assert RunGovernance(ledger).audit_summary(run_id)["budget"]["usage"]["tokens"] == 4
+
+
+def test_token_aliases_skip_empty_primary_values():
+    class _Usage:
+        prompt_tokens = 0
+        input_tokens = 2
+        completion_tokens = None
+        output_tokens = 3
+
+    assert _reported_token_usage(SimpleNamespace(raw={"usage": _Usage()})) == {"tokens": 5.0}
 
 
 def test_agent_without_turn_hook_reserves_its_worst_case_trajectory(tmp_path):
