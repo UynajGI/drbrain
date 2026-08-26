@@ -103,6 +103,7 @@ def test_autoresearch_config_defaults():
     assert c.plugins_dir == ""
     assert c.mcp_servers == []
     assert c.step_capabilities == {}
+    assert c.budget == {}
     assert c.require_rag_evidence is False
 
 
@@ -246,6 +247,9 @@ autoresearch:
   enabled: true
   run_dir: workspace/runs
   max_cycles: 2
+  budget:
+    max_tokens: 1000
+    max_tool_calls: 4
   require_rag_evidence: true
 """,
             encoding="utf-8",
@@ -254,6 +258,7 @@ autoresearch:
         assert c.autoresearch.enabled is True
         assert c.autoresearch.run_dir == "workspace/runs"
         assert c.autoresearch.max_cycles == 2
+        assert c.autoresearch.budget == {"max_tokens": 1000, "max_tool_calls": 4}
         assert c.autoresearch.require_rag_evidence is True
 
 

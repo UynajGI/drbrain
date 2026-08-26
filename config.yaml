@@ -103,5 +103,6 @@ autoresearch:
   stagnation_cycles: 3
   max_adaptations: 2
   lease_seconds: 900
+  budget: {}  # e.g. {max_tokens: 100000, max_tool_calls: 20}
   require_rag_evidence: false  # true = 已启用 RAG 时无可引用证据即降为 prediction
 

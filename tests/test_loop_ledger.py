@@ -11,7 +11,7 @@ import pytest
 from drbrain.loop.director import JANITOR_STALE_SECONDS, ResearchDirector, _default_state
 from drbrain.loop.events import ResearchState
 from drbrain.loop.state import InvalidTransitionError
-from drbrain.loop.store import LEDGER_SCHEMA_VERSION, RunLedger
+from drbrain.loop.store import LEDGER_SCHEMA_VERSION, RunBudgetExceededError, RunLedger
 from drbrain.loop.transitions import TransitionService
 
 
@@ -365,6 +365,27 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
         "stagnation_cycles": 7,
         "max_adaptations": 4,
     }
+    assert run.budget == resumed[0].payload["budget"]
+
+
+def test_resume_replaces_the_enforced_budget_with_the_audited_limits(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("budget resume", budget={"max_model_calls": 4})
+
+    resumed = ledger.record_resume(
+        run.run_id,
+        config={"n_critics": 3},
+        budget={"max_model_calls": 1},
+    )
+
+    assert resumed.payload["previous_budget"] == {"max_model_calls": 4}
+    assert resumed.payload["budget"] == {"max_model_calls": 1}
+    assert ledger.budget_snapshot(run.run_id)["limits"] == {"max_model_calls": 1}
+
+    TransitionService(ledger).start_run(run.run_id)
+    ledger.reserve_budget(run.run_id, {"model_calls": 1})
+    with pytest.raises(RunBudgetExceededError, match="model_calls"):
+        ledger.reserve_budget(run.run_id, {"model_calls": 1})
 
 
 def test_resume_reuses_the_generation_pinned_when_the_run_was_created(tmp_path, monkeypatch):
