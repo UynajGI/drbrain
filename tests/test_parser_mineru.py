@@ -3,6 +3,8 @@
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 from drbrain.parser.mineru_parser import (
     MinerUParser,
 )
@@ -30,7 +32,7 @@ def _mock_mineru_run(
         # Simulate -o output: create temp dir with images
         out_dir = Path(cmd[cmd.index("-o") + 1])
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "paper.md").write_text(md_content)
+        (out_dir / "paper.md").write_text(md_content, encoding="utf-8")
         img_dir = out_dir / "images"
         img_dir.mkdir(exist_ok=True)
         (img_dir / "test.jpg").write_bytes(b"fake")
@@ -41,6 +43,13 @@ def _mock_mineru_run(
         return result
 
     return mock_run, lambda: call_count
+
+
+@pytest.fixture(autouse=True)
+def _mock_openalex_authorship_lookup():
+    """Keep CLI/parser behavior tests independent from the OpenAlex network."""
+    with unittest.mock.patch("drbrain.extractor.openalex.search_authors_by_work", return_value=[]):
+        yield
 
 
 def test_parser_retries_mineru_on_failure():
@@ -95,7 +104,6 @@ def test_parser_succeeds_on_first_try():
             "drbrain.parser.mineru.parser._find_cli", return_value="mineru-open-api"
         ),
         unittest.mock.patch.object(MinerUParser, "_count_pages", return_value=1),
-        unittest.mock.patch("drbrain.extractor.openalex.search_authors_by_work", return_value=[]),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser._resolve_metadata",
             return_value={
