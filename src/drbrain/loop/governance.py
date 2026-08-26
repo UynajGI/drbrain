@@ -96,6 +96,8 @@ class RunGovernance:
             if not isinstance(bundle, Mapping):
                 continue
             bundle_id = str(bundle.get("bundle_id") or "")
+            if not bundle_id:
+                continue
             bundle_summary = {
                 "bundle_id": bundle_id,
                 "generation": str(bundle.get("generation") or ""),
@@ -103,7 +105,7 @@ class RunGovernance:
                 "retriever": str(bundle.get("retriever") or ""),
                 "tool_call_id": str(bundle.get("tool_call_id") or ""),
             }
-            if not bundle_id or bundle_id not in known_bundle_ids:
+            if bundle_id not in known_bundle_ids:
                 bundles.append(bundle_summary)
                 known_bundle_ids.add(bundle_id)
             records = bundle.get("records")
@@ -120,15 +122,21 @@ class RunGovernance:
                     {
                         "evidence_id": evidence_id,
                         "bundle_ids": [],
-                        "generation": bundle_summary["generation"],
+                        "bundle_refs": [],
                         "document_locator": _mapping(record.get("document_locator")),
                         "chunk_locator": _mapping(record.get("chunk_locator")),
                         "content_checksum": str(record.get("content_checksum") or ""),
                         "excerpt_checksum": str(record.get("excerpt_checksum") or ""),
                     },
                 )
-                if bundle_id and bundle_id not in entry["bundle_ids"]:
+                bundle_ref = {
+                    "bundle_id": bundle_id,
+                    "generation": bundle_summary["generation"],
+                }
+                if bundle_id not in entry["bundle_ids"]:
                     entry["bundle_ids"].append(bundle_id)
+                if bundle_ref not in entry["bundle_refs"]:
+                    entry["bundle_refs"].append(bundle_ref)
 
         settlements = self._transitions.execution_snapshot(run.run_id)["settlements"]
         claims: list[dict[str, Any]] = []
