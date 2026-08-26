@@ -10,6 +10,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from drbrain.storage.database import Database
 
 EVIDENCE_COLS = [
@@ -247,9 +249,10 @@ def test_migrate_v13_adds_claims_and_evidence(tmp_path):
 
     db = Database(db_path)
 
-    assert _versions(db) == list(range(1, 17))
+    assert _versions(db) == list(range(1, 18))
     assert "evidence" in _table_names(db)
     assert "claims" in _table_names(db)
+    assert "claim_evidence" in _table_names(db)
     assert "owner_principal" in _cols(db, "agent_sessions")
 
     # Both tables are immediately writable.
@@ -270,7 +273,45 @@ def test_migration_is_idempotent(tmp_path):
     db.close()
 
     db2 = Database(db_path)
-    assert _versions(db2) == list(range(1, 17))
+    assert _versions(db2) == list(range(1, 18))
     assert "evidence" in _table_names(db2)
     assert "claims" in _table_names(db2)
+    assert "claim_evidence" in _table_names(db2)
     db2.close()
+
+
+def test_record_claim_evidence_preserves_many_to_many_links(tmp_db):
+    claim_id = tmp_db.record_claim("research", "Verified claim", claim_type="Conclusion")
+    evidence_id = tmp_db.record_evidence(
+        "paper-1",
+        "section-2",
+        evidence_id="ev-real",
+        snippet="The supporting passage.",
+    )
+
+    linked = tmp_db.record_claim_evidence(claim_id, [evidence_id, evidence_id])
+
+    assert linked == ["ev-real"]
+    assert tmp_db.conn.execute("SELECT claim_id, evidence_id FROM claim_evidence").fetchall() == [
+        (claim_id, "ev-real")
+    ]
+
+    # Re-recording an idempotent claim must not cascade-delete its evidence link.
+    tmp_db.record_claim("research", "Verified claim", claim_type="Conclusion")
+    assert tmp_db.conn.execute("SELECT claim_id, evidence_id FROM claim_evidence").fetchall() == [
+        (claim_id, "ev-real")
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        tmp_db.record_claim_evidence(claim_id, ["unknown-evidence"])
+
+    # Updating the evidence must not delete an existing claim relationship.
+    tmp_db.record_evidence(
+        "paper-1",
+        "section-2",
+        evidence_id="ev-real",
+        snippet="A richer supporting passage.",
+    )
+    assert tmp_db.conn.execute("SELECT claim_id, evidence_id FROM claim_evidence").fetchall() == [
+        (claim_id, "ev-real")
+    ]
