@@ -149,7 +149,16 @@ def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path
             run_id,
             actor="rag_evidence",
             event_type="rag_evidence_recorded",
-            payload={"bundle": bundle | {"bundle_id": "eb-later", "generation": "gen-later"}},
+            payload={
+                "bundle": bundle
+                | {
+                    "bundle_id": "eb-later",
+                    "generation": "gen-later",
+                    "records": [
+                        bundle["records"][0] | {"chunk_locator": {"node_id": "node-later"}}
+                    ],
+                }
+            },
         )
         for _ in range(2):
             ledger.append_event(
@@ -224,6 +233,25 @@ def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path
                     {"bundle_id": "eb-fixture", "generation": "gen-fixture"},
                     {"bundle_id": "eb-later", "generation": "gen-later"},
                 ],
+                "record_variants": [
+                    {
+                        "bundle_id": "eb-fixture",
+                        "generation": "gen-fixture",
+                        "document_locator": {"paper_id": "paper-fixture"},
+                        "chunk_locator": {"node_id": "node-fixture"},
+                        "content_checksum": "content-fixture",
+                        "excerpt_checksum": "excerpt-fixture",
+                    },
+                    {
+                        "bundle_id": "eb-later",
+                        "generation": "gen-later",
+                        "document_locator": {"paper_id": "paper-fixture"},
+                        "chunk_locator": {"node_id": "node-later"},
+                        "content_checksum": "content-fixture",
+                        "excerpt_checksum": "excerpt-fixture",
+                    },
+                ],
+                "has_conflicting_records": True,
                 "document_locator": {"paper_id": "paper-fixture"},
                 "chunk_locator": {"node_id": "node-fixture"},
                 "content_checksum": "content-fixture",

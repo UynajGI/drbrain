@@ -113,6 +113,8 @@ queryable form. It resolves each settled claim's persisted `evidence_ids` to
 the generation-pinned RAG bundle's document/chunk locators and checksums. An
 unknown evidence ID remains explicit in `missing_evidence_ids`; the command
 never invents a citation or silently substitutes a newer index generation.
+If one evidence ID has conflicting recorded locators or checksums, the response
+keeps every `record_variants` entry and marks `has_conflicting_records: true`.
 
 Before starting a run that enables MCP, inspect the static durable contract:
 
