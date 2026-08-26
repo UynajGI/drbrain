@@ -974,13 +974,16 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
         return (value.strip(),) if value.strip() else ()
     if not isinstance(value, (list, tuple, set, frozenset)):
         return ()
-    return tuple(str(item).strip() for item in value if str(item).strip())
+    values = [str(item).strip() for item in value if str(item).strip()]
+    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
 
 
 def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> Any:
     """Map a trusted MCP descriptor onto the same durable tool contract."""
+    from drbrain.rag.mcp_tools import mcp_server_id
+
     tool_name = str(descriptor.get("name") or "").strip()
-    server_id = str(server.get("id") or server.get("name") or server.get("command") or "mcp")
+    server_id = mcp_server_id(server)
     raw_schema = descriptor.get("inputSchema")
     schema = dict(raw_schema) if isinstance(raw_schema, dict) else {}
     capabilities = _string_tuple(server.get("required_capabilities"))

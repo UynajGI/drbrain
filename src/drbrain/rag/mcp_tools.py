@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,6 +46,11 @@ def validate_mcp_server(
 ) -> MCPServerPolicy:
     """Validate one host-owned MCP server configuration without contacting it."""
     return _policy_from_server(server, require_trusted=require_trusted)
+
+
+def mcp_server_id(server: Mapping[str, Any], *, fallback: str = "mcp") -> str:
+    """Normalize the host-owned identifier used in MCP tool capabilities."""
+    return str(server.get("id") or server.get("name") or server.get("command") or fallback).strip()
 
 
 def _policy_from_server(
@@ -99,7 +104,7 @@ def _policy_from_server(
         if not allowed_tools:
             raise MCPTrustError("Trusted MCP servers require a non-empty allowed_tools list")
 
-    server_id = str(server.get("id") or server.get("name") or command).strip()
+    server_id = mcp_server_id(server, fallback=command)
     return MCPServerPolicy(
         server_id=server_id,
         command=command,

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.preflight import preflight_mcp_servers
+from drbrain.rag.agent import _mcp_tool_definition
 
 
 def test_mcp_preflight_reports_visible_classified_tools_without_contacting_server():
     report = preflight_mcp_servers(
         [
             {
-                "id": "catalog",
+                "id": " catalog ",
                 "command": "catalog-mcp",
                 "trusted": True,
                 "allowed_tools": ["search"],
@@ -40,3 +41,30 @@ def test_mcp_preflight_reports_visible_classified_tools_without_contacting_serve
             }
         ],
     }
+    definition = _mcp_tool_definition(
+        {
+            "id": " catalog ",
+            "command": "catalog-mcp",
+            "side_effect": "read",
+        },
+        {"name": "search"},
+    )
+    assert definition.required_capabilities == ("mcp:catalog:search",)
+
+
+def test_mcp_preflight_sorts_set_capabilities_in_its_diagnostic_report():
+    report = preflight_mcp_servers(
+        [
+            {
+                "id": "catalog",
+                "command": "catalog-mcp",
+                "trusted": True,
+                "allowed_tools": ["search"],
+                "side_effect": "read",
+                "required_capabilities": {"beta", "alpha"},
+            }
+        ],
+        tool_policy=ToolPolicy(step_capabilities={"retrieve": {"alpha", "beta"}}),
+    )
+
+    assert report["servers"][0]["tools"][0]["required_capabilities"] == ["alpha", "beta"]

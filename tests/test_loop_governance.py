@@ -144,6 +144,21 @@ def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path
                 event_type="rag_evidence_recorded",
                 payload={"bundle": bundle},
             )
+        ledger.append_event(
+            conn,
+            run_id,
+            actor="rag_evidence",
+            event_type="rag_evidence_recorded",
+            payload={"bundle": bundle | {"bundle_id": "eb-later", "generation": "gen-later"}},
+        )
+        for _ in range(2):
+            ledger.append_event(
+                conn,
+                run_id,
+                actor="rag_evidence",
+                event_type="rag_evidence_recorded",
+                payload={"bundle": {"generation": "ignored", "records": []}},
+            )
     execution = DurableExecution(TransitionService(ledger), run_id)
     execution.ensure_node_contracts()
     experiment = execution.record_experiment(
@@ -175,7 +190,14 @@ def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path
             "query": "fixture query",
             "retriever": "fusion",
             "tool_call_id": "rag-fixture",
-        }
+        },
+        {
+            "bundle_id": "eb-later",
+            "generation": "gen-later",
+            "query": "fixture query",
+            "retriever": "fusion",
+            "tool_call_id": "rag-fixture",
+        },
     ]
     assert len(lineage["claims"]) == 1
     claim = lineage["claims"][0]
@@ -197,8 +219,11 @@ def test_evidence_lineage_binds_settled_claims_to_recorded_rag_locators(tmp_path
         "evidence": [
             {
                 "evidence_id": "ev-fixture",
-                "bundle_ids": ["eb-fixture"],
-                "generation": "gen-fixture",
+                "bundle_ids": ["eb-fixture", "eb-later"],
+                "bundle_refs": [
+                    {"bundle_id": "eb-fixture", "generation": "gen-fixture"},
+                    {"bundle_id": "eb-later", "generation": "gen-later"},
+                ],
                 "document_locator": {"paper_id": "paper-fixture"},
                 "chunk_locator": {"node_id": "node-fixture"},
                 "content_checksum": "content-fixture",

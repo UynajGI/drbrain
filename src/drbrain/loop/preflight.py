@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from drbrain.loop.policy import ToolDefinition, ToolPolicy, ToolSideEffect
-from drbrain.rag.mcp_tools import validate_mcp_server
+from drbrain.rag.mcp_tools import mcp_server_id, validate_mcp_server
 
 _DURABLE_SIDE_EFFECTS = frozenset({"pure", "read", "write", "irreversible"})
 
@@ -32,9 +32,7 @@ def preflight_mcp_servers(
                 }
             )
             continue
-        server_id = str(
-            server.get("id") or server.get("name") or server.get("command") or f"server-{index + 1}"
-        )
+        server_id = mcp_server_id(server, fallback=f"server-{index + 1}")
         try:
             policy = validate_mcp_server(server, require_trusted=True)
         except ValueError as exc:
@@ -113,4 +111,5 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
         return (value.strip(),) if value.strip() else ()
     if not isinstance(value, (list, tuple, set, frozenset)):
         return ()
-    return tuple(str(item).strip() for item in value if str(item).strip())
+    values = [str(item).strip() for item in value if str(item).strip()]
+    return tuple(sorted(values)) if isinstance(value, (set, frozenset)) else tuple(values)
