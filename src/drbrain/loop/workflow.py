@@ -305,16 +305,24 @@ def _reported_token_usage(result: Any) -> dict[str, int | float]:
         usage = _usage_mapping(candidate)
         if not usage:
             continue
-        total = usage.get("total_tokens", usage.get("total_token_count"))
+        total = next(
+            (
+                value
+                for value in (usage.get("total_tokens"), usage.get("total_token_count"))
+                if _positive_number(value)
+            ),
+            None,
+        )
         if not _positive_number(total):
             prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
             completion = usage.get("completion_tokens", usage.get("output_tokens"))
-            prompt_value = float(prompt) if _positive_number(prompt) else 0.0
-            completion_value = float(completion) if _positive_number(completion) else 0.0
+            prompt_value = _positive_float(prompt)
+            completion_value = _positive_float(completion)
             if prompt_value or completion_value:
                 total = prompt_value + completion_value
-        if _positive_number(total):
-            return {"tokens": float(total)}
+        total_value = _positive_float(total)
+        if total_value:
+            return {"tokens": total_value}
     return {}
 
 
@@ -358,6 +366,17 @@ def _positive_number(value: Any) -> bool:
         and math.isfinite(value)
         and value > 0
     )
+
+
+def _positive_float(value: Any) -> float:
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+    ):
+        return float(value)
+    return 0.0
 
 
 class ResearchLoopWorkflow(Workflow):

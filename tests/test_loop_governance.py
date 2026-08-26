@@ -473,6 +473,46 @@ def test_observed_plugin_resources_remain_auditable_when_they_exhaust_budget(tmp
     assert budget["exhausted"] is True
 
 
+def test_observed_usage_recomputes_wall_time_instead_of_accepting_a_reported_value(tmp_path):
+    ledger, run_id, _ = _running(tmp_path)
+
+    ledger.consume_observed_budget(run_id, {"tokens": 1, "wall_seconds": 100_000})
+
+    budget = RunGovernance(ledger).audit_summary(run_id)["budget"]
+    assert budget["usage"]["tokens"] == 1
+    assert budget["usage"]["wall_seconds"] < 10
+
+
+def test_total_token_count_falls_back_from_empty_total_tokens(tmp_path):
+    ledger, run_id, _ = _running(tmp_path, budget={"max_tokens": 3})
+
+    class _Usage:
+        total_tokens = None
+        total_token_count = 4
+
+    class _Agent:
+        async def take_step(self):
+            return type("Step", (), {"raw": {"usage": _Usage()}})()
+
+        def run(self, **_kwargs):
+            async def result():
+                await self.take_step()
+                return type(
+                    "Result", (), {"response": type("Response", (), {"content": "done"})()}
+                )()
+
+            return result()
+
+    workflow = ResearchLoopWorkflow(
+        budget_reserver=lambda amounts: ledger.reserve_budget(run_id, amounts),
+        budget_consumer=lambda amounts: ledger.consume_observed_budget(run_id, amounts),
+    )
+    with pytest.raises(RunExecutionBlockedError):
+        asyncio.run(workflow.run_agent(_Agent(), "record token count fallback"))
+
+    assert RunGovernance(ledger).audit_summary(run_id)["budget"]["usage"]["tokens"] == 4
+
+
 def test_agent_without_turn_hook_reserves_its_worst_case_trajectory(tmp_path):
     ledger, run_id, _ = _running(tmp_path, budget={"max_model_calls": 2})
     invoked = False

@@ -521,7 +521,12 @@ class RunLedger:
         normalized = {
             str(kind): float(amount)
             for kind, amount in amounts.items()
-            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+            if (
+                str(kind) != "wall_seconds"
+                and isinstance(amount, int | float)
+                and not isinstance(amount, bool)
+                and amount > 0
+            )
         }
         if not normalized:
             return self.budget_snapshot(run_id)
@@ -628,7 +633,12 @@ class RunLedger:
         normalized = {
             str(kind): float(amount)
             for kind, amount in amounts.items()
-            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+            if (
+                str(kind) != "wall_seconds"
+                and isinstance(amount, int | float)
+                and not isinstance(amount, bool)
+                and amount > 0
+            )
         }
         if not normalized:
             return self.budget_snapshot(run_id)
@@ -723,7 +733,12 @@ class RunLedger:
         normalized = {
             str(kind): float(amount)
             for kind, amount in amounts.items()
-            if isinstance(amount, int | float) and not isinstance(amount, bool) and amount > 0
+            if (
+                str(kind) != "wall_seconds"
+                and isinstance(amount, int | float)
+                and not isinstance(amount, bool)
+                and amount > 0
+            )
         }
         if not normalized:
             return self.budget_snapshot(run_id)
