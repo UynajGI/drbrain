@@ -43,7 +43,6 @@ from drbrain.cli.analysis_commands import (  # noqa: F401
     reason_cmd,
     transfers_cmd,
 )
-from drbrain.cli.autoresearch_commands import run_cmd as autoresearch_run_cmd  # noqa: F401
 from drbrain.cli.build_commands import (  # noqa: F401
     build_cmd,
     embed_cmd,

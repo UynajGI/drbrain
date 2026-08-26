@@ -268,6 +268,7 @@ class AutoresearchConfig(_ConfigBase):
     run_dir: str = "workspace/autoresearch"
     plugins_dir: str = ""
     mcp_servers: list[dict] = field(default_factory=list)
+    step_capabilities: dict[str, list[str]] = field(default_factory=dict)
     n_critics: int = 3
     max_cycles: int = 10
     stagnation_cycles: int = 3

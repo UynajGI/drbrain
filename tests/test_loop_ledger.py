@@ -355,7 +355,11 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
     assert run is not None
     resumed = [event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"]
     assert len(resumed) == 1
-    assert resumed[0].payload["config"] == {"n_critics": 2, "rag_generation": "legacy"}
+    assert resumed[0].payload["config"] == {
+        "n_critics": 2,
+        "rag_generation": "legacy",
+        "require_rag_evidence": False,
+    }
     assert resumed[0].payload["budget"] == {
         "max_cycles": 0,
         "stagnation_cycles": 7,
@@ -386,6 +390,25 @@ def test_resume_reuses_the_generation_pinned_when_the_run_was_created(tmp_path, 
         event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"
     ]
     assert resume_event[0].payload["config"]["rag_generation"] == "g-original"
+
+
+def test_resume_reuses_the_strict_evidence_mode_recorded_for_the_run(tmp_path):
+    topic = "strict evidence topic"
+    initial = ResearchDirector(cfg=object(), run_dir=tmp_path, require_rag_evidence=True)
+    asyncio.run(initial.run(topic, max_cycles=0))
+
+    resumed = ResearchDirector(cfg=object(), run_dir=tmp_path, require_rag_evidence=False)
+    asyncio.run(resumed.run(topic, max_cycles=0))
+
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_run(topic)
+    assert run is not None
+    assert run.config["require_rag_evidence"] is True
+    assert resumed._require_rag_evidence is True
+    resume_event = [
+        event for event in ledger.events(run.run_id) if event.event_type == "run_resumed"
+    ]
+    assert resume_event[0].payload["config"]["require_rag_evidence"] is True
 
 
 def test_janitor_projection_replay_does_not_duplicate_audit_lines(tmp_path):

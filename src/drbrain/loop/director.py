@@ -344,6 +344,7 @@ class ResearchDirector:
             model_manifest=model_manifest,
             tool_manifest=tool_manifest,
             rag_generation=self._rag_generation,
+            require_rag_evidence=self._require_rag_evidence,
         )
 
     # ── workspace paths ───────────────────────────────────────────────────────
@@ -1116,7 +1117,11 @@ class ResearchDirector:
 
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
-        config = {"n_critics": self._n_critics, "rag_generation": captured_generation}
+        config = {
+            "n_critics": self._n_critics,
+            "rag_generation": captured_generation,
+            "require_rag_evidence": self._require_rag_evidence,
+        }
         effective_budget: dict[str, int | float] = {
             "max_cycles": max_cycles,
             "stagnation_cycles": stagnation_cycles,
@@ -1170,6 +1175,9 @@ class ResearchDirector:
             legacy_snapshot=state if legacy_projection else None,
         )
         stored_generation = run.config.get("rag_generation")
+        stored_evidence_requirement = run.config.get("require_rag_evidence")
+        if isinstance(stored_evidence_requirement, bool):
+            self._require_rag_evidence = stored_evidence_requirement
         self._rag_generation = (
             str(stored_generation)
             if isinstance(stored_generation, str) and stored_generation
@@ -1179,7 +1187,11 @@ class ResearchDirector:
             self._rag_generation = self._retain_rag_generation(
                 ledger, run.run_id, self._rag_generation
             )
-        effective_config = {"n_critics": self._n_critics, "rag_generation": self._rag_generation}
+        effective_config = {
+            "n_critics": self._n_critics,
+            "rag_generation": self._rag_generation,
+            "require_rag_evidence": self._require_rag_evidence,
+        }
         if existing_run is not None:
             ledger.record_resume(run.run_id, config=effective_config, budget=effective_budget)
         transitions = TransitionService(ledger)

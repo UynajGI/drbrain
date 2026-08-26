@@ -97,6 +97,7 @@ autoresearch:
   run_dir: "workspace/autoresearch"
   plugins_dir: ""
   mcp_servers: []
+  step_capabilities: {}  # 外部工具仅在此明确授予其节点 capability 后才可执行
   n_critics: 3
   max_cycles: 10
   stagnation_cycles: 3

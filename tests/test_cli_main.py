@@ -55,6 +55,7 @@ def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
         "run_dir": str(tmp_path / "runs"),
         "plugins_dir": str(tmp_path / "plugins"),
         "mcp_servers": [{"name": "papers"}],
+        "step_capabilities": {"retrieve": ["rag:read", "plugin:search_papers"]},
         "n_critics": 2,
         "max_cycles": 3,
         "stagnation_cycles": 2,
@@ -87,6 +88,9 @@ def test_autoresearch_run_uses_typed_operator_settings(tmp_path):
     assert captured["n_critics"] == 2
     assert captured["lease_seconds"] == 30
     assert captured["require_rag_evidence"] is True
+    assert captured["tool_policy"].to_manifest()["step_capabilities"] == {
+        "retrieve": ["plugin:search_papers", "rag:read"]
+    }
     assert captured["run_kwargs"] == {
         "max_cycles": 3,
         "stagnation_cycles": 2,
@@ -100,6 +104,17 @@ def test_autoresearch_run_requires_explicit_enable(tmp_path):
 
     assert result.exit_code == 1
     assert "autoresearch.enabled" in result.stderr
+
+
+def test_autoresearch_run_rejects_non_mapping_settings(tmp_path):
+    cfg = _make_config(str(tmp_path / "test.db"), str(tmp_path / "reports"))
+    cfg["autoresearch"] = ["not", "a", "mapping"]
+    with mock_cfg(str(tmp_path / "test.db"), str(tmp_path / "reports")) as load_config:
+        load_config.return_value = cfg
+        result = runner.invoke(app, ["autoresearch", "run", "test topic"])
+
+    assert result.exit_code == 1
+    assert "invalid config" in result.stderr
 
 
 def test_app_stats():

@@ -102,6 +102,7 @@ def test_autoresearch_config_defaults():
     assert c.run_dir == "workspace/autoresearch"
     assert c.plugins_dir == ""
     assert c.mcp_servers == []
+    assert c.step_capabilities == {}
     assert c.require_rag_evidence is False
 
 

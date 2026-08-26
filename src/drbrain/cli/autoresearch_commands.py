@@ -10,6 +10,7 @@ import typer
 from drbrain.cli._common import open_db
 from drbrain.config import AutoresearchConfig
 from drbrain.loop import ResearchDirector
+from drbrain.loop.policy import ToolPolicy
 
 autoresearch_app = typer.Typer(help="Durable autoresearch operations")
 
@@ -18,8 +19,19 @@ def _settings(cfg: Any) -> AutoresearchConfig:
     """Read typed settings while accepting legacy dict-like CLI test config."""
     raw = cfg.get("autoresearch", {})
     if isinstance(raw, AutoresearchConfig):
-        return raw
-    return AutoresearchConfig(**raw) if isinstance(raw, dict) else AutoresearchConfig()
+        settings = raw
+    elif isinstance(raw, dict):
+        try:
+            settings = AutoresearchConfig(**raw)
+        except TypeError as exc:
+            raise ValueError(f"invalid autoresearch settings: {exc}") from exc
+    else:
+        raise ValueError("autoresearch settings must be a mapping")
+    if not isinstance(settings.mcp_servers, list):
+        raise ValueError("autoresearch.mcp_servers must be a list")
+    if not isinstance(settings.step_capabilities, dict):
+        raise ValueError("autoresearch.step_capabilities must be a mapping")
+    return settings
 
 
 @autoresearch_app.command("run")
@@ -33,7 +45,11 @@ def run_cmd(
 ) -> None:
     """Run or resume the durable autoresearch loop for one topic."""
     cfg = ctx.obj["config"]
-    settings = _settings(cfg)
+    try:
+        settings = _settings(cfg)
+    except ValueError as exc:
+        typer.echo(f"[autoresearch] invalid config: {exc}", err=True)
+        raise typer.Exit(1) from exc
     if not settings.enabled:
         typer.echo(
             "[autoresearch] disabled: set `autoresearch.enabled: true` in config.yaml",
@@ -42,6 +58,11 @@ def run_cmd(
         raise typer.Exit(1)
 
     effective_max_cycles = settings.max_cycles if max_cycles is None else max_cycles
+    tool_policy = (
+        ToolPolicy(step_capabilities=settings.step_capabilities)
+        if settings.plugins_dir or settings.mcp_servers
+        else None
+    )
     try:
         with open_db(cfg) as db:
             director = ResearchDirector(
@@ -52,6 +73,7 @@ def run_cmd(
                 run_dir=settings.run_dir,
                 n_critics=settings.n_critics,
                 lease_seconds=settings.lease_seconds,
+                tool_policy=tool_policy,
                 require_rag_evidence=settings.require_rag_evidence,
             )
             state = director.run_sync(
@@ -61,7 +83,7 @@ def run_cmd(
                 max_adaptations=settings.max_adaptations,
             )
     except Exception as exc:  # noqa: BLE001 - CLI reports the durable-run failure
-        typer.echo(f"[autoresearch] run failed: {exc}", err=True)
+        typer.echo(f"[autoresearch] durable run failed ({type(exc).__name__}): {exc}", err=True)
         raise typer.Exit(1) from exc
 
     summary = {

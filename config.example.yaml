@@ -138,6 +138,9 @@ autoresearch:
   run_dir: "workspace/autoresearch"
   plugins_dir: "" # optional external Model-as-Tool plugin directory
   mcp_servers: [] # optional MCP server definitions
+  # Required when plugins_dir or mcp_servers is set; empty means external tools are denied.
+  # Example: {retrieve: ["rag:read", "plugin:search_papers"]}
+  step_capabilities: {}
   n_critics: 3
   max_cycles: 10
   stagnation_cycles: 3
