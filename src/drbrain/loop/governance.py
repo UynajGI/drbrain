@@ -36,6 +36,7 @@ class RunGovernance:
             "last_projected_event": run.last_projected_event,
             "active_steps": self._ledger.active_leased_steps(run.run_id),
             "recoverable_steps": self._ledger.recoverable_step_ids(run.run_id),
+            "manual_review_steps": self._ledger.manual_review_step_ids(run.run_id),
             "event_count": len(events),
             "last_event": self._event_dict(events[-1]) if events else None,
         }
@@ -81,9 +82,11 @@ class RunGovernance:
             and run.status in {"paused", "succeeded", "failed", "cancelled"},
         }
 
-    def pause(self, identifier: str, *, reason: str = "operator_pause") -> dict[str, Any]:
+    def pause(
+        self, identifier: str, *, reason: str = "operator_pause", actor: str = "operator"
+    ) -> dict[str, Any]:
         run = self._resolve(identifier)
-        self._transitions.pause_run(run.run_id, reason=reason)
+        self._transitions.pause_run(run.run_id, reason=reason, actor=actor)
         return self.status(run.run_id)
 
     def resume(self, identifier: str) -> dict[str, Any]:
@@ -94,6 +97,16 @@ class RunGovernance:
     def cancel(self, identifier: str, *, reason: str = "operator_cancel") -> dict[str, Any]:
         run = self._resolve(identifier)
         self._transitions.cancel_run(run.run_id, reason=reason)
+        return self.status(run.run_id)
+
+    def resolve_manual_review(
+        self, identifier: str, *, step_id: str, reason: str, actor: str = "operator"
+    ) -> dict[str, Any]:
+        """Record an explicit abandon decision; it never retries the old step."""
+        run = self._resolve(identifier)
+        self._transitions.resolve_manual_review(
+            run.run_id, step_id=step_id, reason=reason, actor=actor
+        )
         return self.status(run.run_id)
 
     def approve(
