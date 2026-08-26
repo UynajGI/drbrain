@@ -143,8 +143,10 @@ terminal before any later model, RAG, or tool boundary is admitted.
 The repository CI and focused offline regressions validate the operator path,
 but they do not prove a real provider, plugin, and MCP deployment. When a
 configured internal-beta environment is available, run one bounded topic with
-`require_rag_evidence: true` and an explicitly capability-scoped read tool.
-Record the run ID and verify: the ledger has a generation-pinned evidence
-bundle, tool intent/observation records, claim-to-evidence links, and a resume
-that preserves the same strict evidence setting. This is a targeted acceptance
-run, not a new large-scale test program.
+`require_rag_evidence: true`. For every enabled external path (plugin and/or
+MCP), grant one explicitly capability-scoped read tool and observe one brokered
+call through that path. Record the run ID and verify: the ledger has a
+generation-pinned evidence bundle, an intent/observation pair for each enabled
+external path, claim-to-evidence links, and a resume that preserves the same
+strict evidence setting. This is a targeted acceptance run, not a new
+large-scale test program.
