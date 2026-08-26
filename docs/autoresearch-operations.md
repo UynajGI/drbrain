@@ -4,6 +4,55 @@ The legacy workspace files (`champion.md`, `dead_ends.md`, `results/`, and
 `knowledge/`) remain compatibility projections. The SQLite run ledger is the
 operational source of truth for status, trace, controls, and audit summaries.
 
+## Start or resume a run
+
+Autoresearch is opt-in. Configure the additive `autoresearch` section, then
+use the supported CLI entry point:
+
+```yaml
+autoresearch:
+  enabled: true
+  run_dir: workspace/autoresearch
+  max_cycles: 3
+  require_rag_evidence: true
+```
+
+```bash
+drbrain autoresearch run "research topic"
+# Machine-readable run summary:
+drbrain autoresearch run "research topic" --json
+```
+
+The topic is the durable run identity: invoking the command again with the
+same topic resumes that run rather than creating a second ledger record. The
+CLI only adds this operator entry; existing `ResearchDirector` and workflow
+callers retain their previous defaults.
+
+## External tools and RAG evidence mode
+
+When `plugins_dir` or `mcp_servers` is configured, the CLI creates the
+existing durable `ToolPolicy`/`ToolBroker` boundary. External tools are denied
+unless their capability is explicitly granted to the relevant workflow step:
+
+```yaml
+autoresearch:
+  plugins_dir: path/to/plugins
+  step_capabilities:
+    retrieve: ["rag:read", "plugin:search_papers"]
+```
+
+MCP tools additionally require the existing trusted-server and non-empty
+allowlist contract. The configuration above does not grant a catch-all: an
+empty `step_capabilities` map intentionally exposes no external tool.
+
+`require_rag_evidence: true` is for a deliberately RAG-grounded run. In that
+mode an unreferenced retrieval cannot promote a claim beyond `prediction`.
+The strictness and retained RAG generation are persisted with the run; the
+tool policy also forms part of the checkpoint manifest. A resumed run therefore
+retains its original strictness, and a checkpoint whose strictness or policy
+differs is rejected. Older checkpoints without the additive strictness field
+retain their historical `false` semantics.
+
 ## Read and control a run
 
 ```python
@@ -88,3 +137,14 @@ conservatively charges its timeout duration as a single-thread CPU upper bound,
 so retries cannot evade the CPU cap. If an observed amount crosses its
 limit, that completed boundary stays in the audit trace and the run becomes
 terminal before any later model, RAG, or tool boundary is admitted.
+
+## Internal-beta live acceptance
+
+The repository CI and focused offline regressions validate the operator path,
+but they do not prove a real provider, plugin, and MCP deployment. When a
+configured internal-beta environment is available, run one bounded topic with
+`require_rag_evidence: true` and an explicitly capability-scoped read tool.
+Record the run ID and verify: the ledger has a generation-pinned evidence
+bundle, tool intent/observation records, claim-to-evidence links, and a resume
+that preserves the same strict evidence setting. This is a targeted acceptance
+run, not a new large-scale test program.
