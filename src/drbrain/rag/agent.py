@@ -726,9 +726,7 @@ def _build_retrieval_tool(
                     return str(observation.error or "search_documents failed")
                 rows = observation.output if isinstance(observation.output, list) else []
             else:
-                rows = await _asyncio.to_thread(
-                    retrieve_documents, cfg, db, graph, query, top_k=10
-                )
+                rows = await _asyncio.to_thread(retrieve_documents, cfg, db, graph, query, top_k=10)
             return json.dumps(rows, ensure_ascii=False, default=str)[:12000]
 
         try:

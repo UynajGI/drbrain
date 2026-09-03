@@ -63,9 +63,7 @@ def _openalex_factory() -> CorpusSource:
 
     cfg = load_config()
     # Polite-pool mailto + API key raise OpenAlex's rate cap (~100 rps).
-    return OpenAlexSource(
-        token=cfg.api.openalex_token or None, mailto=cfg.api.crossref_email
-    )
+    return OpenAlexSource(token=cfg.api.openalex_token or None, mailto=cfg.api.crossref_email)
 
 
 def _crossref_factory() -> CorpusSource:

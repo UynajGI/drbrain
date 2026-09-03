@@ -139,7 +139,11 @@ def _resolve_rerank_model_path(model_name: str, cfg: Config) -> str:
     # can miss an HF-hub-style "<org>--<repo>" directory even when it exists
     # (observed with Qwen3-Reranker-0.6B under ~/.cache/modelscope/models).
     dashed = str(model_name).replace("/", "--")
-    for root in ("~/.cache/modelscope/models", "~/.cache/modelscope/hub/models", "~/.cache/huggingface/hub"):
+    for root in (
+        "~/.cache/modelscope/models",
+        "~/.cache/modelscope/hub/models",
+        "~/.cache/huggingface/hub",
+    ):
         base = Path(root).expanduser()
         for cand in (base / dashed, base / f"models--{dashed}"):
             if not cand.is_dir():

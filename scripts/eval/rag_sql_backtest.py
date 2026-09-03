@@ -16,6 +16,7 @@ evaluates the active SQL engine (``retrieve_documents_sql`` over
 Usage:
     .venv/bin/python scripts/eval/rag_sql_backtest.py [--split dev] [--k 10]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -218,9 +219,7 @@ def main() -> None:
             f"| {a['config']} | {a['hit@5']} | {a['mrr@5']} | {a[f'hit@{args.k}']} | "
             f"{a[f'mrr@{args.k}']} | {a[f'node_hit@{args.k}']} | {a['latency_s_avg']} |"
         )
-    (OUT_DIR / f"rag-sql-backtest-{stamp}.md").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8"
-    )
+    (OUT_DIR / f"rag-sql-backtest-{stamp}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines), flush=True)
 
 

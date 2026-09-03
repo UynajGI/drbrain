@@ -911,12 +911,12 @@ def build_index(
 
             _conn = _sqlite3.connect(f"file:{cfg.db.path}?mode=ro", uri=True)
             _parent_keys = sorted({k for k in embed_keys if "#" not in k})
-            _BATCH = 10000
+            _batch_size = 10000
             # Pass 1: hash-only probe (hash column is tiny; fetching the 4KB
             # embedding blob for every row costs GBs of pointless transfer).
             _matched: list[str] = []
-            for _s in range(0, len(_parent_keys), _BATCH):
-                _batch = _parent_keys[_s : _s + _BATCH]
+            for _s in range(0, len(_parent_keys), _batch_size):
+                _batch = _parent_keys[_s : _s + _batch_size]
                 _q = ",".join("?" * len(_batch))
                 for _nid, _h in _conn.execute(
                     "SELECT node_id, content_hash FROM tree_vectors "
@@ -927,8 +927,8 @@ def build_index(
                         _matched.append(_nid)
             # Pass 2: fetch blobs for matches only.
             _reuse: dict[str, list[float]] = {}
-            for _s in range(0, len(_matched), _BATCH):
-                _batch = _matched[_s : _s + _BATCH]
+            for _s in range(0, len(_matched), _batch_size):
+                _batch = _matched[_s : _s + _batch_size]
                 _q = ",".join("?" * len(_batch))
                 for _nid, _blob in _conn.execute(
                     f"SELECT node_id, embedding FROM tree_vectors WHERE node_id IN ({_q})",
@@ -952,9 +952,9 @@ def build_index(
         # Chunked embedding: one giant batch holds the whole corpus in the
         # provider call (hours for millions of nodes, zero crash tolerance).
         # Chunks give progress visibility and bound provider-side memory.
-        _EMBED_CHUNK = 5000
+        _embed_chunk = 5000
         vectors: list[list[float]] = []
-        total_chunks = (len(embedded_texts) + _EMBED_CHUNK - 1) // _EMBED_CHUNK
+        total_chunks = (len(embedded_texts) + _embed_chunk - 1) // _embed_chunk
         _devices = _embed_devices(cfg) if getattr(cfg.embed, "provider", "") == "local" else []
         if len(_devices) > 1 and total_chunks > 1:
             # Fan chunks out over multiple GPUs (spawn pool, one model per GPU).
@@ -962,8 +962,8 @@ def build_index(
 
             _model_path = _embed_model_path(cfg)
             _chunks = [
-                embedded_texts[s : s + _EMBED_CHUNK]
-                for s in range(0, len(embedded_texts), _EMBED_CHUNK)
+                embedded_texts[s : s + _embed_chunk]
+                for s in range(0, len(embedded_texts), _embed_chunk)
             ]
             _jobs = [
                 (_model_path, _devices[i % len(_devices)], c, i + 1, total_chunks)
@@ -975,14 +975,16 @@ def build_index(
                 for _arr in _pool.imap(_embed_chunk_worker, _jobs, chunksize=2):
                     vectors.extend(_arr.tolist() if hasattr(_arr, "tolist") else _arr)
         else:
-            for ci, start in enumerate(range(0, len(embedded_texts), _EMBED_CHUNK), 1):
+            for ci, start in enumerate(range(0, len(embedded_texts), _embed_chunk), 1):
                 logger.info(
                     "[rag] embedding chunk {}/{} ({} nodes)",
                     ci,
                     total_chunks,
-                    min(_EMBED_CHUNK, len(embedded_texts) - start),
+                    min(_embed_chunk, len(embedded_texts) - start),
                 )
-                vectors.extend(embed.get_text_embedding_batch(embedded_texts[start : start + _EMBED_CHUNK]))
+                vectors.extend(
+                    embed.get_text_embedding_batch(embedded_texts[start : start + _embed_chunk])
+                )
         if len(vectors) != len(embed_keys):
             raise RuntimeError(
                 "embedding batch returned "

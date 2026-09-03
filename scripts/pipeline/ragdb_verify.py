@@ -55,9 +55,7 @@ def main() -> None:
     print("== 3. RAG 层健康 ==")
     nt = rag.execute("SELECT COUNT(*) FROM node_texts").fetchone()[0]
     fts = rag.execute("SELECT COUNT(*) FROM node_texts_fts").fetchone()[0]
-    pi = rag.execute(
-        "SELECT COUNT(*) FROM tree_vectors WHERE tree_layer='pageindex'"
-    ).fetchone()[0]
+    pi = rag.execute("SELECT COUNT(*) FROM tree_vectors WHERE tree_layer='pageindex'").fetchone()[0]
     print(f"  node_texts: {nt} | FTS5: {fts} | pageindex 向量: {pi}")
     match = rag.execute(
         """

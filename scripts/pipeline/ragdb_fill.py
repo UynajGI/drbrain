@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sqlite3
 import sys
 import time
@@ -105,7 +104,7 @@ def cmd_extract(workers: int) -> None:
         for done in as_completed(futs):
             _, n = done.result().split(":")
             total += int(n)
-    print(f"[extract] done: {total} nodes in {time.time()-t0:.0f}s", flush=True)
+    print(f"[extract] done: {total} nodes in {time.time() - t0:.0f}s", flush=True)
 
 
 # ── load ─────────────────────────────────────────────────────────────────────
@@ -146,17 +145,15 @@ def cmd_load() -> None:
                         n += len(batch)
                         batch.clear()
                         if n % 200000 == 0:
-                            print(f"[load] {n} rows ({time.time()-t0:.0f}s)", flush=True)
+                            print(f"[load] {n} rows ({time.time() - t0:.0f}s)", flush=True)
         if batch:
-            conn.executemany(
-                "INSERT OR REPLACE INTO node_texts VALUES (?,?,?,?,?)", batch
-            )
+            conn.executemany("INSERT OR REPLACE INTO node_texts VALUES (?,?,?,?,?)", batch)
             n += len(batch)
-    print(f"[load] inserted {n} rows in {time.time()-t0:.0f}s; indexing…", flush=True)
+    print(f"[load] inserted {n} rows in {time.time() - t0:.0f}s; indexing…", flush=True)
     t0 = time.time()
     with conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_node_texts_paper ON node_texts(paper_id)")
-    print(f"[load] index done in {time.time()-t0:.0f}s; FTS5 build…", flush=True)
+    print(f"[load] index done in {time.time() - t0:.0f}s; FTS5 build…", flush=True)
     t0 = time.time()
     with conn:
         conn.execute("DROP TABLE IF EXISTS node_texts_fts")
@@ -166,7 +163,7 @@ def cmd_load() -> None:
             "tokenize='porter unicode61')"
         )
         conn.execute("INSERT INTO node_texts_fts(node_texts_fts) VALUES('rebuild')")
-    print(f"[load] FTS5 done in {time.time()-t0:.0f}s", flush=True)
+    print(f"[load] FTS5 done in {time.time() - t0:.0f}s", flush=True)
     conn.close()
 
 

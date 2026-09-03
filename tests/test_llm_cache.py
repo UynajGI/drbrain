@@ -239,8 +239,16 @@ class TestCallWithMessagesCache:
             r1 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
             r2 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
 
-        assert r1 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
-        assert r2 == {"text": "hi there", "tool_calls": None, "usage": {"in": 20, "out": 10}}
+        assert r1 == {
+            "text": "hi there",
+            "tool_calls": None,
+            "usage": {"in": 20, "out": 10, "cached": 0},
+        }
+        assert r2 == {
+            "text": "hi there",
+            "tool_calls": None,
+            "usage": {"in": 20, "out": 10, "cached": 0},
+        }
         assert call_count[0] == 1  # second call hit cache
 
     def test_different_messages_produce_cache_miss(self, tmp_path):

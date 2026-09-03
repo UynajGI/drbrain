@@ -64,9 +64,7 @@ def _open(cfg: Any) -> sqlite3.Connection | None:
 def _generation_id(conn: sqlite3.Connection) -> str:
     """Content fingerprint of the SQL snapshot (evidence-pinning anchor)."""
     n = conn.execute("SELECT COUNT(*) FROM node_texts").fetchone()[0]
-    sample = conn.execute(
-        "SELECT content_hash FROM node_texts ORDER BY rowid LIMIT 1"
-    ).fetchone()
+    sample = conn.execute("SELECT content_hash FROM node_texts ORDER BY rowid LIMIT 1").fetchone()
     seed = f"{n}:{sample[0] if sample else '-'}"
     return "sql-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
@@ -227,7 +225,9 @@ def _raptor_leg(
     return scored[:k]
 
 
-def _graph_neighbors(graph: Any, label: str, seed_score: float, max_neighbors: int = 8) -> list[dict[str, Any]]:
+def _graph_neighbors(
+    graph: Any, label: str, seed_score: float, max_neighbors: int = 8
+) -> list[dict[str, Any]]:
     """1-hop neighbour expansion of one seed concept (score-decayed)."""
     if graph is None:
         return []
@@ -350,7 +350,9 @@ def retrieve_documents_sql(
     try:
         from drbrain.rag.fusion import get_llamaindex_config
 
-        wanted = [str(x).strip() for x in (get_llamaindex_config(cfg).retrievers or ["bm25", "vector"])]
+        wanted = [
+            str(x).strip() for x in (get_llamaindex_config(cfg).retrievers or ["bm25", "vector"])
+        ]
         generation = _generation_id(conn)
         started = time.perf_counter()
 
@@ -368,13 +370,25 @@ def retrieve_documents_sql(
         if "vector" in wanted:
             t0 = time.perf_counter()
             legs.append(
-                ("vector", [{"key": k, "score": s} for k, s in _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)])
+                (
+                    "vector",
+                    [
+                        {"key": k, "score": s}
+                        for k, s in _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
+                    ],
+                )
             )
             leg_ms.append(f"vector@{(time.perf_counter() - t0) * 1000:.0f}ms")
         if "raptor" in wanted:
             t0 = time.perf_counter()
             legs.append(
-                ("raptor", [{"key": k, "score": s} for k, s in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)])
+                (
+                    "raptor",
+                    [
+                        {"key": k, "score": s}
+                        for k, s in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)
+                    ],
+                )
             )
             leg_ms.append(f"raptor@{(time.perf_counter() - t0) * 1000:.0f}ms")
         if "graph" in wanted:
@@ -509,7 +523,11 @@ def retrieve_documents_sql(
                 )
             )
             rows.append(row)
-        log.debug("[rag-sql] {} | total={:.0f}ms", " ".join(leg_ms), (time.perf_counter() - started) * 1000)
+        log.debug(
+            "[rag-sql] {} | total={:.0f}ms",
+            " ".join(leg_ms),
+            (time.perf_counter() - started) * 1000,
+        )
         return rows
     finally:
         conn.close()

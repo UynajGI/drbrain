@@ -270,6 +270,13 @@ def build_cliques(
     edge_count = 0
     processed = 0
     edge_buf: list[tuple] = []
+    flush_at = 50_000
+    insert_sql = (
+        "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
+        "VALUES (?, ?, ?, ?, 1.0) "
+        "ON CONFLICT(src_label, dst_label, year, paper_id) "
+        "DO UPDATE SET weight = concept_cooccurrence.weight + excluded.weight"
+    )
     for local_id, year in rows:
         if abstract_cache is not None:
             raw = abstract_cache.get(local_id, [])

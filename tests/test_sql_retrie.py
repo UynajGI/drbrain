@@ -63,10 +63,10 @@ def rag_db(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def cfg():
-    return SimpleNamespaceConfig()
+    return _simple_namespace_config()
 
 
-def SimpleNamespaceConfig():
+def _simple_namespace_config():
     from types import SimpleNamespace
 
     return SimpleNamespace(
@@ -123,7 +123,9 @@ def test_graph_leg_rows(rag_db, cfg, monkeypatch):
     import drbrain.extractor.agent_tools as tools
 
     monkeypatch.setattr(
-        tools, "search_concepts", lambda db, q, limit=5: [{"label": "flat band", "type": "Property", "score": 0.9}]
+        tools,
+        "search_concepts",
+        lambda db, q, limit=5: [{"label": "flat band", "type": "Property", "score": 0.9}],
     )
     monkeypatch.setattr(tools, "get_neighbors", lambda graph, label, hops=1, direction="both": [])
     cfg.llamaindex.retrievers = ["bm25", "vector", "graph"]

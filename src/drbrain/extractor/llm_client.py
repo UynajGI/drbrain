@@ -765,6 +765,12 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _cached_tokens(usage: Any) -> int:
+    """Provider-reported prefix-cache hits; 0 unless the field is a real number."""
+    value = getattr(usage, "cached_tokens", None) if usage is not None else None
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
 def _log_llm_call(
     *,
     model: str,
@@ -866,7 +872,7 @@ def call_with_fallback(
                         n_messages=1,
                         tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
                         tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
-                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
+                        cached_tokens=_cached_tokens(usage),
                         duration_ms=elapsed,
                     )
                     parsed = json.loads(content)
@@ -977,7 +983,7 @@ async def acall_with_fallback(
                         n_messages=1,
                         tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
                         tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
-                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
+                        cached_tokens=_cached_tokens(usage),
                         duration_ms=elapsed,
                     )
                     parsed = json.loads(content)
@@ -1247,7 +1253,7 @@ def call_with_messages(
                         n_messages=len(messages),
                         tokens_in=usage.prompt_tokens if usage else 0,
                         tokens_out=usage.completion_tokens if usage else 0,
-                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
+                        cached_tokens=_cached_tokens(usage),
                         duration_ms=elapsed,
                     )
                     if api_key:
@@ -1258,7 +1264,7 @@ def call_with_messages(
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,
-                            "cached": getattr(usage, "cached_tokens", 0) if usage else 0,
+                            "cached": _cached_tokens(usage),
                         },
                     }
                     if _cache is not None and key is not None:
@@ -1375,7 +1381,7 @@ async def acall_with_messages(
                         n_messages=len(messages),
                         tokens_in=usage.prompt_tokens if usage else 0,
                         tokens_out=usage.completion_tokens if usage else 0,
-                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
+                        cached_tokens=_cached_tokens(usage),
                         duration_ms=elapsed,
                     )
                     if api_key:
@@ -1386,7 +1392,7 @@ async def acall_with_messages(
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,
-                            "cached": getattr(usage, "cached_tokens", 0) if usage else 0,
+                            "cached": _cached_tokens(usage),
                         },
                     }
                     if _cache is not None and key is not None:

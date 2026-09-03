@@ -36,9 +36,7 @@ class OpenAlexSource:
         self.mailto = mailto
         self._session = _get_session()
         if self.token:
-            self._session.headers.update(
-                {"Authorization": f"Bearer {self.token}"}
-            )
+            self._session.headers.update({"Authorization": f"Bearer {self.token}"})
 
     def _params(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = dict(params or {})
@@ -75,7 +73,9 @@ class OpenAlexSource:
         page = 1
         while emitted < limit:
             params["page"] = page
-            resp = self._session.get(f"{self.base_url}/works", params=self._params(params), timeout=60)
+            resp = self._session.get(
+                f"{self.base_url}/works", params=self._params(params), timeout=60
+            )
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])

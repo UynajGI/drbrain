@@ -162,8 +162,10 @@ class GNNLinkClassifier:
         self._label2idx = {lab: i for i, lab in enumerate(nodes)}
         x_np = build_node_topo_features(db, nodes, years, whitelist=node_labels)
         self._x_np = x_np
-        x = torch.tensor(x_np, dtype=torch.float32)
-        self._adj = build_normalized_adjacency(db, nodes, cutoff, whitelist=node_labels)
+        x = torch.tensor(x_np, dtype=torch.float32, device=self.device)
+        self._adj = build_normalized_adjacency(db, nodes, cutoff, whitelist=node_labels).to(
+            self.device
+        )
 
         encoder, decoder = self._build_model(torch, x.shape[1])
         self._encoder, self._decoder = encoder.to(self.device), decoder.to(self.device)
