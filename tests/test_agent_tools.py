@@ -232,9 +232,7 @@ def _make_rag_db(tmp: Path, rows: list[tuple[str, str, str]]) -> Path:
 
     rag_path = tmp / "drbrain_rag.db"
     conn = sqlite3.connect(rag_path)
-    conn.execute(
-        "CREATE TABLE node_texts (node_key TEXT, paper_id TEXT, node_id TEXT, text TEXT)"
-    )
+    conn.execute("CREATE TABLE node_texts (node_key TEXT, paper_id TEXT, node_id TEXT, text TEXT)")
     conn.executemany("INSERT INTO node_texts VALUES (?, ?, ?, ?)", rows)
     conn.commit()
     conn.close()
@@ -273,9 +271,7 @@ def test_get_section_content_sql_miss_falls_back_local():
         papers_dir = tmp / "papers"
         paper_dir = papers_dir / "test-paper"
         paper_dir.mkdir(parents=True)
-        (paper_dir / "raw.md").write_text(
-            "# Intro\n\nSome intro text.\n", encoding="utf-8"
-        )
+        (paper_dir / "raw.md").write_text("# Intro\n\nSome intro text.\n", encoding="utf-8")
         tree = {"structure": [{"node_id": "n1", "title": "Intro", "line_num": 1}]}
         (paper_dir / "tree.json").write_text(json.dumps(tree), encoding="utf-8")
 
@@ -513,9 +509,7 @@ def test_execute_tool_get_section_content():
             {"paper_id": "p1", "node_id": "n1"},
             papers_dir=Path("/fake/papers"),
         )
-    fake_fn.assert_called_once_with(
-        Path("/fake/papers"), db=None, paper_id="p1", node_id="n1"
-    )
+    fake_fn.assert_called_once_with(Path("/fake/papers"), db=None, paper_id="p1", node_id="n1")
     assert result == "section text"
 
 
