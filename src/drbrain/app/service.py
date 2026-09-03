@@ -2,7 +2,7 @@
 
 Every function here wraps a capability that already exists behind the CLI
 (``drbrain stats`` / ``search`` / ``ask`` / ``autoresearch``) and returns plain
-JSON-serialisable data. The HTTP layer in :mod:`drbrain.webui.server` is a thin
+JSON-serialisable data. The HTTP layer in :mod:`drbrain.app.server` is a thin
 router over these functions, so they can be unit-tested without a socket.
 
 The UI starts empty: nothing is pre-loaded, every page reflects the live

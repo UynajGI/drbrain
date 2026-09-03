@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from drbrain.app import service
+from drbrain.app.server import WebUIServer
 from drbrain.loop.store import RunLedger
 from drbrain.storage.database import Database
-from drbrain.webui import service
-from drbrain.webui.server import WebUIServer
 
 
 @pytest.fixture

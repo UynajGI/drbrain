@@ -6,7 +6,7 @@ registry the CLI uses. No extra dependencies: standard-library HTTP server plus
 one static HTML file.
 """
 
-from drbrain.webui.service import (
+from drbrain.app.service import (
     RunManager,
     ask,
     assets,

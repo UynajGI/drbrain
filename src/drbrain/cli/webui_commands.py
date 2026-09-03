@@ -17,7 +17,7 @@ def webui_cmd(
     preloaded. Stop with Ctrl-C.
     """
     cfg = ctx.obj["config"]
-    from drbrain.webui.server import serve
+    from drbrain.app.server import serve
 
     url = f"http://{host}:{port}/"
     typer.echo(f"DrBrain WebUI → {url}  (Ctrl-C to stop)")

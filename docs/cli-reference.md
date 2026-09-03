@@ -1053,7 +1053,7 @@ artifacts), 数据与模型 (database / ledger / plugins / export commands).
 The UI starts empty and only reflects the current configuration; nothing is
 preloaded. `研究问答` requires `llamaindex.enabled: true` plus a built index,
 `研究闭环` requires `autoresearch.enabled: true`. Standard library only, no
-extra dependencies. JSON API under `/api/*` (see `src/drbrain/webui/server.py`).
+extra dependencies. JSON API under `/api/*` (see `src/drbrain/app/server.py`).
 
 ## Workspace Management (`drbrain ws`)
 

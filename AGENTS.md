@@ -34,7 +34,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/parser/` | MinerU PDF parser, PageIndex tree parser |
 | `src/drbrain/plugins/` | Model-as-Tool plugin interface — Plugin/PluginResult/PluginRegistry/discover (generic abstraction, concrete plugins load externally at runtime) |
 | `src/drbrain/loop/` | Research loop — LlamaIndex Workflow 编排闭环 (13 节点 + agent-backed + 4 角色 analyst/critic/compute/verifier + 讨论层 discussion.py(消息板+非作者门+queue claim) + 互验/实算门 + 闭环沉淀) |
-| `src/drbrain/webui/` | Local WebUI (`drbrain webui`) — stdlib HTTP server + one static page over the CLI capabilities: search / ask / autoresearch loop (start run, live ledger events, claims) / compute jobs / assets; empty state, no preloaded history |
+| `src/drbrain/app/` | Local WebUI (`drbrain webui`) — stdlib HTTP server + one static page over the CLI capabilities: search / ask / autoresearch loop (start run, live ledger events, claims) / compute jobs / assets; empty state, no preloaded history |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
 | `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库 |

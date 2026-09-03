@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from drbrain.webui import service
+from drbrain.app import service
 
 STATIC_DIR = Path(__file__).parent / "static"
 
