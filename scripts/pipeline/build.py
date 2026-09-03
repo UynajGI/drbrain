@@ -223,8 +223,27 @@ def main() -> None:
                     tdb.close()
 
         pending = [p["local_id"] for p in papers if p["local_id"] not in done]
+        # 单篇超时保护：超长文档会让全部模型 exhausted 且不结束，若不加超时
+        # 整片 worker 会卡死（shard3 曾因此停摆 14h）。
+        per_paper_timeout = int(os.environ.get("BUILD_PAPER_TIMEOUT", "900"))
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
-            for i, rec in enumerate(ex.map(_build_one, pending), 1):
+            futures = {ex.submit(_build_one, lid): lid for lid in pending}
+            for i, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+                lid = futures[fut]
+                try:
+                    rec = fut.result(timeout=per_paper_timeout)
+                except concurrent.futures.TimeoutError:
+                    rec = {
+                        "local_id": lid,
+                        "ok": False,
+                        "error": f"timeout>{per_paper_timeout}s",
+                    }
+                except Exception as e:  # noqa: BLE001
+                    rec = {
+                        "local_id": lid,
+                        "ok": False,
+                        "error": f"{type(e).__name__}: {e}",
+                    }
                 stats["ok" if rec["ok"] else "fail"] += 1
                 with manifest_lock:
                     manifest_f.write(json.dumps(rec, ensure_ascii=False) + "\n")

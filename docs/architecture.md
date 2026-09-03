@@ -2,7 +2,7 @@
 
 ## Philosophy
 
-DrBrain is **symbol-driven with lightweight vectors**. BM25 and rule-based symbolic reasoning form the core. Vectors are used only for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries) to enhance retrieval -- never for arbitrary text chunks. There is no vector database dependency. `provider=none` disables vectors entirely, falling back to BM25 + LLM navigation.
+DrBrain is **symbol-driven with corpus-scale hybrid retrieval**. Rule-based symbolic reasoning forms the core; retrieval runs four legs in parallel -- BM25, dense vectors (sqlite-vec ANN over millions of tree-node vectors), RAPTOR tree summaries and graph traversal -- fused by reciprocal-rank fusion and reranked. Vectors are computed for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries), never for arbitrary text chunks, and live in the same SQLite database as the graph. `provider=none` disables vectors entirely, falling back to BM25 + LLM navigation.
 
 Every design decision follows from a single principle: **the knowledge graph is the source of truth**. Concepts, relations, and inference rules are explicit, auditable, and human-readable. Vectors serve retrieval, not knowledge representation.
 
@@ -447,9 +447,9 @@ Key tables:
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
 - `build_stages` -- per-paper pipeline stage status (paper_id, stage, status, result_json) for agent idempotency
-- `schema_versions` -- versioned migrations (currently v8)
+- `schema_versions` -- versioned migrations (currently v15)
 
-The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Current version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system.
+The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system; versions 9–15 added the concept-graph, epistemic, snapshot, answer, evidence, and claims tables (see `docs/configuration.md` for the full migration table).
 
 **Centralized writes:** `Database` is the sole write surface. All `INSERT`/`UPDATE`/`DELETE` go through `Database` methods (`insert_paper`, `set_paper_field`, `merge_papers`, `upsert_build_stage`, etc.). Application-layer code must not write raw SQL — this guarantees `updated_at` is bumped, transactions are used for multi-step operations, and column allowlists prevent injection via dynamic field names. Read-only `SELECT` is tolerated in callers.
 

@@ -7,7 +7,23 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 
 ## [Unreleased] — dev/feature
 
-_Nothing yet._
+### Added
+- **WebUI** (`src/drbrain/webui/`, `drbrain webui`): local research workbench over the existing CLI capabilities — BM25 search, RAG ask, autoresearch loop (start a run from a research goal, watch ledger events / claims live), compute jobs and data/plugin assets. Standard-library HTTP server, one static page, no new dependencies.
+- **LlamaIndex RAG layer** (`src/drbrain/rag/`): BM25 + vector + tree retrieval with RRF fusion, rerank, FunctionAgent tool calling, and an eval harness (retriever metrics / ragas / semantic / qagen). CLI: `drbrain rag index` (incremental index build), `drbrain rag eval`, and `drbrain hybrid` (fused retrieval).
+- **Concept graph subsystem** (`src/drbrain/concept_graph/`, `drbrain cg …`): corpus-scale concept co-occurrence graph with ingest/build/embed/neighbors/map/predict/recommend; UMAP interactive map export; leakage-free yearly prediction snapshots.
+- **Research loop** (`src/drbrain/loop/`, PR #14): multi-agent orchestration closed loop (workflow nodes + analyst/critic/compute/verifier roles + discussion layer). _Note: this subsystem is under heavy active development upstream; internals will change._
+- **sqlite-vec ANN index layer**: `tree_vectors_vec` virtual tables with optional int8 quantization for corpus-scale vector search over tree nodes.
+- **CLI**: `drbrain hybrid`, `drbrain survey` (one-shot markdown literature survey), `drbrain check-citations`, `drbrain ingest-link`; `cg` and `rag` sub-apps.
+- **Schema migrations v9–v15**: `concept_graph`, `concept_node_columns`, `concept_epistemic`, `knowledge_snapshots`, `answer_records`, `evidence`, `claims`.
+
+### Changed
+- **RAG engine consolidation**: LlamaIndex is the sole hybrid-retrieval engine (legacy `hybrid_search` path removed); `drbrain ask` / `hybrid` route through it.
+- **Extraction robustness**: per-key rate-limit state machine and fallback chains in `extractor/llm_client.py`.
+
+### Fixed
+- Eval qagen migrated to LlamaIndex `DatasetGenerator`; assorted ruff/mypy/CI fixes.
+
+_Entries above summarize commits between `0.1.0a3` and the current `main`; per-commit details live in `git log`._
 
 ## [0.1.0a3] — 2026-06-19
 

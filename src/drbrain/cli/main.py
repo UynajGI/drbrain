@@ -80,6 +80,7 @@ from drbrain.cli.repair_commands import (
 )
 from drbrain.cli.session_commands import session_app
 from drbrain.cli.setup import setup_cmd
+from drbrain.cli.webui_commands import webui_cmd
 from drbrain.cli.ws_commands import ws_app
 from drbrain.log import setup_logging
 from drbrain.services.audit import audit_cmd
@@ -127,6 +128,7 @@ app.command("closure")(closure_cmd)
 app.command("seed")(seed_cmd)
 app.command("list")(list_cmd)
 app.command("stats")(stats_cmd)
+app.command("webui")(webui_cmd)
 app.command("show")(show_cmd)
 app.command("index")(index_cmd)
 app.command("query")(query_cmd)

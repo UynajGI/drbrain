@@ -357,10 +357,17 @@ class Database:
     """Thin SQLite wrapper with schema auto-init."""
 
     def __init__(self, db_path: str | Path = "data/drbrain.db"):
-        """Open SQLite database at *db_path*, enabling WAL mode and auto-migrating schema."""
+        """Open SQLite database at *db_path*, enabling WAL mode and auto-migrating schema.
+
+        ``check_same_thread=False``: the research loop shares one Database
+        across the director thread and retrieval worker threads
+        (``asyncio.to_thread(retrieve_documents, ...)``). CPython's sqlite3
+        runs in serialized threading mode, so cross-thread use of the shared
+        connection is safe; ``busy_timeout`` below absorbs write contention.
+        """
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")

@@ -183,7 +183,7 @@ audit → repair → check-citations → queue resolve-all
 
 ## Architecture
 
-DrBrain is a **symbol-driven academic knowledge graph with lightweight vector retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Vectors used only for semantically-complete tree nodes, never arbitrary chunks.
+DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses BM25 + vector + RAPTOR tree + graph legs (RRF + rerank); vectors live on semantically-complete tree nodes, never arbitrary chunks.
 
 ### Pipeline
 

@@ -76,3 +76,7 @@ workspace/
 # Test-run artifacts (test API keys in config.yaml + local DBs — never commit)
 test-run/
 
+
+# credential-bearing local files (untracked 2026-09-01, history purged)
+research/scripts/cg_openalex_matsci_oa.py
+research/scripts/route_c_gen/cg_rg_temp.py

@@ -217,11 +217,13 @@ class ResearchDirector:
         mcp_servers: list[dict[str, Any]] | None = None,
         run_dir: str | Path = "workspace/autoresearch",
         n_critics: int = 3,
+        single_agent: bool = False,
         lease_seconds: float = 900.0,
         tool_policy: ToolPolicy | None = None,
         noise_band: float = 0.0,
         required_repeats: int = 2,
         require_rag_evidence: bool = False,
+        step_timeout_seconds: float = 600.0,
     ) -> None:
         self._cfg = cfg
         self._db = db
@@ -229,12 +231,14 @@ class ResearchDirector:
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
         self._run_dir = Path(run_dir)
-        self._n_critics = max(1, int(n_critics))
+        self._single_agent = bool(single_agent)
+        self._n_critics = 1 if self._single_agent else max(1, int(n_critics))
         self._lease_seconds = max(1.0, float(lease_seconds))
         self._tool_policy = tool_policy
         self._noise_band = max(0.0, float(noise_band))
         self._required_repeats = max(1, int(required_repeats))
         self._require_rag_evidence = bool(require_rag_evidence)
+        self._step_timeout_seconds = max(30.0, float(step_timeout_seconds))
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
@@ -646,6 +650,77 @@ class ResearchDirector:
             except OSError:
                 logger.warning("[director] role-verifier memory write failed")
 
+        computer_lines = self._collect_tool_failures(topic, cycle_no)
+        if computer_lines:
+            path = self._role_memory_md(topic, "computer")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self._append_missing_lines(path, computer_lines)
+            except OSError:
+                logger.warning("[director] role-computer memory write failed")
+
+    def _collect_tool_failures(self, topic: str, cycle_no: int) -> list[str]:
+        """① 工具失败的结构化反馈（生产化 P1）：从账本提取 compute 节点的
+        失败/拒绝调用，生成 computer 角色记忆的修复指令行，使智能体下周期自愈。"""
+        import json as _json
+        import sqlite3
+
+        try:
+            ledger = self._topic_dir(topic).parent / "ledger.sqlite3"
+            if not ledger.is_file():
+                return []
+            conn = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
+            try:
+                # 取 updated_at 最新的 run（director 写记忆时即当前 run）
+                rid_row = conn.execute(
+                    "SELECT run_id FROM research_runs ORDER BY updated_at DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            if not rid_row:
+                return []
+            rid = rid_row[0]
+            conn = sqlite3.connect(f"file:{ledger}?mode=ro", uri=True)
+            rows = conn.execute(
+                "SELECT tool_name, status, proposal_json, observation_json FROM research_tool_calls "
+                "WHERE run_id=? AND status IN ('denied','failed') ORDER BY rowid DESC LIMIT 8",
+                (rid,),
+            ).fetchall()
+            conn.close()
+            lines = []
+            for tool, status, prop, obs in rows:
+                reason = ""
+                null_keys: list[str] = []
+                try:
+                    obs_obj = _json.loads(obs or "{}")
+                    out = obs_obj.get("output") or {}
+                    err = (
+                        obs_obj.get("error")
+                        or (out.get("error") if isinstance(out, dict) else "")
+                        or ""
+                    )
+                    reason = str(err)[:160]
+                except Exception:
+                    reason = (obs or "")[:120]
+                try:
+                    prop_obj = _json.loads(prop or "{}")
+                    args = prop_obj.get("arguments") or {}
+                    null_keys = [k for k, v in args.items() if v is None]
+                except Exception:
+                    pass
+                hint = (
+                    f"（含 null 字段 {','.join(null_keys)}——不要传 null，直接省略该字段）"
+                    if null_keys
+                    else ""
+                )
+                lines.append(
+                    f"- [cycle {cycle_no}] 工具 {tool} 上一次 {status}{hint}；失败原因：{reason}。下一次调用必须避免同样形式。"
+                )
+            return lines
+        except Exception as exc:
+            logger.warning("[director] tool-failure feedback skipped: %s", exc)
+            return []
+
     # ── T8: proposal board + critic reviews (Discussion-Before-Queuing) ─────────
 
     def _save_discussion(self, topic: str, cycle_no: int, rs: ResearchState | None) -> None:
@@ -806,6 +881,11 @@ class ResearchDirector:
         When a stale job's hypothesis was recorded as verified anywhere in the
         run (a contradiction — verified without real values), a warning is
         logged so the next cycle does not trust that job's evidence.
+
+        A job whose metadata records ``status == "failed"`` (the subprocess
+        crashed, e.g. exit != 0) is reported as failed immediately instead of
+        waiting for the stale timeout — its evidence must not be trusted and
+        the hypothesis does not hang on ``insufficient`` forever.
         """
         jobs_dir = self._topic_dir(topic) / "jobs"
         if not jobs_dir.is_dir():
@@ -819,6 +899,19 @@ class ResearchDirector:
             except (json.JSONDecodeError, OSError):
                 continue
             if not isinstance(meta, dict):
+                continue
+            if meta.get("status") == "failed":
+                error_head = str(meta.get("error", ""))[:200]
+                logger.warning(f"[janitor] job {job_id} failed: {error_head}")
+                self._append_janitor_log(
+                    topic,
+                    {
+                        "event": "[janitor] job failed",
+                        "job_id": job_id,
+                        "error": error_head,
+                        "cycle": state["cycles"],
+                    },
+                )
                 continue
             if _job_log_has_number(str(jobs_dir), job_id):
                 continue  # log carries a numeric result → completed, not stale
@@ -842,7 +935,7 @@ class ResearchDirector:
                     )
         for job_id, started in stale:
             logger.warning(
-                "[janitor] job %s stale (started %.0fs ago, no result)", job_id, now - started
+                f"[janitor] job {job_id} stale (started {now - started:.0f}s ago, no result)"
             )
             self._append_janitor_log(
                 topic,
@@ -856,10 +949,9 @@ class ResearchDirector:
             )
             for statement in verified_by_job.get(job_id, []):
                 logger.warning(
-                    "[janitor] job %s has no real result but its hypothesis %r was "
-                    "recorded verified — do not trust this job's evidence next cycle",
-                    job_id,
-                    statement,
+                    f"[janitor] job {job_id} has no real result but its hypothesis "
+                    f"{statement!r} was recorded verified — do not trust this job's "
+                    "evidence next cycle"
                 )
                 self._append_janitor_log(
                     topic,
@@ -966,6 +1058,7 @@ class ResearchDirector:
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
             n_critics=self._n_critics,
+            timeout=self._step_timeout_seconds,
             # Per-run job dir (not process-global env): concurrent directors on
             # different topics keep their own compute evidence (review P1).
             jobs_dir=str(self._topic_dir(topic) / "jobs"),
@@ -1117,11 +1210,24 @@ class ResearchDirector:
 
         legacy_projection = existing_run is None and self._has_legacy_projection(topic)
         state = self._load_state(topic)
+        if existing_run is not None and state.get("consecutive_no_gain"):
+            # A resume is an operational restart (kill/lease/manual review),
+            # not a research failure: carrying the no-gain counter across the
+            # interruption makes stagnation/adapt fire immediately on restart —
+            # retries must not count as cycles.
+            logger.info(
+                "[director] resume: resetting consecutive_no_gain %d → 0",
+                state["consecutive_no_gain"],
+            )
+            state["consecutive_no_gain"] = 0
+            self._save_state(topic, state)
         config = {
             "n_critics": self._n_critics,
             "rag_generation": captured_generation,
             "require_rag_evidence": self._require_rag_evidence,
         }
+        if self._single_agent:
+            config["single_agent"] = True
         effective_budget: dict[str, int | float] = {
             "max_cycles": max_cycles,
             "stagnation_cycles": stagnation_cycles,
@@ -1192,6 +1298,8 @@ class ResearchDirector:
             "rag_generation": self._rag_generation,
             "require_rag_evidence": self._require_rag_evidence,
         }
+        if self._single_agent:
+            effective_config["single_agent"] = True
         if existing_run is not None:
             ledger.record_resume(run.run_id, config=effective_config, budget=effective_budget)
         transitions = TransitionService(ledger)
@@ -1510,8 +1618,51 @@ class ResearchDirector:
         current_run = ledger.get_run_by_id(run.run_id)
         if current_run is not None and current_run.status == "running":
             transitions.pause_run(run.run_id, reason=stop_status)
+        self._write_final_report(topic, state, stop_status)
         self._log_session(topic, state, stop_status, session_started)
         return state
+
+    def _write_final_report(self, topic: str, state: dict[str, Any], stop_status: str) -> None:
+        """Synthesize one run-level final report from the cycle artifacts.
+
+        Every cycle already leaves ``results/cycle-NNN.md``; the run itself had
+        no single document a reader could open. Best-effort like the other
+        projections: a write failure must never break the loop.
+        """
+        try:
+            lines = [
+                "# 研究终报",
+                "",
+                f"- 任务：{state.get('topic', '')}",
+                f"- 轮次：{state.get('cycles', 0)} | 停止原因：{stop_status}",
+                f"- 转向：{state.get('adaptations', 0)} 次 | 末期连续无进展：{state.get('consecutive_no_gain', 0)}",
+                "",
+                "## 已验证结论（champion）",
+                "",
+            ]
+            lines.extend(
+                f"- [cycle {c['cycle']}] {c['statement']}" for c in state["champion"]
+            ) if state["champion"] else lines.append("（尚无）")
+            lines += ["", "## 已否定方向（dead ends）", ""]
+            lines.extend(f"- {h}" for h in state["rejected"][:20]) if state[
+                "rejected"
+            ] else lines.append("（无）")
+            lines += ["", "## 各轮摘要", ""]
+            for res in state.get("results", []):
+                hyp = res.get("hypotheses") or []
+                ver = res.get("verified") or []
+                fal = res.get("falsified") or []
+                lines.append(
+                    f"- cycle {res.get('cycle')}: 假设 {len(hyp)} / 验证 {len(ver)} / 证伪 {len(fal)}"
+                )
+                for v in ver:
+                    lines.append(f"  - ✔ {v}")
+                for f in fal:
+                    lines.append(f"  - ✘ {f}")
+            path = self._topic_dir(topic) / "final_report.md"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - projection must never break the loop
+            logger.warning("[director] final report write failed: %s", exc)
 
     def run_sync(self, topic: str, **kwargs: Any) -> dict[str, Any]:
         """Convenience sync wrapper (``asyncio.run``)."""
