@@ -1,6 +1,6 @@
 ## DrBrain — Project Context
 
-DrBrain is a **symbol-driven academic knowledge graph with lightweight vector retrieval**. It ingests PDFs,
+DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. It ingests PDFs,
 extracts structured concepts/arguments via LLM, deduplicates identities, and infers
 new relationships through rule-based graph closure.
 

@@ -392,6 +392,21 @@ def capture_index_generation(cfg: Config) -> str | None:
     snapshot; a malformed or dangling pointer remains unavailable/fail-closed.
     """
     active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
+        # SQL-native engine: the evidence anchor is the content fingerprint of
+        # the working copy (node_texts + tree_vectors in drbrain_rag.db).
+        from drbrain.rag.sql_retrie import _default_rag_db, _generation_id
+
+        rag_db = _default_rag_db(cfg)
+        if not rag_db.exists():
+            return None
+        import sqlite3 as _sqlite3
+
+        _conn = _sqlite3.connect(f"file:{rag_db}?mode=ro", uri=True)
+        try:
+            return _generation_id(_conn)
+        finally:
+            _conn.close()
     if active is None:
         return None
     return active[1] or LEGACY_INDEX_GENERATION
@@ -542,6 +557,10 @@ def retain_index_generation(cfg: Config, generation: str | None, run_id: str) ->
     resolved_generation = str(generation or "").strip()
     if not resolved_generation or resolved_generation == LEGACY_INDEX_GENERATION:
         return False
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
+        # SQL-native engine: the generation is a fingerprint of the working
+        # copy, not a prunable filesystem generation — nothing to retain.
+        return True
     storage_root = Path(get_llamaindex_config(cfg).storage_dir)
     generation_root = storage_root / GENERATIONS_DIR_NAME / resolved_generation
     if not generation_root.is_dir():
@@ -660,7 +679,75 @@ def _default_embed_model(cfg: Config) -> Any:
     return DrbrainEmbedding(cfg)
 
 
+def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
+    """Locate a paper's asset directory across on-disk layouts.
+
+    Corpus ingests use different layouts: newer papers live in flat
+    ``<papers>/<local_id>/`` dirs (e.g. ``p00005bb6``), while DOI-keyed
+    papers are nested one level (``<papers>/<prefix>/<suffix>``) or use an
+    underscore-sanitized flat name.  Returns the first existing layout.
+    """
+    candidates = [papers_root / pid]
+    if "/" in pid:
+        prefix, _, suffix = pid.partition("/")
+        candidates.append(papers_root / prefix / suffix.replace("/", "_"))
+        candidates.append(papers_root / pid.replace("/", "_"))
+    for cand in candidates:
+        if cand.is_dir():
+            return cand
+    return None
+
+
 # ── Build ────────────────────────────────────────────────────────────────────
+
+
+def _embed_devices(cfg: Config) -> list[int]:
+    """GPU ids for parallel chunk embedding: configured cuda:N plus extra_gpus."""
+    devices: list[int] = []
+    dev = str(getattr(cfg.embed, "device", "") or "")
+    if dev.startswith("cuda:"):
+        try:
+            devices.append(int(dev.split(":", 1)[1]))
+        except ValueError:
+            pass
+    for g in getattr(cfg.embed, "extra_gpus", None) or []:
+        if int(g) not in devices:
+            devices.append(int(g))
+    return devices
+
+
+def _embed_model_path(cfg: Config) -> str:
+    from drbrain.services.embedding import _resolve_model_path
+
+    path = _resolve_model_path(
+        cfg.embed.model, os.path.expanduser(cfg.embed.cache_dir), cfg.embed.source
+    )
+    if not path:
+        raise RuntimeError("cannot resolve local model path for parallel embedding")
+    return str(path)
+
+
+_WORKER_MODEL: Any = None
+
+
+def _embed_chunk_worker(args: tuple[Any, int, list[str], int, int]) -> Any:
+    """Spawn-pool worker: pin one GPU, embed a chunk, return vectors."""
+    model_path, gpu, texts, ci, total = args
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    global _WORKER_MODEL
+    if _WORKER_MODEL is None:
+        from sentence_transformers import SentenceTransformer
+
+        _WORKER_MODEL = SentenceTransformer(model_path, device="cuda")
+        # Align with scripts/serve_embedding.py: truncate to 512 tokens so
+        # these vectors match the corpus-pipeline embedding semantics.
+        try:
+            _WORKER_MODEL.max_seq_length = 512
+        except Exception:  # noqa: BLE001 - non-fatal optimization
+            pass
+    logger.info("[rag] embedding chunk {}/{} ({} nodes) on GPU {}", ci, total, len(texts), gpu)
+    return _WORKER_MODEL.encode(texts, normalize_embeddings=True, batch_size=64)
 
 
 def build_index(
@@ -698,6 +785,14 @@ def build_index(
         raise RuntimeError(
             "llama-index is not installed; run `uv add llama-index-core llama-index-retrievers-bm25`"
         )
+    # A full-library build holds millions of tracked containers; CPython's
+    # cyclic GC scans them repeatedly during the alloc-heavy phases and
+    # burns minutes of CPU. This function never relies on cycle collection,
+    # so turn it off for the duration.
+    import gc as _gc
+
+    _gc_was_enabled = _gc.isenabled()
+    _gc.disable()
 
     li = get_llamaindex_config(cfg)
     storage_root = Path(li.storage_dir)
@@ -737,21 +832,33 @@ def build_index(
     chunk_docs: dict[str, Document] = {}
     parent_chunks: dict[str, list[str]] = {}
     paper_keys: dict[str, list[str]] = {}
-    for pid in sorted(str(p) for p in target_ids):
-        paper_dir = papers_root / pid
-        if not paper_dir.is_dir():
-            logger.warning("[rag] paper dir missing, skipping: %s", paper_dir)
-            continue
-        docs = collect_tree_nodes(paper_dir)
-        if not docs:
-            logger.info("[rag] no PageIndex nodes for %s (missing tree.json?)", pid)
-            continue
-        paper_keys[pid] = [doc.id_ for doc in docs]
-        docs_by_key.update((doc.id_, doc) for doc in docs)
-        for doc in docs:
-            chunks = _chunk_document(doc, max_node_tokens) if max_node_tokens > 0 else [doc]
-            parent_chunks[doc.id_] = [c.id_ for c in chunks]
-            chunk_docs.update((c.id_, c) for c in chunks)
+
+    import concurrent.futures as _cf
+
+    def _collect_one(pid: str) -> tuple[str, list[Document] | None]:
+        paper_dir = _resolve_paper_dir(papers_root, pid)
+        if paper_dir is None:
+            return pid, None
+        return pid, collect_tree_nodes(paper_dir)
+
+    missing_dirs = 0
+    sorted_ids = sorted(str(p) for p in target_ids)
+    with _cf.ThreadPoolExecutor(max_workers=32) as _ex:
+        for pid, docs in _ex.map(_collect_one, sorted_ids, chunksize=64):
+            if docs is None:
+                missing_dirs += 1
+                continue
+            if not docs:
+                logger.info("[rag] no PageIndex nodes for %s (missing tree.json?)", pid)
+                continue
+            paper_keys[pid] = [doc.id_ for doc in docs]
+            docs_by_key.update((doc.id_, doc) for doc in docs)
+            for doc in docs:
+                chunks = _chunk_document(doc, max_node_tokens) if max_node_tokens > 0 else [doc]
+                parent_chunks[doc.id_] = [c.id_ for c in chunks]
+                chunk_docs.update((c.id_, c) for c in chunks)
+    if missing_dirs:
+        logger.warning("[rag] {} papers had no dir on disk and were skipped", missing_dirs)
 
     hashes = {key: _content_hash(doc.text) for key, doc in docs_by_key.items()}
 
@@ -791,8 +898,91 @@ def build_index(
     embed_keys: list[str] = [ck for key in sorted(still_changed) for ck in parent_chunks[key]]
     embedded_texts = [chunk_docs[k].text for k in embed_keys]
     new_embeddings: dict[str, list[float]] = {}
+    # Reuse pipeline-computed vectors (tree_vectors, pageindex layer) when the
+    # content hash matches: node keys are identical ("paper:node") and both
+    # sides use the same sha256[:16] hash, so a matching hash proves identical
+    # text. This skips re-embedding leaf nodes the corpus pipeline already
+    # embedded; split chunks (#i) and unseen nodes still embed below.
+    if embed_keys and not force:
+        try:
+            import sqlite3 as _sqlite3
+
+            import numpy as _np
+
+            _conn = _sqlite3.connect(f"file:{cfg.db.path}?mode=ro", uri=True)
+            _parent_keys = sorted({k for k in embed_keys if "#" not in k})
+            _BATCH = 10000
+            # Pass 1: hash-only probe (hash column is tiny; fetching the 4KB
+            # embedding blob for every row costs GBs of pointless transfer).
+            _matched: list[str] = []
+            for _s in range(0, len(_parent_keys), _BATCH):
+                _batch = _parent_keys[_s : _s + _BATCH]
+                _q = ",".join("?" * len(_batch))
+                for _nid, _h in _conn.execute(
+                    "SELECT node_id, content_hash FROM tree_vectors "
+                    f"WHERE tree_layer = 'pageindex' AND node_id IN ({_q})",
+                    _batch,
+                ):
+                    if hashes.get(_nid) == _h:
+                        _matched.append(_nid)
+            # Pass 2: fetch blobs for matches only.
+            _reuse: dict[str, list[float]] = {}
+            for _s in range(0, len(_matched), _BATCH):
+                _batch = _matched[_s : _s + _BATCH]
+                _q = ",".join("?" * len(_batch))
+                for _nid, _blob in _conn.execute(
+                    f"SELECT node_id, embedding FROM tree_vectors WHERE node_id IN ({_q})",
+                    _batch,
+                ):
+                    if len(_blob) == 4096:
+                        _reuse[_nid] = _np.frombuffer(_blob, dtype=_np.float32).tolist()
+            _conn.close()
+            if _reuse:
+                new_embeddings.update(_reuse)
+                embed_keys = [k for k in embed_keys if k not in _reuse]
+                embedded_texts = [chunk_docs[k].text for k in embed_keys]
+                logger.info(
+                    "[rag] reused {} vectors from tree_vectors ({} left to embed)",
+                    len(_reuse),
+                    len(embed_keys),
+                )
+        except Exception as exc:  # noqa: BLE001 - reuse is an optimization only
+            logger.warning("[rag] tree_vectors reuse skipped: %s", exc)
     if embedded_texts:
-        vectors = list(embed.get_text_embedding_batch(embedded_texts))
+        # Chunked embedding: one giant batch holds the whole corpus in the
+        # provider call (hours for millions of nodes, zero crash tolerance).
+        # Chunks give progress visibility and bound provider-side memory.
+        _EMBED_CHUNK = 5000
+        vectors: list[list[float]] = []
+        total_chunks = (len(embedded_texts) + _EMBED_CHUNK - 1) // _EMBED_CHUNK
+        _devices = _embed_devices(cfg) if getattr(cfg.embed, "provider", "") == "local" else []
+        if len(_devices) > 1 and total_chunks > 1:
+            # Fan chunks out over multiple GPUs (spawn pool, one model per GPU).
+            import multiprocessing as _mp
+
+            _model_path = _embed_model_path(cfg)
+            _chunks = [
+                embedded_texts[s : s + _EMBED_CHUNK]
+                for s in range(0, len(embedded_texts), _EMBED_CHUNK)
+            ]
+            _jobs = [
+                (_model_path, _devices[i % len(_devices)], c, i + 1, total_chunks)
+                for i, c in enumerate(_chunks)
+            ]
+            _ctx = _mp.get_context("spawn")
+            logger.info("[rag] parallel embedding on GPUs {}", _devices)
+            with _ctx.Pool(len(_devices)) as _pool:
+                for _arr in _pool.imap(_embed_chunk_worker, _jobs, chunksize=2):
+                    vectors.extend(_arr.tolist() if hasattr(_arr, "tolist") else _arr)
+        else:
+            for ci, start in enumerate(range(0, len(embedded_texts), _EMBED_CHUNK), 1):
+                logger.info(
+                    "[rag] embedding chunk {}/{} ({} nodes)",
+                    ci,
+                    total_chunks,
+                    min(_EMBED_CHUNK, len(embedded_texts) - start),
+                )
+                vectors.extend(embed.get_text_embedding_batch(embedded_texts[start : start + _EMBED_CHUNK]))
         if len(vectors) != len(embed_keys):
             raise RuntimeError(
                 "embedding batch returned "
@@ -848,6 +1038,8 @@ def build_index(
     }
     if not nodes:
         logger.warning("[rag] nothing to index; leaving existing indexes untouched")
+        if _gc_was_enabled:
+            _gc.enable()
         return stats
 
     # 5. Build a complete new generation. Nothing below the active pointer is
@@ -934,6 +1126,8 @@ def build_index(
         stats["pruned_generations"] = []
     stats["generation"] = generation
     logger.info("[rag] index build done: %s", stats)
+    if _gc_was_enabled:
+        _gc.enable()
     return stats
 
 

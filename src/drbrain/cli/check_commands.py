@@ -63,12 +63,28 @@ def check_cmd(ctx: typer.Context):
         pymupdf_found = True
     except ImportError:
         pass
+    anydoc_found = False
+    try:
+        importlib.import_module("anydoc")
+        anydoc_found = True
+    except ImportError:
+        pass
+    ocrmypdf_found = False
+    try:
+        importlib.import_module("ocrmypdf")
+        ocrmypdf_found = True
+    except ImportError:
+        pass
+    tesseract_found = shutil.which("tesseract")
 
     cli_tools = {
-        "mineru-open-api": ("MinerU PDF parser CLI", mineru_found),
-        "PyMuPDF (fitz)": ("PDF fallback parser", pymupdf_found),
+        "mineru-open-api": ("MinerU PDF parser CLI", mineru_found, ""),
+        "anydoc": ("PDF fallback parser", anydoc_found, "pip install firecrawl-anydoc"),
+        "ocrmypdf": ("OCR backend for scanned PDFs", ocrmypdf_found, "uv sync --extra anydoc"),
+        "tesseract": ("OCR engine (system)", tesseract_found, "sudo apt install tesseract-ocr"),
+        "PyMuPDF (fitz)": ("PDF fallback parser", pymupdf_found, ""),
     }
-    for tool, (desc, found) in cli_tools.items():
+    for tool, (desc, found, hint) in cli_tools.items():
         if found:
             label = f"  {tool}"
             if isinstance(found, str):
@@ -76,19 +92,76 @@ def check_cmd(ctx: typer.Context):
             else:
                 table2.add_row(label, f"[green]OK[/green] — {desc}")
         else:
-            table2.add_row(f"  {tool}", "[yellow]NOT FOUND[/yellow]", f"{desc} (optional)")
+            note = f"{desc} (optional)" + (f" — install: {hint}" if hint else "")
+            table2.add_row(f"  {tool}", "[yellow]NOT FOUND[/yellow]", note)
             if tool == "mineru-open-api":
-                warnings.append("mineru-open-api not found — using PyMuPDF fallback")
+                if anydoc_found:
+                    warnings.append("mineru-open-api not found — using anydoc fallback")
+                else:
+                    warnings.append("mineru-open-api not found — using PyMuPDF fallback")
 
     console.print(table2)
     # Parser path
     console.print("\n[bold]Parser Path[/bold]")
+    mineru_cfg = cfg.get("mineru", {})
+    use_anydoc_cfg = mineru_cfg.get("use_anydoc", True)
+    ocr_enabled_cfg = mineru_cfg.get("ocr_enabled", False)
+    ocr_language_cfg = mineru_cfg.get("ocr_language", "eng")
+
+    chain: list[str] = []
     if mineru_found:
-        console.print("  MinerU CLI → [green]PyMuPDF[/green]")
-    elif pymupdf_found:
-        console.print("  [yellow]MinerU not found[/yellow], using: [green]PyMuPDF[/green]")
+        chain.append("[green]MinerU CLI[/green]")
+    if use_anydoc_cfg:
+        if anydoc_found:
+            chain.append("[green]anydoc[/green]")
+        else:
+            chain.append("[yellow]anydoc (not installed)[/yellow]")
+    if ocr_enabled_cfg:
+        if ocrmypdf_found and tesseract_found:
+            chain.append("[green]OCRmyPDF+tesseract[/green]")
+        else:
+            missing = []
+            if not ocrmypdf_found:
+                missing.append("ocrmypdf")
+            if not tesseract_found:
+                missing.append("tesseract")
+            chain.append(f"[yellow]OCR (missing: {', '.join(missing)})[/yellow]")
+            install = []
+            if not ocrmypdf_found:
+                install.append("uv sync --extra anydoc")
+            if not tesseract_found:
+                install.append("sudo apt install tesseract-ocr")
+            warnings.append(
+                f"ocr_enabled but OCR backend incomplete — install: {'; '.join(install)}"
+            )
+    if pymupdf_found:
+        chain.append("[green]PyMuPDF[/green]")
+
+    if chain:
+        console.print("  " + " → ".join(chain))
     else:
         console.print("  [red]No PDF parser available[/red] — install pymupdf")
+
+    # tesseract language packs (only relevant when OCR is enabled)
+    if ocr_enabled_cfg and tesseract_found:
+        try:
+            import subprocess
+
+            langs_out = subprocess.run(
+                [tesseract_found, "--list-langs"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout
+            available = set(langs_out.split())
+            for lang in ocr_language_cfg.split("+"):
+                if lang and lang not in available:
+                    warnings.append(
+                        f"tesseract language pack '{lang}' missing — "
+                        f"sudo apt install tesseract-ocr-{lang.replace('_', '-')}"
+                    )
+        except Exception as e:
+            logger.debug("tesseract --list-langs failed: {}", e)
 
     # -- Config files --
     console.print("\n[bold]Configuration[/bold]")
@@ -348,9 +421,12 @@ def check_cmd(ctx: typer.Context):
         logger.debug("MinerU CLI check error: {}", e)
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
 
-    # Only warn about PyMuPDF fallback if no MinerU path works
+    # Only warn about fallback path if no MinerU CLI is available
     if not mineru_cli_available:
-        warnings.append("MinerU unavailable — PDF parsing will use PyMuPDF fallback")
+        if anydoc_found:
+            warnings.append("MinerU unavailable — PDF parsing will use anydoc fallback")
+        else:
+            warnings.append("MinerU unavailable — PDF parsing will use PyMuPDF fallback")
 
     # -- DeepXiv connectivity --
     try:

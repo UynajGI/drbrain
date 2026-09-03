@@ -70,6 +70,11 @@ def run_cmd(
     max_cycles: int | None = typer.Option(
         None, "--max-cycles", help="Override autoresearch.max_cycles for this run"
     ),
+    single_agent: bool = typer.Option(
+        False,
+        "--single-agent",
+        help="Ablation arm: collapse the critic panel to a single reviewer (P2-3)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit the run summary as JSON"),
 ) -> None:
     """Run or resume the durable autoresearch loop for one topic."""
@@ -101,9 +106,11 @@ def run_cmd(
                 mcp_servers=settings.mcp_servers,
                 run_dir=settings.run_dir,
                 n_critics=settings.n_critics,
+                single_agent=single_agent,
                 lease_seconds=settings.lease_seconds,
                 tool_policy=tool_policy,
                 require_rag_evidence=settings.require_rag_evidence,
+                step_timeout_seconds=settings.step_timeout_seconds,
             )
             state = director.run_sync(
                 topic,

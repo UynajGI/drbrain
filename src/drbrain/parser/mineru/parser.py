@@ -1,4 +1,9 @@
-"""MinerU PDF parser via mineru-open-api CLI + PyMuPDF fallback."""
+"""MinerU PDF parser via mineru-open-api CLI + anydoc/OCR/PyMuPDF fallback.
+
+Fallback chain when MinerU is unavailable:
+anydoc (text PDFs) -> OCRmyPDF text layer + anydoc (scanned PDFs, opt-in)
+-> pymupdf4llm -> plain text.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,11 @@ from tempfile import TemporaryDirectory
 
 from loguru import logger as _parse_log
 
+from drbrain.parser.mineru.anydoc_backend import (
+    AnydocStatus,
+    anydoc_to_markdown,
+    ocr_pdf,
+)
 from drbrain.parser.mineru.fallback import (
     ARXIV_FILENAME,
     ID_PATTERN,
@@ -77,7 +87,7 @@ class ParsedPaper:
 
 
 class MinerUParser:
-    """PDF parser: mineru-open-api CLI -> PyMuPDF fallback."""
+    """PDF parser: mineru-open-api CLI -> anydoc -> OCRmyPDF -> PyMuPDF fallback."""
 
     def __init__(
         self,
@@ -90,6 +100,9 @@ class MinerUParser:
         retry_delay: float = 2.0,
         deepxiv_token: str = "",
         s2_api_key: str = "",
+        use_anydoc: bool = True,
+        ocr_enabled: bool = False,
+        ocr_language: str = "eng",
     ):
         self.token = token
         self.model = model
@@ -100,6 +113,9 @@ class MinerUParser:
         self.retry_delay = retry_delay
         self.deepxiv_token = deepxiv_token
         self.s2_api_key = s2_api_key
+        self.use_anydoc = use_anydoc
+        self.ocr_enabled = ocr_enabled
+        self.ocr_language = ocr_language
 
     def extract(self, pdf_path: str | Path, max_pages: int = 150) -> ParsedPaper:
         """Extract structured content from PDF. Splits into chunks if > max_pages."""
@@ -219,7 +235,7 @@ class MinerUParser:
             raw_md = self._read_output_md(out_dir)
             img_dir = out_dir / "images" if (out_dir / "images").exists() else None
         else:
-            raw_md = self._fallback_pymupdf(pdf_path)
+            raw_md = self._fallback_chain(pdf_path)
             img_dir = None
         return raw_md, img_dir, managed_tmp
 
@@ -233,9 +249,10 @@ class MinerUParser:
                 _parse_log.info("[parse] MinerU succeeded for %s", pdf_path.name)
             else:
                 _parse_log.warning(
-                    "[parse] MinerU unavailable, falling back to PyMuPDF for %s", pdf_path.name
+                    "[parse] MinerU unavailable, falling back to anydoc/OCR/PyMuPDF for %s",
+                    pdf_path.name,
                 )
-                raw_md = self._fallback_pymupdf(pdf_path)
+                raw_md = self._fallback_chain(pdf_path)
                 out_dir = None
 
             title = self._extract_title(raw_md, str(pdf_path))
@@ -413,6 +430,27 @@ class MinerUParser:
             return ""
         return md_files[0].read_text(encoding="utf-8")
 
+    def _fallback_chain(self, pdf_path: Path) -> str:
+        """Fallback extraction when MinerU is unavailable: anydoc -> OCR -> pymupdf4llm."""
+        if self.use_anydoc:
+            status, md = anydoc_to_markdown(pdf_path)
+            if status is AnydocStatus.OK:
+                _parse_log.info("[parse] anydoc extracted %s", pdf_path.name)
+                return md
+            if status is AnydocStatus.UNSUPPORTED and self.ocr_enabled:
+                _parse_log.info("[parse] %s looks scanned, trying OCRmyPDF", pdf_path.name)
+                tmp = TemporaryDirectory(prefix="ocr_")
+                try:
+                    ocr_path = Path(tmp.name) / f"{pdf_path.stem}_ocr.pdf"
+                    if ocr_pdf(pdf_path, ocr_path, language=self.ocr_language):
+                        ocr_status, ocr_md = anydoc_to_markdown(ocr_path)
+                        if ocr_status is AnydocStatus.OK:
+                            _parse_log.info("[parse] OCR + anydoc extracted %s", pdf_path.name)
+                            return ocr_md
+                finally:
+                    tmp.cleanup()
+        return self._fallback_pymupdf(pdf_path)
+
     def _fallback_pymupdf(self, pdf_path: Path) -> str:
         """Extract markdown via pymupdf4llm. Falls back to plain text."""
         try:
@@ -512,5 +550,8 @@ def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
         enable_table=mineru_cfg.get("enable_table", True),
         deepxiv_token=api_cfg.get("deepxiv_token", ""),
         s2_api_key=api_cfg.get("s2_api_key", ""),
+        use_anydoc=mineru_cfg.get("use_anydoc", True),
+        ocr_enabled=mineru_cfg.get("ocr_enabled", False),
+        ocr_language=mineru_cfg.get("ocr_language", "eng"),
     )
     return parser.extract(pdf_path, max_pages=max_pages)

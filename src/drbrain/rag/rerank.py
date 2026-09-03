@@ -135,6 +135,23 @@ def _resolve_rerank_model_path(model_name: str, cfg: Config) -> str:
             return str(local_path)
     except Exception:  # pragma: no cover - resolution is best-effort
         pass
+    # Last resort: probe the known on-disk layouts directly. snapshot_download
+    # can miss an HF-hub-style "<org>--<repo>" directory even when it exists
+    # (observed with Qwen3-Reranker-0.6B under ~/.cache/modelscope/models).
+    dashed = str(model_name).replace("/", "--")
+    for root in ("~/.cache/modelscope/models", "~/.cache/modelscope/hub/models", "~/.cache/huggingface/hub"):
+        base = Path(root).expanduser()
+        for cand in (base / dashed, base / f"models--{dashed}"):
+            if not cand.is_dir():
+                continue
+            # ModelScope snapshot layout stores weights one level down
+            # (<repo>/snapshots/<commit>/...); the loadable dir is that leaf.
+            snapshots = cand / "snapshots"
+            if snapshots.is_dir():
+                leaves = sorted(p for p in snapshots.iterdir() if p.is_dir())
+                cand = leaves[-1] if leaves else cand
+            if any(cand.glob("*.safetensors")) or any(cand.glob("*.bin")):
+                return str(cand)
     return str(model_name)
 
 

@@ -59,10 +59,22 @@ def _sciverse_factory() -> CorpusSource:
 
 def _openalex_factory() -> CorpusSource:
     from drbrain.concept_graph.sources.openalex import OpenAlexSource
+    from drbrain.config import load_config
 
-    return OpenAlexSource()
+    cfg = load_config()
+    # Polite-pool mailto + API key raise OpenAlex's rate cap (~100 rps).
+    return OpenAlexSource(
+        token=cfg.api.openalex_token or None, mailto=cfg.api.crossref_email
+    )
+
+
+def _crossref_factory() -> CorpusSource:
+    from drbrain.concept_graph.sources.crossref import CrossRefSource
+
+    return CrossRefSource()
 
 
 # Built-in registrations (factories lazy-import the adapter modules).
 register_source("sciverse", _sciverse_factory)
 register_source("openalex", _openalex_factory)
+register_source("crossref", _crossref_factory)

@@ -110,6 +110,7 @@ class GNNLinkClassifier:
         epochs: int = 100,
         pos_fraction: float = 0.3,
         seed: int = 42,
+        device: str | None = None,
     ):
         self.hidden_dim = hidden_dim
         self.embed_dim = embed_dim
@@ -117,6 +118,7 @@ class GNNLinkClassifier:
         self.epochs = epochs
         self.pos_fraction = pos_fraction
         self.seed = seed
+        self.device = device
         self._trained = False
 
     def _build_model(self, torch, in_dim: int):
@@ -147,6 +149,8 @@ class GNNLinkClassifier:
         """
         torch = require_torch()
         torch.manual_seed(self.seed)
+        if self.device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Vocabulary = ALL nodes in the cutoff graph (so message passing sees the
         # full neighbourhood and test pairs over valid nodes get real scores),
@@ -162,7 +166,7 @@ class GNNLinkClassifier:
         self._adj = build_normalized_adjacency(db, nodes, cutoff, whitelist=node_labels)
 
         encoder, decoder = self._build_model(torch, x.shape[1])
-        self._encoder, self._decoder = encoder, decoder
+        self._encoder, self._decoder = encoder.to(self.device), decoder.to(self.device)
         params = list(encoder.parameters()) + list(decoder.parameters())
         opt = torch.optim.Adam(params, lr=self.lr)
         loss_fn = torch.nn.BCEWithLogitsLoss()
@@ -171,8 +175,8 @@ class GNNLinkClassifier:
         pair_idx = np.array(
             [[self._label2idx[u], self._label2idx[v]] for u, v in pairs], dtype=np.int64
         )
-        pair_idx_t = torch.tensor(pair_idx, dtype=torch.long)
-        y_t = torch.tensor(y, dtype=torch.float32)
+        pair_idx_t = torch.tensor(pair_idx, dtype=torch.long, device=self.device)
+        y_t = torch.tensor(y, dtype=torch.float32, device=self.device)
 
         for epoch in range(self.epochs):
             order = oversample_indices(y, pos_fraction=self.pos_fraction, seed=self.seed + epoch)
@@ -194,7 +198,7 @@ class GNNLinkClassifier:
         if not self._trained:
             raise RuntimeError("GNNLinkClassifier must be fitted before predict_proba.")
         with torch.no_grad():
-            x = torch.tensor(self._x_np, dtype=torch.float32)
+            x = torch.tensor(self._x_np, dtype=torch.float32, device=self.device)
             emb = self._encoder(x, self._adj)
             idx = [[self._label2idx.get(u, -1), self._label2idx.get(v, -1)] for u, v in pairs]
             out = np.zeros(len(pairs), dtype=np.float32)

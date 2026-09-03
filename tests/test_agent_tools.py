@@ -226,6 +226,65 @@ def test_get_section_content_valid():
         assert "intro text" in content.lower()
 
 
+def _make_rag_db(tmp: Path, rows: list[tuple[str, str, str]]) -> Path:
+    """Create <tmp>/drbrain_rag.db with a node_texts table."""
+    import sqlite3
+
+    rag_path = tmp / "drbrain_rag.db"
+    conn = sqlite3.connect(rag_path)
+    conn.execute(
+        "CREATE TABLE node_texts (node_key TEXT, paper_id TEXT, node_id TEXT, text TEXT)"
+    )
+    conn.executemany("INSERT INTO node_texts VALUES (?, ?, ?, ?)", rows)
+    conn.commit()
+    conn.close()
+    return rag_path
+
+
+def _fake_db(tmp: Path):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(path=tmp / "drbrain.db")
+
+
+def test_get_section_content_sql_first():
+    """Pipeline papers: SQL node_texts wins over the stub local tree."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        _make_rag_db(tmp, [("test-paper:n1", "test-paper", "n1", "SQL section body.")])
+        papers_dir = tmp / "papers"
+        paper_dir = papers_dir / "test-paper"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text("# Intro\n\nLocal text.\n", encoding="utf-8")
+        tree = {"structure": [{"node_id": "n1", "title": "Intro", "line_num": 1}]}
+        (paper_dir / "tree.json").write_text(json.dumps(tree), encoding="utf-8")
+
+        content = get_section_content(
+            papers_dir, paper_id="test-paper", node_id="n1", db=_fake_db(tmp)
+        )
+        assert content == "SQL section body."
+
+
+def test_get_section_content_sql_miss_falls_back_local():
+    """No row in the SQL store: the local PageIndex artifact is still used."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        _make_rag_db(tmp, [("other:n9", "other", "n9", "Unrelated.")])
+        papers_dir = tmp / "papers"
+        paper_dir = papers_dir / "test-paper"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text(
+            "# Intro\n\nSome intro text.\n", encoding="utf-8"
+        )
+        tree = {"structure": [{"node_id": "n1", "title": "Intro", "line_num": 1}]}
+        (paper_dir / "tree.json").write_text(json.dumps(tree), encoding="utf-8")
+
+        content = get_section_content(
+            papers_dir, paper_id="test-paper", node_id="n1", db=_fake_db(tmp)
+        )
+        assert "intro text" in content.lower()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # search_tree
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -446,7 +505,7 @@ def test_execute_tool_get_document_structure():
 
 
 def test_execute_tool_get_section_content():
-    """execute_tool routes get_section_content with papers_dir kwarg."""
+    """execute_tool routes get_section_content with papers_dir and db kwargs."""
     fake_fn = mock.MagicMock(return_value="section text")
     with mock.patch.dict(TOOL_HANDLERS, {"get_section_content": fake_fn}):
         result = execute_tool(
@@ -454,7 +513,9 @@ def test_execute_tool_get_section_content():
             {"paper_id": "p1", "node_id": "n1"},
             papers_dir=Path("/fake/papers"),
         )
-    fake_fn.assert_called_once_with(Path("/fake/papers"), paper_id="p1", node_id="n1")
+    fake_fn.assert_called_once_with(
+        Path("/fake/papers"), db=None, paper_id="p1", node_id="n1"
+    )
     assert result == "section text"
 
 

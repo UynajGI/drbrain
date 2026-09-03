@@ -366,7 +366,7 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     # cycle starts; pre-write the job artifacts there so the gate finds them.
     jobs_dir = tmp_path / "runs" / "topological-flat-band" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "job-1.log").write_text("computed 1.0", encoding="utf-8")
+    (jobs_dir / "job-1.log").write_text('{"min_bandwidth_ev": 1.0}', encoding="utf-8")
     (jobs_dir / "job-1.json").write_text(
         json.dumps(
             {
@@ -705,3 +705,46 @@ def test_janitor_flags_stale_jobs(monkeypatch, tmp_path):
     assert len(distrust) == 1
     assert distrust[0]["job_id"] == "job-stale"
     assert distrust[0]["statement"] == "h1"
+
+
+def test_janitor_flags_failed_jobs(tmp_path):
+    """T-janitor: meta 记 status=failed 的崩溃作业立即记 failed 事件,不走 stale 分支。
+
+    崩溃(如 NameError, exit≠0)的作业日志永远等不到结果 JSON;不回灌失败状态的
+    话,其假设会在 insufficient 上永久悬置——janitor 必须在扫描时把失败显式记账。
+    """
+    d = ResearchDirector(cfg=_cfg(), run_dir=str(tmp_path / "runs"))
+    jobs = tmp_path / "runs" / "a-general-research-question" / "jobs"
+    jobs.mkdir(parents=True, exist_ok=True)
+    # started 1h ago + status=failed:即使早超过 stale 阈值,也只记 failed 不记 stale
+    (jobs / "job-crash.json").write_text(
+        json.dumps(
+            {
+                "job_id": "job-crash",
+                "pid": 1,
+                "started_at": time.time() - 3600,
+                "status": "failed",
+                "error": "NameError: name 'min_bandwidth_ev' is not defined",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (jobs / "job-crash.log").write_text(
+        "Traceback (most recent call last) ... exit 1", encoding="utf-8"
+    )
+
+    state = _default_state("a general research question")
+    state["cycles"] = 1
+    d._janitor_scan("a general research question", state)
+
+    log_path = tmp_path / "runs" / "a-general-research-question" / "logs" / "janitor.jsonl"
+    assert log_path.exists()
+    entries = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines()]
+    failed = [e for e in entries if e["event"] == "[janitor] job failed"]
+    assert len(failed) == 1
+    assert failed[0]["job_id"] == "job-crash"
+    assert "NameError" in failed[0]["error"]
+    assert failed[0]["cycle"] == 1
+    # 不再走 stale 分支
+    assert not any(e["event"].endswith("stale") for e in entries)
+    assert not any(e["event"] == "[janitor] stale job trusted" for e in entries)

@@ -15,13 +15,34 @@ import json
 import threading
 import time
 from enum import Enum
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import litellm
 from loguru import logger
+from openai import AsyncOpenAI
+from openai import OpenAI as SyncOpenAI
 
 if TYPE_CHECKING:
     from drbrain.extractor.cache import ApiCache
+
+# OpenAI SDK 客户端缓存(base_url+api_key 复用连接,序列化稳定使 provider 前缀缓存可命中)
+_openai_clients: dict[str, SyncOpenAI] = {}
+_aopenai_clients: dict[str, AsyncOpenAI] = {}
+
+
+def _openai_client(api_key: str, base_url: str) -> SyncOpenAI:
+    ck = f"{base_url}|{api_key[:8]}"
+    if ck not in _openai_clients:
+        _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url)
+    return _openai_clients[ck]
+
+
+def _aopenai_client(api_key: str, base_url: str) -> AsyncOpenAI:
+    ck = f"{base_url}|{api_key[:8]}"
+    if ck not in _aopenai_clients:
+        _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    return _aopenai_clients[ck]
 
 
 def _cache_key(model_name: str, system_prompt: str, prompt: str, max_tokens: int) -> str:
@@ -170,7 +191,13 @@ def resolve_agent_key(model_cfg: dict) -> dict:
     if isinstance(keys, list):
         keys = [str(k) for k in keys if k]
         if keys:
-            model_cfg["api_key"] = keys[next(_AGENT_KEY_COUNTER) % len(keys)]
+            # Pin from the keys NOT in cooldown: a plain round-robin counter
+            # assigns ~N_dead/N keys of the agents to rate-limited keys for
+            # their whole lifetime. Fall back to plain round-robin only when
+            # every key is cooling down (state recovers on its own).
+            available = [k for k in keys if _RATE_LIMIT_SM.is_key_available(model_cfg, k)]
+            pool = available or keys
+            model_cfg["api_key"] = pool[next(_AGENT_KEY_COUNTER) % len(pool)]
     model_cfg.pop("api_keys", None)
     return model_cfg
 
@@ -514,6 +541,192 @@ def _build_litellm_kwargs(
     return kwargs
 
 
+class _ChatShim:
+    """Responses API 结果 → chat-completions 形适配器（choices/message/usage），
+    让既有 content 提取、``_record_llm``、tool_calls 消费代码零改动。"""
+
+    def __init__(self, content: str, tool_calls: list | None, usage):
+        msg = SimpleNamespace(content=content, tool_calls=tool_calls)
+        self.choices = [SimpleNamespace(message=msg)]
+        self.usage = usage
+
+
+def _responses_tools(chat_tools: list[dict] | None) -> list[dict] | None:
+    """chat tools（``{type:function,function:{name,...}}``）→ Responses 扁平格式。"""
+    if not chat_tools:
+        return None
+    out = []
+    for t in chat_tools:
+        fn = t.get("function") or t
+        out.append(
+            {
+                "type": "function",
+                "name": fn.get("name"),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            }
+        )
+    return out
+
+
+def _messages_to_responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
+    """chat messages → ``(instructions, responses input 数组)``。
+
+    assistant.tool_calls → ``function_call`` 项；role=tool → ``function_call_output`` 项；
+    system 合并为 ``instructions``（Responses API 的系统提示位）。
+    """
+    instructions = ""
+    input_items: list[dict] = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content")
+        if isinstance(content, list):  # anthropic 缓存分块 → 拼纯文本
+            content = "".join(
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "text"
+            )
+        if role == "system":
+            instructions = content or ""
+        elif role == "assistant" and m.get("tool_calls"):
+            if content:
+                input_items.append({"role": "assistant", "content": content})
+            for tc in m["tool_calls"]:
+                fn = tc.get("function") or {}
+                input_items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tc.get("id", ""),
+                        "name": fn.get("name", ""),
+                        "arguments": fn.get("arguments", "{}"),
+                    }
+                )
+        elif role == "tool":
+            input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": m.get("tool_call_id", ""),
+                    "output": content
+                    if isinstance(content, str)
+                    else json.dumps(content, ensure_ascii=False),
+                }
+            )
+        else:
+            input_items.append({"role": role, "content": content or ""})
+    return instructions, input_items
+
+
+def _responses_output_to_chat(resp) -> tuple[str, list | None, SimpleNamespace]:
+    """Responses 返回 → ``(text, chat 形 tool_calls, usage)``。"""
+    text_parts: list[str] = []
+    tool_calls: list = []
+    for item in getattr(resp, "output", None) or []:
+        itype = getattr(item, "type", None)
+        if itype == "message":
+            for c in getattr(item, "content", None) or []:
+                if getattr(c, "type", "") == "output_text":
+                    text_parts.append(getattr(c, "text", "") or "")
+        elif itype == "function_call":
+            tool_calls.append(
+                SimpleNamespace(
+                    id=getattr(item, "call_id", "") or f"call_{len(tool_calls)}",
+                    type="function",
+                    function=SimpleNamespace(
+                        name=getattr(item, "name", ""),
+                        arguments=getattr(item, "arguments", "{}"),
+                    ),
+                )
+            )
+    usage = getattr(resp, "usage", None)
+    usage_details = getattr(usage, "input_tokens_details", None)
+    usage_ns = SimpleNamespace(
+        prompt_tokens=getattr(usage, "input_tokens", 0) or 0,
+        completion_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cached_tokens=getattr(usage_details, "cached_tokens", 0) or 0,
+    )
+    return "".join(text_parts), (tool_calls or None), usage_ns
+
+
+def _responses_kwargs(model_cfg: dict, kwargs: dict, api_key: str | None) -> dict:
+    """由 chat completions kwargs 构造 ``litellm.responses`` kwargs。
+
+    gpt-5 系不接受 temperature / response_format，确定性靠 prompt 纪律
+    （drbrain 各 prompt 均明写"只返回 JSON"）。
+    """
+    instructions, input_items = _messages_to_responses_input(kwargs.get("messages") or [])
+    rk: dict = dict(
+        model=f"openai/{model_cfg['model']}",
+        input=input_items,
+        max_output_tokens=_to_int(kwargs.get("max_tokens")) or 4096,
+        timeout=kwargs.get("timeout", 60),
+    )
+    if instructions:
+        rk["instructions"] = instructions
+    tools = _responses_tools(kwargs.get("tools"))
+    if tools:
+        rk["tools"] = tools
+    if api_key:
+        rk["api_key"] = api_key
+    if kwargs.get("api_base"):
+        rk["api_base"] = kwargs["api_base"]
+    return rk
+
+
+def _responses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
+    """OpenAI SDK 直连 Responses API——跳过 litellm 序列化层,前缀缓存可命中。"""
+    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
+    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
+    rk.pop("api_key", None)
+    # 剥 litellm 的 openai/ 前缀
+    if "model" in rk and rk["model"].startswith("openai/"):
+        rk["model"] = rk["model"][7:]
+    client = _openai_client(api_key or "", base_url)
+    return client.responses.create(**rk)
+
+
+async def _aresponses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
+    """:func:`_responses_call_openai` 的 async 版。"""
+    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
+    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
+    rk.pop("api_key", None)
+    if "model" in rk and rk["model"].startswith("openai/"):
+        rk["model"] = rk["model"][7:]
+    client = _aopenai_client(api_key or "", base_url)
+    return await client.responses.create(**rk)
+
+
+def _invoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
+    """统一调用入口：``wire_api: responses`` 的模型走 Responses API（含 tools 桥接），
+    其余走 chat completions。返回 ``(content, response)``。
+
+    中转示例（Sub2API，wire_api=responses）::
+
+        - provider: sub2api
+          model: gpt-5.6-sol
+          base_url: https://www.kapestack.top/Sub2API/v1
+          api_key: sk-...
+          wire_api: responses
+    """
+    if model_cfg.get("wire_api") != "responses":
+        resp = litellm.completion(**kwargs)
+        return resp.choices[0].message.content, resp
+    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    resp = _responses_call_openai(rk, model_cfg, api_key)
+    content, tool_calls, usage = _responses_output_to_chat(resp)
+    return content, _ChatShim(content, tool_calls, usage)
+
+
+async def _ainvoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
+    """:func:`_invoke_llm` 的 async 版（``litellm.aresponses``）。"""
+    if model_cfg.get("wire_api") != "responses":
+        resp = await litellm.acompletion(**kwargs)
+        return resp.choices[0].message.content, resp
+    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    resp = await _aresponses_call_openai(rk, model_cfg, api_key)
+    content, tool_calls, usage = _responses_output_to_chat(resp)
+    return content, _ChatShim(content, tool_calls, usage)
+
+
 def _record_llm(model_name: str, provider: str, response, start_time: float) -> None:
     """Record LLM usage to metrics store."""
     try:
@@ -561,6 +774,7 @@ def _log_llm_call(
     n_messages: int,
     tokens_in: int = 0,
     tokens_out: int = 0,
+    cached_tokens: int = 0,
     duration_ms: int = 0,
     error: str = "",
 ) -> None:
@@ -586,6 +800,7 @@ def _log_llm_call(
             "n_messages": _to_int(n_messages),
             "tokens_in": _to_int(tokens_in),
             "tokens_out": _to_int(tokens_out),
+            "cached_tokens": _to_int(cached_tokens),
             "duration_ms": _to_int(duration_ms),
             "error": str(error)[:200],
         }
@@ -638,9 +853,8 @@ def call_with_fallback(
                         disable_thinking=disable_thinking,
                         api_key=api_key,
                     )
-                    response = litellm.completion(**kwargs)
+                    content, response = _invoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
-                    content = response.choices[0].message.content
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.info(f"[llm] success: {name} in {elapsed}ms")
                     usage = getattr(response, "usage", None)
@@ -652,6 +866,7 @@ def call_with_fallback(
                         n_messages=1,
                         tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
                         tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
                         duration_ms=elapsed,
                     )
                     parsed = json.loads(content)
@@ -749,9 +964,8 @@ async def acall_with_fallback(
                         disable_thinking=disable_thinking,
                         api_key=api_key,
                     )
-                    response = await litellm.acompletion(**kwargs)
+                    content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
-                    content = response.choices[0].message.content
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.info(f"[llm] async success: {name} in {elapsed}ms")
                     usage = getattr(response, "usage", None)
@@ -763,6 +977,7 @@ async def acall_with_fallback(
                         n_messages=1,
                         tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
                         tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
                         duration_ms=elapsed,
                     )
                     parsed = json.loads(content)
@@ -828,7 +1043,6 @@ def call_text_with_fallback(
     max_tokens: int = 4096,
 ) -> str | None:
     """Sync text call with fallback. Returns raw text (not JSON)."""
-    import litellm
 
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
@@ -857,8 +1071,7 @@ def call_text_with_fallback(
                         kwargs["api_key"] = api_key
                     if model_cfg.get("base_url"):
                         kwargs["api_base"] = model_cfg["base_url"]
-                    response = litellm.completion(**kwargs)
-                    content = response.choices[0].message.content
+                    content, _resp = _invoke_llm(model_cfg, kwargs, api_key)
                     if api_key:
                         _RATE_LIMIT_SM.on_success(model_cfg, api_key)
                     if content is None:
@@ -931,12 +1144,11 @@ async def acall_text_with_fallback(
                         kwargs["api_key"] = api_key
                     if model_cfg.get("base_url"):
                         kwargs["api_base"] = model_cfg["base_url"]
-                    response = await litellm.acompletion(**kwargs)
+                    content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
                     logger.debug(
                         f"LLM text call success: {name} in {int((time.monotonic() - start) * 1000)}ms"
                     )
-                    content = response.choices[0].message.content
                     if api_key:
                         _RATE_LIMIT_SM.on_success(model_cfg, api_key)
                     if content is None:
@@ -1019,7 +1231,7 @@ def call_with_messages(
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
 
-                    response = litellm.completion(**kwargs)
+                    content, response = _invoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
 
                     msg = response.choices[0].message
@@ -1035,6 +1247,7 @@ def call_with_messages(
                         n_messages=len(messages),
                         tokens_in=usage.prompt_tokens if usage else 0,
                         tokens_out=usage.completion_tokens if usage else 0,
+                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
                         duration_ms=elapsed,
                     )
                     if api_key:
@@ -1045,6 +1258,7 @@ def call_with_messages(
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,
+                            "cached": getattr(usage, "cached_tokens", 0) if usage else 0,
                         },
                     }
                     if _cache is not None and key is not None:
@@ -1145,7 +1359,7 @@ async def acall_with_messages(
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
 
-                    response = await litellm.acompletion(**kwargs)
+                    content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
 
                     msg = response.choices[0].message
@@ -1161,6 +1375,7 @@ async def acall_with_messages(
                         n_messages=len(messages),
                         tokens_in=usage.prompt_tokens if usage else 0,
                         tokens_out=usage.completion_tokens if usage else 0,
+                        cached_tokens=getattr(usage, "cached_tokens", 0) if usage else 0,
                         duration_ms=elapsed,
                     )
                     if api_key:
@@ -1171,6 +1386,7 @@ async def acall_with_messages(
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,
+                            "cached": getattr(usage, "cached_tokens", 0) if usage else 0,
                         },
                     }
                     if _cache is not None and key is not None:

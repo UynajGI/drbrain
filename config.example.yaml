@@ -73,6 +73,11 @@ mineru:
   enable_formula: true # parse LaTeX formulas
   enable_table: true # parse tables
   max_pages: 150 # split threshold for large PDFs (MinerU limit: 200)
+  # ── Fallback chain (when MinerU is unavailable) ──
+  # anydoc (text PDFs) -> OCRmyPDF (scanned PDFs) -> pymupdf4llm
+  use_anydoc: true # pip install firecrawl-anydoc; set false to skip anydoc
+  ocr_enabled: false # OCR scanned PDFs via OCRmyPDF (needs system tesseract)
+  ocr_language: "eng" # tesseract language pack, e.g. "eng+chi_sim"
 
 # ── Database ─────────────────────────────────────────────────────
 db:

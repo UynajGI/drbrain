@@ -23,10 +23,28 @@ class OpenAlexSource:
 
     name = "openalex"
 
-    def __init__(self, base_url: str = OPENALEX_BASE, token: str | None = None):
+    def __init__(
+        self,
+        base_url: str = OPENALEX_BASE,
+        token: str | None = None,
+        mailto: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.token = token
+        # OpenAlex raises the anonymous rate cap from ~10 to ~100 req/s for
+        # requests that carry a polite-pool mailto.
+        self.mailto = mailto
         self._session = _get_session()
+        if self.token:
+            self._session.headers.update(
+                {"Authorization": f"Bearer {self.token}"}
+            )
+
+    def _params(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        params = dict(params or {})
+        if self.mailto:
+            params.setdefault("mailto", self.mailto)
+        return params
 
     def search(
         self,
@@ -57,7 +75,7 @@ class OpenAlexSource:
         page = 1
         while emitted < limit:
             params["page"] = page
-            resp = self._session.get(f"{self.base_url}/works", params=params, timeout=60)
+            resp = self._session.get(f"{self.base_url}/works", params=self._params(params), timeout=60)
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])
@@ -103,7 +121,9 @@ class OpenAlexSource:
         """Fetch referenced works for an OpenAlex work id (citations omitted)."""
         if not unique_id:
             return None
-        resp = self._session.get(f"{self.base_url}/works/{unique_id}", timeout=60)
+        resp = self._session.get(
+            f"{self.base_url}/works/{unique_id}", params=self._params(), timeout=60
+        )
         if resp.status_code >= 400:
             return None
         work = resp.json()

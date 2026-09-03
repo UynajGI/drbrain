@@ -1140,3 +1140,173 @@ Export session history.
 ```bash
 drbrain session export sess-xxx --output session.json
 ```
+
+---
+
+## Hybrid Retrieval (LlamaIndex RAG)
+
+### `drbrain hybrid`
+
+Hybrid retrieval (BM25 + vector fused via RRF) through the LlamaIndex engine.
+Returns paper-level hits with per-leg sources. Requires `llamaindex.enabled:
+true` in config and a built index (`drbrain rag index`).
+
+| Flag | Description |
+|------|-------------|
+| `-n`, `--limit N` | Maximum results (default 10) |
+| `--json` | Output JSON to stdout |
+
+```bash
+drbrain hybrid "transformer efficiency" -n 5
+drbrain hybrid "quantum error correction" --json
+```
+
+### `drbrain rag index`
+
+Build (or incrementally update) the LlamaIndex vector + BM25 indexes. Reads
+each paper's tree structure into nodes, embeds only changed nodes, and
+persists everything under `llamaindex.storage_dir`.
+
+| Flag | Description |
+|------|-------------|
+| `-f`, `--force` | Force full rebuild (ignore content_hash) |
+| `--paper ID` | Restrict to paper local_id (repeatable) |
+| `--json` | Output JSON to stdout |
+
+```bash
+drbrain rag index
+drbrain rag index --paper p0001a2b3 --force
+```
+
+### `drbrain rag eval`
+
+Run retrieval/RAG evaluation on the golden set.
+
+| Flag | Description |
+|------|-------------|
+| `--split S` | Golden split: `dev` / `val` / `test` |
+| `--metrics M` | `retriever` / `ragas` / `semantic` / `qagen` / `all` |
+| `--k LIST` | Comma-separated top-k values (retriever) |
+| `--n N` | Max golden queries for ragas/semantic eval |
+| `--json` | Output JSON to stdout |
+
+```bash
+drbrain rag eval --metrics retriever --k 5,10
+drbrain rag eval --metrics all --split val
+```
+
+---
+
+## Concept Graph (`cg` sub-app)
+
+Corpus-scale concept co-occurrence graph, independent of the per-paper
+knowledge graph built by `drbrain build`.
+
+### `drbrain cg ingest`
+
+Ingest paper metadata from an external academic API (sciverse / openalex)
+into the library.
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--source S` | Corpus source: `sciverse` \| `openalex` |
+| `--year-from` / `--year-to` | Publication year range |
+| `--venue V` | Venue filter (repeatable) |
+| `-n`, `--limit N` | Max records to fetch (default 100) |
+| `--with-citations` | Also harvest citation edges |
+| `--dry-run` | Count matches without writing |
+
+```bash
+drbrain cg ingest "graph neural networks" -s openalex --year-from 2020 -n 500
+drbrain cg ingest --dry-run --venue Nature
+```
+
+### `drbrain cg build`
+
+Build the concept co-occurrence graph (per-paper cliques + frequency
+filtering).
+
+| Flag | Description |
+|------|-------------|
+| `-s`, `--source S` | Concept source: `terms` \| `concepts` \| `abstract` |
+| `--min-freq N` | Minimum document frequency to keep a concept (default 3) |
+| `--min-words N` | Minimum words in a concept label (default 2) |
+
+```bash
+drbrain cg build -s terms --min-freq 5
+```
+
+### `drbrain cg embed`
+
+Embed concept labels (optionally mixed with containing-paper titles) for
+similarity search and prediction.
+
+| Flag | Description |
+|------|-------------|
+| `--context` | Average label with containing-paper titles |
+| `--model NAME` | Model label recorded in the DB |
+
+### `drbrain cg neighbors`
+
+Show the nearest concepts to a query concept by embedding similarity.
+
+```bash
+drbrain cg neighbors "graph neural networks" --top 20
+```
+
+### `drbrain cg map`
+
+Export an interactive UMAP concept map to HTML.
+
+```bash
+drbrain cg map -o concept_map.html
+```
+
+### `drbrain cg predict`
+
+Leakage-free yearly prediction of rising concepts: features are snapshotted
+at `--feat-cutoff`, labels measured in a later window.
+
+| Flag | Description |
+|------|-------------|
+| `--feat-cutoff YEAR` | Feature snapshot year (G_t, leakage-free) |
+| `--train-end YEAR` | End of training label window |
+| `--test-end YEAR` | End of test label window |
+| `--model M` | `baseline` \| `embed` \| `mixture` \| `gnn` |
+
+### `drbrain cg recommend`
+
+Suggest research directions for an author based on their publication profile
+and concept-map gaps.
+
+| Flag | Description |
+|------|-------------|
+| `-a`, `--author NAME` | Author name (substring match) |
+| `-k`, `--top N` | Suggestions per section (default 25) |
+| `--sim-min` / `--sim-max` | Similarity band to keep |
+
+```bash
+drbrain cg recommend --author "Zhang" --top 10
+```
+
+---
+
+## Literature Survey
+
+### `drbrain survey`
+
+Generate a one-shot markdown literature survey: gap list (research gaps +
+debates + frontier signals), literature cross-references (who cites whom +
+shared references), and evidence chains tracing each gap back to sources.
+
+| Flag | Description |
+|------|-------------|
+| `TOPIC` | Topic to survey (optional; defaults to the whole library) |
+| `-o`, `--output FILE` | Write markdown to FILE instead of stdout |
+| `--json` | Output structured JSON instead of markdown |
+| `--top-n N` | Max items per section (default 10) |
+
+```bash
+drbrain survey "knowledge graph reasoning" -o survey.md
+drbrain survey --top-n 20
+```

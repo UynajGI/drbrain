@@ -433,9 +433,11 @@ def _normalize_section_headers(markdown_content: str) -> str:
         if not next_blank:
             out.append(line)
             continue
-        # Short line.
+        # Short line. 编号标题(1.2 / 2.2.3)放宽词数——latex 片段会展开成多个词
         words = stripped.split()
-        if len(words) > 12 or len(stripped) > 80:
+        is_numbered_line = bool(re.match(r"^\d+(\.\d+)*\.?\s+", stripped))
+        word_cap = 20 if is_numbered_line else 12
+        if len(words) > word_cap or len(stripped) > 100:
             out.append(line)
             continue
         # No sentence-ending punctuation.
@@ -455,7 +457,11 @@ def _normalize_section_headers(markdown_content: str) -> str:
         # substantial content block (filters author-affiliation/address lines).
         is_titlecase = stripped[0].isupper() and not stripped.endswith(":")
         if is_numbered or is_allcaps or is_known:
-            out.append("# " + stripped)
+            # 按编号深度定级(1.2 → ##,1.2.3 → ###),无编号保持 H1:
+            # 层级信息是 tree 嵌套与 LLM 树导航的关键信号,不应打平。
+            m_num = re.match(r"^(\d+(?:\.\d+)*)\.?\s+", stripped)
+            level = min(m_num.group(1).count(".") + 1, 4) if m_num else 1
+            out.append("#" * level + " " + stripped)
         elif is_titlecase and len(words) <= 6:
             # Look ahead past the blank line for a substantial paragraph.
             j = i + 1

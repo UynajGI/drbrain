@@ -173,8 +173,10 @@ def test_job_log_has_number_gate(tmp_path):
     # log present but no parseable number
     (jobs / "j1.log").write_text("all done, nothing numeric", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j1") is False
-    # number appears in the log + job finished → evidence
-    (jobs / "j1.log").write_text("result = 1.0", encoding="utf-8")
+    # a parseable result JSON (non-empty min_bandwidth_ev) + job finished → evidence
+    (jobs / "j1.log").write_text(
+        '{"min_bandwidth_ev": 0.02, "flat_band_likely": true}', encoding="utf-8"
+    )
     assert _job_log_has_number(run_dir, "j1") is True
     # still-running job (alive pid) with a numeric log → NOT final evidence
     (jobs / "j4.json").write_text('{"job_id": "j4", "pid": 1}', encoding="utf-8")
@@ -182,7 +184,7 @@ def test_job_log_has_number_gate(tmp_path):
     assert _job_log_has_number(run_dir, "j4") is False
     # log_path from meta is honored (not just <job_id>.log)
     elsewhere = tmp_path / "elsewhere.log"
-    elsewhere.write_text("computed 42", encoding="utf-8")
+    elsewhere.write_text('{"min_bandwidth_ev": 42.0}', encoding="utf-8")
     (jobs / "j2.json").write_text(
         json.dumps({"job_id": "j2", "pid": dead_pid, "log_path": str(elsewhere)}),
         encoding="utf-8",
@@ -191,6 +193,27 @@ def test_job_log_has_number_gate(tmp_path):
     # malformed meta json → no evidence
     (jobs / "j3.json").write_text("{broken", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j3") is False
+    # marker substring present but no parseable result JSON → not evidence
+    (jobs / "j6.json").write_text(json.dumps({"job_id": "j6", "pid": dead_pid}), encoding="utf-8")
+    (jobs / "j6.log").write_text("waiting on min_bandwidth_ev ... crashed", encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j6") is False
+    # 毒化防护:meta 记了 status=failed 的作业,即使日志含完整结果 JSON 也不许过门
+    (jobs / "j5.log").write_text(
+        '{"min_bandwidth_ev": 0.02, "flat_band_likely": true}', encoding="utf-8"
+    )
+    (jobs / "j5.json").write_text(
+        json.dumps(
+            {
+                "job_id": "j5",
+                "pid": dead_pid,
+                "status": "failed",
+                "error": "NameError: name 'x' is not defined",
+                "log_path": str(jobs / "j5.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _job_log_has_number(run_dir, "j5") is False
 
 
 def test_classify_verification_t4_job_gate(tmp_path):
@@ -210,7 +233,7 @@ def test_classify_verification_t4_job_gate(tmp_path):
     ver = Verification(statement="h1", supports=1, refutes=0, computed="1.0", value=1.0)
     assert _classify_verification(ver, 0.9, True, run_dir) == "prediction"
     # job_id 指向真实作业文件、日志含数值、作业已结束 → verified
-    (jobs / "j1.log").write_text("value 2.5", encoding="utf-8")
+    (jobs / "j1.log").write_text('{"min_bandwidth_ev": 2.5}', encoding="utf-8")
     (jobs / "j1.json").write_text(
         json.dumps(
             {
@@ -225,6 +248,24 @@ def test_classify_verification_t4_job_gate(tmp_path):
         statement="h1", supports=1, refutes=0, computed="2.5", value=2.5, job_id="j1"
     )
     assert _classify_verification(ver, 0.9, True, run_dir) == "verified"
+    # meta status=failed 的崩溃作业:即使日志含合法结果 JSON 也降级 prediction(不翻转 verified)
+    (jobs / "j2.log").write_text('{"min_bandwidth_ev": 1.0}', encoding="utf-8")
+    (jobs / "j2.json").write_text(
+        json.dumps(
+            {
+                "job_id": "j2",
+                "pid": 99999999,
+                "status": "failed",
+                "error": "NameError: name 'x' is not defined",
+                "log_path": str(jobs / "j2.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ver = Verification(
+        statement="h2", supports=1, refutes=0, computed="1.0", value=1.0, job_id="j2"
+    )
+    assert _classify_verification(ver, 0.9, True, run_dir) == "prediction"
     # falsified 不受计算门影响
     assert (
         _classify_verification(

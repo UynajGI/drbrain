@@ -46,6 +46,9 @@ class _ConfigBase:
 @dataclass
 class LLMConfig(_ConfigBase):
     models: list[dict] = field(default_factory=list)
+    # 节点级模型覆盖（autoresearch workflow step_name → 该节点的完整 fallback 链）。
+    # 未命中的节点用全局 models；列表需写全（不自动追加全局链）。
+    node_models: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass
@@ -56,6 +59,9 @@ class MinerUConfig(_ConfigBase):
     enable_formula: bool = True
     enable_table: bool = True
     max_pages: int = 150
+    use_anydoc: bool = True
+    ocr_enabled: bool = False
+    ocr_language: str = "eng"
 
 
 @dataclass
@@ -145,6 +151,7 @@ class EmbedConfig(_ConfigBase):
     model: str = "Qwen/Qwen3-Embedding-0.6B"
     cache_dir: str = "~/.cache/modelscope/hub/models"
     device: str = "auto"
+    extra_gpus: list[int] = field(default_factory=list)  # 大规模嵌入的额外并行卡号
     top_k: int = 10
     source: str = "modelscope"
     hf_endpoint: str = ""
@@ -198,6 +205,9 @@ class LlamaIndexConfig(_ConfigBase):
     llm: str = "litellm"
     vector_store: str = "memory"
     storage_dir: str = "data/llamaindex"
+    # "llamaindex" = 并行索引库；"sql" = 主库副本（drbrain_rag.db，node_texts+FTS5
+    # +tree_vectors）直检，目标架构（全文入库，无独立索引构建）
+    rag_engine: str = "llamaindex"
     retrievers: list[str] = field(default_factory=lambda: ["bm25", "vector"])
     fusion_mode: str = "reciprocal_rank"
     rerank: bool = True
@@ -270,10 +280,14 @@ class AutoresearchConfig(_ConfigBase):
     mcp_servers: list[dict] = field(default_factory=list)
     step_capabilities: dict[str, list[str]] = field(default_factory=dict)
     n_critics: int = 3
+    single_agent: bool = False
     max_cycles: int = 10
     stagnation_cycles: int = 3
     max_adaptations: int = 2
     lease_seconds: float = 900.0
+    # Per-workflow-step timeout; rate-limited LLM fallbacks can stretch a
+    # single step (identify_gaps etc.) well past the 600s default.
+    step_timeout_seconds: float = 600.0
     # Passed through to ResearchDirector, which validates supported limit names
     # and numeric values before a durable run is created or resumed.
     budget: dict[str, int | float] = field(default_factory=dict)
