@@ -1033,6 +1033,28 @@ drbrain explore --delete transformers
 
 ---
 
+## WebUI (`drbrain webui`)
+
+### `drbrain webui`
+
+Serve a local single-page research workbench over the same database, ledger
+and plugin registry the CLI uses.
+
+```bash
+drbrain webui                     # http://127.0.0.1:8765/
+drbrain webui --port 9000 --open  # custom port, open the browser
+```
+
+Pages: 工作台 (KPI counters, recent runs), 文献检索 (`drbrain search`), 研究问答
+(`drbrain ask`), 研究闭环 (start `drbrain autoresearch run` from a research goal
+and watch ledger events / claims live), 计算任务 (ledger experiments and
+artifacts), 数据与模型 (database / ledger / plugins / export commands).
+
+The UI starts empty and only reflects the current configuration; nothing is
+preloaded. `研究问答` requires `llamaindex.enabled: true` plus a built index,
+`研究闭环` requires `autoresearch.enabled: true`. Standard library only, no
+extra dependencies. JSON API under `/api/*` (see `src/drbrain/webui/server.py`).
+
 ## Workspace Management (`drbrain ws`)
 
 Workspaces are named subsets of papers for focused analysis.

@@ -8,6 +8,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 ## [Unreleased] — dev/feature
 
 ### Added
+- **WebUI** (`src/drbrain/webui/`, `drbrain webui`): local research workbench over the existing CLI capabilities — BM25 search, RAG ask, autoresearch loop (start a run from a research goal, watch ledger events / claims live), compute jobs and data/plugin assets. Standard-library HTTP server, one static page, no new dependencies.
 - **LlamaIndex RAG layer** (`src/drbrain/rag/`): BM25 + vector + tree retrieval with RRF fusion, rerank, FunctionAgent tool calling, and an eval harness (retriever metrics / ragas / semantic / qagen). CLI: `drbrain rag index` (incremental index build), `drbrain rag eval`, and `drbrain hybrid` (fused retrieval).
 - **Concept graph subsystem** (`src/drbrain/concept_graph/`, `drbrain cg …`): corpus-scale concept co-occurrence graph with ingest/build/embed/neighbors/map/predict/recommend; UMAP interactive map export; leakage-free yearly prediction snapshots.
 - **Research loop** (`src/drbrain/loop/`, PR #14): multi-agent orchestration closed loop (workflow nodes + analyst/critic/compute/verifier roles + discussion layer). _Note: this subsystem is under heavy active development upstream; internals will change._

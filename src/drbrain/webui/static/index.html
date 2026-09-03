@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DrBrain · 研究工作台</title>
+<link rel="icon" href="data:,">
+<style>
+:root{--bg:#f4f6fa;--card:#fff;--line:#e4e8ef;--txt:#1b2430;--muted:#6b7686;--navy:#1f3a5f;--teal:#0f766e;--teal2:#14b8a6;--gold:#b7791f;--red:#b42318;--green:#15803d;--mono:"JetBrains Mono","SFMono-Regular",Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:14px/1.5 "Noto Sans CJK SC","PingFang SC","Microsoft YaHei","Segoe UI",sans-serif}
+#app{display:flex;flex-direction:column;height:100%}
+#nav{display:flex;align-items:center;gap:4px;height:52px;padding:0 20px;background:#fff;border-bottom:1px solid var(--line);flex:none}
+.brand{display:flex;align-items:center;gap:10px;margin-right:22px}
+.brand .mark{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--navy),var(--teal));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+.brand b{font-size:15px}.brand span{color:var(--muted);font-size:12px}
+.tab{padding:6px 12px;border-radius:7px;color:var(--muted);cursor:pointer;font-size:13.5px}
+.tab:hover{background:#f1f4f9}.tab.active{color:var(--teal);background:#ecfdf8;font-weight:600}
+#nav .right{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:12.5px;color:var(--muted)}
+.status i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--teal2);margin-right:6px}
+#main{flex:1;overflow:auto;padding:22px 26px}
+.page{display:none;max-width:1400px;margin:0 auto}.page.show{display:block}
+h2{margin:0 0 4px;font-size:20px;font-weight:600}.sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.grid{display:grid;gap:14px}.kpis{grid-template-columns:repeat(4,1fr);margin-bottom:14px}
+.kpi .v{font-size:28px;font-weight:700;color:var(--navy);font-family:var(--mono)}.kpi .l{color:var(--muted);font-size:12.5px;margin-top:2px}.kpi .d{font-size:12px;color:var(--muted);margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:6px 8px;border-bottom:1px solid var(--line)}td{padding:8px;border-bottom:1px solid #f0f2f6;vertical-align:top}
+tr.row{cursor:pointer}tr.row:hover td{background:#f7f9fc}tr.sel td{background:#eef7f5}
+.m{font-family:var(--mono);font-size:12px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted);background:#fff}.chip.on{border-color:var(--teal);color:var(--teal);background:#ecfdf8}
+.badge{display:inline-block;border-radius:6px;padding:2px 8px;font-size:11.5px;font-weight:600;font-family:var(--mono)}
+.badge.ok{background:#e7f6ec;color:var(--green)}.badge.ins{background:#f1f4f9;color:var(--muted)}.badge.warn{background:#fdf3e0;color:var(--gold)}.badge.teal{background:#ecfdf8;color:var(--teal)}.badge.red{background:#fdecec;color:var(--red)}
+.searchbar{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:8px 10px 8px 16px}
+.searchbar:focus-within{border-color:var(--teal);box-shadow:0 0 0 3px rgba(20,184,166,.15)}
+.searchbar input{flex:1;border:0;outline:0;font-size:14.5px;background:transparent;color:var(--txt)}
+.btn{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:9px 16px;font-size:13.5px;cursor:pointer}.btn:hover{background:#274a78}.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}.btn.sm{padding:6px 11px;font-size:12.5px}
+.small{font-size:12px;color:var(--muted)}.empty{padding:40px;text-align:center;color:var(--muted)}
+.res{display:grid;grid-template-columns:32px 1fr 90px;gap:12px;align-items:center;padding:12px 6px;border-bottom:1px solid #eef1f6}
+.res .rk{color:var(--muted);font-family:var(--mono);font-size:12px}.res .t{font-weight:600}.res .meta{color:var(--muted);font-size:12px;margin-top:3px;font-family:var(--mono)}.res .sc{text-align:right;font-family:var(--mono);color:var(--teal)}
+.chat{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,4fr);gap:16px}
+.msg{padding:12px 16px;border-radius:14px;line-height:1.65;font-size:14px;margin-bottom:12px;white-space:pre-wrap}
+.msg.user{background:var(--navy);color:#fff;border-bottom-right-radius:4px;margin-left:20%}
+.msg.bot{background:#fff;border:1px solid var(--line);border-bottom-left-radius:4px;margin-right:8%}
+.src{padding:8px 10px;border-radius:8px;font-size:12.5px;display:flex;gap:8px;align-items:baseline;border-bottom:1px solid #f0f2f6}.src .n{font-family:var(--mono);color:var(--teal);font-size:11px;width:24px;flex:none}.src .p{color:var(--muted);font-family:var(--mono);font-size:11px;margin-left:auto;flex:none}
+.lp{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,7fr) minmax(0,4fr);gap:14px}
+.nd{display:flex;align-items:center;gap:8px;padding:5px 6px;font-size:12.5px;color:var(--muted);border-radius:6px}.nd i{width:8px;height:8px;border-radius:50%;background:#cbd5e1;flex:none}
+.nd.run{color:var(--txt);background:#f0fbf9}.nd.run i{background:var(--teal2);animation:pulse 1s infinite}.nd.done{color:var(--txt)}.nd.done i{background:var(--teal)}
+@keyframes pulse{50%{opacity:.3}}
+.board{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto}
+.dm{display:flex;gap:10px}.dm .av{width:28px;height:28px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;color:#fff;font-family:var(--mono)}
+.dm .bub{background:#fff;border:1px solid var(--line);border-radius:12px;border-top-left-radius:4px;padding:8px 12px;font-size:13px;line-height:1.55;flex:1;min-width:0}.dm .who{font-size:11px;color:var(--muted);margin-bottom:3px;font-family:var(--mono)}.dm .who b{color:var(--txt)}
+.dm.sys .bub{background:#f6f8fc;border-style:dashed;color:var(--muted);font-size:12px}
+.tl{position:relative;padding-left:18px;margin-top:6px;max-height:40vh;overflow:auto}.tl:before{content:"";position:absolute;left:6px;top:4px;bottom:4px;width:2px;background:#e4e8ef}
+.ev{position:relative;padding:4px 0 4px 10px;font-size:12.5px}.ev:before{content:"";position:absolute;left:-16px;top:9px;width:8px;height:8px;border-radius:50%;background:#94a3b8;border:2px solid #fff}.ev.hi:before{background:var(--teal)}
+.ev .a{color:var(--gold);font-family:var(--mono);font-size:11.5px}.ev .s{color:var(--muted);font-family:var(--mono);font-size:11px}
+.ccard{background:#f6f8fc;border-radius:10px;padding:10px 12px;font-size:12.5px;margin-bottom:8px}.ccard.ok{background:#e7f6ec}
+.two{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:16px}
+pre{background:#f6f8fc;border-radius:8px;padding:10px 12px;font-size:12px;overflow:auto;max-height:40vh;margin:8px 0 0}
+.repo{display:flex;gap:14px;align-items:flex-start;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#fff}.repo .ic{width:36px;height:36px;border-radius:9px;background:#eef3fa;display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--navy);flex:none}.repo .nm{font-weight:600}.repo .ds{color:var(--muted);font-size:12.5px;margin-top:2px}
+#toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);background:#1b2430;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;pointer-events:none}#toast.show{opacity:1;transform:translateX(-50%)}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid #cbd5e1;border-top-color:var(--teal);border-radius:50%;animation:rot .8s linear infinite;vertical-align:-2px}@keyframes rot{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="nav">
+    <div class="brand"><div class="mark">D</div><b>DrBrain</b><span>研究工作台</span></div>
+    <div class="tab active" data-p="home">工作台</div>
+    <div class="tab" data-p="search">文献检索</div>
+    <div class="tab" data-p="ask">研究问答</div>
+    <div class="tab" data-p="loop">研究闭环</div>
+    <div class="tab" data-p="compute">计算任务</div>
+    <div class="tab" data-p="assets">数据与模型</div>
+    <div class="right"><span class="status"><i></i><span id="st-papers">—</span> 篇文献</span><span class="m" id="clock"></span></div>
+  </div>
+  <div id="main">
+    <div class="page show" id="p-home">
+      <h2>工作台</h2><div class="sub">知识底座与研究闭环运行概览（实时读取当前数据库与账本）</div>
+      <div class="grid kpis" id="kpis"></div>
+      <div class="grid" style="grid-template-columns:3fr 2fr">
+        <div class="card"><h4 style="margin:0 0 10px;font-size:14px">最近研究运行</h4><div id="home-runs"><div class="empty">尚无运行记录 · 到「研究闭环」输入研究目标启动</div></div></div>
+        <div class="card"><h4 style="margin:0 0 10px;font-size:14px">模型资产（插件）</h4><div id="home-plugins"><div class="empty">未配置 autoresearch.plugins_dir</div></div></div>
+      </div>
+    </div>
+    <div class="page" id="p-search">
+      <h2>文献检索</h2><div class="sub">BM25 全文索引 · 与 <code>drbrain search</code> 同一引擎</div>
+      <div class="searchbar"><span>⌕</span><input id="q" placeholder="输入关键词、材料或机制"><button class="btn" id="qbtn">检索</button></div>
+      <div style="display:flex;gap:8px;margin:12px 0 14px" id="stype"><span class="chip on" data-t="">全部</span><span class="chip" data-t="Paper">论文</span><span class="chip" data-t="Concept">概念</span><span class="chip" data-t="Argument">论证</span></div>
+      <div class="card" id="sres"><div class="empty">输入关键词开始检索</div></div>
+    </div>
+    <div class="page" id="p-ask">
+      <h2>研究问答</h2><div class="sub">四路召回 · RRF 融合 · 精排 · 合成 —— 与 <code>drbrain ask</code> 同一路径；证据不足即弃答</div>
+      <div class="chat">
+        <div><div id="thread"></div>
+          <div class="searchbar"><span>✎</span><input id="aq" placeholder="向知识底座提问…"><button class="btn" id="abtn">提问</button></div></div>
+        <div class="card"><h4 style="margin:0 0 10px;font-size:13px;color:var(--muted)">证据来源</h4><div id="srcs"><div class="small">提问后显示精排后的来源章节</div></div></div>
+      </div>
+    </div>
+    <div class="page" id="p-loop">
+      <h2>研究闭环</h2><div class="sub">生成自由 · 裁决接管。多智能体自主研究，假设由模型提出，结论由代码门槛从证据计数与实算产物推导</div>
+      <div class="searchbar"><span>◎</span><input id="goal" placeholder="输入研究目标，例如：对候选材料完成文献证据三角 + 第一性原理实算的 verified 裁决"><input id="mc" type="number" min="1" placeholder="cycles" style="width:80px;flex:none;border-left:1px solid var(--line);padding-left:10px"><button class="btn" id="gbtn">启动研究</button></div>
+      <div style="display:flex;gap:8px;margin:12px 0 14px;flex-wrap:wrap;align-items:center"><span class="small">历史运行：</span><select id="runsel" style="font-size:12.5px;padding:4px 8px;border:1px solid var(--line);border-radius:8px;max-width:60%"><option value="">（选择一个 run 查看）</option></select><span class="chip" id="runlbl" style="margin-left:auto">未启动</span></div>
+      <div class="lp">
+        <div class="card"><h4 style="margin:0 0 8px;font-size:13px;color:var(--muted)">流程节点</h4><div id="nodes"></div><div class="small" style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px"><span>事件 <b class="m" id="k-ev">0</b></span><span>提案 <b class="m" id="k-pr">0</b></span><span>裁决 <b class="m" id="k-st">0</b></span><span>verified <b class="m" id="k-vf" style="color:var(--green)">0</b></span></div></div>
+        <div class="card"><h4 style="margin:0 0 8px;font-size:13px;color:var(--muted)">讨论板</h4><div class="board" id="board"><div class="empty">输入研究目标并启动，智能体将在此讨论</div></div></div>
+        <div class="card"><h4 style="margin:0 0 8px;font-size:13px;color:var(--muted)">claims</h4><div id="claims"><div class="small">—</div></div><h4 style="margin:12px 0 4px;font-size:13px;color:var(--muted)">账本事件流</h4><div class="tl" id="ledger"></div></div>
+      </div>
+    </div>
+    <div class="page" id="p-compute">
+      <h2>计算任务</h2><div class="sub">研究闭环登记的实验作业（计划 / 配置 / 产物 / 裁决），来自账本 research_experiments</div>
+      <div class="two">
+        <div class="card"><h4 style="margin:0 0 10px;font-size:14px">作业</h4><div id="jobs"><div class="empty">尚无实验作业</div></div></div>
+        <div class="card" id="jobview"><div class="empty">选择作业查看计划与结果</div></div>
+      </div>
+    </div>
+    <div class="page" id="p-assets">
+      <h2>数据与模型</h2><div class="sub">当前配置指向的数据库、账本、插件与导出入口</div>
+      <div class="grid" id="repos" style="grid-template-columns:1fr 1fr"></div>
+      <div class="card" style="margin-top:16px"><h4 style="margin:0 0 10px;font-size:14px">插件</h4><div id="plugins"><div class="empty">未发现插件</div></div></div>
+      <div class="card" style="margin-top:16px"><h4 style="margin:0 0 10px;font-size:14px">导出</h4><div id="exports"></div></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const api=async(path,opt)=>{const r=await fetch(path,opt);const j=await r.json().catch(()=>({error:'bad json'}));if(!r.ok&&!j.error)j.error=r.statusText;return j;};
+const post=(path,body)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),2800);}
+function goto(p){document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.p===p));document.querySelectorAll('.page').forEach(x=>x.classList.toggle('show',x.id==='p-'+p));({home:loadHome,compute:loadJobs,assets:loadAssets,loop:loadRuns})[p]?.();}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>goto(t.dataset.p)));
+setInterval(()=>{$('#clock').textContent=new Date().toLocaleTimeString('zh-CN',{hour12:false});},500);
+const fmt=n=>Number(n||0).toLocaleString();const ts=t=>t?new Date(t*1000).toLocaleTimeString('zh-CN',{hour12:false}):'';
+
+/* 工作台 */
+async function loadHome(){const d=await api('/api/dashboard');if(d.error){toast(d.error);return;}
+  $('#st-papers').textContent=fmt(d.papers);const L=d.ledger||{};
+  $('#kpis').innerHTML=[[fmt(d.papers),'文献','已入库论文'],[fmt(d.concepts),'概念节点',fmt(d.edges)+' 条关系边'],[fmt(L.settlements),'账本裁决',fmt(L.runs)+' 次运行 · '+fmt(L.events)+' 事件'],[fmt(L.verified),'verified 结论','keep 裁决']].map(([v,l,x],i)=>`<div class="card kpi"><div class="v"${i===3?' style="color:var(--green)"':''}>${v}</div><div class="l">${l}</div><div class="d">${x}</div></div>`).join('');
+  const rs=d.recent_runs||[];$('#home-runs').innerHTML=rs.length?`<table><thead><tr><th>run</th><th>研究目标</th><th>事件</th><th>裁决</th><th>状态</th></tr></thead><tbody>${rs.map(r=>`<tr class="row" data-run="${esc(r.run_id)}"><td class="m">${esc(r.run_id.slice(0,8))}</td><td>${esc(r.topic).slice(0,60)}</td><td class="m">${r.events}</td><td class="m">${r.settlements} ${r.verified?`<span class="badge ok">${r.verified} verified</span>`:''}</td><td><span class="badge ${r.status==='running'?'teal':r.status==='succeeded'?'ok':'ins'}">${esc(r.status)}</span></td></tr>`).join('')}</tbody></table>`:'<div class="empty">尚无运行记录 · 到「研究闭环」输入研究目标启动</div>';
+  $('#home-runs').querySelectorAll('tr.row').forEach(tr=>tr.addEventListener('click',()=>{goto('loop');selectRun(tr.dataset.run);}));
+  const ps=await api('/api/plugins');$('#home-plugins').innerHTML=Array.isArray(ps)&&ps.length?`<table><tbody>${ps.map(p=>`<tr><td>${esc(p.name)}</td><td class="m small">${esc(p.type)}</td><td><span class="badge ok">在线</span></td></tr>`).join('')}</tbody></table>`:'<div class="empty">未配置 autoresearch.plugins_dir</div>';}
+
+/* 检索 */
+let stype='';$('#stype').addEventListener('click',e=>{const c=e.target.closest('.chip');if(!c)return;document.querySelectorAll('#stype .chip').forEach(x=>x.classList.toggle('on',x===c));stype=c.dataset.t;if($('#q').value.trim())doSearch();});
+async function doSearch(){const q=$('#q').value.trim();if(!q)return;const box=$('#sres');box.innerHTML='<div class="empty"><span class="spin"></span> 检索中…</div>';
+  const r=await api('/api/search?q='+encodeURIComponent(q)+'&limit=20'+(stype?'&type='+stype:''));if(r.error){box.innerHTML=`<div class="empty">${esc(r.error)}</div>`;return;}
+  const rows=r.results||[];if(!rows.length){box.innerHTML='<div class="empty">无结果</div>';return;}const max=rows[0].score||1;
+  box.innerHTML=`<div class="small" style="margin-bottom:6px">${rows.length} 条结果</div>`+rows.map((x,i)=>`<div class="res"><div class="rk">${i+1}</div><div><div class="t">${esc(x.label)}</div><div class="meta">${esc(x.type)}${x.arg_type?' · '+esc(x.arg_type):''} · ${esc(x.local_id)}${x.year?' · '+x.year:''}${x.confidence!=null?' · conf '+Number(x.confidence).toFixed(2):''}</div></div><div class="sc"><b>${Number(x.score).toFixed(2)}</b></div></div>`).join('');}
+$('#qbtn').addEventListener('click',doSearch);$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+
+/* 问答 */
+async function doAsk(){const q=$('#aq').value.trim();if(!q)return;$('#aq').value='';const th=$('#thread');th.insertAdjacentHTML('beforeend',`<div class="msg user">${esc(q)}</div>`);
+  const bot=document.createElement('div');bot.className='msg bot';bot.innerHTML='<span class="spin"></span> 四路召回 → RRF 融合 → 精排 → 合成…';th.appendChild(bot);$('#abtn').disabled=true;
+  const r=await post('/api/ask',{question:q,top_k:5});$('#abtn').disabled=false;
+  if(r.error){bot.innerHTML=`<span style="color:var(--red)">${esc(r.error)}</span>`;return;}
+  bot.textContent=r.answer||'（证据不足，弃答）';const S=r.sources||[];
+  $('#srcs').innerHTML=S.length?`<div class="small" style="margin-bottom:6px">${S.length} 条来源 · engine ${esc(r.engine||'')}</div>`+S.map((s,i)=>`<div class="src"><span class="n">[${i+1}]</span><span>${esc(s.title||s.section||s.node_id||'')}</span><span class="p">${esc(s.paper_id||s.local_id||'')}</span></div>`).join(''):'<div class="small">无来源</div>';}
+$('#abtn').addEventListener('click',doAsk);$('#aq').addEventListener('keydown',e=>{if(e.key==='Enter')doAsk();});
+
+/* 闭环 */
+const NODES=[['retrieve','检索 · 四路融合'],['identify_gaps','缺口识别'],['propose','假设提出 · analyst'],['critique','互评讨论 · critic'],['plan','实验规划'],['compute','实算'],['verify','证据三角核验'],['settle','裁决沉淀']];
+const NODE_OF={retrieve:'retrieve',rag_evidence:'retrieve',identify_gaps:'identify_gaps',gap:'identify_gaps',proposal_recorded:'propose',critic_review_recorded:'critique',proposal_critiqued:'critique',queue_item_recorded:'plan',experiment_planned:'plan',experiment_artifact_recorded:'compute',tool_call:'compute',verify:'verify',evidence_bundle_recorded:'verify',claim_settled:'settle'};
+const ROLE={analyst:['AN','#1f3a5f'],compute:['CP','#0f766e'],verifier:['VF','#15803d'],director:['DR','#475569'],transition:['TR','#94a3b8'],settle:['ST','#15803d'],retrieve:['RT','#64748b']};
+const roleOf=a=>ROLE[a]||(/critic/.test(a)?[a.replace(/[^0-9]/g,'')?'C'+a.replace(/[^0-9]/g,''):'CR','#7c3aed']:['AG','#64748b']);
+let curRun=null,lastSeq=0,poll=null;
+function renderNodes(){$('#nodes').innerHTML=NODES.map(([k,n])=>`<div class="nd" data-n="${k}"><i></i>${n}</div>`).join('');}
+function summarize(e){const p=e.payload||{};const bits=[];for(const k of ['statement','hypothesis','verdict','score','kind','status','reason','tool_name','query']){if(p[k]!=null&&typeof p[k]!=='object')bits.push(`${k}=${String(p[k]).slice(0,160)}`);}return bits.join(' · ')||Object.keys(p).slice(0,6).join(', ');}
+function addEvents(evs){const b=$('#board'),l=$('#ledger');if(b.querySelector('.empty'))b.innerHTML='';
+  for(const e of evs){lastSeq=Math.max(lastSeq,e.seq);const n=NODE_OF[e.type];if(n){document.querySelectorAll('.nd').forEach(x=>x.classList.remove('run'));const el=document.querySelector(`.nd[data-n="${n}"]`);if(el){el.classList.add('run');}}
+    const hi=e.type==='claim_settled'||e.type==='proposal_recorded';l.insertAdjacentHTML('beforeend',`<div class="ev ${hi?'hi':''}"><span class="s">#${e.seq} ${ts(e.created_at)}</span> <span class="a">${esc(e.actor)}</span> ${esc(e.type)}</div>`);
+    const [ini,col]=roleOf(e.actor);const sys=/^(director|transition|run|system)/.test(e.actor)||/^run_|checkpoint|lease/.test(e.type);
+    b.insertAdjacentHTML('beforeend',`<div class="dm ${sys?'sys':''}"><div class="av" style="background:${col}">${ini}</div><div class="bub"><div class="who"><b>${esc(e.actor)}</b> · ${esc(e.type)}</div>${esc(summarize(e))}</div></div>`);}
+  while(b.children.length>60)b.removeChild(b.firstChild);while(l.children.length>80)l.removeChild(l.firstChild);b.scrollTop=b.scrollHeight;l.scrollTop=l.scrollHeight;$('#k-ev').textContent=fmt(lastSeq);}
+async function refreshClaims(){if(!curRun)return;const cs=await api(`/api/runs/${curRun}/claims`);if(!Array.isArray(cs))return;
+  $('#k-pr').textContent=cs.length;$('#k-st').textContent=cs.filter(c=>c.verdict).length;$('#k-vf').textContent=cs.filter(c=>c.verdict==='keep').length;
+  $('#claims').innerHTML=cs.length?cs.slice(-6).reverse().map(c=>`<div class="ccard ${c.verdict==='keep'?'ok':''}"><div class="small m">${esc(c.claim_id).slice(0,18)} · ${esc(c.author)}</div><span class="badge ${c.verdict==='keep'?'ok':c.verdict?'ins':'teal'}">${esc(c.verdict||c.status)}</span> ${c.reviews.map(r=>`<span class="badge teal">${esc(r.reviewer)} ${r.score!=null?Number(r.score).toFixed(2):''} ${esc(r.verdict||'')}</span>`).join(' ')}<div style="margin-top:6px">${esc(c.statement).slice(0,220)}</div>${c.reason?`<div class="small" style="margin-top:4px">${esc(c.reason)} · ${c.evidence_ids.length} 条证据</div>`:''}</div>`).join(''):'<div class="small">尚无提案</div>';}
+async function selectRun(runId){curRun=runId;lastSeq=0;$('#board').innerHTML='';$('#ledger').innerHTML='';renderNodes();$('#runsel').value=runId||'';
+  if(!runId){$('#runlbl').textContent='未启动';$('#runlbl').classList.remove('on');return;}
+  const rs=await api('/api/runs');const r=(Array.isArray(rs)?rs:[]).find(x=>x.run_id===runId);$('#runlbl').textContent=`run ${runId.slice(0,8)} · ${r?r.status:''}`;$('#runlbl').classList.add('on');
+  addEvents(await api(`/api/runs/${runId}/events?after=0&limit=200`));await refreshClaims();
+  if(r&&r.status==='succeeded'){document.querySelectorAll('.nd').forEach(x=>x.className='nd done');}
+  clearInterval(poll);poll=setInterval(async()=>{if(!curRun)return;const ev=await api(`/api/runs/${curRun}/events?after=${lastSeq}`);if(Array.isArray(ev)&&ev.length){addEvents(ev);await refreshClaims();}
+    const all=await api('/api/runs');const me=(Array.isArray(all)?all:[]).find(x=>x.run_id===curRun);if(me){$('#runlbl').textContent=`run ${curRun.slice(0,8)} · ${me.status}`;if(me.status!=='running'&&me.status!=='created'){document.querySelectorAll('.nd.run').forEach(x=>x.className='nd done');}}},2500);}
+async function loadRuns(){const rs=await api('/api/runs');const sel=$('#runsel');const cur=sel.value;sel.innerHTML='<option value="">（选择一个 run 查看）</option>'+(Array.isArray(rs)?rs:[]).map(r=>`<option value="${esc(r.run_id)}">${esc(r.run_id.slice(0,8))} · ${esc(r.status)} · ${esc(r.topic).slice(0,50)}</option>`).join('');sel.value=cur;if(!$('#nodes').children.length)renderNodes();}
+$('#runsel').addEventListener('change',()=>selectRun($('#runsel').value));
+async function startRun(){const goal=$('#goal').value.trim();if(!goal)return;const mc=$('#mc').value;$('#gbtn').disabled=true;
+  const r=await post('/api/runs',{topic:goal,max_cycles:mc||null});$('#gbtn').disabled=false;if(r.error){toast(r.error);return;}
+  toast(r.started?'研究已启动':'该研究目标正在运行中');$('#runlbl').textContent='starting…';$('#board').innerHTML='<div class="empty"><span class="spin"></span> 正在创建 run…</div>';
+  let tries=0;const find=setInterval(async()=>{const rs=await api('/api/runs');const me=(Array.isArray(rs)?rs:[]).find(x=>x.topic===goal);const st=await api('/api/run-status?topic='+encodeURIComponent(goal));
+    if(me){clearInterval(find);await loadRuns();selectRun(me.run_id);}else if(st.error){clearInterval(find);$('#board').innerHTML=`<div class="empty" style="color:var(--red)">${esc(st.error)}</div>`;}else if(++tries>60){clearInterval(find);toast('run 尚未出现在账本中，请稍后刷新');}},1500);}
+$('#gbtn').addEventListener('click',startRun);$('#goal').addEventListener('keydown',e=>{if(e.key==='Enter')startRun();});
+
+/* 计算 */
+async function loadJobs(){const xs=await api('/api/experiments');const tb=$('#jobs');if(!Array.isArray(xs)||!xs.length){tb.innerHTML='<div class="empty">尚无实验作业</div>';return;}
+  tb.innerHTML=`<table><thead><tr><th>experiment</th><th>claim</th><th>状态</th><th>裁决</th></tr></thead><tbody>${xs.map((x,i)=>`<tr class="row" data-i="${i}"><td class="m">${esc(x.experiment_id).slice(0,14)}</td><td class="m">${esc(x.claim_id).slice(0,14)}</td><td><span class="badge ${x.status==='settled'?'ok':'teal'}">${esc(x.status)}</span></td><td>${x.verdict?`<span class="badge ${x.verdict==='keep'?'ok':'ins'}">${esc(x.verdict)}</span>`:'—'}</td></tr>`).join('')}</tbody></table>`;
+  tb.querySelectorAll('tr.row').forEach(tr=>tr.addEventListener('click',()=>{tb.querySelectorAll('tr').forEach(t=>t.classList.remove('sel'));tr.classList.add('sel');const x=xs[+tr.dataset.i];
+    $('#jobview').innerHTML=`<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b class="m">${esc(x.experiment_id)}</b><span class="badge ${x.status==='settled'?'ok':'teal'}">${esc(x.status)}</span>${x.verdict?`<span class="badge ${x.verdict==='keep'?'ok':'ins'}">${esc(x.verdict)} · ${esc(x.reason||'')}</span>`:''}<span class="small" style="margin-left:auto">seed ${esc(x.seed)} · ${x.artifacts} 产物 · ${ts(x.created_at)}</span></div><div class="small" style="margin-top:8px">计划</div><pre>${esc(JSON.stringify(x.plan,null,2))}</pre><div class="small" style="margin-top:8px">结果</div><pre>${esc(JSON.stringify(x.result,null,2))}</pre>`;}));}
+
+/* 资产 */
+async function loadAssets(){const a=await api('/api/assets');if(a.error){toast(a.error);return;}const mb=b=>b==null?'—':(b/1e6).toFixed(1)+' MB';
+  $('#repos').innerHTML=[['D','知识库 SQLite',a.database.path,mb(a.database.bytes)],['L','研究闭环账本',a.ledger.path,mb(a.ledger.bytes)],['P','插件目录',a.plugins_dir||'（未配置）',(a.plugins||[]).length+' 个插件'],['W','运行工作区',a.ledger.run_dir,'']].map(([i,n,p,d])=>`<div class="repo"><div class="ic">${i}</div><div style="min-width:0"><div class="nm">${n}</div><div class="ds m" style="word-break:break-all">${esc(p)}</div><div class="small">${esc(d)}</div></div></div>`).join('');
+  $('#plugins').innerHTML=(a.plugins||[]).length?`<table><thead><tr><th>名称</th><th>类型</th><th>后端</th><th>说明</th></tr></thead><tbody>${a.plugins.map(p=>`<tr><td><b>${esc(p.name)}</b></td><td class="m">${esc(p.type)}</td><td class="m">${esc(p.backend)}</td><td class="small">${esc(p.description).slice(0,120)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">未发现插件</div>';
+  $('#exports').innerHTML=a.exports.map(e=>`<div class="src"><span>${esc(e.label)}</span><span class="p">${esc(e.command)}</span></div>`).join('');}
+
+renderNodes();loadHome();
+</script>
+</body>
+</html>

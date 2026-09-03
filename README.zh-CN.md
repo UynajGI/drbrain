@@ -108,7 +108,7 @@ drbrain pipeline --preset full
 `export-okf` `import` `translate` `session` `ws` `cg` `rag` `pipeline`
 `repair` `enrich` `audit` `backup` `restore` `metrics` `document` `fsearch`
 `patent-search` `proceedings` `explore` `report` `seed` `list` `stats` `show`
-`index` `queue` `delete` `lineage` `style` `check` `clean`
+`index` `queue` `delete` `lineage` `style` `check` `clean` `webui`
 
 运行 `drbrain --help` 查看完整列表，或参阅
 [CLI 参考手册](docs/cli-reference.md)。
