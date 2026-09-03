@@ -462,6 +462,8 @@ class ResearchLoopWorkflow(Workflow):
         self._cfg = cfg
         self._db = db
         self._graph = graph
+        self._last_job_ids: dict[str, str] = {}
+        self._last_summaries: dict[str, str] = {}
         self._tool_broker = tool_broker
         self._evidence_recorder = evidence_recorder
         self._durable_front_half = durable_front_half
@@ -751,9 +753,7 @@ class ResearchLoopWorkflow(Workflow):
                 seen_papers[pid] = paper_title
             paper_label = seen_papers.get(pid) or pid or "unknown"
             node_title = str((item.document_locator or {}).get("title") or "").strip()
-            labels.append(
-                f"[{pid}] {paper_label} — {node_title}" if node_title else f"[{pid}] {paper_label}"
-            )
+            labels.append(node_title if node_title else f"[{pid}] {paper_label}")
         return list(dict.fromkeys(labels)), bundle
 
     @staticmethod

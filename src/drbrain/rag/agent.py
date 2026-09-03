@@ -603,7 +603,9 @@ def retrieve_documents(
     the other retrievers read mutable filesystem or SQLite state and would make
     a supposedly pinned result mix index epochs.
     """
-    if getattr(cfg.llamaindex, "rag_engine", "llamaindex") == "sql":
+    from drbrain.rag.config import get_llamaindex_config
+
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
         from drbrain.rag.sql_retrie import retrieve_documents_sql
 
         return retrieve_documents_sql(cfg, db, query, filters=filters, top_k=top_k, graph=graph)
@@ -704,7 +706,9 @@ def _build_retrieval_tool(
     if resolved_generation is None:
         log.warning("[rag] retrieval tool unavailable (invalid active index pointer)")
         return None
-    if getattr(cfg.llamaindex, "rag_engine", "llamaindex") == "sql":
+    from drbrain.rag.config import get_llamaindex_config
+
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
         # SQL-native engine: no LlamaIndex legs exist on disk; back the tool
         # with the database retrieval path (still generation-pinned).
         import asyncio as _asyncio
