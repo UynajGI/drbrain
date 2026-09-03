@@ -3,8 +3,8 @@
 > 日期:2026-08-12
 > 分支:`feat/llamaindex-upgrade-research`(基于 3dd7bb1)
 > 输入:
-> - 调研 A:`research/reports/llamaindex-tutorial-survey.md`(pyllm LlamaIndex 教程全章节能力清单)
-> - 调研 B:`research/reports/drbrain-rag-current-state.md`(drbrain 现有 RAG 四层基线 + 10 项薄弱点)
+> - 调研 A:`docs/llamaindex-tutorial-survey.md`(pyllm LlamaIndex 教程全章节能力清单)
+> - 调研 B:`docs/drbrain-rag-current-state.md`(drbrain 现有 RAG 四层基线 + 10 项薄弱点)
 > 结论:引入 LlamaIndex **有价值但需克制**——不替换 drbrain 核心,而是用其补三层短板(检索质量层/评估层/可观测层),并以"统一检索器接口"方式渐进接入。
 
 ---
@@ -128,4 +128,4 @@
 
 ---
 
-*关联文档:`research/reports/llamaindex-tutorial-survey.md`、`research/reports/drbrain-rag-current-state.md`*
+*关联文档:`docs/llamaindex-tutorial-survey.md`、`docs/drbrain-rag-current-state.md`*

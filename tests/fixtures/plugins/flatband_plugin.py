@@ -3,7 +3,7 @@
 This module lives *outside* ``src/drbrain`` — drbrain never imports it. It is
 loaded at runtime by :meth:`PluginRegistry.discover`, which calls this module's
 ``register(registry)``. The handler delegates to a fake CLI command (no real
-research/ assets) so the test exercises the full ``subprocess`` backend path
+model assets) so the test exercises the full ``subprocess`` backend path
 without any heavyweight model dependency.
 """
 

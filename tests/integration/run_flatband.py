@@ -8,7 +8,7 @@ research task and prints the report.
 
 Usage:
     uv run python tests/integration/run_flatband.py [--task "..."] \
-        [--db data/drbrain.db] [--plugins research/plugins] [--no-db]
+        [--db data/drbrain.db] [--plugins PLUGINS_DIR] [--no-db]
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--task", default=DEFAULT_TASK)
     ap.add_argument("--db", default=str(ROOT / "data" / "drbrain.db"))
     ap.add_argument("--no-db", action="store_true")
-    ap.add_argument("--plugins", default=str(ROOT / "research" / "plugins"))
+    ap.add_argument("--plugins", default=os.environ.get("DRBRAIN_PLUGINS_DIR", ""))
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 

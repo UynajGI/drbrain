@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
 
 from drbrain.plugins import PluginRegistry
 
-PLUGINS_DIR = Path(__file__).resolve().parents[1] / "research" / "plugins"
+PLUGINS_DIR = Path(os.environ.get("DRBRAIN_TEST_PLUGINS_DIR", ""))
 
 pytestmark = pytest.mark.skipif(
     not (PLUGINS_DIR / "list_skills.py").exists(),
-    reason="external skill plugins not present (research/plugins/)",
+    reason="external skill plugins not present (set DRBRAIN_TEST_PLUGINS_DIR)",
 )
 
 

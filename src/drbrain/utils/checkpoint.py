@@ -45,8 +45,8 @@ from loguru import logger
 class Checkpoint:
     """JSON-backed offset/progress checkpoint with atomic saves.
 
-    Pattern source: ``research/scripts/cg_fulltext_concepts_api.py`` (v2
-    stability rework, 2026-08-08/09) — the batch loop dumps ``{"offset": n}``
+    Pattern source: the corpus-scale fulltext concept-extraction batch loop
+    (v2 stability rework, 2026-08-08/09) — it dumps ``{"offset": n}``
     every batch, re-reads it on restart to resume exactly, and resets to 0 when
     the saved offset is out of bounds of a regenerated (shorter) todo list.
 
@@ -127,7 +127,7 @@ class Checkpoint:
 class IdempotentFile:
     """File-fingerprint idempotency marker: skip work when the source is unchanged.
 
-    Pattern source: ``research/scripts/cg_concept_merge.py`` — it records
+    Pattern source: the corpus concept-merge batch script — it records
     ``md5(f"{st_mtime}:{st_size}")[:16]`` of the source file into
     ``<src>.merged_marker`` and skips the merge when the marker still matches,
     so a rerun over untouched input does nothing.
@@ -216,8 +216,7 @@ class IdempotentFile:
 class DoneFlag:
     """Completion marker file; ``is_done()`` checks existence only.
 
-    Pattern source: research batch scripts — e.g.
-    ``research/scripts/cg_fulltext_concepts_api.py`` writes
+    Pattern source: corpus batch scripts — the concept-extraction job writes
     ``concepts_done.flag`` (a timestamp) beside the offset file, and the
     unattended supervisor keys completion off that flag's presence instead of
     any volatile offset, which can drift as the todo list is regenerated.

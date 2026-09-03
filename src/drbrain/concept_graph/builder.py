@@ -31,7 +31,7 @@ _DIM_RE = re.compile(r"(?<!\w)([0-9]+)d(?!\w)")
 _FORMULA_TOKEN_RE = re.compile(r"[a-z]{1,2}\d*(?:\.\d+)?")
 # Formulas whose tokens fail element-symbol parsing (diatomic gases, H2O...).
 _KNOWN_FORMULA_LOWER = {f.lower() for f in KNOWN_FORMULA} | {"o2", "o3", "n2", "h2"}
-# Trivial-label noise patterns (from research/scripts/cg_concept_clean.py).
+# Trivial-label noise patterns from the corpus concept-cleaning rules.
 _NOISE_PAT = [
     re.compile(r"^[a-zA-Z]$"),  # single letter
     re.compile(r"^[\d\s]+$"),  # digit-only
@@ -44,8 +44,7 @@ def normalize_concept(text: str) -> str:
     """Normalize a concept label (lowercase, de-fill, singularize, tidy).
 
     Implements the light linguistic normalization illustrated in the paper's
-    Table 1, merged with the research-validated rules from
-    ``research/scripts/cg_concept_normalize.py``: lowercasing, removal of the
+    Table 1, merged with corpus-validated rules: lowercasing, removal of the
     fill word ``of``, plural→singular (with the uncountable/collective
     ``EXCEPT`` set kept as-is), 2d/3d→2D/3D writing unification, and
     whitespace/punctuation tidy-up. Returns ``""`` for labels that collapse to
@@ -92,8 +91,7 @@ def _singularize(token: str) -> str:
 def is_noise(text: str) -> bool:
     """Heuristic flag for concept labels that are extraction noise.
 
-    Mirrors the research pipeline filter (``research/scripts/cg_concept_clean.py``
-    / ``cg_concept_refine_pipeline.py``): biomedical residue words from the
+    Mirrors the corpus refinement filter: biomedical residue words from the
     ``NON_MATERIAL`` list, overlong labels (>80 chars), single letters,
     digit-/symbol-only labels, and year-prefixed labels. Flags rather than
     drops, so downstream stages decide whether to discard the concept.
@@ -120,8 +118,8 @@ def is_formula(text: str) -> bool:
     A label looks like a formula when its flattened text parses into at least
     two element-symbol tokens (case reconstructed from the lowercase scan) and
     every token is either a known element symbol or a known formula fragment
-    (e.g. ``o2``). Mirrors the research pipeline's material-type validator
-    (``research/scripts/cg_concept_refine_pipeline.py``).
+    (e.g. ``o2``). Mirrors the corpus refinement pipeline's material-type
+    validator.
 
     Args:
         text: Raw concept label.

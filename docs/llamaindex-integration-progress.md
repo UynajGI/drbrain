@@ -189,7 +189,7 @@ llama-index-core 0.14.23 的 `QueryFusionRetriever` **可 import 但 API 已不�
 - `uv run ruff check`(engine/analysis_commands/query_commands/test_rag_engine)+ `ruff format --check` ✅
 - 回归子集:rag 五件套 + config(not integration)✅ **125 passed, 4 deselected**;legacy CLI 直调(`test_query.py` + `test_tree_retrieval.py` 的 query_cmd 路径)✅ **51 passed**(legacy 分支未动)
 - CLI 冒烟 ✅:`ask/query/hybrid --help` 均显示 `--engine [default: llamaindex]`;临时目录 config(enabled=true,绝对路径指 test-run 语料)+ `drbrain rag index --paper 10.1002_adma.202308655` 建索引后,`ask --engine llamaindex` 真实跑通(答案 + 3 条来源回链)、`hybrid --engine llamaindex` 论文级 1 行、`query --engine llamaindex --json` 节级 3 行;仓库根(无索引)`ask --engine llamaindex` 打印 fallback 警告后走 legacy,`--engine legacy` 显式走 legacy
-- 未改 `src/drbrain/rag/` 既有文件(仅新增 engine.py);legacy ask/hybrid/query 原实现逐字保留;未 rm;未碰 research/、test-run/、data/(CLI 冒烟用临时目录配置,仅读 test-run 语料)
+- 未改 `src/drbrain/rag/` 既有文件(仅新增 engine.py);legacy ask/hybrid/query 原实现逐字保留;未 rm;未碰 test-run/、data/(CLI 冒烟用临时目录配置,仅读 test-run 语料)
 
 ### 遗留/注意
 1. **test-run/config.yaml 无 `llamaindex:` 段**(T1 只加了仓库根 config.yaml)→ 在 test-run 目录直接跑 CLI,`--engine llamaindex` 会因 enabled=false 静默走 legacy。CLI 真跑验证需临时 config 显式 `enabled: true`(集成 pytest 已覆盖 test-run 语料真跑,test-run/config.yaml 属工单禁改范围,T9 可考虑补段)。
@@ -230,7 +230,7 @@ llama-index-core 0.14.23 的 `QueryFusionRetriever` **可 import 但 API 已不�
 - `uv run ruff check`(agent/analysis_commands/__init__/test_rag_agent)+ `ruff format --check` ✅
 - 回归子集:rag 六件套 + config + 两个 CLI 测试文件(not integration)✅ **184 passed, 1 skipped, 7 deselected**
 - CLI 冒烟 ✅:`reason --help` 显示 `--engine [default: llamaindex]` 与 `--json`;仓库根(enabled=true)真实 `reason --engine llamaindex` 跑通(16.9GB 库,真实 LLM 4 次 search_concepts,答案 + 轨迹 + `[turns: 5, engine: llamaindex]`);`--engine legacy` 走原 ReasonerAgent 路径(既有测试覆盖)
-- 未改 `src/drbrain/rag/` 既有文件(只新增 agent.py;engine.py 的 `resolve_engine` 复用);llm.py/agent_tools.py/reasoner.py/session_agent.py 只读+import;legacy reason 分支逐字未动;未 rm;未碰 research/、test-run/、data/(CLI 冒烟只读仓库根库)
+- 未改 `src/drbrain/rag/` 既有文件(只新增 agent.py;engine.py 的 `resolve_engine` 复用);llm.py/agent_tools.py/reasoner.py/session_agent.py 只读+import;legacy reason 分支逐字未动;未 rm;未碰 test-run/、data/(CLI 冒烟只读仓库根库)
 
 ### 遗留/注意
 1. **真实运行中模型在 5 轮内偏好反复搜索**(search_concepts×N → get_document_structure×N)而非收敛到答案,`early_stopping_method="generate"` 兜底给出"达最大轮数"式答案——工具循环机制本身正常(轨迹完整),属模型/语料行为;若需更强收敛可考虑 max_turns 提升或 system prompt 加"尽快用工具拿证据后直接作答"。
@@ -268,7 +268,7 @@ llama-index-core 0.14.23 的 `QueryFusionRetriever` **可 import 但 API 已不�
 - `uv run ruff check`(eval/rag_commands/scripts/test_rag_eval)+ `ruff format` ✅
 - 回归子集:test_rag_eval + smoke + engine + config(not integration)✅ **106 passed, 2 deselected**
 - 基线数字落盘:`docs/llamaindex-eval-baseline.md`(见文件;真实 47 论文索引 + dev 30 条 retriever + val 10 条 ragas,`drbrain rag eval --metrics all` 产出)
-- 未改 `src/drbrain/rag/` 既有文件(只新增 eval.py);rag_commands.py 只**新增** eval 命令(index 命令逐字未动);未 rm;未碰 research/、test-run/;data/llamaindex/ 新增 golden.jsonl + 索引(vector/bm25/manifest)
+- 未改 `src/drbrain/rag/` 既有文件(只新增 eval.py);rag_commands.py 只**新增** eval 命令(index 命令逐字未动);未 rm;未碰 test-run/;data/llamaindex/ 新增 golden.jsonl + 索引(vector/bm25/manifest)
 
 ### 遗留/注意
 1. **retriever 指标自写而非框架**:0.14.23 `RetrieverEvaluator` 可 import 但只支持单层 expected_ids;paper/node 双层级 + 融合检索器场景下框架无增益(工单兜底条款)。若 T9 想用框架,需先定"node 层级即框架 expected_ids"的语义映射。
@@ -316,7 +316,7 @@ llama-index-core 0.14.23 的 `QueryFusionRetriever` **可 import 但 API 已不�
 - **A/B 实测**(bge 未缓存且无网络,用 `--rerank-model mock` 演示管线;真实 bge 数字待模型缓存后 `uv run python scripts/rerank_ab.py --query-file data/llamaindex/golden.jsonl --split dev` 直接产出):
   - perturb 模式(单论文 chem 索引,6 条自选 query):**3/6 top-1 改变**,均值 τ=0.50,mean|Δrank|=0.87,top-k overlap 全 1.00 → 排序扰动真实存在、工具工作正常
   - mrr 模式(T7 golden dev 子集,12 条 fully-covered query + 12 篇 GPU 安全论文索引 132 节点):**MRR@10 0.9333 → 0.8500,HR@10 1.0 → 1.0**(mock 词法重叠启发式反而伤 MRR——佐证语义 bge-reranker 的必要性;HR 在 k=10 饱和)
-- 未改 `src/drbrain/rag/` 既有文件逻辑(engine.py 仅挂载点+top_k 提升,标注清楚);未 rm;未碰 research/、test-run/、data/(A/B 临时索引全部落在 /tmp)
+- 未改 `src/drbrain/rag/` 既有文件逻辑(engine.py 仅挂载点+top_k 提升,标注清楚);未 rm;未碰 test-run/、data/(A/B 临时索引全部落在 /tmp)
 
 ### 遗留/注意
 1. **真实 bge-reranker-v2-m3 的 MRR 数字未产出**(本机无 HF 网络 + 模型未缓存):A/B 工具已就绪,联网/缓存后 `scripts/rerank_ab.py --query-file data/llamaindex/golden.jsonl --split dev --rerank-top-k 20` 一条命令出表。建议 T9 先 `huggingface-cli download BAAI/bge-reranker-v2-m3` 预缓存再补跑。

@@ -68,7 +68,7 @@ Evidence { paper_id, page, snippet, value, unit, conditions, provenance, authori
 ## 七、双路召回 + 插件（既调模型又调软件）
 
 - **模型插件**：flatband/GBDT/GNN（`backend="inprocess"`，joblib 权重）。
-- **软件插件**：LAMMPS/DFT（`backend="subprocess"`，如 `research/plugins/lammps_plugin.py`）。
+- **软件插件**：LAMMPS/DFT（`backend="subprocess"`，外部插件，如 `lammps_plugin.py`）。
 - 统一经 `PluginRegistry.discover(plugin_dir)` 加载，`to_llamaindex_tools()` 桥进 FunctionAgent；失败映射到 `RetrievalStatus.SOURCE_UNAVAILABLE` → abstain 不编造。
 
 ## 八、闭环沉淀
@@ -85,7 +85,7 @@ Evidence { paper_id, page, snippet, value, unit, conditions, provenance, authori
 
 实现相对设计的增量：4 个自由节点（retrieve / gap / 互评 / 核验）是 **agent-backed**（内部跑 `build_node_agent` + `run_agent` 的 FunctionAgent，非手写 stub）；agent 经 `run_agent_json` 返回结构化 JSON；新增 **通用 MCP 接入**（`rag/mcp_tools.py`，`build_agent(mcp_servers=...)` 连接任意 stdio MCP server）；闭环沉淀落 `settle` 节点写回 KG `claims` 表。
 
-**autoresearch 集成测试增量（2026-08-13，`tests/integration/` + `run_flatband.py`）**：为让三层体系脱离人工辅助自主运转，`retrieve` 改为**确定性路径**（agent 蒸馏关键词 → 本地 KG 插件 `search_papers` 直接检索，不再解析 agent 自由文本）；`report` 增加**确定性模板回退**（agent 报告优先，空则落结构化模板）；新增**本地 KG data 插件**（`research/plugins/local_kg_search.py`，读真实 schema `papers`/`fulltext`/`concept_nodes`/`concept_cooccurrence`/`paper_citations`）；`search_papers` 用**逐步短语匹配**（多词 query 逐词退让命中）；`build_bm25_index` 加**按库路径缓存**；loop 每步超时 45s→600s（agent 节点多轮 LLM）。
+**autoresearch 集成测试增量（2026-08-13，`tests/integration/` + `run_flatband.py`）**：为让三层体系脱离人工辅助自主运转，`retrieve` 改为**确定性路径**（agent 蒸馏关键词 → 本地 KG 插件 `search_papers` 直接检索，不再解析 agent 自由文本）；`report` 增加**确定性模板回退**（agent 报告优先，空则落结构化模板）；新增**本地 KG data 插件**（`local_kg_search.py`，读真实 schema `papers`/`fulltext`/`concept_nodes`/`concept_cooccurrence`/`paper_citations`）；`search_papers` 用**逐步短语匹配**（多词 query 逐词退让命中）；`build_bm25_index` 加**按库路径缓存**；loop 每步超时 45s→600s（agent 节点多轮 LLM）。
 
 ## 十、持续研究内核（AutoScientists 语义，2026-08-13 补齐）
 

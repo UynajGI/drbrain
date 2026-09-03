@@ -3,7 +3,7 @@
 The main project writes exclusively through SQLite (single-writer transaction
 semantics). This module adds an *optional* DuckDB analysis layer: SQLite stays
 the source of truth, and heavy re-aggregations are snapshotted / exported into
-a DuckDB database (the unified ``cg.duckdb`` pattern from ``research/``) where
+a DuckDB database (the unified ``cg.duckdb`` pattern) where
 columnar, parallel execution makes them fast. Nothing here ever writes back to
 the SQLite source.
 
@@ -11,22 +11,19 @@ the SQLite source.
 this module never fails; calling any function without duckdb installed raises a
 clear ``ImportError`` pointing at ``pip install 'drbrain[analytics]'``.
 
-Performance notes learned in ``research/scripts/`` — keep in mind when writing
-downstream SQL:
+Performance notes learned in corpus-scale migration scripts — keep in mind when
+writing downstream SQL:
 
 - ``list_transform`` lambdas cannot contain subqueries. For element-wise enrich
   with a lookup table, use ``UNNEST`` + ``LEFT JOIN`` and re-aggregate with
-  ``list(struct_pack(...))`` instead
-  (``research/scripts/cg_recipe_conditions_merge.py``, 2026-08-11).
+  ``list(struct_pack(...))`` instead (2026-08-11).
 - DuckDB's unnest output column has no user-controllable alias: for struct
   arrays access fields as ``unnest.field``
-  (``research/scripts/cg_duckdb_migrate.py`` ``recipes`` view) or name the
-  column explicitly with ``UNNEST(arr) AS t(col)`` as done here.
+  or name the column explicitly with ``UNNEST(arr) AS t(col)`` as done here.
 - On multi-million-row tables (2M+), bulk ``COPY FROM jsonl`` beats
   row-by-row INSERT/executemany by a wide margin: the v2–v6 incremental
   INSERT/UPDATE/COPY rebuilds were all slow, while the v7 full rebuild
-  (DROP + CREATE + COPY) finished in 2–4 min
-  (``research/scripts/cg_concept_merge_v7.py``).
+  (DROP + CREATE + COPY) finished in 2–4 min.
 """
 
 from __future__ import annotations
@@ -84,7 +81,7 @@ def snapshot_sqlite(
     (mirroring the reference migration, which rebuilds the analysis DB from
     scratch and logs skips).
 
-    Reference: ``research/scripts/cg_duckdb_migrate.py`` — ATTACH sqlite →
+    Reference pattern — ATTACH sqlite →
     CREATE TABLE AS snapshot; per-table try/except; DETACH after the loop.
 
     Args:
@@ -125,7 +122,7 @@ def register_json_glob(
     file per shard, shards may have differing columns) merge into a single
     columnar table.
 
-    Reference: ``research/scripts/cg_duckdb_migrate.py`` — the ``concepts`` /
+    Reference pattern — the ``concepts`` /
     ``recipes_raw`` shard aggregation via ``read_json_auto`` with
     ``union_by_name=True``.
 
@@ -164,8 +161,7 @@ def register_view_unnest(
     (``SELECT doi, unnest.target_material ... FROM recipes_raw,
     unnest(recipes_raw.recipes)``).
 
-    Reference: ``research/scripts/cg_duckdb_migrate.py`` (``recipes`` view) and
-    ``research/scripts/cg_route_c_recipe_graph.py`` (scalar-array unnest).
+    Reference: the ``recipes`` view pattern and scalar-array unnest.
 
     Args:
         duckdb_con: open DuckDB connection (the analysis database).
@@ -203,13 +199,12 @@ def rebuild_table(
     is rewritten to target ``<table>_new`` internally (``IF NOT EXISTS`` and
     ``OR REPLACE`` variants are accepted).
 
-    Two rebuild modes, from ``research/scripts/``:
-    - This function: new-table + batch INSERT + rename — the
-      ``cg_drt_prep_duckdb.py`` pattern (``CREATE OR REPLACE TABLE
-      concept_nodes_new AS ...`` → ``DROP TABLE IF EXISTS`` → ``ALTER TABLE
-      ... RENAME TO ...``). Best when rows are already materialized in Python
-      and the payload is moderate.
-    - DROP + CREATE + COPY FROM jsonl — the ``cg_concept_merge_v7.py`` pattern.
+    Two rebuild modes:
+    - This function: new-table + batch INSERT + rename (``CREATE OR REPLACE
+      TABLE concept_nodes_new AS ...`` → ``DROP TABLE IF EXISTS`` →
+      ``ALTER TABLE ... RENAME TO ...``). Best when rows are already
+      materialized in Python and the payload is moderate.
+    - DROP + CREATE + COPY FROM jsonl.
       On a 2M-row table the incremental v2–v6 INSERT/UPDATE/COPY paths were all
       slow; the v7 full rebuild via COPY finished in 2–4 min. For
       multi-million-row rebuilds prefer writing rows to a temp JSONL and

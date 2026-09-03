@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
 
 from drbrain.plugins import PluginRegistry
 
-PLUGIN_PATH = Path(__file__).resolve().parents[1] / "research" / "plugins" / "shell_command.py"
+PLUGINS_DIR = Path(os.environ.get("DRBRAIN_TEST_PLUGINS_DIR", ""))
+PLUGIN_PATH = PLUGINS_DIR / "shell_command.py"
 
 pytestmark = pytest.mark.skipif(
     not PLUGIN_PATH.exists(),
-    reason="external CLI plugin not present (research/plugins/)",
+    reason="external CLI plugin not present (set DRBRAIN_TEST_PLUGINS_DIR)",
 )
 
 

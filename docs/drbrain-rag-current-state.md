@@ -235,4 +235,4 @@
 
 - **可被 LlamaIndex 直接替代/增强**的部分:持久化 BM25 索引、向量存储与 ANN、混合检索融合(RRF)、跨编码器重排、查询变换(HyDE 已有雏形,`query/query_transform.py` 可映射到 LlamaIndex QueryTransform)。
 - **DrBrain 的差异化资产需要保留**:PageIndex 文档树(tree.json)与 RAPTOR 树(tree_summaries 父子链接)是定制结构,若迁移需映射到 LlamaIndex 的 `Document/IndexNode` 图结构;知识图谱工具调用链(reasoner/session_agent + 8 个图工具)不在 LlamaIndex 核心能力内,属于 Agent 层,升级时应保持接口稳定(`TOOL_DEFINITIONS`、`execute_tool`、`SessionAgent` 的 session 持久化)。
-- 报告/子库:另有 `research/reports/llamaindex-tutorial-survey.md`(既有调研文档),本报告与之互补(现状基线 vs 方案调研)。
+- 报告/子库:另有 `docs/llamaindex-tutorial-survey.md`(既有调研文档),本报告与之互补(现状基线 vs 方案调研)。

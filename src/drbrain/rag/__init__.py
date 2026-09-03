@@ -2,7 +2,7 @@
 
 Replaces homogeneous retrieval/synthesis/agent/eval implementations with
 LlamaIndex while preserving drbrain-only assets (PageIndex tree, RAPTOR,
-knowledge graph, SQLite). See ``research/reports/llamaindex-integration-design.md``.
+knowledge graph, SQLite). See ``docs/llamaindex-integration-design.md``.
 
 Ticket ownership:
     T1 (this) — deps, config, Settings init, package skeleton

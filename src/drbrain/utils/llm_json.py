@@ -4,14 +4,12 @@ LLMs frequently wrap JSON in markdown code fences, prepend/append prose, or
 emit output truncated mid-way.  :func:`parse_llm_json` tolerates all three
 failure modes before raising the standard ``json.JSONDecodeError``.
 
-Patterns distilled from the research-side batch scripts:
+Patterns distilled from corpus-scale batch scripts:
 
-- ``research/scripts/cg_fulltext_concepts_api.py`` — first-brace-block
-  extraction via ``re.search(r'\\{.*\\}', text, re.S)`` (handles prose
-  around the JSON).
-- ``research/scripts/cg_recipe_conditions_backfill.py`` — fence stripping
-  (``re.sub(r"^```[a-z]*\\n?", ...)``) plus truncation tolerance (keep the
-  prefix ending at the last parseable ``}``).
+- first-brace-block extraction via ``re.search(r'\\{.*\\}', text, re.S)``
+  (handles prose around the JSON).
+- fence stripping (``re.sub(r"^```[a-z]*\\n?", ...)``) plus truncation
+  tolerance (keep the prefix ending at the last parseable ``}``).
 """
 
 from __future__ import annotations

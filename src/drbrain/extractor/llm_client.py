@@ -81,14 +81,14 @@ class KeyRotator:
 
     Independent, additive component — the existing fallback-chain logic
     (``call_with_fallback`` / ``acall_with_fallback``) is untouched.  Two
-    strategies, both distilled from the research-side batch scripts:
+    strategies, both distilled from corpus-scale batch scripts:
 
     - ``round_robin``: keys are picked in a cycle via ``next(itertools.count())
-      % n`` — mirrors ``research/scripts/cg_recipe_extract_api.py``
+      % n`` — mirrors the corpus recipe-extraction script's
       ``_next_headers``.  Spreads concurrent batch traffic evenly; single-key
       429 rate limits are the recurring pain point in those batch jobs.
     - ``hash``: ``hash(key_hint) % n`` maps the same entity string to the same
-      key deterministically — mirrors ``research/scripts/cg_recipe_conditions_backfill.py``
+      key deterministically — mirrors the corpus conditions-backfill script's
       ``hash(material) % len(KEYS)``.  Pair with a per-key connection pool so
       one entity always reuses the same pool/connection.
 

@@ -156,13 +156,13 @@ flowchart LR
 
 ### 3.3 现状规模（大规模语料）
 
-概念网络 ~60 万节点 + 共现 ~2200 万边 + 嵌入 ~60 万×10 维（语料工作区 local-only，不入版本库）。
+概念网络 ~60 万节点 + 共现 ~2200 万边 + 嵌入 ~60 万×10 维。
 
 ---
 
 ## 四、Model-as-Tools 设计
 
-目录：`src/drbrain/plugins/`（只 ship 接口抽象）+ `research/plugins/`（具体插件，外部加载）。
+目录：`src/drbrain/plugins/`（只 ship 接口抽象）；具体插件运行时从外部插件目录加载（local-only，不入版本库）。
 
 ### 4.1 插件协议（protocol.py）
 
@@ -200,7 +200,7 @@ PluginRegistry.to_llamaindex_tools()       # 桥接为 LlamaIndex FunctionTool
 
 **核心原则**：预测材料性质这类需要"算证据结果"的任务，人不用预写——agent 通过 `run_python(mode=async)` 自主写 DFT 代码、落盘作业、`check_job` 轮询、查日志找问题修复。跑一次一小时的 DFT，中途检查日志路径是 agent 的事。
 
-现役 29 个插件（`research/plugins/`，local-only），覆盖模型/软件/数据三类。
+插件由外部目录经 `PluginRegistry.discover(plugin_dir)` 发现加载（local-only，不入版本库），覆盖模型/软件/数据三类。
 
 ---
 
@@ -354,7 +354,6 @@ src/drbrain/
 ├── services/       # 嵌入、审计、修复、enrich、translate、zotero 等
 └── providers/      # web 抽取、USPTO 专利检索
 
-research/plugins/   # 29 个具体插件（local-only，不入版本库）
 docs/               # 本文档所在：架构/设计/现状
 ```
 

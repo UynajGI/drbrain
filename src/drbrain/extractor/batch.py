@@ -1,7 +1,7 @@
 """Batch LLM orchestration: todo, checkpoint, concurrency, output, done flag.
 
-Pattern source: ``research/scripts/cg_fulltext_concepts_api.py`` — the v2
-stability rework (2026-08-08/09) of the 100k+ paper concept-extraction job.
+Pattern source: the v2 stability rework (2026-08-08/09) of the corpus-scale
+100k+ paper concept-extraction job.
 The orchestration moves validated there are generalized here:
 
 - One-time todo list of lightweight IDs (e.g. doi) instead of LIMIT/OFFSET

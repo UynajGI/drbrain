@@ -1,13 +1,8 @@
 """Materials-science vocabulary used by concept normalization and filtering.
 
-These word lists were validated in the research pipeline (git-ignored, sources
-below) against a ~172k-fulltext materials-science corpus. They are kept here as
-data so the main project and the research rules do not drift:
-
-* ``EXCEPT`` / ``NON_MATERIAL`` / ``ELEMENTS`` / ``KNOWN_FORMULA``
-  — ``research/scripts/cg_concept_refine_pipeline.py``
-* ``EXCEPT`` extras — ``research/scripts/cg_concept_normalize.py``
-* ``NON_MATERIAL`` extras — ``research/scripts/cg_concept_clean.py``
+These word lists were validated against a ~172k-fulltext materials-science
+corpus during corpus-scale concept refinement. They are kept here as data so
+vocabulary handling stays deterministic across pipelines.
 """
 
 from __future__ import annotations

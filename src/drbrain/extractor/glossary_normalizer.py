@@ -1,8 +1,7 @@
 """Controlled-vocabulary normalization: deterministic glossary + LLM fallback.
 
-Generic mechanism generalized from the research-side batch script
-``research/scripts/cg_recipe_normalize.py`` (v2, 2026-08-08), which
-normalized 19,724 distinct synthesis-method names via:
+Generic mechanism generalized from a corpus-side batch script (v2,
+2026-08-08), which normalized 19,724 distinct synthesis-method names via:
 
 - a deterministic glossary layer: substring-containment matching against a
   curated term table (the script's ``METHOD_MAP``, 30+ entries) plus stripping
@@ -91,9 +90,9 @@ class GlossaryNormalizer:
             skipped. When unset, mappings live only in memory.
         suffixes: generic suffixes stripped when the glossary misses, e.g.
             ``"hydrothermal method"`` → ``"hydrothermal"``. Defaults to the
-            research script's ``(" method", " technique", " process")``.
+            corpus script's ``(" method", " technique", " process")``.
 
-    Pattern source: ``research/scripts/cg_recipe_normalize.py``.
+    Pattern source: the corpus synthesis-method normalization batch script.
     """
 
     def __init__(

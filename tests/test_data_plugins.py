@@ -2,25 +2,26 @@
 
 Proves the architecture-level "global data surface": external ``data`` plugins
 discoverable via :class:`PluginRegistry` and bridged to LlamaIndex tools.
-HTTP is mocked, so these tests never touch the live APIs. They skip in CI
-(where ``research/plugins/`` is not checked in).
+HTTP is mocked, so these tests never touch the live APIs. They skip unless an
+external plugins directory is configured via ``DRBRAIN_TEST_PLUGINS_DIR``.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
 
 from drbrain.plugins import PluginRegistry
 
-PLUGINS_DIR = Path(__file__).resolve().parents[1] / "research" / "plugins"
+PLUGINS_DIR = Path(os.environ.get("DRBRAIN_TEST_PLUGINS_DIR", ""))
 DATA_PLUGINS = ("sciverse_search", "arxiv_search", "s2_search")
 
 pytestmark = pytest.mark.skipif(
     not (PLUGINS_DIR / "sciverse_search.py").exists(),
-    reason="external data plugins not present (research/plugins/)",
+    reason="external data plugins not present (set DRBRAIN_TEST_PLUGINS_DIR)",
 )
 
 
