@@ -1,9 +1,9 @@
 """Research-loop schemas: shared state, evidence, hypotheses, and node events.
 
 Every node exchanges a typed pydantic :class:`Event` (its input/output schema)
-rather than free-form chat — this is the "非自由群聊 / Schema 交换" contract the
-competition spec requires. The shared :class:`ResearchState` rides through
-``Context.store`` so every node reads/writes the same structured state.
+rather than free-form chat — a fixed schema-exchange contract that keeps the
+pipeline deterministic and auditable. The shared :class:`ResearchState` rides
+through ``Context.store`` so every node reads/writes the same structured state.
 """
 
 from __future__ import annotations
@@ -114,6 +114,12 @@ class ResearchState(BaseModel):
     prior_champion: list[str] = Field(default_factory=list)  # T6: structured champion list
     prior_rejected: list[str] = Field(default_factory=list)  # T6: structured dead-ends list
     candidates: list[str] = Field(default_factory=list)
+    # RAG retrieval health for this cycle: "ok" | "empty" | "error" |
+    # "unavailable". "error" means the retrieval layer FAILED (index outage,
+    # generation drift) — never to be confused with "the corpus has nothing";
+    # downstream nodes and the report surface it so an unattended run cannot
+    # mistake a broken index for a silent literature.
+    retrieval_status: str = "ok"
     retrieve_candidates: list[str] | None = None  # 检索中间产物（未筛选候选）
     parsed: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)

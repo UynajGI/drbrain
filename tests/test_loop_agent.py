@@ -76,11 +76,14 @@ def _write_compute_plugin(tmp_path) -> str:
     return str(tmp_path)
 
 
-def _write_job(run_dir, job_id: str, log_text: str = '{"min_bandwidth_ev": 1.0}') -> Path:
+def _write_job(
+    run_dir, job_id: str, log_text: str = '{"value": 1.0, "quantity": "q", "unit": "u"}'
+) -> Path:
     """Pre-write a fake async job's on-disk artifacts (``<job_id>.json`` + ``<job_id>.log``).
 
     Mirrors what ``run_python(mode=async)`` leaves in ``$DRBRAIN_RUN_DIR``: a
-    meta json (pid / log_path) plus the captured stdout log.
+    meta json (pid / log_path) plus the captured stdout log. The log carries the
+    T4 result contract (a JSON with a finite numeric ``value``).
     """
     jobs = Path(run_dir)
     jobs.mkdir(parents=True, exist_ok=True)
@@ -390,7 +393,11 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
 
 def test_verify_requires_real_job_files(monkeypatch, tmp_path):
     """正路径：compute 节点产出的 job_id 指向真实作业文件（json+log 含数值）→ verified。"""
-    jobs = _write_job(tmp_path / "jobs", "job-ok", log_text='{"min_bandwidth_ev": -12.34}')
+    jobs = _write_job(
+        tmp_path / "jobs",
+        "job-ok",
+        log_text='{"value": -12.34, "quantity": "energy", "unit": "eV"}',
+    )
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
     _scripted_llm(
         monkeypatch,
@@ -776,3 +783,168 @@ def test_critique_pending_when_no_non_author_comment(monkeypatch, tmp_path):
     assert len(queued) == 1
     assert queued[0].discussion_pending is True
     assert all(h.status == "proposed" for h in state.hypotheses)
+
+
+# ── 通用结果契约 + claim 置信度诚实 + 脏输出鲁棒性 ────────────────────────────
+
+
+def test_t4_gate_rejects_domain_keys_and_accepts_value_contract(tmp_path):
+    """T4 结果契约：只认 ``value``（有限数值）；领域专名键一律无效。"""
+    from drbrain.loop.workflow import _extract_result_payload
+
+    # 新契约：value 有限数值 → 通过
+    assert _extract_result_payload('{"quantity": "gap", "value": 0.3, "unit": "eV"}') is not None
+    # 字符串 / bool / 缺失 value → 拒绝
+    assert _extract_result_payload('{"value": "big"}') is None
+    assert _extract_result_payload('{"value": true}') is None
+    assert _extract_result_payload('{"quantity": "gap"}') is None
+    # 任何领域专名键（旧竞赛残留）都不是证据
+    assert _extract_result_payload('{"min_bandwidth_ev": 1.0}') is None
+
+
+def test_persist_claims_confidence_by_evidence_shape(tmp_path):
+    """无实算产物的 Conclusion/Rejected 置信度封顶 0.6，Prediction 0.3；有 job_id 才 1.0。"""
+    from drbrain.loop.events import ResearchState, Verification
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        wf = ResearchLoopWorkflow(db=db)
+        state = ResearchState(
+            task="generic research task",
+            verified=["lit-supported conclusion"],
+            falsified=["lit-countered claim"],
+            predictions=["bare guess"],
+            verifications=[
+                Verification(statement="lit-supported conclusion", supports=1, job_id=""),
+                Verification(statement="lit-countered claim", refutes=2, job_id=""),
+            ],
+        )
+        wf._persist_claims(state)
+        rows = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows["lit-supported conclusion"] == pytest.approx(0.6)
+        assert rows["lit-countered claim"] == pytest.approx(0.6)
+        assert rows["bare guess"] == pytest.approx(0.3)
+
+        state2 = ResearchState(
+            task="generic research task",
+            verified=["job-backed conclusion"],
+            verifications=[
+                Verification(statement="job-backed conclusion", supports=1, job_id="job-9")
+            ],
+        )
+        wf._persist_claims(state2)
+        rows2 = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows2["job-backed conclusion"] == pytest.approx(1.0)
+    finally:
+        db.close()
+
+
+def test_critic_non_numeric_score_does_not_crash(monkeypatch, tmp_path):
+    """脏输出：critic 把 score 写成字符串（"high"）→ 不崩溃，按 0 分处理走 DISCARD。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "q"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": "high", "flaw": "x"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), n_critics=1)
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())  # 之前这里会 ValueError → 整轮失败
+    assert "hypotheses=1" in result
+    assert all(h.status == "discarded" for h in state.hypotheses)
+
+
+def test_critic_join_by_claim_id_survives_statement_paraphrase(monkeypatch, tmp_path):
+    """脏输出：critic 改写了 statement 但原样回抄 claim_id → 评论仍能匹配上（不再作废）。"""
+    from drbrain.loop.workflow import _claim_id
+
+    claim_id = _claim_id("h1")
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "q"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": json.dumps(
+                    {
+                        "hypotheses": [
+                            {
+                                "claim_id": claim_id,
+                                "statement": "h1 改写版：机制完全不同的复述",
+                                "score": 0.9,
+                                "flaw": "fine, kept with residual risk noted",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), n_critics=1)
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    _, state = asyncio.run(_go())
+    # statement 字面已对不上，但 claim_id 命中 → 评审生效（critiqued 而非 pending）。
+    assert all(h.status == "critiqued" for h in state.hypotheses)
+    assert state.hypotheses[0].score == pytest.approx(0.9)
+
+
+def test_retrieve_reports_rag_status_in_state(monkeypatch, tmp_path):
+    """检索故障进 state.retrieval_status：报告可见，绝不与「语料无内容」混淆。"""
+    _scripted_llm(monkeypatch, [{"text": '{"query": "q"}', "tool_calls": None, "usage": None}])
+    wf = ResearchLoopWorkflow(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        evidence_recorder=lambda _bundle: None,  # 使 RAG 路径可用（否则是 unavailable）
+    )
+    # 强制 RAG 路径以 error 收场：generation 存在 → 进入检索，retrieve_documents 抛异常
+    wf._rag_generation = "gen-1"
+    monkeypatch.setattr(
+        "drbrain.rag.agent.retrieve_documents",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("index outage")),
+    )
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert state.retrieval_status == "error"
+    assert "rag=error" in result

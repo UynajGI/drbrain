@@ -366,7 +366,7 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     # cycle starts; pre-write the job artifacts there so the gate finds them.
     jobs_dir = tmp_path / "runs" / "topological-flat-band" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "job-1.log").write_text('{"min_bandwidth_ev": 1.0}', encoding="utf-8")
+    (jobs_dir / "job-1.log").write_text('{"value": 1.0, "quantity": "q"}', encoding="utf-8")
     (jobs_dir / "job-1.json").write_text(
         json.dumps(
             {
@@ -724,7 +724,7 @@ def test_janitor_flags_failed_jobs(tmp_path):
                 "pid": 1,
                 "started_at": time.time() - 3600,
                 "status": "failed",
-                "error": "NameError: name 'min_bandwidth_ev' is not defined",
+                "error": "NameError: name 'x' is not defined",
             }
         ),
         encoding="utf-8",
