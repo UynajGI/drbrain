@@ -2,7 +2,7 @@
 """Qwen3-Embedding-0.6B 本地嵌入服务 — OpenAI 兼容 /v1/embeddings。
 
 常驻进程，模型只加载一次，避免每次 embed 都重新加载 0.6B（省时间）。
-用法: /home/jiangyuan/mineru-venv/bin/python research/scripts/serve_embedding.py
+用法: /home/jiangyuan/mineru-venv/bin/python scripts/serve_embedding.py
 """
 
 from __future__ import annotations

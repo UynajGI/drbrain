@@ -14,7 +14,7 @@ Discussion-Before-Queuing 门：一个 proposal 只有在消息板上收到 **�
 评论后才能被 claim（``discussion_pending`` 为 True 的条目被 claim 拒绝），
 对齐 ROLE-ANALYST Step 5 与 ROLE-GPU Step 3。
 
-本模块零依赖：只 import 标准库，不 import llama-index / pydantic / 竞赛代码。
+本模块零依赖：只 import 标准库，不 import llama-index / pydantic 等三方依赖。
 ``QueueItem.hypothesis`` 存运行时对象（workflow 桥接时传入 ``Hypothesis``），
 本模块不 import 它，保持可独立测试。
 """

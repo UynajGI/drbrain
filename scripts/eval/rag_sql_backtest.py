@@ -28,7 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 GOLDEN = ROOT / "data/llamaindex/golden.jsonl"
-OUT_DIR = ROOT / "research/semifinal/evidence/rag-backtest"
+OUT_DIR = ROOT / "workspace/eval/rag-backtest"
 
 # (name, retrievers, rerank) — production = four legs + rerank
 CONFIGS = [

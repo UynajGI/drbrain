@@ -4,7 +4,7 @@
 V100 (sm_70) 跑不动 vLLM 0.19（SymmMem/FA2/Triton 均不支持），改用 transformers。
 9B 4bit ≈ 5.5GB 权重，单卡 16GB 足够。串行推理锁防并发 OOM。
 
-用法: /home/jiangyuan/mineru-venv/bin/python research/scripts/serve_transformers_llm.py
+用法: /home/jiangyuan/mineru-venv/bin/python scripts/serve_transformers_llm.py
 """
 
 from __future__ import annotations

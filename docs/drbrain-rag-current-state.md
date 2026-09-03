@@ -219,7 +219,7 @@
 ## 7. 薄弱点(RAG 工程视角)
 
 1. **BM25 索引不持久化**。每次查询(含 `query`/`search`/`hybrid`/`ask`/`reason` 的种子检索)都在内存里重建全库 BM25;`index_cmd` 只是 watermark,无复用索引。库变大时检索延迟线性恶化。
-2. **向量检索是 SQLite 全表扫描**。`search_tree` 每查询读出整张 `tree_vectors` 做 numpy 矩阵乘(O(N) IO+算力);`tree_traversal_search` 每层也整层扫描;609k 节点级规模(竞赛语料)下不可扩展。无 ANN/HNSW、无独立向量库。
+2. **向量检索是 SQLite 全表扫描**。`search_tree` 每查询读出整张 `tree_vectors` 做 numpy 矩阵乘(O(N) IO+算力);`tree_traversal_search` 每层也整层扫描;609k 节点级规模下不可扩展。无 ANN/HNSW、无独立向量库。
 3. **混合融合粒度与策略简单**。(a) BM25 文档粒度(local_id)==论文级,embedding 是 section 级再折叠到论文级——RRF 只融合论文排名,段落证据只在 payload 里"搭便车";(b) `rrf_weights` 参数存在但 CLI 未暴露,无基于质量的自适应加权;(c) `query_by_structure_hybrid` 的 LLM+向量合并是**集合拼接**(LLM 优先,无分数加权);(d) 存在两套 RRF 实现(`fusion.py` 与 `tree_retrieval.py:_rrf_score`)与未被调用的 `_hybrid_score`,融合逻辑不收敛于单一实现。
 4. **重排序默认关闭**。跨编码器 rerank 仅 `--rerank` 显式开启,默认 Noop;依赖 sentence-transformers 可选安装,加载失败静默降级,无回退统计。
 5. **无流式输出**。`ask`/`reason` 的 LLM 合成全部整段等待,长回答体验差,也无法做"边生成边显示证据"。
