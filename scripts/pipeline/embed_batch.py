@@ -95,7 +95,7 @@ def main() -> None:
                         pdir, db.path, embed_cfg, llm_models, sink=sink, cache=_api_cache
                     )
                 )
-            if sink:
+            if sink and raptor_f is not None:
                 with _json_lock:
                     for rec in sink:
                         raptor_f.write(_json.dumps(rec, ensure_ascii=False) + "\n")

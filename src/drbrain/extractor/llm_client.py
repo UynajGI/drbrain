@@ -32,14 +32,14 @@ _aopenai_clients: dict[str, AsyncOpenAI] = {}
 
 
 def _openai_client(api_key: str, base_url: str) -> SyncOpenAI:
-    ck = f"{base_url}|{api_key[:8]}"
+    ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _openai_clients:
         _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url)
     return _openai_clients[ck]
 
 
 def _aopenai_client(api_key: str, base_url: str) -> AsyncOpenAI:
-    ck = f"{base_url}|{api_key[:8]}"
+    ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _aopenai_clients:
         _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url)
     return _aopenai_clients[ck]
