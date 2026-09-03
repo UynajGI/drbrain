@@ -189,10 +189,24 @@ class SciverseSource:
 
     # ── relations ────────────────────────────────────────────────────────
 
-    def fetch_relations(self, unique_id: str) -> PaperRelations | None:
-        """Fetch citation / reference / related-work lists for ``unique_id``."""
+    def fetch_relations(
+        self,
+        unique_id: str,
+        *,
+        relation_types: tuple[str, ...] = ("citations", "references", "related_works"),
+    ) -> PaperRelations | None:
+        """Fetch citation / reference / related-work lists for ``unique_id``.
+
+        ``relation_types`` selects which relation types to request (e.g. only
+        ``("references",)`` when building the citation graph fast).
+        """
         if not unique_id:
             return None
+        # corpus_sources was populated without Sciverse's id prefix (paper: /
+        # ebook:); the relations endpoint requires it, so restore it for
+        # bare-DOI ids to stay compatible with existing rows.
+        if not unique_id.startswith(("paper:", "ebook:")):
+            unique_id = f"paper:{unique_id}"
         relations = PaperRelations(unique_id=unique_id)
         mapping = {
             "CITATIONS": "citations",
@@ -200,6 +214,8 @@ class SciverseSource:
             "RELATED_WORKS": "related_works",
         }
         for relation, attr in mapping.items():
+            if relation.lower() not in relation_types:
+                continue
             items = self._fetch_relation_page(unique_id, relation)
             setattr(relations, attr, items)
         logger.debug(

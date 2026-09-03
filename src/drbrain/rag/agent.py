@@ -603,6 +603,12 @@ def retrieve_documents(
     the other retrievers read mutable filesystem or SQLite state and would make
     a supposedly pinned result mix index epochs.
     """
+    from drbrain.rag.config import get_llamaindex_config
+
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
+        from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+        return retrieve_documents_sql(cfg, db, query, filters=filters, top_k=top_k, graph=graph)
     try:
         from llama_index.core.schema import QueryBundle
 
@@ -700,6 +706,43 @@ def _build_retrieval_tool(
     if resolved_generation is None:
         log.warning("[rag] retrieval tool unavailable (invalid active index pointer)")
         return None
+    from drbrain.rag.config import get_llamaindex_config
+
+    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
+        # SQL-native engine: no LlamaIndex legs exist on disk; back the tool
+        # with the database retrieval path (still generation-pinned).
+        import asyncio as _asyncio
+
+        async def _search_sql(**kwargs: Any) -> str:
+            query = str(kwargs.get("query", ""))
+            if tool_broker is not None:
+                assert definition is not None
+                assert workflow_step is not None
+                observation = await tool_broker.execute(
+                    node_name=workflow_step,
+                    definition=definition,
+                    arguments={"query": query},
+                    executor=lambda: _asyncio.to_thread(
+                        retrieve_documents, cfg, db, graph, query, top_k=10
+                    ),
+                )
+                if not observation.ok:
+                    return str(observation.error or "search_documents failed")
+                rows = observation.output if isinstance(observation.output, list) else []
+            else:
+                rows = await _asyncio.to_thread(retrieve_documents, cfg, db, graph, query, top_k=10)
+            return json.dumps(rows, ensure_ascii=False, default=str)[:12000]
+
+        try:
+            from llama_index.core.tools import FunctionTool
+
+            return FunctionTool.from_defaults(
+                fn=_search_sql,
+                name="search_documents",
+                description="Search the indexed corpus for papers/sections relevant to a query",
+            )
+        except Exception:  # noqa: BLE001 - the tool is a bonus, never a blocker
+            return None
     try:
         legs = get_retrievers(
             cfg,
@@ -778,11 +821,18 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
         cfg: Config,
         temperature: float = AGENT_TEMPERATURE,
         max_tokens: int = AGENT_MAX_TOKENS,
+        models_override: list[dict] | None = None,
         **kwargs: Any,
     ) -> None:
         # Explicit so mypy uses this signature instead of synthesizing one from
         # the (multiple-inheritance) pydantic base's fields.
         super().__init__(cfg, temperature=temperature, max_tokens=max_tokens, **kwargs)
+        if models_override:
+            # per-node 模型覆盖（llm.node_models[step]）：同样走 resolve_agent_key
+            # 保持 key 轮换语义；覆盖 DrbrainLLM 从 cfg.llm.models 设置的全局链。
+            from drbrain.extractor.llm_client import resolve_agent_key
+
+            self._models = [resolve_agent_key(m) for m in models_override]
 
     @property
     def metadata(self) -> Any:
@@ -1094,6 +1144,7 @@ def build_agent(
     tool_policy: Any = None,
     workflow_step: str | None = None,
     rag_generation: str | None = None,
+    models_override: list[dict] | None = None,
 ) -> Any | None:
     """Assemble the LlamaIndex :class:`FunctionAgent`.
 
@@ -1181,7 +1232,12 @@ def build_agent(
             "(distinguished by --[inferred: ...]-->):\n" + closure_context
         )
 
-    llm = AgentFunctionLLM(cfg, temperature=temperature, max_tokens=max_tokens)
+    llm = AgentFunctionLLM(
+        cfg,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        models_override=models_override,
+    )
     agent = FunctionAgent(
         name="drbrain-reasoner",
         description="Knowledge graph reasoning assistant with graph tools",

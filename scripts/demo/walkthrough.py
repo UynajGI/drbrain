@@ -9,6 +9,7 @@ Usage:
     python scripts/walkthrough.py [--db data/realdata_fulltext.db] [--papers-dir data/test_papers]
                                   [--commands "stats,list,index,query"] [--timeout 300]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,7 +64,9 @@ def main() -> None:
     cfg = yaml.safe_load(orig) if orig else {}
     cfg["db"] = {"path": str(ROOT / args.db)}
     cfg["dirs"] = {**cfg.get("dirs", {}), "papers": str(ROOT / args.papers_dir)}
-    CONFIG_LOCAL.write_text(yaml.dump(cfg, allow_unicode=True, default_flow_style=False), encoding="utf-8")
+    CONFIG_LOCAL.write_text(
+        yaml.dump(cfg, allow_unicode=True, default_flow_style=False), encoding="utf-8"
+    )
     print(f"[walkthrough] config.local.yaml -> test DB {args.db} (backup at {BAK.name})")
 
     labels = args.commands.split(",") if args.commands else [c[0] for c in DEFAULT_COMMANDS]
@@ -80,7 +83,10 @@ def main() -> None:
             try:
                 p = subprocess.run(
                     [sys.executable, "-m", "drbrain.cli.main", *argv],
-                    capture_output=True, text=True, timeout=to, cwd=ROOT,
+                    capture_output=True,
+                    text=True,
+                    timeout=to,
+                    cwd=ROOT,
                 )
                 code, out = p.returncode, (p.stdout or "") + (p.stderr or "")
             except subprocess.TimeoutExpired as e:

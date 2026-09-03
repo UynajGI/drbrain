@@ -76,7 +76,7 @@ def _write_compute_plugin(tmp_path) -> str:
     return str(tmp_path)
 
 
-def _write_job(run_dir, job_id: str, log_text: str = "result = 1.0") -> Path:
+def _write_job(run_dir, job_id: str, log_text: str = '{"min_bandwidth_ev": 1.0}') -> Path:
     """Pre-write a fake async job's on-disk artifacts (``<job_id>.json`` + ``<job_id>.log``).
 
     Mirrors what ``run_python(mode=async)`` leaves in ``$DRBRAIN_RUN_DIR``: a
@@ -390,7 +390,7 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
 
 def test_verify_requires_real_job_files(monkeypatch, tmp_path):
     """正路径：compute 节点产出的 job_id 指向真实作业文件（json+log 含数值）→ verified。"""
-    jobs = _write_job(tmp_path / "jobs", "job-ok", log_text="converged energy -12.34")
+    jobs = _write_job(tmp_path / "jobs", "job-ok", log_text='{"min_bandwidth_ev": -12.34}')
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
     _scripted_llm(
         monkeypatch,

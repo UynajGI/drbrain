@@ -7,6 +7,7 @@ tool definitions and execution logic without duplication.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -209,8 +210,20 @@ def get_document_structure(papers_dir: Path | None, paper_id: str) -> list[dict]
     return _extract(structure)
 
 
-def get_section_content(papers_dir: Path | None, paper_id: str, node_id: str) -> str:
-    """Return the raw text content for a tree node."""
+def get_section_content(
+    papers_dir: Path | None, paper_id: str, node_id: str, db: Any = None
+) -> str:
+    """Return the raw text content for a tree node.
+
+    Pipeline-ingested papers keep section bodies in the RAG database
+    (``node_texts``); their local ``tree.json`` nodes are structure-only
+    stubs, so the SQL store is read first and the local PageIndex artifact
+    remains as the fallback for papers outside it.
+    """
+    if db is not None:
+        text = _sql_section_text(db, paper_id, node_id)
+        if text:
+            return text
     if papers_dir is None:
         return ""
 
@@ -229,6 +242,28 @@ def get_section_content(papers_dir: Path | None, paper_id: str, node_id: str) ->
         return get_node_content(md_path, structure, node_id) or ""
     except Exception:
         return ""
+
+
+def _sql_section_text(db: Any, paper_id: str, node_id: str) -> str:
+    """Read one section body from the RAG database's ``node_texts`` table."""
+    try:
+        rag_path = Path(db.path).parent / "drbrain_rag.db"
+    except Exception:
+        return ""
+    if not rag_path.exists():
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{rag_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT text FROM node_texts WHERE paper_id = ? AND node_id = ?",
+                (paper_id, node_id),
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+    return str(row[0]) if row and row[0] else ""
 
 
 def search_tree(db, query: str) -> list[dict]:
@@ -436,8 +471,10 @@ def execute_tool(
         return handler(db, **args)
     elif name in ("get_neighbors", "find_path"):
         return handler(graph, **args)
-    elif name in ("get_document_structure", "get_section_content"):
+    elif name == "get_document_structure":
         return handler(papers_dir, **args)
+    elif name == "get_section_content":
+        return handler(papers_dir, db=db, **args)
     elif name in ("search_tree", "get_raptor_summaries"):
         return handler(db, **args)
     return []

@@ -212,6 +212,10 @@ def validate_arguments(schema: Mapping[str, Any], arguments: Mapping[str, Any]) 
     for key, value in arguments.items():
         property_schema = properties.get(key)
         if isinstance(property_schema, Mapping):
+            # LLM 常为可选字段补发 null(OpenAI function calling 惯例);非必填字段
+            # 的 None 视同缺省,跳过类型校验(必填字段的存在性已由上面 required 检查)。
+            if value is None and key not in required:
+                continue
             _validate_value(property_schema, value, path=str(key))
 
 

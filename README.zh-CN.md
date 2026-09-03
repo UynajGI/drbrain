@@ -2,7 +2,7 @@
 
 # 🧠 DrBrain
 
-**符号驱动的学术知识图谱 + 轻量向量检索。**
+**符号驱动的学术知识图谱 + 全库级四路混合检索。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
@@ -22,7 +22,7 @@
 
 - 📚 论文库变成**概念粒度**的可查询知识图谱。
 - 🧩 推理是**符号驱动**的：闭包规则、置信度传播、反事实分析——不只是向量相似度。
-- ⚡ 轻量向量检索：只对**语义完整的树节点**做向量，不做任意切片。
+- ⚡ **全库级混合检索**：BM25 + 稠密向量 + RAPTOR 树摘要 + 图谱遍历四路召回，RRF 融合后精排，覆盖数十万篇全文；向量落在**语义完整的树节点**上，不做任意切片。
 - 🤖 **为 AI 代理而生**：每个功能都通过 CLI 访问，你的代理直接就能用。
 
 ---
@@ -75,7 +75,9 @@ drbrain pipeline --preset full
 | **入库** | `ingest` `fetch` | PDF 经 MinerU 解析 → 5 源元数据交叉验证（arXiv、CrossRef、S2、OpenAlex、DeepXiv）→ LLM 树结构化 |
 | **构建** | `build` | 5 阶段概念抽取（增量）：本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
 | **检索** | `query` `search` | BM25 关键词搜索 + PageRank 加权、有向图遍历、混合排序 |
+| **RAG 检索** | `hybrid` `rag` | LlamaIndex 混合引擎：BM25 + 向量 + 树检索 RRF 融合、重排、`drbrain rag index/eval` |
 | **知识图谱** | `closure` | 规则闭包（增量）：8+4 条推理规则、t-norm 传递接地、TransE 嵌入链接预测 |
+| **概念图** | `cg` | 语料级概念共现图：build/embed/neighbors、UMAP 交互地图导出、防泄漏年度趋势预测 |
 | **嵌入** | `embed` | TransE 图嵌入（增量微调）或 PageIndex/RAPTOR 文本向量 |
 | **推理** | `reason` | 符号驱动发现：因果链、置信度传播、反事实分析、跨域同构、假设生成 |
 | **工作流** | `reason --workflow` | 7 条结构化推理管线：review、gap-analysis、impact、compare、frontier、lineage、paradigm |
@@ -100,11 +102,13 @@ drbrain pipeline --preset full
 <details>
 <summary><b>全部命令一览</b></summary>
 
-`setup` `ingest` `fetch` `build` `embed` `closure` `query` `search` `ask`
-`reason` `graph` `analyze` `evolve` `landscape` `frontier` `paradigm`
-`citations` `export` `export-okf` `import` `translate` `session` `ws`
-`pipeline` `repair` `enrich` `audit` `backup` `restore` `metrics`
-`document` `fsearch` `patent-search` `proceedings` `explore` `check` `clean`
+`setup` `ingest` `ingest-link` `fetch` `batch-fetch` `build` `embed` `closure`
+`query` `search` `hybrid` `ask` `reason` `graph` `analyze` `survey` `evolve`
+`landscape` `frontier` `paradigm` `citations` `check-citations` `export`
+`export-okf` `import` `translate` `session` `ws` `cg` `rag` `pipeline`
+`repair` `enrich` `audit` `backup` `restore` `metrics` `document` `fsearch`
+`patent-search` `proceedings` `explore` `report` `seed` `list` `stats` `show`
+`index` `queue` `delete` `lineage` `style` `check` `clean` `webui`
 
 运行 `drbrain --help` 查看完整列表，或参阅
 [CLI 参考手册](docs/cli-reference.md)。
@@ -151,6 +155,8 @@ Copilot 等 AI 编程工具。
 | [工作流](docs/workflows.md) | 结构化推理工作流指南 |
 | [会话](docs/sessions.md) | 持久化 Session Agent 深入 |
 | [嵌入](docs/embedding.md) | local、openai-compat、none 三种 provider |
+| [概念图交接](docs/concept-graph-handover.md) | 语料级概念图设计与现状 |
+| [RAG 现状](docs/drbrain-rag-current-state.md) | LlamaIndex 检索层基线与状态 |
 | [故障排除](docs/troubleshooting.md) | 常见问题与恢复 |
 | [技能参考](docs/skills.md) | 27 个代理技能及其 CLI 命令 |
 | [贡献指南](docs/contributing.md) | 如何添加命令、模块和技能 |
@@ -161,8 +167,8 @@ Copilot 等 AI 编程工具。
 
 DrBrain 的代理优先设计受
 [ScholarAIO](https://github.com/ZimoLiao/scholaraio)——"AI 代理的研究基础设施"
-先驱——启发。DrBrain 走了不同的技术路线：符号驱动的知识图谱推理 +
-语义完整节点的轻量向量检索（而非全文切片嵌入）。树结构检索受
+先驱——启发。DrBrain 走了不同的技术路线：符号驱动的知识图谱推理，建立在
+全库级四路混合检索（BM25 + 向量 + 树 + 图，RRF 融合）之上，向量落在语义完整的树节点上。树结构检索受
 [PageIndex](https://github.com/answerdotai/pageindex) 和
 [RAPTOR](https://arxiv.org/abs/2401.18059) 启发。
 

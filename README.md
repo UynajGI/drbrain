@@ -2,7 +2,7 @@
 
 # 🧠 DrBrain
 
-**Symbol-driven academic knowledge graph with lightweight vector retrieval.**
+**Symbol-driven academic knowledge graph with corpus-scale hybrid retrieval.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
@@ -25,8 +25,10 @@ relationships through rule-based reasoning.
   **concept-level granularity**.
 - 🧩 Reasoning is **symbol-driven**: closure rules, confidence propagation,
   counterfactuals — not just embedding similarity.
-- ⚡ Lightweight vectors for retrieval: **semantically-complete tree nodes**
-  only, never arbitrary chunks.
+- ⚡ **Corpus-scale hybrid retrieval**: BM25 + dense vectors + RAPTOR tree
+  summaries + graph traversal, fused by RRF and reranked — over hundreds of
+  thousands of full-text papers, with vectors on semantically-complete tree
+  nodes rather than arbitrary chunks.
 - 🤖 **Built for AI agents**: every feature is accessible through the CLI
   that your agent already uses.
 
@@ -81,7 +83,9 @@ drbrain pipeline --preset full
 | **Ingest** | PDF → structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
 | **Build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
+| **RAG Retrieval** | LlamaIndex hybrid engine | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag index/eval` |
 | **Knowledge Graph** | Rule-based closure *(incremental)* | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
+| **Concept Graph** | Corpus-scale co-occurrence map | `drbrain cg` — concept graph build/embed/neighbors, UMAP map export, leakage-free trend prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm |
 | **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
@@ -99,11 +103,13 @@ drbrain pipeline --preset full
 <details>
 <summary><b>All commands</b></summary>
 
-`setup` `ingest` `fetch` `build` `embed` `closure` `query` `search` `ask`
-`reason` `graph` `analyze` `evolve` `landscape` `frontier` `paradigm`
-`citations` `export` `export-okf` `import` `translate` `session` `ws`
-`pipeline` `repair` `enrich` `audit` `backup` `restore` `metrics`
-`document` `fsearch` `patent-search` `proceedings` `explore` `check` `clean`
+`setup` `ingest` `ingest-link` `fetch` `batch-fetch` `build` `embed` `closure`
+`query` `search` `hybrid` `ask` `reason` `graph` `analyze` `survey` `evolve`
+`landscape` `frontier` `paradigm` `citations` `check-citations` `export`
+`export-okf` `import` `translate` `session` `ws` `cg` `rag` `pipeline`
+`repair` `enrich` `audit` `backup` `restore` `metrics` `document` `fsearch`
+`patent-search` `proceedings` `explore` `report` `seed` `list` `stats` `show`
+`index` `queue` `delete` `lineage` `style` `check` `clean` `webui`
 
 Run `drbrain --help` for the full list, or see the
 [CLI Reference](docs/cli-reference.md).
@@ -152,6 +158,8 @@ EN / 中文):
 | [Workflows](docs/workflows.md) | Structured reasoning workflow guide |
 | [Sessions](docs/sessions.md) | Persistent Session Agent deep dive |
 | [Embedding](docs/embedding.md) | Local, openai-compat, and none providers |
+| [Concept Graph Handover](docs/concept-graph-handover.md) | Corpus-scale concept graph design and status |
+| [RAG Current State](docs/drbrain-rag-current-state.md) | LlamaIndex retrieval layer baseline and status |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
 | [Skills Reference](docs/skills.md) | 27 agent skills and their CLI commands |
 | [Contributing](docs/contributing.md) | How to add commands, modules, and skills |
@@ -163,8 +171,9 @@ EN / 中文):
 DrBrain's agent-first design is inspired by
 [ScholarAIO](https://github.com/ZimoLiao/scholaraio) — the pioneering
 "research infrastructure for AI agents." DrBrain takes a different technical
-path: symbol-driven knowledge graph reasoning with lightweight vector
-retrieval for semantically-complete nodes (vs full-text chunk embedding).
+path: symbol-driven knowledge graph reasoning on top of a corpus-scale
+hybrid retriever (BM25 + vector + tree + graph, RRF-fused) whose vectors live
+on semantically-complete tree nodes rather than full-text chunks.
 Tree-structured retrieval is inspired by
 [PageIndex](https://github.com/answerdotai/pageindex) and
 [RAPTOR](https://arxiv.org/abs/2401.18059).

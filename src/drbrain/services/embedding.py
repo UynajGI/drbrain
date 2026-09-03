@@ -806,6 +806,8 @@ async def build_paper_tree_vectors(
     db_path: Path,
     embed_cfg: EmbedConfig | None = None,
     llm_models: list[dict] | None = None,
+    sink: list[dict] | None = None,
+    cache=None,
 ) -> int:
     """Build PageIndex tree vectors + RAPTOR recursive summaries for a single paper.
 
@@ -818,6 +820,10 @@ async def build_paper_tree_vectors(
         db_path: SQLite database path.
         embed_cfg: Embedding configuration.
         llm_models: LLM model list for RAPTOR summarization.
+        sink: RAPTOR sink (先缓存后入库) — when set, summaries/vectors are
+            collected here instead of written to the DB.
+        cache: ApiCache for RAPTOR summaries — interruption/resume costs zero
+            LLM calls on cache hits.
 
     Returns:
         Total number of vectors + summaries created.
@@ -825,15 +831,17 @@ async def build_paper_tree_vectors(
     from drbrain.extractor.raptor import build_raptor_tree
 
     pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg)
-
     raptor_count = 0
     if llm_models:
         try:
-            raptor_count = await build_raptor_tree(paper_dir, db_path, embed_cfg, llm_models)
-        except Exception:
+            raptor_count = await build_raptor_tree(
+                paper_dir, db_path, embed_cfg, llm_models, sink=sink, cache=cache
+            )
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "RAPTOR tree build failed for %s, PageIndex vectors still created",
+                "RAPTOR tree build failed for {} ({}), PageIndex vectors still created",
                 paper_dir.name,
+                exc,
             )
 
     return pageindex_count + raptor_count
@@ -871,6 +879,7 @@ def search_tree(
     if provider == "none":
         return []
 
+    db_path = Path(db_path)
     if not db_path.exists():
         return []
 

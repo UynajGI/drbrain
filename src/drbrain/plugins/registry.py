@@ -55,7 +55,13 @@ def _input_schema_to_model(plugin: Plugin) -> type | None:
     required = set(schema.get("required") or [])
     fields: dict[str, Any] = {}
     for key, prop in properties.items():
-        ptype = _JSON_TO_PY.get(prop.get("type"), Any)
+        ptype_raw = prop.get("type")
+        if isinstance(ptype_raw, list):
+            # JSON Schema union type (e.g. ["array", "string"]): take the
+            # first branch — a list is unhashable and would raise TypeError
+            # here, killing the whole plugin discovery for the directory.
+            ptype_raw = ptype_raw[0] if ptype_raw else None
+        ptype = _JSON_TO_PY.get(ptype_raw, Any)
         if key in required:
             fields[key] = (ptype, ...)
         else:

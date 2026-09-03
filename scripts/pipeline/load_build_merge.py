@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 from drbrain.storage.database import Database  # noqa: E402
 
 VALID_TYPES = {"Problem", "Method", "Conclusion", "Debate", "Gap", "Actor"}
-COMMIT_EVERY = 500  # 每 N 篇 commit 一次
+COMMIT_EVERY = 2000  # 每 N 篇 commit 一次
 
 
 def main() -> None:
@@ -58,6 +58,21 @@ def main() -> None:
 
     db = Database(args.db)
     conn: sqlite3.Connection = db.conn
+
+    # 提速：关同步写 + 插入前暂删 concepts/edges 索引（插入后重建）。
+    # 35.6M 行的索引维护是主要开销，延迟重建比边插边维护快 3-5x。
+    conn.execute("PRAGMA synchronous=OFF")
+    index_ddl = [
+        r
+        for r in conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type='index' AND sql IS NOT NULL "
+            "AND tbl_name IN ('concepts', 'edges') AND name LIKE 'idx_%'"
+        )
+    ]
+    for name, _sql in index_ddl:
+        conn.execute(f"DROP INDEX {name}")
+    conn.commit()
     t0 = time.monotonic()
     done_papers = 0
     ins_c = ins_e = skip_c = skip_e = 0
@@ -91,6 +106,13 @@ def main() -> None:
         if row and row[0] == "extracted":
             done_papers += 1
             continue
+        if row is None:
+            # 缓存期 ingest 未入库的篇：补占位 papers 行，避免 concepts 外键失败
+            conn.execute(
+                "INSERT OR IGNORE INTO papers (local_id, title, paper_type, status) "
+                "VALUES (?, '', 'paper', 'placeholder')",
+                (lid,),
+            )
 
         for c in rec.get("concepts", []):
             ctype = c.get("type", "")
@@ -129,6 +151,10 @@ def main() -> None:
             )
 
     flush()
+    conn.commit()
+    # 重建索引
+    for name, sql in index_ddl:
+        conn.execute(sql)
     conn.commit()
     print(
         f"\n入库完成: papers={done_papers} concepts={ins_c}(无效 {skip_c}) "

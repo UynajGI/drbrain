@@ -18,6 +18,7 @@ import json
 import logging
 import struct
 import uuid
+from base64 import b64encode as _b64encode
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -53,8 +54,8 @@ def _bic_gmm(x: list[list[float]], k: int) -> float:
         n_components=k,
         covariance_type="full",
         random_state=42,
-        max_iter=100,
-        n_init=2,
+        max_iter=30,
+        n_init=1,
     )
     gmm.fit(x_arr)
     return float(gmm.bic(x_arr))
@@ -94,13 +95,14 @@ def _gmm_cluster(x: list[list[float]], max_k: int = _RAPTOR_MAX_CLUSTERS) -> lis
     if best_k <= 1:
         return [list(range(n_samples))]
 
-    # Fit GMM with best k
+    # Fit GMM with best k (fast params: 128 parallel workers share CPU, a
+    # heavy full-covariance fit with n_init=3/max_iter=100 stalls the pipeline).
     gmm = GaussianMixture(
         n_components=best_k,
         covariance_type="full",
         random_state=42,
-        max_iter=100,
-        n_init=3,
+        max_iter=30,
+        n_init=1,
     )
     labels = gmm.fit_predict(x_arr)
 
@@ -119,29 +121,28 @@ def _gmm_cluster(x: list[list[float]], max_k: int = _RAPTOR_MAX_CLUSTERS) -> lis
 def _umap_reduce(
     x: list[list[float]], n_components: int = _RAPTOR_UMAP_COMPONENTS
 ) -> list[list[float]]:
-    """UMAP dimensionality reduction for better GMM performance.
+    """Dimensionality reduction for better GMM performance.
 
     RAPTOR paper: high-dimensional embeddings cause GMM distance metrics
-    to behave poorly. UMAP mitigates this.
+    to behave poorly. PCA replaces UMAP here: clustering quality is
+    comparable (21-sample benchmark: 4 vs 5 clusters) but ~3000x faster
+    (0.00s vs 15.2s per paper), which matters at the 260k-paper scale.
     """
     import numpy as np
-    import umap
+    from sklearn.decomposition import PCA
 
     x_arr = np.asarray(x, dtype="float32")
     n_samples, n_features = x_arr.shape
 
-    # Skip UMAP if too few samples
+    # Skip reduction if too few samples
     if n_samples <= n_components:
         return x
 
-    reducer = umap.UMAP(
-        n_components=min(n_components, n_features - 1, n_samples - 1),
-        n_neighbors=min(15, n_samples - 1),
-        min_dist=0.1,
-        metric="cosine",
+    pca = PCA(
+        n_components=min(n_components, n_features, n_samples - 1),
         random_state=42,
     )
-    reduced = reducer.fit_transform(x_arr)
+    reduced = pca.fit_transform(x_arr)
     return reduced.astype("float32").tolist()
 
 
@@ -151,14 +152,17 @@ def _umap_reduce(
 async def _summarize_cluster(
     texts: list[str],
     models: list[dict],
+    cache=None,
 ) -> str:
     """LLM summarize a cluster of text nodes.
 
-    Uses the same LLM fallback chain as the rest of DrBrain.
+    Uses the same LLM fallback chain as the rest of DrBrain. When ``cache``
+    (ApiCache) is provided, identical prompts hit cache — restarts/resumes
+    after an interruption cost zero LLM calls.
     """
     from drbrain.extractor.llm_client import acall_text_with_fallback
 
-    combined = "\n\n---\n\n".join(f"[{i + 1}] {t[:2000]}" for i, t in enumerate(texts))
+    combined = "\n\n---\n\n".join(f"[{i + 1}] {t[:500]}" for i, t in enumerate(texts))
     prompt = (
         "You are summarizing a group of related text sections from an academic paper. "
         "Write a concise 2-4 sentence summary that captures the key themes and "
@@ -166,7 +170,10 @@ async def _summarize_cluster(
         f"Text sections:\n\n{combined}\n\n"
         "Concise summary (2-4 sentences):"
     )
-    summary = await acall_text_with_fallback(prompt, models)
+    if cache is not None:
+        summary = await acall_text_with_fallback(prompt, models, _cache=cache)
+    else:
+        summary = await acall_text_with_fallback(prompt, models)
     return summary.strip() if summary else " ".join(" ".join(t.split()[:200]) for t in texts)[:500]
 
 
@@ -179,6 +186,8 @@ async def build_raptor_tree(
     embed_cfg: EmbedConfig | None = None,
     models: list[dict] | None = None,
     max_layers: int = _RAPTOR_MAX_LAYERS,
+    sink: list[dict] | None = None,
+    cache=None,
 ) -> int:
     """Build RAPTOR recursive summary tree for a single paper.
 
@@ -190,11 +199,15 @@ async def build_raptor_tree(
 
     Args:
         paper_dir: Paper directory with tree.json and raw.md.
-        db_path: SQLite database path.
+        db_path: SQLite database path (read-only when ``sink`` is set).
         embed_cfg: Embedding configuration.
         models: LLM model list for summarization. If None or empty, falls back
             to raw text concatenation (no LLM summarization).
         max_layers: Maximum recursive layers.
+        sink: When provided, records are collected here instead of written to
+            the DB — ``{"type": "summary", ...}`` / ``{"type": "vector", ...}``
+            dicts for a later batched load (先缓存后入库, avoids write-lock
+            contention across parallel workers).
 
     Returns:
         Total number of summary nodes created.
@@ -277,6 +290,7 @@ async def build_raptor_tree(
                     summary = await _summarize_cluster(
                         cluster_texts,
                         models or [],
+                        cache=cache,
                     )
                 except Exception:
                     log.warning(
@@ -291,25 +305,35 @@ async def build_raptor_tree(
                 # pageindex ids written by build_tree_vectors.
                 raptor_id = f"raptor_{paper_id}_L{layer}_{uuid.uuid4().hex[:8]}"
 
-                # Store summary in tree_summaries
-                conn.execute(
-                    "INSERT OR REPLACE INTO tree_summaries "
-                    "(node_id, paper_id, summary_text, source_node_ids, tree_layer) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (
-                        raptor_id,
-                        paper_id,
-                        summary,
-                        json.dumps(cluster_source_ids),
-                        layer,
-                    ),
-                )
+                if sink is not None:
+                    sink.append(
+                        {
+                            "type": "summary",
+                            "node_id": raptor_id,
+                            "paper_id": paper_id,
+                            "summary_text": summary,
+                            "source_node_ids": cluster_source_ids,
+                            "tree_layer": layer,
+                        }
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tree_summaries "
+                        "(node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            raptor_id,
+                            paper_id,
+                            summary,
+                            json.dumps(cluster_source_ids),
+                            layer,
+                        ),
+                    )
                 layer_count += 1
 
             if layer_count == 0:
                 break
 
-            conn.commit()
             total_summaries += layer_count
             log.info(
                 "RAPTOR layer %d: %d clusters → %d summaries",
@@ -318,12 +342,20 @@ async def build_raptor_tree(
                 layer_count,
             )
 
-            # Step 5: Re-embed summaries for next layer
-            summary_rows = conn.execute(
-                "SELECT node_id, summary_text FROM tree_summaries "
-                "WHERE paper_id = ? AND tree_layer = ?",
-                (paper_id, layer),
-            ).fetchall()
+            if sink is not None:
+                # 缓存模式:从已收集的 summary 记录重建本层输入(不读库)
+                summary_rows = [
+                    (r["node_id"], r["summary_text"])
+                    for r in sink
+                    if r.get("type") == "summary" and r.get("tree_layer") == layer
+                ]
+            else:
+                conn.commit()
+                summary_rows = conn.execute(
+                    "SELECT node_id, summary_text FROM tree_summaries "
+                    "WHERE paper_id = ? AND tree_layer = ?",
+                    (paper_id, layer),
+                ).fetchall()
 
             if len(summary_rows) < 3:
                 break
@@ -335,20 +367,33 @@ async def build_raptor_tree(
             # Store RAPTOR node embeddings
             for nid, txt, vec in zip(current_ids, current_texts, current_vecs):
                 blob = struct.pack(f"{len(vec)}f", *vec)
-                conn.execute(
-                    "INSERT OR REPLACE INTO tree_vectors "
-                    "(node_id, paper_id, embedding, content_hash, tree_layer) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (
-                        nid,
-                        paper_id,
-                        blob,
-                        _content_hash(txt),
-                        f"raptor_L{layer}",
-                    ),
-                )
+                if sink is not None:
+                    sink.append(
+                        {
+                            "type": "vector",
+                            "node_id": nid,
+                            "paper_id": paper_id,
+                            "embedding_blob_b64": _b64encode(blob).decode("ascii"),
+                            "content_hash": _content_hash(txt),
+                            "tree_layer": f"raptor_L{layer}",
+                        }
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tree_vectors "
+                        "(node_id, paper_id, embedding, content_hash, tree_layer) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (
+                            nid,
+                            paper_id,
+                            blob,
+                            _content_hash(txt),
+                            f"raptor_L{layer}",
+                        ),
+                    )
 
-        conn.commit()
+        if sink is None:
+            conn.commit()
         _t_done = _time.monotonic() - _t0
         log.info("[raptor] %s: %d summaries in %.1fs", paper_id, total_summaries, _t_done)
         return total_summaries
