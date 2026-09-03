@@ -52,7 +52,6 @@ docs/learn/
 # Added by code-review-graph
 .code-review-graph/
 .mcp.json
-.claude/
 .coverage.*
 
 # Local-only tooling directories (not for public repo)
@@ -64,7 +63,6 @@ research/
 
 # Local agent tooling (per-user / generated — never commit)
 .qwen/
-.agents/
 .codegraph/
 
 # Runtime caches (API cache responses)
