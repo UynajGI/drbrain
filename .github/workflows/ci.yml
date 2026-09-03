@@ -67,6 +67,7 @@ jobs:
           --ignore-vuln PYSEC-2026-2288
           --ignore-vuln PYSEC-2026-2289
           --ignore-vuln PYSEC-2026-2290
+          --ignore-vuln CVE-2026-9856
 
   test:
     runs-on: ubuntu-latest

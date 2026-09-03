@@ -155,11 +155,10 @@ class WebUIHandler(BaseHTTPRequestHandler):
                 return self._json(result, status)
             if url.path == "/api/runs":
                 mc = body.get("max_cycles")
+                max_cycles = int(mc) if isinstance(mc, (int, str)) and str(mc).strip() else None
                 try:
                     started = self.server.run_manager.start(
-                        cfg,
-                        str(body.get("topic", "")),
-                        max_cycles=int(mc) if mc not in (None, "") else None,
+                        cfg, str(body.get("topic", "")), max_cycles=max_cycles
                     )
                 except (ValueError, RuntimeError) as exc:
                     return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)

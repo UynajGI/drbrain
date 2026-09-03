@@ -414,12 +414,12 @@ def retrieve_documents_sql(
         li = get_llamaindex_config(cfg)
         rerank_top_k = int(getattr(li, "rerank_top_k", None) or 20)
         reranker = _get_reranker(cfg)
-        pool = fused[: max(rerank_top_k, top_k)] if reranker is not None else fused[:top_k]
+        cand = fused[: max(rerank_top_k, top_k)] if reranker is not None else fused[:top_k]
 
         # Meta resolution: graph rows carry their own metadata; node rows come
         # from node_texts (pageindex units) with tree_summaries as the raptor
         # fallback.
-        text_keys = [k for k, _ in pool if k not in rich]
+        text_keys = [k for k, _ in cand if k not in rich]
         meta: dict[str, tuple[str, str]] = {}
         if text_keys:
             ph = ",".join("?" * len(text_keys))
@@ -447,20 +447,20 @@ def retrieve_documents_sql(
                 return str(rich[key].get("text") or "")
             return meta.get(key, ("", ""))[1]
 
-        primary: list[tuple[str, float]] = pool[:top_k]
-        if reranker is not None and pool:
+        primary: list[tuple[str, float]] = cand[:top_k]
+        if reranker is not None and cand:
             try:
-                passages = [_text_of(k)[:2000] for k, _ in pool]
+                passages = [_text_of(k)[:2000] for k, _ in cand]
                 scores = reranker.rerank(query, passages)
-                if scores and len(scores) == len(pool):
+                if scores and len(scores) == len(cand):
                     primary = sorted(
-                        ((k, float(s)) for (k, _s), s in zip(pool, scores) if s is not None),
+                        ((k, float(s)) for (k, _s), s in zip(cand, scores) if s is not None),
                         key=lambda kv: kv[1],
                         reverse=True,
                     )[:top_k]
             except Exception as exc:  # noqa: BLE001 - degrade to coarse order
                 log.warning("[rag-sql] rerank failed ({}); falling back to RRF order", exc)
-                primary = pool[:top_k]
+                primary = cand[:top_k]
 
         # Leg diversity guarantee: bm25+vector share the same retrieval units, so
         # their double-hits mathematically crowd single-leg raptor / graph
