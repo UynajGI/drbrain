@@ -412,8 +412,11 @@ def _classify_verification(
             _payload = _job_log_payload(run_dir, _jid)
             if _payload is None:
                 continue
+            _raw_value = _payload.get("value")
+            if not isinstance(_raw_value, (int, float, str)):
+                continue
             try:
-                _logged_value = float(_payload.get("value"))
+                _logged_value = float(_raw_value)
             except (TypeError, ValueError):
                 continue
             # T4 契约里 unit 可选——日志没写单位时默认就是预测所要求的单位
