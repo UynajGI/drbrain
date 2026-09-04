@@ -34,6 +34,8 @@ def rag_db(tmp_path, monkeypatch):
         CREATE TABLE tree_summaries (
             node_id TEXT PRIMARY KEY, paper_id TEXT NOT NULL, summary_text TEXT NOT NULL DEFAULT '',
             source_node_ids TEXT NOT NULL DEFAULT '', tree_layer INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE paper_categories (
+            paper_id TEXT PRIMARY KEY, categories TEXT NOT NULL DEFAULT '');
         """
     )
     rows = [
@@ -43,6 +45,10 @@ def rag_db(tmp_path, monkeypatch):
     ]
     conn.executemany("INSERT INTO node_texts VALUES (?,?,?,?,?)", rows)
     conn.execute("INSERT INTO node_texts_fts(node_texts_fts) VALUES ('rebuild')")
+    conn.executemany(
+        "INSERT INTO paper_categories VALUES (?,?)",
+        [("pA", "cond-mat.str-el physics.acc-phys"), ("pB", "physics.chem-ph")],
+    )
     conn.executemany(
         "INSERT INTO tree_vectors VALUES (?,?,?,?,?)",
         [
@@ -166,3 +172,37 @@ def test_generation_id_stable(rag_db):
     g2 = sql_retrie._generation_id(conn)
     conn.close()
     assert g1 == g2 and g1.startswith("sql-")
+
+
+def test_categories_filter_narrows_recall(rag_db, cfg, monkeypatch):
+    """filters={"categories": ...} restricts the BM25 recall leg (review §6.2)."""
+    _patch_embed(monkeypatch, [1.0] * DIM)
+    rows = sql_retrie.retrieve_documents_sql(
+        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        filters={"categories": "cond-mat"},
+    )
+    assert rows, "cond-mat paper must survive the filter"
+    assert {r["paper_id"] for r in rows} == {"pA"}
+
+
+def test_categories_filter_prefix_matches_arxiv_archives(rag_db, cfg, monkeypatch):
+    _patch_embed(monkeypatch, [1.0] * DIM)
+    rows = sql_retrie.retrieve_documents_sql(
+        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        filters={"categories": ["physics"]},
+    )
+    assert rows, "physics.* papers must survive a physics archive filter"
+    assert {r["paper_id"] for r in rows} == {"pA", "pB"}
+
+
+def test_missing_categories_table_widens_instead_of_erroring(rag_db, cfg, monkeypatch):
+    conn = sqlite3.connect(rag_db)
+    conn.execute("DROP TABLE paper_categories")
+    conn.commit()
+    conn.close()
+    _patch_embed(monkeypatch, [1.0] * DIM)
+    rows = sql_retrie.retrieve_documents_sql(
+        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        filters={"categories": "cond-mat"},
+    )
+    assert rows, "corpora without category metadata must not error nor narrow"

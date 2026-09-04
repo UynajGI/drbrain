@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS papers (
     volume TEXT DEFAULT '',
     pages TEXT DEFAULT '',
     authors TEXT DEFAULT '',
+    categories TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -33,6 +34,14 @@ CREATE TABLE IF NOT EXISTS paper_ids (
     s2_id TEXT UNIQUE,
     openalex_id TEXT UNIQUE
 );
+
+CREATE TABLE IF NOT EXISTS paper_citations (
+    citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    cited_key TEXT NOT NULL,
+    cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
+    PRIMARY KEY (citing_local_id, cited_key)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_citations_cited ON paper_citations(cited_key);
 
 CREATE TABLE IF NOT EXISTS concepts (
     concept_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -403,6 +412,7 @@ class Database:
             (15, "claims", self._migrate_add_claims),
             (16, "agent_session_principal", self._migrate_add_agent_session_principal),
             (17, "claim_evidence", self._migrate_add_claim_evidence),
+            (18, "paper_categories", self._migrate_add_paper_categories),
         ]
 
         for version, name, fn in migrations:
@@ -728,6 +738,24 @@ class Database:
             """
         )
 
+    def _migrate_add_paper_categories(self) -> None:
+        """Add arXiv category metadata + corpus citation edges (physics ingest)."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "categories" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN categories TEXT DEFAULT ''")
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS paper_citations (
+                citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                cited_key TEXT NOT NULL,
+                cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
+                PRIMARY KEY (citing_local_id, cited_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_paper_citations_cited
+                ON paper_citations(cited_key);
+            """
+        )
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
         return self.conn.execute(sql, params)
@@ -777,6 +805,7 @@ class Database:
         volume: str = "",
         pages: str = "",
         authors: str = "",
+        categories: str = "",
     ) -> None:
         """Insert or ignore a paper record with full metadata fields.
 
@@ -785,8 +814,8 @@ class Database:
         """
         self.conn.execute(
             "INSERT INTO papers (local_id, title, year, status, paper_type, "
-            "journal, publisher, citation_count, volume, pages, authors, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "journal, publisher, citation_count, volume, pages, authors, categories, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
             (
                 local_id,
@@ -800,6 +829,7 @@ class Database:
                 volume,
                 pages,
                 authors,
+                categories,
             ),
         )
 
@@ -818,6 +848,58 @@ class Database:
             "UPDATE papers SET abstract = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (abstract, local_id),
         )
+
+    def set_paper_categories(self, local_id: str, categories: str) -> None:
+        """Store the space-separated arXiv category list for a paper."""
+        self.conn.execute(
+            "UPDATE papers SET categories = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (categories, local_id),
+        )
+
+    def iter_paper_categories(self) -> list[tuple[str, str]]:
+        """Return ``(local_id, categories)`` for every paper that has categories."""
+        return [
+            (r[0], r[1])
+            for r in self.conn.execute(
+                "SELECT local_id, categories FROM papers WHERE categories != ''"
+            ).fetchall()
+        ]
+
+    def insert_paper_citations(
+        self, citing_local_id: str, cited_keys: list[str]
+    ) -> None:
+        """Record raw citation keys (\\cite arguments) extracted from one paper.
+
+        Resolution of ``cited_key`` (arXiv id / DOI / bib key) to an in-corpus
+        ``cited_local_id`` happens later, once the full corpus is ingested.
+        """
+        if not cited_keys:
+            return
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO paper_citations (citing_local_id, cited_key) "
+            "VALUES (?, ?)",
+            [(citing_local_id, k) for k in cited_keys],
+        )
+
+    def resolve_paper_citations(self, key_to_local_id: dict[str, str]) -> int:
+        """Fill ``cited_local_id`` for citations whose key is now in-corpus.
+
+        Returns the number of citation rows resolved.
+        """
+        resolved = 0
+        with self.conn:
+            rows = self.conn.execute(
+                "SELECT rowid, cited_key FROM paper_citations WHERE cited_local_id IS NULL"
+            ).fetchall()
+            for rowid, key in rows:
+                local_id = key_to_local_id.get(str(key))
+                if local_id:
+                    self.conn.execute(
+                        "UPDATE paper_citations SET cited_local_id = ? WHERE rowid = ?",
+                        (local_id, rowid),
+                    )
+                    resolved += 1
+        return resolved
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""

@@ -477,3 +477,42 @@ def test_get_stats_with_paper_ids_filter(tmp_db):
     stats_all = tmp_db.get_stats(paper_ids=["p1", "p2"])
     assert stats_all["papers"] == 2
     assert stats_all["concepts"] == 2
+
+
+def test_paper_categories_roundtrip(tmp_db):
+    """v18: papers.categories + helpers (review §6.2)."""
+    tmp_db.insert_paper(
+        "pA", "Kagome", 2024, "uploaded", categories="cond-mat.str-el quant-ph"
+    )
+    tmp_db.insert_paper("pB", "Corrosion", 2020, "uploaded")
+    tmp_db.set_paper_categories("pB", "physics.chem-ph")
+
+    pairs = dict(tmp_db.iter_paper_categories())
+    assert pairs == {"pA": "cond-mat.str-el quant-ph", "pB": "physics.chem-ph"}
+    row = tmp_db.execute(
+        "SELECT categories FROM papers WHERE local_id = 'pA'"
+    ).fetchone()
+    assert row == ("cond-mat.str-el quant-ph",)
+
+
+def test_paper_citations_insert_and_resolve(tmp_db):
+    """v18: citation edges resolve against the corpus after full ingest."""
+    tmp_db.insert_paper("p1", "Citing", 2024, "uploaded")
+    tmp_db.insert_paper("p2", "Cited", 2023, "uploaded")
+
+    tmp_db.insert_paper_citations("p1", ["hep-lat/9107001", "kane2011"])
+    tmp_db.insert_paper_citations("p1", ["hep-lat/9107001"])  # PK dedupes
+    tmp_db.insert_paper_citations("p1", [])
+    tmp_db.commit()
+
+    unresolved = tmp_db.execute(
+        "SELECT cited_key, cited_local_id FROM paper_citations ORDER BY cited_key"
+    ).fetchall()
+    assert unresolved == [("hep-lat/9107001", None), ("kane2011", None)]
+
+    resolved = tmp_db.resolve_paper_citations({"hep-lat/9107001": "p2", "unknown": "p1"})
+    assert resolved == 1
+    now = tmp_db.execute(
+        "SELECT cited_key, cited_local_id FROM paper_citations WHERE cited_key = 'hep-lat/9107001'"
+    ).fetchone()
+    assert now == ("hep-lat/9107001", "p2")

@@ -77,18 +77,63 @@ def _fts_query(query: str) -> str | None:
     return " OR ".join(f'"{w}"' for w in words)
 
 
-def _bm25_leg(conn: sqlite3.Connection, query: str, k: int) -> list[tuple[str, float]]:
+def _categories_filter(
+    conn: sqlite3.Connection, categories: list[str] | tuple[str, ...] | str | None
+) -> tuple[str, list[str]]:
+    """Build a paper_id subquery restricting candidates to wanted categories.
+
+    ``categories`` comes from ``filters["categories"]`` (a string, or list of
+    strings). Matching is arXiv token-prefix aware — ``cond-mat`` hits
+    ``cond-mat.mes-hall`` but never ``xcond-mat``. Returns ``("", [])`` when
+    the filter is absent or the corpus predates category metadata (no
+    ``paper_categories`` table): missing metadata must silently widen, never
+    error.
+    """
+    if isinstance(categories, str):
+        raw: list[str] = [categories]
+    else:
+        raw = list(categories or [])
+    wanted = [str(c).strip().lower() for c in raw if str(c).strip()]
+    if not wanted:
+        return "", []
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_categories'"
+    ).fetchone()
+    if not has_table:
+        return "", []
+    clauses: list[str] = []
+    params: list[str] = []
+    for cat in wanted:
+        clauses.append("' ' || categories || ' ' LIKE ?")
+        params.append(f"% {cat}%")
+    subquery = (
+        " AND nt.paper_id IN "
+        "(SELECT paper_id FROM paper_categories WHERE (" + " OR ".join(clauses) + "))"
+    )
+    return subquery, params
+
+
+def _bm25_leg(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int,
+    *,
+    categories_filter: tuple[str, list[str]] = ("", []),
+) -> list[tuple[str, float]]:
     fts_q = _fts_query(query)
     if not fts_q:
         return []
+    clause, params = categories_filter
     try:
         rows = conn.execute(
             """SELECT nt.node_key, bm25(node_texts_fts) AS s
                FROM node_texts_fts
                JOIN node_texts nt ON nt.rowid = node_texts_fts.rowid
-               WHERE node_texts_fts MATCH ?
+               WHERE node_texts_fts MATCH ?"""
+            + clause
+            + """
                ORDER BY s LIMIT ?""",
-            (fts_q, k),
+            (fts_q, *params, k),
         ).fetchall()
     except sqlite3.OperationalError as exc:
         log.warning("[rag-sql] FTS5 query failed: {}", exc)
@@ -357,7 +402,9 @@ def retrieve_documents_sql(
         started = time.perf_counter()
 
         need_pool = any(w in wanted for w in ("bm25", "vector", "raptor"))
-        bm25 = _bm25_leg(conn, query, 1000) if need_pool else []
+        categories = (filters or {}).get("categories")
+        cats_filter = _categories_filter(conn, categories)
+        bm25 = _bm25_leg(conn, query, 1000, categories_filter=cats_filter) if need_pool else []
         pool = [k for k, _ in bm25]
         pool_papers = list(dict.fromkeys(k.split(":", 1)[0] for k in pool))
 
