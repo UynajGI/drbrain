@@ -427,10 +427,12 @@ def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
         print(f"[kg-lazy] warning: {paper_id} not in the library (marking anyway)", flush=True)
     import fcntl
 
-    worklist_path = Path(worklist_path)
-    worklist_path.parent.mkdir(parents=True, exist_ok=True)
+    # 锁在独立 .lock 文件上：worklist 本体在首次 save 前不存在，
+    # 用 "a+" 打开它会把空文件留给 load_worklist 的 json.loads 炸掉。
+    lock_path = worklist_path.with_name(worklist_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     added = False
-    with worklist_path.open("a+") as lock_fh:
+    with lock_path.open("a+") as lock_fh:
         fcntl.flock(lock_fh, fcntl.LOCK_EX)
         try:
             wl = load_worklist(worklist_path)
