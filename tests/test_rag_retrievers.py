@@ -533,14 +533,15 @@ def test_tree_retriever_expanded_leaf_carries_parent_line_offsets(tmp_path, monk
     assert node.metadata["line_start"] == 0
     assert node.metadata["line_end"] == 6
     # the declared parent slice reproduces the displayed body
-    assert "\n".join(
-        (papers_dir / "pa" / "raw.md").read_text(encoding="utf-8").split("\n")[0:6]
-    ).strip() == node.text
+    assert (
+        "\n".join(
+            (papers_dir / "pa" / "raw.md").read_text(encoding="utf-8").split("\n")[0:6]
+        ).strip()
+        == node.text
+    )
 
 
-def test_tree_retriever_leaf_keeps_its_own_line_offsets_without_expansion(
-    tmp_path, monkeypatch
-):
+def test_tree_retriever_leaf_keeps_its_own_line_offsets_without_expansion(tmp_path, monkeypatch):
     """No expansion → the leaf body is shown → the leaf's own offsets travel."""
     papers_dir = tmp_path / "papers"
     _write_nested_paper_with_offsets(papers_dir, "pa")

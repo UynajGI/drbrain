@@ -10,8 +10,9 @@ category-scoped retrieval. Citation keys land in ``paper_cite_keys``; a
 is complete.
 
 Usage:
-  python scripts/pipeline/ingest_arxiv_latex.py --shards "physics/data/arxiv-latex/*.parquet" --limit 100
-  python scripts/pipeline/ingest_arxiv_latex.py --resolve-citations
+  python scripts/pipeline/ingest_arxiv_latex.py ingest --limit 100 physics/data/arxiv-latex/physics_arxiv_part_0001.parquet
+  python scripts/pipeline/ingest_arxiv_latex.py ingest physics/data/arxiv-latex/physics_arxiv_part_*.parquet
+  python scripts/pipeline/ingest_arxiv_latex.py resolve-citations
 """
 
 from __future__ import annotations
@@ -38,9 +39,22 @@ def _iter_rows(shards: list[Path], limit: int):
     import polars as pl
 
     for shard in shards:
-        df = pl.read_parquet(shard, columns=[
-            "id", "title", "abstract", "categories", "latex", "doi", "update_date",
-        ])
+        wanted = [
+            "id",
+            "title",
+            "abstract",
+            "categories",
+            "latex",
+            "doi",
+            "update_date",
+            "journal-ref",
+            "authors",
+        ]
+        schema_names = set(pl.read_parquet_schema(shard))
+        df = pl.read_parquet(shard, columns=[c for c in wanted if c in schema_names])
+        if limit == 0:
+            yield from df.iter_rows(named=True)
+            continue
         for row in df.iter_rows(named=True):
             yield row
             limit -= 1
@@ -54,7 +68,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     shards = [Path(p) for p in args.shards]
     if not shards:
-        print(f"[ingest] no shards given", flush=True)
+        print("[ingest] no shards given", flush=True)
         return
 
     db_path = args.db
@@ -112,8 +126,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         imported += 1
         if imported % args.report_every == 0:
             print(
-                f"[ingest] {imported} papers ({skipped} skipped) "
-                f"in {time.time() - t0:.0f}s",
+                f"[ingest] {imported} papers ({skipped} skipped) in {time.time() - t0:.0f}s",
                 flush=True,
             )
     print(f"[ingest] done: {imported} imported, {skipped} skipped", flush=True)
@@ -129,9 +142,9 @@ def cmd_resolve(args: argparse.Namespace) -> None:
     for local_id, _title in [
         (r[0], r[1]) for r in db.execute("SELECT local_id, title FROM papers").fetchall()
     ]:
-        key_map[local_id] = local_id
+        key_map.setdefault(local_id, local_id)
         key_map.setdefault(_safe_paper_dir(local_id), local_id)
-    for arxiv_id, in db.execute("SELECT arxiv FROM paper_ids WHERE arxiv IS NOT NULL").fetchall():
+    for (arxiv_id,) in db.execute("SELECT arxiv FROM paper_ids WHERE arxiv IS NOT NULL").fetchall():
         key_map.setdefault(str(arxiv_id), str(arxiv_id))
         key_map.setdefault(_safe_paper_dir(str(arxiv_id)), str(arxiv_id))
     resolved = db.resolve_paper_cite_keys(key_map)
@@ -151,17 +164,13 @@ def main() -> None:
     p_ingest.add_argument(
         "--db", type=Path, default=REPO / "data" / "drbrain.db", help="main library DB"
     )
-    p_ingest.add_argument(
-        "--papers-root", type=Path, default=PAPERS_ROOT, help="paper dir root"
-    )
+    p_ingest.add_argument("--papers-root", type=Path, default=PAPERS_ROOT, help="paper dir root")
     p_ingest.add_argument("--limit", type=int, default=0, help="max rows (0 = all)")
     p_ingest.add_argument("--min-chars", type=int, default=2000)
     p_ingest.add_argument("--report-every", type=int, default=500)
     p_ingest.add_argument("shards", nargs="+", help="parquet shard paths")
 
-    p_resolve = sub.add_parser(
-        "resolve-citations", help="map citation keys to in-corpus papers"
-    )
+    p_resolve = sub.add_parser("resolve-citations", help="map citation keys to in-corpus papers")
     p_resolve.add_argument(
         "--db", type=Path, default=REPO / "data" / "drbrain.db", help="main library DB"
     )

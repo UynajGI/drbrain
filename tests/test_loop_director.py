@@ -284,23 +284,45 @@ def test_absorb_counts_falsification_as_information_gain():
     assert state["consecutive_no_gain"] == 0
 
 
-def test_absorb_counts_job_consumption_as_information_gain():
-    """L-I1: 预测被实算改写（消费到数值作业）是进展。"""
+def test_absorb_counts_job_consumption_as_information_gain(tmp_path):
+    """L-I1: 预测被实算改写（消费到**有落盘产物**的数值作业）才是进展。
+
+    诚实语义（review round-2）:只有 job 日志可解析的作业算消费——提交了但
+    未完成/失败的 job_id 不算，否则死循环提交的 run 永不触发停滞。
+    """
     from drbrain.loop.events import ResearchState, Verification
 
-    d = ResearchDirector(cfg=_cfg())
+    run_dir = tmp_path / "runs"
+    d = ResearchDirector(cfg=_cfg(), run_dir=str(run_dir))
+    jobs_dir = run_dir / "t" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "job-9.log").write_text('{"value": 1.0}', encoding="utf-8")
+
     state = _default_state("t")
     state["champion"].append({"statement": "h1", "cycle": 1, "confidence": 1.0})
-    rs = ResearchState(
+
+    real = ResearchState(
         verifications=[
             Verification(statement="p1", job_id="job-9", status="prediction"),
         ],
         predictions=["p1"],
         hypotheses=[_h("h1")],
     )
-    result = d._absorb(state, "report", rs)
+    result = d._absorb(state, "report", real)
     assert result["scorecard"]["jobs_consumed"] == 1
     assert state["consecutive_no_gain"] == 0
+
+    # 只有 job_id 字符串、没有落盘产物 → 不算消费（幻觉 job_id 不得续命）
+    phantom = ResearchState(
+        verifications=[
+            Verification(statement="p2", job_id="job-404", status="prediction"),
+        ],
+        predictions=["p2"],
+        hypotheses=[_h("h1")],
+    )
+    result = d._absorb(state, "report", phantom)
+    assert result["scorecard"]["jobs_consumed"] == 0
+    assert state["consecutive_no_gain"] == 1
 
 
 def test_absorb_scorecard_records_contradiction_and_rag_status():

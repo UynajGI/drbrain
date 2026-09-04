@@ -62,9 +62,7 @@ def test_small_output_passes_through_untouched():
 
 def test_plugin_declaration_overrides_default():
     registry = PluginRegistry()
-    registry.register(
-        _search_plugin(max_output_bytes=100), lambda args: {"blob": "y" * 500}
-    )
+    registry.register(_search_plugin(max_output_bytes=100), lambda args: {"blob": "y" * 500})
     result = registry.call("search_papers", {})
     assert result.truncated is True
     assert result.data["bytes"] > 100
@@ -73,9 +71,7 @@ def test_plugin_declaration_overrides_default():
 
 def test_call_argument_overrides_plugin_declaration():
     registry = PluginRegistry()
-    registry.register(
-        _search_plugin(max_output_bytes=10_000), lambda args: {"blob": "y" * 500}
-    )
+    registry.register(_search_plugin(max_output_bytes=10_000), lambda args: {"blob": "y" * 500})
     result = registry.call("search_papers", {}, max_output_bytes=50)
     assert result.truncated is True
     assert len(result.data["preview"]) == 50

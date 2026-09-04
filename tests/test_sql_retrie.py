@@ -178,7 +178,10 @@ def test_categories_filter_narrows_recall(rag_db, cfg, monkeypatch):
     """filters={"categories": ...} restricts the BM25 recall leg (review §6.2)."""
     _patch_embed(monkeypatch, [1.0] * DIM)
     rows = sql_retrie.retrieve_documents_sql(
-        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        cfg,
+        None,
+        "kagome flat band corrosion steel",
+        top_k=5,
         filters={"categories": "cond-mat"},
     )
     assert rows, "cond-mat paper must survive the filter"
@@ -188,7 +191,10 @@ def test_categories_filter_narrows_recall(rag_db, cfg, monkeypatch):
 def test_categories_filter_prefix_matches_arxiv_archives(rag_db, cfg, monkeypatch):
     _patch_embed(monkeypatch, [1.0] * DIM)
     rows = sql_retrie.retrieve_documents_sql(
-        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        cfg,
+        None,
+        "kagome flat band corrosion steel",
+        top_k=5,
         filters={"categories": ["physics"]},
     )
     assert rows, "physics.* papers must survive a physics archive filter"
@@ -202,7 +208,10 @@ def test_missing_categories_table_widens_instead_of_erroring(rag_db, cfg, monkey
     conn.close()
     _patch_embed(monkeypatch, [1.0] * DIM)
     rows = sql_retrie.retrieve_documents_sql(
-        cfg, None, "kagome flat band corrosion steel", top_k=5,
+        cfg,
+        None,
+        "kagome flat band corrosion steel",
+        top_k=5,
         filters={"categories": "cond-mat"},
     )
     assert rows, "corpora without category metadata must not error nor narrow"

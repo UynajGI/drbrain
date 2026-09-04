@@ -47,9 +47,7 @@ META_TABLE = "vector_meta"
 
 
 def _ensure_meta_table(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {META_TABLE} (key TEXT PRIMARY KEY, value TEXT)"
-    )
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {META_TABLE} (key TEXT PRIMARY KEY, value TEXT)")
 
 
 def mark_vec_synced(conn: sqlite3.Connection) -> None:
@@ -82,9 +80,7 @@ def vec_synced(conn: sqlite3.Connection) -> bool:
     """
     try:
         _ensure_meta_table(conn)
-        row = conn.execute(
-            f"SELECT value FROM {META_TABLE} WHERE key = 'synced'"
-        ).fetchone()
+        row = conn.execute(f"SELECT value FROM {META_TABLE} WHERE key = 'synced'").fetchone()
     except sqlite3.Error:
         return False
     return bool(row and row[0] == "1")
@@ -97,9 +93,7 @@ def embedding_byte_len(conn: sqlite3.Connection) -> int:
     Falls back to the historical 1024-float layout when the corpus is empty.
     """
     try:
-        row = conn.execute(
-            f"SELECT length(embedding) FROM {BASE_TABLE} LIMIT 1"
-        ).fetchone()
+        row = conn.execute(f"SELECT length(embedding) FROM {BASE_TABLE} LIMIT 1").fetchone()
         return int(row[0]) if row and row[0] else 4096
     except sqlite3.Error:
         return 4096

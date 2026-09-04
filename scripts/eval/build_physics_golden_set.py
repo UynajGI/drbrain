@@ -32,7 +32,7 @@ import re
 import sqlite3
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -79,7 +79,9 @@ def _keywords(text: str, k: int = QUERY_KEYWORDS) -> str:
     return " ".join(w for w, _ in ranked[:k])
 
 
-def build_cases(conn, limit: int = 0, seed: int | None = None, now: str | None = None) -> list[dict]:
+def build_cases(
+    conn, limit: int = 0, seed: int | None = None, now: str | None = None
+) -> list[dict]:
     """Construct golden cases from resolved in-library citations.
 
     ``conn`` is any object with ``execute(sql)`` returning a cursor (a sqlite3
@@ -87,7 +89,7 @@ def build_cases(conn, limit: int = 0, seed: int | None = None, now: str | None =
     are ordered by (citing, cited); when ``seed`` is given the list is shuffled
     with ``random.Random(seed)`` before ``limit`` is applied.
     """
-    created_at = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    created_at = now or datetime.now(UTC).isoformat(timespec="seconds")
     cases: list[dict] = []
     for citing, cited, title, abstract in conn.execute(_CITE_PAIRS_SQL).fetchall():
         title = str(title or "").strip()

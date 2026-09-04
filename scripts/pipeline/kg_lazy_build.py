@@ -40,7 +40,7 @@ import re
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -68,7 +68,7 @@ def _safe_paper_dir(arxiv_id: str) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 # ── conclusion-section extraction from raw.md ────────────────────────────────
@@ -119,31 +119,81 @@ _TYPE_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Conclusion",
         (
-            "we find", "we found", "we show", "we demonstrate", "we conclude",
-            "results show", "our results", "our findings", "our analysis",
-            "indicates", "indicate", "demonstrates", "demonstrate", "reveals",
-            "reveal", "in summary", "to summarize", "these findings",
-            "conclude", "conclusion", "overall",
+            "we find",
+            "we found",
+            "we show",
+            "we demonstrate",
+            "we conclude",
+            "results show",
+            "our results",
+            "our findings",
+            "our analysis",
+            "indicates",
+            "indicate",
+            "demonstrates",
+            "demonstrate",
+            "reveals",
+            "reveal",
+            "in summary",
+            "to summarize",
+            "these findings",
+            "conclude",
+            "conclusion",
+            "overall",
         ),
     ),
     (
         "Method",
         (
-            "we propose", "we present", "we introduce", "we develop", "we derive",
-            "we study", "we investigate", "we construct", "we calculate",
-            "we perform", "we analyze", "we extend", "we formulate",
-            "method", "approach", "framework", "formalism", "algorithm",
-            "simulation", "calculation", "formulation", "scheme", "technique",
-            "we model", "monte carlo", "mean field", "perturbation",
+            "we propose",
+            "we present",
+            "we introduce",
+            "we develop",
+            "we derive",
+            "we study",
+            "we investigate",
+            "we construct",
+            "we calculate",
+            "we perform",
+            "we analyze",
+            "we extend",
+            "we formulate",
+            "method",
+            "approach",
+            "framework",
+            "formalism",
+            "algorithm",
+            "simulation",
+            "calculation",
+            "formulation",
+            "scheme",
+            "technique",
+            "we model",
+            "monte carlo",
+            "mean field",
+            "perturbation",
         ),
     ),
     (
         "Problem",
         (
-            "problem", "challenge", "open question", "unsolved", "unresolved",
-            "limitation", "difficulty", "remains unclear", "remains an open",
-            "puzzle", "paradox", "issue", "obstacle", "lack of",
-            "little is known", "poorly understood", "open problem",
+            "problem",
+            "challenge",
+            "open question",
+            "unsolved",
+            "unresolved",
+            "limitation",
+            "difficulty",
+            "remains unclear",
+            "remains an open",
+            "puzzle",
+            "paradox",
+            "issue",
+            "obstacle",
+            "lack of",
+            "little is known",
+            "poorly understood",
+            "open problem",
         ),
     ),
 )
@@ -162,7 +212,7 @@ def _sentence_type(sentence: str) -> str:
 
 def heuristic_extract(
     chunks: list[tuple[str, str]],
-    min_concepts: int = MIN_CONCEPTS,
+    min_concepts: int = MIN_CONCEPTS,  # best-effort floor: short abstracts may yield fewer
     max_concepts: int = MAX_CONCEPTS,
 ) -> list[dict]:
     """Extract 3-5 key concepts from (text, section) chunks with pure TF /
@@ -299,9 +349,7 @@ def spark4b_extract(
         messages = [
             {
                 "role": "user",
-                "content": _SPARK_PROMPT.format(
-                    min_n=min_concepts, max_n=max_concepts, text=text
-                ),
+                "content": _SPARK_PROMPT.format(min_n=min_concepts, max_n=max_concepts, text=text),
             }
         ]
         inputs = tokenizer.apply_chat_template(
@@ -311,7 +359,7 @@ def spark4b_extract(
             out = model.generate(
                 inputs, max_new_tokens=300, do_sample=False, pad_token_id=tokenizer.eos_token_id
             )
-        raw = tokenizer.decode(out[0][inputs.shape[1]:], skip_special_tokens=True)
+        raw = tokenizer.decode(out[0][inputs.shape[1] :], skip_special_tokens=True)
         parsed = parse_llm_json(raw)
     except Exception as exc:  # noqa: BLE001 — best-effort per paper
         print(f"[kg-lazy] spark4b extraction failed: {type(exc).__name__}: {exc}", flush=True)
@@ -358,9 +406,7 @@ def load_worklist(path: Path) -> dict:
 
 def save_worklist(path: Path, wl: dict) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(
-        json.dumps(wl, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    Path(path).write_text(json.dumps(wl, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
@@ -418,21 +464,17 @@ def run_l1(
         raise SystemExit(2)
     extract_fn = EXTRACTORS[extractor]
 
-    rows = db.execute(_L1_SELECT).fetchall()
-    if limit > 0:
-        rows = rows[:limit]
+    sql = _L1_SELECT + (" LIMIT ?" if limit > 0 else "")
+    rows = db.execute(sql, (limit,) if limit > 0 else ()).fetchall()
     print(
-        f"[kg-lazy] L1: {len(rows)} papers to process "
-        f"(extractor={extractor}, root={papers_root})",
+        f"[kg-lazy] L1: {len(rows)} papers to process (extractor={extractor}, root={papers_root})",
         flush=True,
     )
 
     stats = {"selected": len(rows), "processed": 0, "skipped": 0, "inserted": 0}
     t0 = time.time()
     for local_id, title, abstract, year in rows:
-        if db.execute(
-            "SELECT 1 FROM concepts WHERE local_id = ? LIMIT 1", (local_id,)
-        ).fetchone():
+        if db.execute("SELECT 1 FROM concepts WHERE local_id = ? LIMIT 1", (local_id,)).fetchone():
             stats["skipped"] += 1
             continue
         chunks: list[tuple[str, str]] = [(abstract, "abstract")]
@@ -494,7 +536,9 @@ def _get_build_one():
     return mod.build_one
 
 
-def _full_extract(db, paper_id: str, cfg: dict, papers_root: Path, skip_refine: bool = True) -> dict:
+def _full_extract(
+    db, paper_id: str, cfg: dict, papers_root: Path, skip_refine: bool = True
+) -> dict:
     """Delegate one paper to the existing full extraction pipeline."""
     build_one = _get_build_one()
     return build_one(paper_id, cfg, db, skip_refine=skip_refine)
@@ -580,8 +624,7 @@ def run_l2(
     if worklist_path and worklist_changed:
         save_worklist(worklist_path, wl)
     print(
-        f"[kg-lazy] L2 done: ok={stats['ok']} skipped={stats['skipped']} "
-        f"failed={stats['failed']}",
+        f"[kg-lazy] L2 done: ok={stats['ok']} skipped={stats['skipped']} failed={stats['failed']}",
         flush=True,
     )
     return stats

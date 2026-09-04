@@ -299,16 +299,19 @@ def _job_log_has_number(run_dir: str | None, job_id: str) -> bool:
     return _extract_result_payload(text) is not None
 
 
+# "==" is deliberately absent: exact float equality between a computed value
+# and an LLM-chosen threshold would auto-falsify nearly every prediction.
 _COMPARATORS = {
     "<": lambda a, b: a < b,
     "<=": lambda a, b: a <= b,
     ">": lambda a, b: a > b,
     ">=": lambda a, b: a >= b,
-    "==": lambda a, b: a == b,
 }
 
 
-def _structured_prediction_met(hypothesis: Hypothesis | None, value: float, unit: str) -> bool | None:
+def _structured_prediction_met(
+    hypothesis: Hypothesis | None, value: float, unit: str
+) -> bool | None:
     """§7.1: code-judge a structured prediction — value vs threshold with units.
 
     Returns True/False when the hypothesis carries a machine-checkable
@@ -345,7 +348,10 @@ def _structured_prediction_met(hypothesis: Hypothesis | None, value: float, unit
 
 
 def _classify_verification(
-    ver: Verification, score: float, has_compute: bool, run_dir: str | None = None,
+    ver: Verification,
+    score: float,
+    has_compute: bool,
+    run_dir: str | None = None,
     hypothesis: Hypothesis | None = None,
 ) -> str:
     """Code-based verdict from the evidence counts (T3), with T2/T4 gates.
@@ -395,6 +401,10 @@ def _classify_verification(
         return "verified"
     if structured is not None and ver.job_id:
         # 数值证据在手且可机检：代码判定压过含混的计数（supports/refutes 混杂）。
+        # T4 纪律与主分支一致——job_id 是 LLM 填的字符串，落盘产物必须存在且
+        # 能解析，否则可能是幻觉 job_id 伪造的终局判定。
+        if not _job_log_has_number(run_dir, ver.job_id):
+            return "prediction"
         return "verified" if structured else "falsified"
     return "prediction"
 
@@ -1570,8 +1580,8 @@ class ResearchLoopWorkflow(Workflow):
         and no KG means "unknown" — never a free novelty bonus.
         """
         query = self._fallback_query(
-            f"{hypothesis.statement} {hypothesis.prediction}" or state.task
-        )
+            f"{hypothesis.statement} {hypothesis.prediction}"
+        ) or self._fallback_query(state.task or "")
         keywords = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", hypothesis.statement)][:4]
 
         literature_hit = False
@@ -1617,10 +1627,10 @@ class ResearchLoopWorkflow(Workflow):
         if kg_reverse:
             return "contradiction"
         if literature_hit and kg_forward:
-            return "known"
-        if literature_hit:
+            # 双重命中才算 reproduction（封杀 champion 的强处置）——数值相近
+            # 比对待结构化 prediction 普及后接入，再进一步收紧。
             return "reproduction"
-        if kg_forward:
+        if literature_hit or kg_forward:
             return "known"
         return "novel"
 
@@ -1729,9 +1739,7 @@ class ResearchLoopWorkflow(Workflow):
                     continue
                 score = _to_float(raw.get("score", 0.0)) or 0.0
                 # §7.3: 最终分 = 0.7×critic rubric + 0.3×代码新颖性标签
-                score = self._compose_novelty_score(
-                    score, novelty_labels.get(claim_id, "unknown")
-                )
+                score = self._compose_novelty_score(score, novelty_labels.get(claim_id, "unknown"))
                 # 理由字段别名兜底:不同模型会把评语放进 flaw 之外的键
                 flaw = ""
                 for key in ("flaw", "content", "rationale", "reason", "comment"):
@@ -2407,9 +2415,7 @@ class ResearchLoopWorkflow(Workflow):
                     verification_by_statement.setdefault(verification.statement, []).append(
                         verification
                     )
-            ledger_ids = {
-                h.claim_id: h.claim_id for h in state.hypotheses if h.claim_id
-            }
+            ledger_ids = {h.claim_id: h.claim_id for h in state.hypotheses if h.claim_id}
             for statements, claim_type, no_numeric_confidence in (
                 (state.verified, "Conclusion", 0.6),
                 (state.falsified, "Rejected", 0.6),
@@ -2428,15 +2434,10 @@ class ResearchLoopWorkflow(Workflow):
                         confidence=confidence,
                         run_id=self._provenance_run_id,
                         cycle=self._provenance_cycle,
-                        job_id=next(
-                            (v.job_id for v in verifications if v.job_id), ""
-                        ),
+                        job_id=next((v.job_id for v in verifications if v.job_id), ""),
                         claim_ledger_id=ledger_ids.get(
                             next(
-                                (
-                                    v.claim_id
-                                    for v in verifications if v.claim_id
-                                ),
+                                (v.claim_id for v in verifications if v.claim_id),
                                 "",
                             ),
                             "",
@@ -2444,9 +2445,7 @@ class ResearchLoopWorkflow(Workflow):
                         model=self._last_verify_model,
                         prompt_hash=self._last_verify_prompt_hash,
                         evidence_node_ids=",".join(
-                            dict.fromkeys(
-                                eid for v in verifications for eid in v.evidence_ids
-                            )
+                            dict.fromkeys(eid for v in verifications for eid in v.evidence_ids)
                         ),
                     )
                     self._record_claim_evidence(
@@ -2473,9 +2472,10 @@ class ResearchLoopWorkflow(Workflow):
         if self._db is None or not persisted:
             return
         try:
-            task_anchor = "task:" + hashlib.sha1(
-                (state.task or "research-loop").encode("utf-8")
-            ).hexdigest()[:16]
+            task_anchor = (
+                "task:"
+                + hashlib.sha1((state.task or "research-loop").encode("utf-8")).hexdigest()[:16]
+            )
             relation_by_type = {"Conclusion": "supports", "Rejected": "refutes"}
             for claim_id, claim_type in persisted:
                 relation = relation_by_type.get(claim_type, "predicts")

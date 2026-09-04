@@ -46,11 +46,15 @@ _VERB_ENVIRONMENTS = {
     "math",
 }
 
-_CITE_RE = re.compile(r"\\(?:cite|citep|citet|citealp|citealt|citeauthor|citeyear)\*?\s*(\[[^]]*\])*\s*\{([^}]*)\}")
+_CITE_RE = re.compile(
+    r"\\(?:cite|citep|citet|citealp|citealt|citeauthor|citeyear)\*?\s*(\[[^]]*\])*\s*\{([^}]*)\}"
+)
 _REF_RE = re.compile(r"\\(?:ref|autoref|eqref|pageref|Cref|cref)\s*\{([^}]*)\}")
 _LABEL_RE = re.compile(r"\\label\{([^}]*)\}")
 _COMMENT_RE = re.compile(r"(?m)^((?:[^%\\]|\\.)*)%.*$")
-_GROUP_RE = re.compile(r"\\(?:text|textbf|textit|texttt|textrm|mathrm|mathbf|mathit|emph)\{([^{}]*)\}")
+_GROUP_RE = re.compile(
+    r"\\(?:text|textbf|textit|texttt|textrm|mathrm|mathbf|mathit|emph)\{([^{}]*)\}"
+)
 _BRACE_CMD_RE = re.compile(r"\\(?:title|author|date|thanks)\s*(\[[^]]*\])?\s*\{")
 _RESIDUAL_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?(\[[^]]*\])?")
 _DOLLAR_DISPLAY_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
@@ -207,7 +211,9 @@ def latex_to_document(latex: str) -> LatexDocument:
     if abstract:
         abstract_md = _simplify_inline(abstract).strip()
         markdown = f"## Abstract\n\n{abstract_md}\n\n{markdown}"
-    return LatexDocument(markdown=markdown, citations=list(dict.fromkeys(citations)), abstract=abstract)
+    return LatexDocument(
+        markdown=markdown, citations=list(dict.fromkeys(citations)), abstract=abstract
+    )
 
 
 def latex_to_markdown(latex: str) -> str:

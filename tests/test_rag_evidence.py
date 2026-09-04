@@ -179,9 +179,7 @@ def test_retrieval_rows_carry_tree_line_offsets_from_node_metadata():
     assert row["line_end"] == 4
     # the historic payload and evidence fields are unchanged
     assert row["node_id"] == "0001"
-    assert row["content_checksum"] == hashlib.sha256(
-        b"condition list part 1"
-    ).hexdigest()
+    assert row["content_checksum"] == hashlib.sha256(b"condition list part 1").hexdigest()
 
 
 def test_retrieval_rows_without_line_offsets_stay_key_clean():
@@ -654,22 +652,16 @@ def test_kg_settlement_writes_claim_edges_and_marks_contested(tmp_path):
     workflow._write_kg_settlement(state_ok, persisted)
 
     edges = db.conn.execute("SELECT src_id, dst_id, relation FROM edges").fetchall()
-    assert any(
-        src.startswith("claim:") and rel == "supports" for src, _dst, rel in edges
-    ), edges
+    assert any(src.startswith("claim:") and rel == "supports" for src, _dst, rel in edges), edges
 
     state_bad = ResearchState(task="physics loop", falsified=["H1"])
     persisted = workflow._persist_claims(state_bad)
     workflow._write_kg_settlement(state_bad, persisted)
 
-    rows = db.conn.execute(
-        "SELECT claim_id, claim_type FROM claims ORDER BY claim_type"
-    ).fetchall()
+    rows = db.conn.execute("SELECT claim_id, claim_type FROM claims ORDER BY claim_type").fetchall()
     assert [ctype for _cid, ctype in rows] == ["Conclusion", "Rejected"]
 
-    relations = {
-        rel for rel, in db.conn.execute("SELECT relation FROM edges").fetchall()
-    }
+    relations = {rel for (rel,) in db.conn.execute("SELECT relation FROM edges").fetchall()}
     assert "refutes" in relations
     assert "contested" in relations
     db.close()

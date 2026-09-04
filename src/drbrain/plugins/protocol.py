@@ -41,6 +41,9 @@ from typing import Any, Literal
 # ``gnn``) belong in :attr:`Plugin.metadata`, not in this strict type.
 PluginType = Literal["model", "software", "data", "formula", "other"]
 Backend = Literal["subprocess", "inprocess", "static"]
+# Deprecated aliases kept ONLY so external plugins importing them keep working;
+# no code path reads them anymore (P-I2).
+OnFailure = Literal["abstain", "stale", "none"]
 PluginSideEffect = Literal["pure", "read", "write", "irreversible", "unspecified"]
 
 
@@ -82,7 +85,10 @@ class JobStatus(StrEnum):
 class Plugin:
     """Generic descriptor of an external capability exposed as an agent tool.
 
-    Frozen: a registered plugin is immutable. ``summary_fields`` names the keys
+    Frozen: a registered plugin is immutable. Unknown keyword arguments are
+    ignored (extra="ignore") so external plugins written against older
+    protocol revisions (e.g. passing ``on_failure=``/``entry=``) keep
+    loading instead of raising TypeError during discovery. ``summary_fields`` names the keys
     whose values are worth surfacing to the LLM alongside the raw JSON (the
     "raw JSON + key-field summary" compromise).
 
@@ -95,10 +101,16 @@ class Plugin:
     name: str
     description: str
     input_schema: dict[str, Any]
+    # Compat-only fields (P-I2): declared unread since the schema-bridge
+    # rework, but external plugins still pass them to Plugin(...); removing
+    # them outright would TypeError during third-party discovery.
+    output_schema: dict[str, Any] | None = None
     plugin_type: PluginType = "other"
     version: str = ""
     resource: str | None = None
     backend: Backend = "inprocess"
+    entry: str = ""  # deprecated, unread (compat: older plugins pass it)
+    on_failure: OnFailure = "abstain"  # deprecated, unread (compat)
     timeout_s: float = 60.0
     summary_fields: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -121,9 +133,7 @@ class Plugin:
 
 def _job_method_not_implemented(*_args: Any) -> Any:
     """Protocol default for any job method the plugin did not register."""
-    raise NotImplementedError(
-        "plugin has no async-job methods registered (submit/poll/cancel)"
-    )
+    raise NotImplementedError("plugin has no async-job methods registered (submit/poll/cancel)")
 
 
 @dataclass(frozen=True)

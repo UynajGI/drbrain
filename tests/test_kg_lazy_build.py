@@ -193,9 +193,7 @@ def test_l2_consumes_worklist_and_marks_done(tmp_db, tmp_path, papers_root, monk
         return {"ok": True, "local_id": pid}
 
     monkeypatch.setattr(kg, "_full_extract", fake_full_extract)
-    stats = kg.run_l2(
-        tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}}
-    )
+    stats = kg.run_l2(tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}})
     assert stats["ok"] == 1 and stats["failed"] == 0
     assert calls == ["p1"]
 
@@ -215,9 +213,7 @@ def test_l2_failure_keeps_pending(tmp_db, tmp_path, papers_root, monkeypatch):
         "_full_extract",
         lambda db, pid, cfg, root, skip_refine=True: {"ok": False, "error": "boom"},
     )
-    stats = kg.run_l2(
-        tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}}
-    )
+    stats = kg.run_l2(tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}})
     assert stats["failed"] == 1
     wl = kg.load_worklist(wl_path)
     assert [e["paper_id"] for e in wl["pending"]] == ["p1"]
@@ -238,9 +234,7 @@ def test_l2_skips_paper_that_already_has_concepts(tmp_db, tmp_path, papers_root,
         return {"ok": True, "local_id": pid}
 
     monkeypatch.setattr(kg, "_full_extract", fake_full_extract)
-    stats = kg.run_l2(
-        tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}}
-    )
+    stats = kg.run_l2(tmp_db, papers_root, worklist_path=wl_path, cfg={"llm": {"models": ["stub"]}})
     assert stats["skipped"] == 1 and stats["ok"] == 0
     assert calls == []  # no extraction call for an already-built paper
     wl = kg.load_worklist(wl_path)

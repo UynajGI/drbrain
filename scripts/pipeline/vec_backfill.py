@@ -66,12 +66,14 @@ def main() -> None:
             except Exception:  # noqa: BLE001 — 维度异常等跳过
                 fail += 1
         conn.commit()
-        vi.mark_vec_synced(conn)  # R-I2: 完整回填后打同步水位
         print(
             f"[{min(i + args.batch, len(missing))}/{len(missing)}] "
             f"ok={done} fail={fail} elapsed={time.monotonic() - t0:.0f}s",
             flush=True,
         )
+    # R-I2: 水位只在整轮回填完成后打——中途打标会让不完整库被读者当成已同步。
+    if fail == 0:
+        vi.mark_vec_synced(conn)
 
     n_vec = conn.execute(f"SELECT COUNT(*) FROM {vi.VEC_TABLE}").fetchone()[0]
     print(

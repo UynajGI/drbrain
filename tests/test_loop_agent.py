@@ -1028,8 +1028,7 @@ def test_dirty_llm_outputs_survive_the_cycle(monkeypatch, tmp_path):
     # 脏 claim_id + 改写语句 → 评论无法归属 → discussion_pending（诚实降级，
     # 留给下一轮重审），而不是崩溃或无声消失。
     assert all(
-        h.status in ("prediction", "critiqued", "discarded", "proposed")
-        for h in state.hypotheses
+        h.status in ("prediction", "critiqued", "discarded", "proposed") for h in state.hypotheses
     )
     assert "verified=0" in result
 
@@ -1059,8 +1058,13 @@ def test_structured_prediction_code_falsification(tmp_path):
         unit="eV",
     )
     ver = Verification(
-        statement="H", job_id="job-42", value=0.31, unit="eV",
-        supports=1, refutes=0, computed="0.31",
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31",
     )
     run_dir = str(jobs)  # 生产里 _jobs_dir 即 jobs 目录本身
 
@@ -1069,22 +1073,37 @@ def test_structured_prediction_code_falsification(tmp_path):
 
     # 数值 0.71 ≥ 0.5 → 代码证伪压过 supports=1 的计数
     ver_bad = Verification(
-        statement="H", job_id="job-42", value=0.71, unit="eV",
-        supports=1, refutes=0, computed="0.71",
+        statement="H",
+        job_id="job-42",
+        value=0.71,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.71",
     )
     assert _classify_verification(ver_bad, 0.9, True, run_dir, hypothesis=h) == "falsified"
 
     # 混杂计数 + 可机检数值 + 真实作业 → 代码判定说了算
     ver_mixed = Verification(
-        statement="H", job_id="job-42", value=0.31, unit="eV",
-        supports=2, refutes=1, computed="0.31",
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=2,
+        refutes=1,
+        computed="0.31",
     )
     assert _classify_verification(ver_mixed, 0.9, True, run_dir, hypothesis=h) == "verified"
 
     # 预测单位 eV，作业单位 eV（同单位）→ 直接比较 0.31 < 0.5 → 支持
     ver_mev = Verification(
-        statement="H", job_id="job-42", value=0.31, unit="eV",
-        supports=1, refutes=0, computed="0.31 eV",
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31 eV",
     )
     assert _classify_verification(ver_mev, 0.9, True, run_dir, hypothesis=h) == "verified"
 

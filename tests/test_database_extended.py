@@ -481,17 +481,13 @@ def test_get_stats_with_paper_ids_filter(tmp_db):
 
 def test_paper_categories_roundtrip(tmp_db):
     """v18: papers.categories + helpers (review §6.2)."""
-    tmp_db.insert_paper(
-        "pA", "Kagome", 2024, "uploaded", categories="cond-mat.str-el quant-ph"
-    )
+    tmp_db.insert_paper("pA", "Kagome", 2024, "uploaded", categories="cond-mat.str-el quant-ph")
     tmp_db.insert_paper("pB", "Corrosion", 2020, "uploaded")
     tmp_db.set_paper_categories("pB", "physics.chem-ph")
 
     pairs = dict(tmp_db.iter_paper_categories())
     assert pairs == {"pA": "cond-mat.str-el quant-ph", "pB": "physics.chem-ph"}
-    row = tmp_db.execute(
-        "SELECT categories FROM papers WHERE local_id = 'pA'"
-    ).fetchone()
+    row = tmp_db.execute("SELECT categories FROM papers WHERE local_id = 'pA'").fetchone()
     assert row == ("cond-mat.str-el quant-ph",)
 
 

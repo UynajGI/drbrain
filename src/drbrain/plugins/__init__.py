@@ -31,6 +31,7 @@ from drbrain.plugins.protocol import (
     Backend,
     JobMethods,
     JobStatus,
+    OnFailure,
     Plugin,
     PluginResult,
     PluginType,
@@ -41,6 +42,7 @@ from drbrain.plugins.registry import DEFAULT_MAX_OUTPUT_BYTES, PluginRegistry, j
 
 __all__ = [
     "Artifact",
+    "OnFailure",
     "Backend",
     "DEFAULT_MAX_OUTPUT_BYTES",
     "JobMethods",

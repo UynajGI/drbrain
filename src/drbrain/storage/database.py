@@ -889,9 +889,7 @@ class Database:
             ).fetchall()
         ]
 
-    def insert_paper_cite_keys(
-        self, citing_local_id: str, cited_keys: list[str]
-    ) -> None:
+    def insert_paper_cite_keys(self, citing_local_id: str, cited_keys: list[str]) -> None:
         """Record raw citation keys (\\cite arguments) extracted from one paper.
 
         Resolution of ``cited_key`` (arXiv id / DOI / bib key) to an in-corpus
@@ -900,8 +898,7 @@ class Database:
         if not cited_keys:
             return
         self.conn.executemany(
-            "INSERT OR IGNORE INTO paper_cite_keys (citing_local_id, cited_key) "
-            "VALUES (?, ?)",
+            "INSERT OR IGNORE INTO paper_cite_keys (citing_local_id, cited_key) VALUES (?, ?)",
             [(citing_local_id, k) for k in cited_keys],
         )
 
@@ -910,20 +907,21 @@ class Database:
 
         Returns the number of citation rows resolved.
         """
-        resolved = 0
         with self.conn:
             rows = self.conn.execute(
                 "SELECT rowid, cited_key FROM paper_cite_keys WHERE cited_local_id IS NULL"
             ).fetchall()
-            for rowid, key in rows:
-                local_id = key_to_local_id.get(str(key))
-                if local_id:
-                    self.conn.execute(
-                        "UPDATE paper_cite_keys SET cited_local_id = ? WHERE rowid = ?",
-                        (local_id, rowid),
-                    )
-                    resolved += 1
-        return resolved
+            updates = [
+                (key_to_local_id[str(key)], rowid)
+                for rowid, key in rows
+                if key_to_local_id.get(str(key))
+            ]
+            if updates:
+                self.conn.executemany(
+                    "UPDATE paper_cite_keys SET cited_local_id = ? WHERE rowid = ?",
+                    updates,
+                )
+        return len(updates)
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""
@@ -1516,6 +1514,12 @@ class Database:
             # one run and falsified in another must coexist (the review's
             # "Rejected→Conclusion 翻转静默覆盖" bug) so authority rules can
             # arbitrate instead of last-writer-wins.
+            # NOTE (upgrade window): pre-v19 rows were keyed by
+            # label+claim_text only; the first re-record of the same
+            # assertion inserts a new-keyed row and the legacy row lingers
+            # with empty provenance. authority arbitration sees both — the
+            # stale orphan simply loses on freshness, so no re-key migration
+            # is required, but expect one duplicate per legacy claim.
             digest = hashlib.sha1(f"{label}\x00{claim_text}\x00{claim_type}".encode()).hexdigest()
             claim_id = f"claim_{digest[:16]}"
         self.conn.execute(

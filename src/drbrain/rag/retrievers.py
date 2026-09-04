@@ -262,9 +262,7 @@ def _full_section_body(md_path: str | Path, node: dict) -> str:
     return "\n".join(lines[start:end]).strip()
 
 
-def _parent_section(
-    papers_dir, paper_id: str, node_id: str
-) -> tuple[str, str, str, dict | None]:
+def _parent_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, str, dict | None]:
     """Return ``(parent_title, full_parent_body, parent_node_id, parent_node)``.
 
     Resolves the PARENT of ``node_id`` (the "context unit" surrounding a
@@ -425,8 +423,8 @@ if _LLAMA_INDEX_AVAILABLE:
                         # Retrieval unit (leaf) ≠ context unit (parent section):
                         # swap the leaf chunk for its parent's full body so a
                         # section split across siblings reaches the LLM whole.
-                        parent_title, parent_body, parent_node_id, parent_node = (
-                            _parent_section(self._papers_dir, paper_id, nid)
+                        parent_title, parent_body, parent_node_id, parent_node = _parent_section(
+                            self._papers_dir, paper_id, nid
                         )
                         if parent_node_id and parent_body:
                             body = parent_body
@@ -440,9 +438,7 @@ if _LLAMA_INDEX_AVAILABLE:
                     if line_start is None:
                         # Leaf body shown as-is (no expansion, or no parent):
                         # travel with the leaf's own raw.md offsets.
-                        line_start, line_end = _tree_node_offsets(
-                            self._papers_dir, paper_id, nid
-                        )
+                        line_start, line_end = _tree_node_offsets(self._papers_dir, paper_id, nid)
                     node = TextNode(
                         text=_truncate_for_llm(body),
                         id_=f"{paper_id}:{nid}",

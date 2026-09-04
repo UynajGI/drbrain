@@ -116,9 +116,7 @@ def _enum_annotation(prop: dict[str, Any]) -> Any:
     return Literal[deduped[0]] if len(deduped) == 1 else Literal[deduped]
 
 
-def _annotation_for(
-    key: str, prop: dict[str, Any], model_name: str, base: type, depth: int
-) -> Any:
+def _annotation_for(key: str, prop: dict[str, Any], model_name: str, base: type, depth: int) -> Any:
     """Map one property spec to a python annotation, recursing into objects."""
     ptype_raw = prop.get("type")
     if isinstance(ptype_raw, list):
@@ -140,9 +138,7 @@ def _annotation_for(
             and isinstance(items.get("properties"), dict)
             and items["properties"]
         ):
-            sub = _build_model(
-                _safe_identifier(f"{model_name}_{key}_item"), items, base, depth + 1
-            )
+            sub = _build_model(_safe_identifier(f"{model_name}_{key}_item"), items, base, depth + 1)
             if sub is not None:
                 return list[sub]  # type: ignore[valid-type]  # runtime-built alias
         return list
@@ -460,9 +456,7 @@ class PluginRegistry:
         """
         jobs = self._jobs.get(name)
         if jobs is None:
-            raise NotImplementedError(
-                f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)"
-            )
+            raise NotImplementedError(f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)")
         return str(jobs.submit(arguments))
 
     def poll_job(self, name: str, job_id: str) -> dict[str, Any]:
@@ -472,9 +466,7 @@ class PluginRegistry:
         """
         jobs = self._jobs.get(name)
         if jobs is None:
-            raise NotImplementedError(
-                f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)"
-            )
+            raise NotImplementedError(f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)")
         return jobs.poll(job_id)
 
     def cancel_job(self, name: str, job_id: str) -> bool:
@@ -484,9 +476,7 @@ class PluginRegistry:
         """
         jobs = self._jobs.get(name)
         if jobs is None:
-            raise NotImplementedError(
-                f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)"
-            )
+            raise NotImplementedError(f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)")
         return bool(jobs.cancel(job_id))
 
     def discover(self, plugin_dir: str | Path) -> int:

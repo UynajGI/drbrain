@@ -1315,11 +1315,11 @@ class ResearchDirector:
         # §7.3 新颖性门:文献已覆盖的复现假设不进 champion(仍可跑,进
         # reproductions 计数)——champion 列表只留新知识。
         novelty_by_claim = dict(getattr(rs, "novelty_labels", {}) or {}) if rs else {}
-        claim_to_stmt = {h.claim_id: h.statement for h in (rs.hypotheses if rs else []) if h.claim_id}
+        claim_to_stmt = {
+            h.claim_id: h.statement for h in (rs.hypotheses if rs else []) if h.claim_id
+        }
         reproduction_stmts = {
-            claim_to_stmt[cid]
-            for cid, label in novelty_by_claim.items()
-            if label == "reproduction"
+            claim_to_stmt[cid] for cid, label in novelty_by_claim.items() if label == "reproduction"
         }
 
         new_champion = list(
@@ -1346,7 +1346,16 @@ class ResearchDirector:
         }
         # §7.6 发现记分卡：结构化指标，停滞判定与 adapt 决策都从这张卡读，
         # 而不是只看 champion 计数。
-        jobs_consumed = len({v.job_id for v in verifications if v.job_id})
+        # L-I1 诚实语义:只数「落盘产物可解析」的作业——提交了但没跑完/失败
+        # 的 job_id 不算消费,否则死循环提交的 run 永不停滞。
+        _jobs_run_dir = str(self._topic_dir(str(state.get("topic", ""))) / "jobs")
+        jobs_consumed = len(
+            {
+                v.job_id
+                for v in verifications
+                if v.job_id and _job_log_has_number(_jobs_run_dir, v.job_id)
+            }
+        )
         # 本轮证伪了「先前被接受为 champion」的 statement = 文献/旧证据与新
         # 实算打架——最值钱的信号，单独计数（它不会进 new_rejected）。
         contradictions = [f for f in falsified if f in champion_statements]
@@ -1366,9 +1375,7 @@ class ResearchDirector:
         # L-I1: 进展 = 信息增益，不只新 champion。证伪（新 dead end）是知识，
         # 实算结果消费（预测被改写）也是进展——三者任一发生即不算无增益轮。
         info_gain = bool(new_champion or new_rejected or jobs_consumed)
-        state["consecutive_no_gain"] = (
-            0 if info_gain else state["consecutive_no_gain"] + 1
-        )
+        state["consecutive_no_gain"] = 0 if info_gain else state["consecutive_no_gain"] + 1
         if contradictions:
             logger.info(
                 "[director] cycle %d contradicts prior champion: %s",
