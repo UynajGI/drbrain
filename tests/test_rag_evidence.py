@@ -597,11 +597,24 @@ def test_loop_persists_verified_claim_with_its_real_retrieval_evidence(tmp_path)
 
 
 def test_persist_claims_writes_provenance(tmp_path):
-    """L-I5: claims carry run/cycle/job/model/prompt provenance into the KG."""
+    """L-I5: claims carry run/cycle/job/model/prompt provenance into the KG.
+
+    Full confidence requires the T4 discipline to hold end to end: the
+    verification's job_id must resolve to an on-disk artifact whose log
+    parses to a numeric value (OCR r6) — not just an LLM-copied string.
+    """
     from drbrain.storage.database import Database as _Database
 
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    log_file = jobs / "job-77.log"
+    log_file.write_text('{"quantity": "q", "value": 1.0}', encoding="utf-8")
+    (jobs / "job-77.json").write_text(
+        json.dumps({"job_id": "job-77", "log_path": str(log_file)}), encoding="utf-8"
+    )
+
     db = _Database(tmp_path / "prov.db")
-    workflow = ResearchLoopWorkflow(db=db, run_id="run-abc", cycle=3)
+    workflow = ResearchLoopWorkflow(db=db, run_id="run-abc", cycle=3, jobs_dir=str(jobs))
     workflow._last_verify_model = "gpt-x"
     workflow._last_verify_prompt_hash = "p" * 16
     state = ResearchState(
@@ -635,6 +648,28 @@ def test_persist_claims_writes_provenance(tmp_path):
     # numeric job evidence keeps full confidence (4db2d6d contract)
     assert row[7] == 1.0
     assert row[8] == "Conclusion"
+    db.close()
+
+
+def test_persist_claims_caps_confidence_for_unverifiable_job_id(tmp_path):
+    """OCR r6: an LLM-copied job_id with NO on-disk artifact is not numeric
+    evidence — the claim falls back to the literature-only confidence cap."""
+    from drbrain.storage.database import Database as _Database
+
+    db = _Database(tmp_path / "prov2.db")
+    workflow = ResearchLoopWorkflow(db=db, run_id="run-1", cycle=1)
+    state = ResearchState(
+        task="physics loop",
+        verifications=[
+            Verification(statement="H1", evidence_ids=[], job_id="job-ghost", status="verified")
+        ],
+        verified=["H1"],
+    )
+
+    workflow._persist_claims(state)
+
+    row = db.conn.execute("SELECT job_id, confidence FROM claims").fetchone()
+    assert row == ("job-ghost", 0.6)
     db.close()
 
 

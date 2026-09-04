@@ -2473,7 +2473,12 @@ class ResearchLoopWorkflow(Workflow):
             ):
                 for statement in statements:
                     verifications = verification_by_statement.get(statement, [])
-                    has_numeric_evidence = any(v.job_id for v in verifications)
+                    # 与 T4 同一纪律：job_id 是 LLM 抄写的字符串，只有落盘
+                    # 产物能解析出数值才算"有实算证据"（OCR r6）。
+                    run_dir = self._jobs_dir or os.environ.get("DRBRAIN_RUN_DIR") or None
+                    has_numeric_evidence = any(
+                        v.job_id and _job_log_has_number(run_dir, v.job_id) for v in verifications
+                    )
                     confidence = 1.0 if has_numeric_evidence else no_numeric_confidence
                     claim_id = self._db.record_claim(
                         state.task or "research-loop",

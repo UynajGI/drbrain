@@ -887,13 +887,15 @@ def test_t4_gate_rejects_domain_keys_and_accepts_value_contract(tmp_path):
 
 
 def test_persist_claims_confidence_by_evidence_shape(tmp_path):
-    """无实算产物的 Conclusion/Rejected 置信度封顶 0.6，Prediction 0.3；有 job_id 才 1.0。"""
+    """无实算产物的 Conclusion/Rejected 置信度封顶 0.6，Prediction 0.3；
+    job_id 通过 T4 落盘校验才 1.0（OCR r6：字符串本身不是证据）。"""
     from drbrain.loop.events import ResearchState, Verification
     from drbrain.storage.database import Database
 
     db = Database(str(tmp_path / "t.db"))
+    jobs = _write_job(tmp_path / "jobs", "job-9")
     try:
-        wf = ResearchLoopWorkflow(db=db)
+        wf = ResearchLoopWorkflow(db=db, jobs_dir=str(jobs))
         state = ResearchState(
             task="generic research task",
             verified=["lit-supported conclusion"],
@@ -909,6 +911,18 @@ def test_persist_claims_confidence_by_evidence_shape(tmp_path):
         assert rows["lit-supported conclusion"] == pytest.approx(0.6)
         assert rows["lit-countered claim"] == pytest.approx(0.6)
         assert rows["bare guess"] == pytest.approx(0.3)
+
+        # 无产物的 job_id（LLM 抄写字符串）不算实算证据
+        state_ghost = ResearchState(
+            task="generic research task",
+            verified=["ghost-backed conclusion"],
+            verifications=[
+                Verification(statement="ghost-backed conclusion", supports=1, job_id="job-ghost")
+            ],
+        )
+        wf._persist_claims(state_ghost)
+        rows_ghost = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows_ghost["ghost-backed conclusion"] == pytest.approx(0.6)
 
         state2 = ResearchState(
             task="generic research task",

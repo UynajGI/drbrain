@@ -76,11 +76,20 @@ def vec_synced(conn: sqlite3.Connection) -> bool:
     retrieval and degraded to a full scan on any mismatch. The watermark is
     written by the sync writers (embedding build / vec_backfill) and cleared
     by every incremental write, so a missing or cleared watermark means
-    "not synced" without paying for a scan.
+    "not synced" without paying for a scan. Hot path (OCR r6): a plain
+    SELECT with no schema DDL — the CREATE runs only on the cold
+    table-missing error path, never on the per-query read.
     """
     try:
-        _ensure_meta_table(conn)
         row = conn.execute(f"SELECT value FROM {META_TABLE} WHERE key = 'synced'").fetchone()
+    except sqlite3.OperationalError:
+        # 表尚不存在（冷库）：建表一次后重读，之后每查询都是纯 SELECT。
+        _ensure_meta_table(conn)
+        try:
+            row = conn.execute(f"SELECT value FROM {META_TABLE} WHERE key = 'synced'").fetchone()
+        except sqlite3.Error:
+            return False
+        return bool(row and row[0] == "1")
     except sqlite3.Error:
         return False
     return bool(row and row[0] == "1")

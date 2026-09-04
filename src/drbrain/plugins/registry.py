@@ -402,11 +402,26 @@ def _truncate_output(data: Any, max_bytes: int | None) -> tuple[Any, bool]:
     """Bound an output to ``max_bytes``; ``None``/``<=0`` means unlimited.
 
     Mirrors the loop-side ``tool_broker._bounded`` digest shape so evidence
-    records look the same whichever boundary clipped them.
+    records look the same whichever boundary clipped them. ``default=str``
+    covers non-serializable leaves but NOT circular references
+    (``ValueError``) or pathological nesting (``RecursionError``) — those
+    degrade to a safe repr digest instead of escaping the never-raise
+    contract (OCR r6).
     """
     if max_bytes is None or max_bytes <= 0:
         return data, False
-    encoded = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+    try:
+        encoded = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+    except (ValueError, RecursionError, TypeError):
+        return (
+            {
+                "truncated": True,
+                "bytes": 0,
+                "sha256": "",
+                "preview": repr(data)[:512],
+            },
+            True,
+        )
     if len(encoded) <= max_bytes:
         return data, False
     return (
