@@ -333,6 +333,17 @@ def test_settle_persists_claims_to_db(tmp_path):
         ).fetchall()
         assert ("h1 confirmed", "Conclusion") in rows
         assert ("p1", "Prediction") in rows
+        # v12 knowledge_snapshots 的生产写入者：settle 落库即登记快照
+        snaps = db.conn.execute(
+            "SELECT snapshot_id, revision_id, description FROM knowledge_snapshots"
+        ).fetchall()
+        assert len(snaps) == 1
+        assert snaps[0][0].startswith("snap-")
+        assert "verified=1" in snaps[0][2] and "predictions=1" in snaps[0][2]
+        # 幂等：同一 outcome 重放不再新增行
+        wf._persist_claims(state)
+        snaps_after = db.conn.execute("SELECT COUNT(*) FROM knowledge_snapshots").fetchone()[0]
+        assert snaps_after == 1
     finally:
         db.close()
 

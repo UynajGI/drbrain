@@ -30,11 +30,12 @@ from typing import Any
 from loguru import logger as log
 
 from drbrain.rag.evidence import build_evidence_record
+from drbrain.utils.rrf import DEFAULT_K as _RRF_K
+from drbrain.utils.rrf import rrf_fuse_scores
 
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-.]*")
 _MAX_TERMS = 16
 _KNN_POOL = 100
-_RRF_K = 60
 
 
 def _default_rag_db(cfg: Any) -> Path:
@@ -192,11 +193,8 @@ def _rerank_with_vectors(
 
 
 def _fuse(legs: list[list[tuple[str, float]]]) -> list[tuple[str, float]]:
-    scores: dict[str, float] = {}
-    for leg in legs:
-        for rank, (key, _s) in enumerate(leg, start=1):
-            scores[key] = scores.get(key, 0.0) + 1.0 / (_RRF_K + rank)
-    return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    # RRF 收敛（R-I7）：实现与常量统一来自 drbrain.utils.rrf，不再自留一份。
+    return rrf_fuse_scores(legs, k=_RRF_K)
 
 
 # Module-level reranker cache: CrossEncoderReranker's model load is lazy but

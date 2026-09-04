@@ -1356,6 +1356,25 @@ class Database:
             (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
         )
 
+    def record_knowledge_snapshot(
+        self, snapshot_id: str, revision_id: str = "", description: str = ""
+    ) -> str:
+        """Register one knowledge snapshot (the v12 table's production writer).
+
+        A snapshot marks the knowledge state a settle (or answer) was grounded
+        in: ``revision_id`` pins the retrieval generation, ``description``
+        carries the human-readable cycle summary. Idempotent on
+        ``snapshot_id`` — a deterministic id (e.g. hash of the settled claim
+        set) makes re-settling the same outcome a no-op.
+        """
+        self.conn.execute(
+            "INSERT INTO knowledge_snapshots (snapshot_id, revision_id, description) "
+            "VALUES (?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING",
+            (snapshot_id, revision_id, description),
+        )
+        self.conn.commit()
+        return snapshot_id
+
     def record_answer(
         self,
         question: str,

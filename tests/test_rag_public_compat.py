@@ -61,7 +61,6 @@ PUBLIC_SYMBOLS: dict[str, tuple[str, ...]] = {
         "DrbrainRAPTORRetriever",
         "DrbrainTreeRetriever",
     ),
-    "drbrain.rag.state": ("RAGState",),
     "drbrain.rag.status": ("RetrievalError", "RetrievalStatus", "classify_failure"),
     "drbrain.cli.rag_commands": ("rag_app", "rag_eval_cmd", "rag_health_cmd", "rag_index_cmd"),
 }
@@ -241,7 +240,6 @@ def test_rag_function_signatures_are_additive_only():
 def test_rag_data_contracts_remain_additive_only():
     from drbrain.config import LlamaIndexConfig, LlamaIndexEvalConfig
     from drbrain.rag.authority import ResolvedClaim
-    from drbrain.rag.state import RAGState
     from drbrain.rag.status import RetrievalStatus
 
     assert [member.value for member in RetrievalStatus] == [
@@ -252,17 +250,6 @@ def test_rag_data_contracts_remain_additive_only():
         "timeout",
         "source_unavailable",
         "insufficient_evidence",
-    ]
-    assert [field.name for field in fields(RAGState)][:9] == [
-        "entity_ids",
-        "intent",
-        "attribute",
-        "period",
-        "comparison_period",
-        "tenant_id",
-        "user_id",
-        "snapshot_id",
-        "extra",
     ]
     assert [field.name for field in fields(ResolvedClaim)][:9] == [
         "label",

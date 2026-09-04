@@ -10,12 +10,27 @@ expected hit:
 
     (query, expected_paper_id) pairs, each annotated ``source=arxiv-citation``.
 
-Output JSON (``--out``, default ``data/physics_golden_set.json``)::
+Output is **JSONL in exactly the schema ``drbrain.rag.eval.load_golden``
+consumes** (``--out``, default ``data/physics_golden_set.jsonl``)::
 
-    {"cases": [{"query", "expected_paper_id", "source", "created_at"}]}
+    {"query", "relevant_papers": [cited], "relevant_nodes": [],
+     "split": "dev|val|test", "reference_answer": <cited abstract>,
+     "source", "created_at"}
+
+``reference_answer`` carries the cited paper's abstract — the same cheap
+non-LLM ground truth the built-in set uses. Splits are deterministic
+60/20/20 after the (optional) shuffle, so dev never leaks into test.
+``relevant_nodes`` is left empty: node-level metrics stay neutral and only
+paper-level HitRate/MRR are scored (RAGAS-style metrics use
+``reference_answer``).
+
+To evaluate against it, point the config at the file and run::
+
+    # config.yaml → llamaindex.eval.golden_set: data/physics_golden_set.jsonl
+    drbrain rag eval --split dev
 
 ``--limit`` bounds the size, ``--seed`` makes the (shuffled) sample
-reproducible. An empty library yields ``{"cases": []}`` with a hint — not an
+reproducible. An empty library yields an empty file with a hint — not an
 error.
 
 Usage:
@@ -39,9 +54,11 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
 DEFAULT_DB = REPO / "data" / "drbrain.db"
-DEFAULT_OUT = REPO / "data" / "physics_golden_set.json"
+DEFAULT_OUT = REPO / "data" / "physics_golden_set.jsonl"
 SOURCE = "arxiv-citation"
 QUERY_KEYWORDS = 6
+# 与 drbrain.rag.eval 的 dev/val/test 约定一致（60/20/20）。
+_SPLIT_RATIOS = (("dev", 0.6), ("val", 0.2), ("test", 0.2))
 
 _STOPWORDS = frozenset(
     """a an the and or of in on for to with by from as is are was were be been being
@@ -79,26 +96,40 @@ def _keywords(text: str, k: int = QUERY_KEYWORDS) -> str:
     return " ".join(w for w, _ in ranked[:k])
 
 
+def _split_for(index: int, total: int) -> str:
+    """Deterministic 60/20/20 split assignment for one case."""
+    for name, ratio in _SPLIT_RATIOS:
+        if index < round(total * ratio):
+            return name
+        index -= round(total * ratio)
+    return _SPLIT_RATIOS[-1][0]
+
+
 def build_cases(
     conn, limit: int = 0, seed: int | None = None, now: str | None = None
 ) -> list[dict]:
     """Construct golden cases from resolved in-library citations.
 
-    ``conn`` is any object with ``execute(sql)`` returning a cursor (a sqlite3
-    connection or ``drbrain.storage.database.Database``). Deterministic: rows
-    are ordered by (citing, cited); when ``seed`` is given the list is shuffled
-    with ``random.Random(seed)`` before ``limit`` is applied.
+    Cases come out in the exact schema ``drbrain.rag.eval.load_golden``
+    consumes (JSONL lines), so ``drbrain rag eval`` can score against this
+    file without any translation layer. Deterministic: rows are ordered by
+    (citing, cited); when ``seed`` is given the list is shuffled with
+    ``random.Random(seed)`` before ``limit`` is applied, and the 60/20/20
+    dev/val/test split is assigned after the shuffle.
     """
     created_at = now or datetime.now(UTC).isoformat(timespec="seconds")
     cases: list[dict] = []
     for citing, cited, title, abstract in conn.execute(_CITE_PAIRS_SQL).fetchall():
         title = str(title or "").strip()
-        kws = _keywords(str(abstract or title))
+        reference = str(abstract or "").strip()
+        kws = _keywords(reference or title)
         query = re.sub(r"\s+", " ", f"{title} {kws}").strip()
         cases.append(
             {
                 "query": query,
-                "expected_paper_id": cited,
+                "relevant_papers": [cited],
+                "relevant_nodes": [],  # paper-level eval only; node hits stay neutral
+                "reference_answer": reference,
                 "source": SOURCE,
                 "created_at": created_at,
             }
@@ -107,6 +138,8 @@ def build_cases(
         random.Random(seed).shuffle(cases)
     if limit > 0:
         cases = cases[:limit]
+    for i, case in enumerate(cases):
+        case["split"] = _split_for(i, len(cases))
     return cases
 
 
@@ -137,10 +170,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(
-        json.dumps({"cases": cases}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    with args.out.open("w", encoding="utf-8") as fh:
+        for case in cases:
+            fh.write(json.dumps(case, ensure_ascii=False) + "\n")
+    splits = Counter(case["split"] for case in cases)
+    breakdown = ", ".join(f"{name}={splits.get(name, 0)}" for name, _ in _SPLIT_RATIOS)
+    print(f"[golden] wrote {len(cases)} cases ({breakdown}) → {args.out}", flush=True)
+    print(
+        "[golden] evaluate with: config llamaindex.eval.golden_set → this file, then "
+        "`drbrain rag eval --split dev`",
+        flush=True,
     )
-    print(f"[golden] wrote {len(cases)} cases → {args.out}", flush=True)
     return 0
 
 

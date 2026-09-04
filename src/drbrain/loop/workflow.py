@@ -2504,6 +2504,25 @@ class ResearchLoopWorkflow(Workflow):
                         evidence_by_id,
                     )
                     persisted.append((claim_id, claim_type))
+            # v12 knowledge_snapshots 的生产写入者：把本次 settle 后的知识状态
+            # 登记为快照。确定性 id（task + 落库 claim 集）让重放/重跑幂等，
+            # revision 钉住本次 settle 所依据的检索代。
+            outcome_material = ";".join(
+                f"{claim_type}:{claim_id}" for claim_id, claim_type in sorted(persisted)
+            )
+            snapshot_id = (
+                "snap-"
+                + hashlib.sha256(f"{state.task}|{outcome_material}".encode()).hexdigest()[:16]
+            )
+            self._db.record_knowledge_snapshot(
+                snapshot_id,
+                revision_id=self._rag_generation or "",
+                description=(
+                    f"task={state.task or 'research-loop'}; "
+                    f"verified={len(state.verified)}; falsified={len(state.falsified)}; "
+                    f"predictions={len(state.predictions)}"
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 — persistence must not break the loop
             logger.warning("[loop] settle persist failed: %s", exc)
         return persisted

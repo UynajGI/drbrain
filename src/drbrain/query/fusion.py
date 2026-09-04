@@ -26,8 +26,9 @@ which drops all metadata and only returns ``(id, score)`` tuples.
 from __future__ import annotations
 
 from drbrain.query.types import SearchHit
+from drbrain.utils.rrf import DEFAULT_K  # RRF 收敛（R-I7）：常量单一来源
 
-DEFAULT_K = 60
+__all__ = ["DEFAULT_K", "reciprocal_rank_fusion"]
 
 
 def reciprocal_rank_fusion(

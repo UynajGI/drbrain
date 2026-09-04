@@ -40,6 +40,7 @@ from typing import Any
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
 from drbrain.rag.status import RetrievalError, RetrievalStatus, classify_failure
+from drbrain.utils.rrf import DEFAULT_K  # RRF 收敛（R-I7）：常量单一来源
 
 try:
     from llama_index.core.retrievers import BaseRetriever
@@ -61,9 +62,6 @@ __all__ = [
     "build_fusion_retriever",
     "get_retrievers",
 ]
-
-#: RRF damping constant (Cormack et al. 2009), same as ``query/fusion.py``.
-DEFAULT_K = 60
 
 #: Supported fusion modes: canonical RRF, and RRF with per-source weights.
 FUSION_MODES = ("reciprocal_rank", "weighted")
