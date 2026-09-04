@@ -35,13 +35,13 @@ CREATE TABLE IF NOT EXISTS paper_ids (
     openalex_id TEXT UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS paper_citations (
+CREATE TABLE IF NOT EXISTS paper_cite_keys (
     citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
     cited_key TEXT NOT NULL,
     cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
     PRIMARY KEY (citing_local_id, cited_key)
 );
-CREATE INDEX IF NOT EXISTS idx_paper_citations_cited ON paper_citations(cited_key);
+CREATE INDEX IF NOT EXISTS idx_paper_cite_keys_cited ON paper_cite_keys(cited_key);
 
 CREATE TABLE IF NOT EXISTS concepts (
     concept_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -769,14 +769,14 @@ class Database:
             self.conn.execute("ALTER TABLE papers ADD COLUMN categories TEXT DEFAULT ''")
         self.conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS paper_citations (
+            CREATE TABLE IF NOT EXISTS paper_cite_keys (
                 citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
                 cited_key TEXT NOT NULL,
                 cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
                 PRIMARY KEY (citing_local_id, cited_key)
             );
-            CREATE INDEX IF NOT EXISTS idx_paper_citations_cited
-                ON paper_citations(cited_key);
+            CREATE INDEX IF NOT EXISTS idx_paper_cite_keys_cited
+                ON paper_cite_keys(cited_key);
             """
         )
 
@@ -889,7 +889,7 @@ class Database:
             ).fetchall()
         ]
 
-    def insert_paper_citations(
+    def insert_paper_cite_keys(
         self, citing_local_id: str, cited_keys: list[str]
     ) -> None:
         """Record raw citation keys (\\cite arguments) extracted from one paper.
@@ -900,12 +900,12 @@ class Database:
         if not cited_keys:
             return
         self.conn.executemany(
-            "INSERT OR IGNORE INTO paper_citations (citing_local_id, cited_key) "
+            "INSERT OR IGNORE INTO paper_cite_keys (citing_local_id, cited_key) "
             "VALUES (?, ?)",
             [(citing_local_id, k) for k in cited_keys],
         )
 
-    def resolve_paper_citations(self, key_to_local_id: dict[str, str]) -> int:
+    def resolve_paper_cite_keys(self, key_to_local_id: dict[str, str]) -> int:
         """Fill ``cited_local_id`` for citations whose key is now in-corpus.
 
         Returns the number of citation rows resolved.
@@ -913,13 +913,13 @@ class Database:
         resolved = 0
         with self.conn:
             rows = self.conn.execute(
-                "SELECT rowid, cited_key FROM paper_citations WHERE cited_local_id IS NULL"
+                "SELECT rowid, cited_key FROM paper_cite_keys WHERE cited_local_id IS NULL"
             ).fetchall()
             for rowid, key in rows:
                 local_id = key_to_local_id.get(str(key))
                 if local_id:
                     self.conn.execute(
-                        "UPDATE paper_citations SET cited_local_id = ? WHERE rowid = ?",
+                        "UPDATE paper_cite_keys SET cited_local_id = ? WHERE rowid = ?",
                         (local_id, rowid),
                     )
                     resolved += 1

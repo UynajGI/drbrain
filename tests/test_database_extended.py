@@ -500,19 +500,19 @@ def test_paper_citations_insert_and_resolve(tmp_db):
     tmp_db.insert_paper("p1", "Citing", 2024, "uploaded")
     tmp_db.insert_paper("p2", "Cited", 2023, "uploaded")
 
-    tmp_db.insert_paper_citations("p1", ["hep-lat/9107001", "kane2011"])
-    tmp_db.insert_paper_citations("p1", ["hep-lat/9107001"])  # PK dedupes
-    tmp_db.insert_paper_citations("p1", [])
+    tmp_db.insert_paper_cite_keys("p1", ["hep-lat/9107001", "kane2011"])
+    tmp_db.insert_paper_cite_keys("p1", ["hep-lat/9107001"])  # PK dedupes
+    tmp_db.insert_paper_cite_keys("p1", [])
     tmp_db.commit()
 
     unresolved = tmp_db.execute(
-        "SELECT cited_key, cited_local_id FROM paper_citations ORDER BY cited_key"
+        "SELECT cited_key, cited_local_id FROM paper_cite_keys ORDER BY cited_key"
     ).fetchall()
     assert unresolved == [("hep-lat/9107001", None), ("kane2011", None)]
 
-    resolved = tmp_db.resolve_paper_citations({"hep-lat/9107001": "p2", "unknown": "p1"})
+    resolved = tmp_db.resolve_paper_cite_keys({"hep-lat/9107001": "p2", "unknown": "p1"})
     assert resolved == 1
     now = tmp_db.execute(
-        "SELECT cited_key, cited_local_id FROM paper_citations WHERE cited_key = 'hep-lat/9107001'"
+        "SELECT cited_key, cited_local_id FROM paper_cite_keys WHERE cited_key = 'hep-lat/9107001'"
     ).fetchone()
     assert now == ("hep-lat/9107001", "p2")

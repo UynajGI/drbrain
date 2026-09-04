@@ -371,6 +371,52 @@ def _graph_leg(db: Any, graph: Any, query: str, k: int) -> list[dict[str, Any]]:
     return entries
 
 
+def _claims_leg(db: Any, query: str, k: int) -> list[dict[str, Any]]:
+    """Settled-claims leg (review §7.4): the loop's own conclusions are knowledge.
+
+    Reads the main DB ``claims`` table (verified/falsified/predicted assertions
+    written at settle time) so the next cycle's retrieve step can see — and
+    cite — what earlier cycles concluded. Entries carry their own row metadata
+    because claims have no ``node_texts`` counterpart. Keywords score by
+    hit count × claim confidence; failures degrade to an empty leg.
+    """
+    if db is None:
+        return []
+    words = _WORD_RE.findall(query)[:_MAX_TERMS]
+    if not words:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT claim_id, claim_text, claim_type, confidence FROM claims "
+            "ORDER BY created_at DESC LIMIT 500"
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 — schema drift must not break the leg
+        log.warning("[rag-sql] claims leg read failed: {}", exc)
+        return []
+    lowered = [w.lower() for w in words]
+    scored: list[tuple[float, tuple]] = []
+    for row in rows:
+        text_l = str(row[1]).lower()
+        hits = sum(1 for w in lowered if w in text_l)
+        if hits:
+            scored.append((hits * max(float(row[3] or 0.0), 0.05), row))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    entries: list[dict[str, Any]] = []
+    for score, (claim_id, claim_text, claim_type, confidence) in scored[:k]:
+        entries.append(
+            {
+                "key": f"claim:{claim_id}",
+                "score": max(0.05, min(score, 1.0)),
+                "paper_id": "",
+                "node_id": f"claim:{claim_id}",
+                "title": f"[{claim_type or 'claim'}]",
+                "text": str(claim_text)[:500],
+                "source": "claims",
+            }
+        )
+    return entries
+
+
 def retrieve_documents_sql(
     cfg: Any,
     db: Any,
@@ -442,10 +488,19 @@ def retrieve_documents_sql(
             t0 = time.perf_counter()
             legs.append(("graph", _graph_leg(db, graph, query, top_k)))
             leg_ms.append(f"graph={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
+        if "claims" in wanted:
+            t0 = time.perf_counter()
+            legs.append(("claims", _claims_leg(db, query, top_k)))
+            leg_ms.append(f"claims={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
         if not legs:
             return []
 
-        rich = {e["key"]: e for name, entries in legs if name == "graph" for e in entries}
+        rich = {
+            e["key"]: e
+            for name, entries in legs
+            if name in ("graph", "claims")  # self-describing legs
+            for e in entries
+        }
         tuple_legs = [[(e["key"], e["score"]) for e in entries] for _, entries in legs]
         fused = _fuse(tuple_legs)
         membership: dict[str, list[str]] = {}

@@ -5,7 +5,7 @@ Physics corpus path (review §6): the raw arXiv LaTeX source is converted to
 ``raw.md`` with :mod:`drbrain.parser.latex_md` (math atoms preserved, ``\\cite``
 keys extracted, ``\\section`` headings → PageIndex tree built in code — no LLM
 pass), then inserted as regular papers with ``categories`` metadata for
-category-scoped retrieval. Citation keys land in ``paper_citations``; a
+category-scoped retrieval. Citation keys land in ``paper_cite_keys``; a
 ``--resolve-citations`` pass maps them to in-corpus local_ids once the corpus
 is complete.
 
@@ -107,7 +107,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         )
         db.insert_paper_ids(local_id=arxiv_id, doi=row.get("doi") or None, arxiv=arxiv_id)
         db.set_paper_abstract(arxiv_id, str(row.get("abstract") or ""))
-        db.insert_paper_citations(arxiv_id, doc.citations)
+        db.insert_paper_cite_keys(arxiv_id, doc.citations)
         db.commit()
         imported += 1
         if imported % args.report_every == 0:
@@ -121,7 +121,7 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
 
 def cmd_resolve(args: argparse.Namespace) -> None:
-    """Map ``paper_citations.cited_key`` → in-corpus ``cited_local_id``."""
+    """Map ``paper_cite_keys.cited_key`` → in-corpus ``cited_local_id``."""
     from drbrain.storage.database import Database
 
     db = Database(str(args.db))
@@ -134,7 +134,7 @@ def cmd_resolve(args: argparse.Namespace) -> None:
     for arxiv_id, in db.execute("SELECT arxiv FROM paper_ids WHERE arxiv IS NOT NULL").fetchall():
         key_map.setdefault(str(arxiv_id), str(arxiv_id))
         key_map.setdefault(_safe_paper_dir(str(arxiv_id)), str(arxiv_id))
-    resolved = db.resolve_paper_citations(key_map)
+    resolved = db.resolve_paper_cite_keys(key_map)
     print(f"[resolve] {resolved} citations resolved to in-corpus papers", flush=True)
     db.close()
 

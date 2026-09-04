@@ -206,3 +206,35 @@ def test_missing_categories_table_widens_instead_of_erroring(rag_db, cfg, monkey
         filters={"categories": "cond-mat"},
     )
     assert rows, "corpora without category metadata must not error nor narrow"
+
+
+def test_claims_leg_surfaces_settled_claims(rag_db, cfg, monkeypatch):
+    """§7.4: claims 检索腿让下一轮看见上一轮结论（retrievers 加 "claims"）。"""
+    _patch_embed(monkeypatch, [1.0] * DIM)
+
+    class _Rows:
+        """Database.execute 返回 cursor——桩要有 fetchall。"""
+
+        @staticmethod
+        def fetchall():
+            return [
+                ("claim_aaa", "Kagome metals host a flat band", "Conclusion", 1.0),
+                ("claim_bbb", "Unrelated corrosion result", "Rejected", 0.6),
+            ]
+
+    class ClaimsDB:
+        """主库桩：claims 表返回上一轮的结论。"""
+
+        conn = None
+
+        @staticmethod
+        def execute(sql, params=()):
+            assert "FROM claims" in sql
+            return _Rows()
+
+    cfg.llamaindex.retrievers = ["bm25", "claims"]
+    rows = sql_retrie.retrieve_documents_sql(cfg, ClaimsDB, "kagome flat band", top_k=3)
+    claim_rows = [r for r in rows if "claims" in r["legs"]]
+    assert claim_rows, "claims leg must surface settled conclusions"
+    assert claim_rows[0]["node_id"].startswith("claim:")
+    assert "kagome" in claim_rows[0]["text"].lower()
