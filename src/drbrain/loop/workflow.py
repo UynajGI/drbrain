@@ -82,6 +82,17 @@ FALSIFY_REFUTES = 2  # T3: refutes >= 2 and supports == 0 → falsified
 # matched by exact name — never by substring sniffing.
 _COMPUTE_TOOL_NAMES = ("run_python", "check_job", "read_job")
 
+
+class ComputeToolsUnavailableError(RuntimeError):
+    """Strict compute mode: hypotheses need computed evidence, no tools exist.
+
+    Raised by the compute node when ``require_compute_tools`` is set and the
+    environment exposes none of the job-contract tools. Durable runs translate
+    this into a paused run awaiting manual review instead of silently settling
+    claims through the literature-only (uncomputed) path.
+    """
+
+
 # T4 result contract: a finished job proves a real computation by printing a
 # JSON object with a finite numeric ``value`` field (optionally ``quantity`` /
 # ``unit``). Domain-neutral on purpose — the host never knows what was computed.
@@ -457,7 +468,9 @@ class ResearchLoopWorkflow(Workflow):
         tool_broker: ToolBroker | None = None,
         tool_policy: ToolPolicy | None = None,
         rag_generation: str | None | _UnsetRagGeneration = _RAG_GENERATION_UNSET,
-        require_rag_evidence: bool = False,
+        require_rag_evidence: bool = True,
+        require_compute_tools: bool = False,
+        compute_tool_names: list[str] | None = None,
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
@@ -491,6 +504,10 @@ class ResearchLoopWorkflow(Workflow):
             else (tool_broker.policy if tool_broker is not None else None)
         )
         self._rag_evidence_required = bool(require_rag_evidence)
+        self._require_compute_tools = bool(require_compute_tools)
+        self._compute_tool_names = (
+            tuple(compute_tool_names) if compute_tool_names else _COMPUTE_TOOL_NAMES
+        )
         self._rag_generation: str | None = None
         if rag_generation is _RAG_GENERATION_UNSET and cfg is not None:
             try:
@@ -798,11 +815,19 @@ class ResearchLoopWorkflow(Workflow):
     def _requires_evidence_ids(self, state: ResearchState) -> bool:
         """Require citations for retrieved RAG evidence or strict RAG mode.
 
-        Durable compute-only loops remain governed by their numeric-artifact
-        gate. Strict RAG mode fails closed when retrieval did not yield a
-        durable, referenced evidence record.
+        Strict mode (the default) fails closed when retrieval did not yield a
+        durable, referenced evidence record — a broken index must not silently
+        degrade the loop into pure-LLM reasoning. Two exemptions keep hosts
+        honest without blocking non-RAG deployments: retrieval that never ran
+        (``retrieval_status == "unavailable"``) leaves claims governed by the
+        numeric-artifact (T4) gate instead, and hosts may still opt out
+        explicitly via ``require_rag_evidence=False``.
         """
-        return bool(state.evidence_bundles) or self._rag_evidence_required
+        if not self._rag_evidence_required:
+            return bool(state.evidence_bundles)
+        if state.retrieval_status == "unavailable" and not state.evidence_bundles:
+            return False
+        return True
 
     @staticmethod
     def _fallback_query(task: str) -> str:
@@ -1005,7 +1030,7 @@ class ResearchLoopWorkflow(Workflow):
                 names += [t.metadata.name for t in agent.tools]
             except Exception:  # noqa: BLE001
                 pass
-        return any(n in _COMPUTE_TOOL_NAMES for n in names)
+        return any(n in self._compute_tool_names for n in names)
 
     async def run_agent(
         self,
@@ -1700,6 +1725,16 @@ class ResearchLoopWorkflow(Workflow):
         agent = self.build_node_agent(role="compute", step_name="compute")
         candidates = [h for h in ev.hypotheses if h.status == "critiqued" and h.statement.strip()]
         durable_broker_missing = self._durable_execution is not None and self._tool_broker is None
+        compute_ready = (
+            agent is not None and self._has_compute_tools(agent) and not durable_broker_missing
+        )
+        if self._require_compute_tools and candidates and not compute_ready:
+            raise ComputeToolsUnavailableError(
+                "strict compute mode: hypotheses need computed evidence but no compute "
+                f"tools are visible (expected any of: {', '.join(self._compute_tool_names)}). "
+                "Configure a compute plugin, or set autoresearch.require_compute_tools=false "
+                "to allow literature-only verdicts (confidence-capped, never Conclusion)."
+            )
         # 作业续读(代码级保障):异步作业常跨周期完成,先把已完成而未消费的产物扫
         # 出来注入提示词,compute 直接采用数值,不再依赖 LLM 自觉去翻。
         prior_jobs = self._finished_prior_jobs()
@@ -1716,7 +1751,7 @@ class ResearchLoopWorkflow(Workflow):
             )
         if durable_broker_missing:
             logger.warning("[loop] compute skipped: durable execution requires ToolBroker")
-        if agent is not None and self._has_compute_tools(agent) and not durable_broker_missing:
+        if compute_ready:
             # Claim every queued, discussed hypothesis. Each claim is atomic
             # under the queue's lock (single-process If-Match equivalent).
             claimed: list[Hypothesis] = []
@@ -1736,7 +1771,7 @@ class ResearchLoopWorkflow(Workflow):
                 "tool_policy": self._tool_policy.to_manifest()
                 if self._tool_policy is not None
                 else {},
-                "compute_tools": list(_COMPUTE_TOOL_NAMES),
+                "compute_tools": list(self._compute_tool_names),
             }
             execution_environment = {
                 "jobs_dir": self._jobs_dir or "",
@@ -1750,12 +1785,7 @@ class ResearchLoopWorkflow(Workflow):
                     config=execution_config,
                 )
                 experiment_ids[hypothesis.statement] = str(experiment["experiment_id"])
-        if (
-            agent is not None
-            and candidates
-            and self._has_compute_tools(agent)
-            and not durable_broker_missing
-        ):
+        if compute_ready and candidates:
             hypothesis_catalog = json.dumps(
                 [
                     {

@@ -47,7 +47,7 @@ from drbrain.rag.evidence import (
     has_retrieved_evidence,
 )
 from drbrain.rag.llm import DrbrainLLM
-from drbrain.rag.status import RetrievalStatus
+from drbrain.rag.status import RetrievalStatus, RetrievalUnavailable
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -614,12 +614,12 @@ def retrieve_documents(
 
         from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
         from drbrain.rag.indexer import capture_index_generation
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RetrievalUnavailable(f"llama-index stack unavailable: {exc}") from exc
     resolved_generation = generation or capture_index_generation(cfg)
     if resolved_generation is None:
         log.warning("[rag] retrieval unavailable (invalid active index pointer)")
-        return []
+        raise RetrievalUnavailable("invalid active index pointer")
     try:
         legs = get_retrievers(
             cfg,
@@ -629,7 +629,7 @@ def retrieve_documents(
             generation_backed_only=True,
         )
         if not legs:
-            return []
+            raise RetrievalUnavailable("no persisted retrieval legs resolved")
         fused = build_fusion_retriever(
             cfg,
             vector_index=legs.get("vector"),
@@ -637,11 +637,13 @@ def retrieve_documents(
             custom_retrievers={k: v for k, v in legs.items() if k not in ("bm25", "vector")},
             top_k=top_k,
         )
+    except RetrievalUnavailable:
+        raise
     except Exception as exc:  # pragma: no cover - depends on on-disk index state
         log.warning("[rag] retrieval unavailable (%s)", exc)
-        return []
+        raise RetrievalUnavailable(str(exc)) from exc
     if fused is None:
-        return []
+        raise RetrievalUnavailable("fusion retriever could not be built")
     nodes = fused.retrieve(QueryBundle(query_str=query))
     return _retrieval_rows(
         nodes,

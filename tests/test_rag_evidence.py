@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from drbrain.loop.events import (
     Computed,
     Evidence,
@@ -19,6 +21,7 @@ from drbrain.loop.workflow import (
 )
 from drbrain.rag import agent as rag_agent
 from drbrain.rag import indexer
+from drbrain.rag.config import LlamaIndexConfig
 from drbrain.rag.evidence import build_evidence_record
 from drbrain.storage.database import Database
 
@@ -92,8 +95,10 @@ def test_retrieve_documents_refuses_an_invalid_active_pointer(monkeypatch):
     get_retrievers = Mock()
     monkeypatch.setattr(indexer, "capture_index_generation", lambda _cfg: None)
     monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
+    cfg = SimpleNamespace(llamaindex=LlamaIndexConfig(rag_engine="llamaindex"))
 
-    assert rag_agent.retrieve_documents(object(), object(), object(), "perovskite") == []
+    with pytest.raises(rag_agent.RetrievalUnavailable):
+        rag_agent.retrieve_documents(cfg, object(), object(), "perovskite")
     get_retrievers.assert_not_called()
 
 
@@ -106,8 +111,10 @@ def test_resolved_generation_only_uses_persisted_retrievers(monkeypatch):
         return {}
 
     monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
+    cfg = SimpleNamespace(llamaindex=LlamaIndexConfig(rag_engine="llamaindex"))
 
-    assert rag_agent.retrieve_documents(object(), object(), object(), "perovskite") == []
+    with pytest.raises(rag_agent.RetrievalUnavailable):
+        rag_agent.retrieve_documents(cfg, object(), object(), "perovskite")
     assert observed == {"generation": "g-pinned", "generation_backed_only": True}
 
 
@@ -120,8 +127,9 @@ def test_retrieval_tool_uses_the_resolved_generation_for_its_legs(monkeypatch):
         return {}
 
     monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
+    cfg = SimpleNamespace(llamaindex=LlamaIndexConfig(rag_engine="llamaindex"))
 
-    assert rag_agent._build_retrieval_tool(object(), object(), object()) is None
+    assert rag_agent._build_retrieval_tool(cfg, object(), object()) is None
     assert observed == {"generation": "g-pinned", "generation_backed_only": True}
 
 
@@ -191,8 +199,9 @@ def test_brokerless_rag_evidence_is_durably_recorded(monkeypatch):
         evidence_recorder=recorded.append,
     )
 
-    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+    titles, bundle, status = asyncio.run(workflow._retrieve_rag_evidence("stability"))
 
+    assert status == "ok"
     assert titles == ["Stability"]
     assert bundle is not None
     assert bundle.tool_call_id.startswith("rag-")
@@ -228,8 +237,9 @@ def test_brokered_rag_retrieval_runs_the_executor_off_loop(monkeypatch):
         tool_broker=broker,
     )
 
-    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+    titles, bundle, status = asyncio.run(workflow._retrieve_rag_evidence("stability"))
 
+    assert status == "ok"
     assert titles == ["Stability"]
     assert bundle is not None
     assert broker.recorded == [bundle.model_dump(mode="json")]
@@ -251,7 +261,7 @@ def test_brokerless_evidence_write_failure_is_fail_closed(monkeypatch):
         evidence_recorder=fail_record,
     )
 
-    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None)
+    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None, "error")
 
 
 def test_brokerless_rag_ignores_unciteable_records(monkeypatch):
@@ -267,7 +277,7 @@ def test_brokerless_rag_ignores_unciteable_records(monkeypatch):
         evidence_recorder=recorded.append,
     )
 
-    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None)
+    assert asyncio.run(workflow._retrieve_rag_evidence("stability")) == ([], None, "empty")
     assert recorded == []
 
 
@@ -287,8 +297,9 @@ def test_brokerless_rag_skips_a_malformed_record_without_dropping_valid_evidence
         evidence_recorder=recorded.append,
     )
 
-    titles, bundle = asyncio.run(workflow._retrieve_rag_evidence("stability"))
+    titles, bundle, status = asyncio.run(workflow._retrieve_rag_evidence("stability"))
 
+    assert status == "ok"
     assert titles == ["Stability"]
     assert bundle is not None
     assert len(bundle.records) == 1

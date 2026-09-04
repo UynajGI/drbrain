@@ -51,6 +51,17 @@ class RetrievalError(Exception):
         self.failures: list[tuple[str, RetrievalStatus]] = list(failures or [])
 
 
+class RetrievalUnavailable(RuntimeError):
+    """The retrieval layer itself is unusable — never treat this as "no results".
+
+    Raised by :func:`drbrain.rag.agent.retrieve_documents` when the engine
+    cannot run at all (stack missing, invalid index pointer, no legs
+    resolved). Callers (the research loop) map it to
+    ``retrieval_status="error"`` / a degraded cycle instead of "reasoning
+    without a corpus" (R-E2).
+    """
+
+
 def classify_failure(exc: BaseException) -> RetrievalStatus:
     """Map a leg exception to a failure status.
 

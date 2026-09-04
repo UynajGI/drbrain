@@ -357,8 +357,12 @@ def test_resume_records_effective_parameters_in_the_audit_trail(tmp_path):
     assert len(resumed) == 1
     assert resumed[0].payload["config"] == {
         "n_critics": 2,
-        "rag_generation": "legacy",
+        # rag_engine defaults to the SQL-native engine; with no drbrain_rag.db
+        # on disk the captured generation is None (no legacy snapshot involved).
+        "rag_generation": None,
         "require_rag_evidence": False,
+        "require_compute_tools": False,
+        "compute_tool_names": ["run_python", "check_job", "read_job"],
     }
     assert resumed[0].payload["budget"] == {
         "max_cycles": 0,

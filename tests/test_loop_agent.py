@@ -17,6 +17,7 @@ import pytest
 
 from drbrain.config import Config, LlamaIndexConfig
 from drbrain.loop import ResearchLoopWorkflow
+from drbrain.loop.workflow import ComputeToolsUnavailableError
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 pytestmark = pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
@@ -546,6 +547,39 @@ def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
 
     result = asyncio.run(_go())
     assert "verified=1" in result
+
+
+def test_strict_compute_mode_pauses_without_compute_tools(monkeypatch, tmp_path):
+    """T4 严格模式：有候选但无计算工具 → 硬暂停报错，不再静默走无实算路径。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        require_compute_tools=True,
+    )
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    with pytest.raises(ComputeToolsUnavailableError):
+        asyncio.run(_go())
 
 
 # ── T7: per-role cross-cycle memory injection ─────────────────────────────────

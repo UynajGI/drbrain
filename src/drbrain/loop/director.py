@@ -44,6 +44,7 @@ from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
     CRITIQUE_DISCARD_SCORE,
     ResearchLoopWorkflow,
+    _COMPUTE_TOOL_NAMES,
     _job_log_has_number,
 )
 
@@ -223,6 +224,8 @@ class ResearchDirector:
         noise_band: float = 0.0,
         required_repeats: int = 2,
         require_rag_evidence: bool = False,
+        require_compute_tools: bool = False,
+        compute_tool_names: list[str] | None = None,
         step_timeout_seconds: float = 600.0,
     ) -> None:
         self._cfg = cfg
@@ -238,6 +241,10 @@ class ResearchDirector:
         self._noise_band = max(0.0, float(noise_band))
         self._required_repeats = max(1, int(required_repeats))
         self._require_rag_evidence = bool(require_rag_evidence)
+        self._require_compute_tools = bool(require_compute_tools)
+        self._compute_tool_names = (
+            list(compute_tool_names) if compute_tool_names else list(_COMPUTE_TOOL_NAMES)
+        )
         self._step_timeout_seconds = max(30.0, float(step_timeout_seconds))
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
@@ -1066,6 +1073,8 @@ class ResearchDirector:
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
             require_rag_evidence=self._require_rag_evidence,
+            require_compute_tools=self._require_compute_tools,
+            compute_tool_names=list(self._compute_tool_names),
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
             durable_execution=durable_execution,
@@ -1225,6 +1234,8 @@ class ResearchDirector:
             "n_critics": self._n_critics,
             "rag_generation": captured_generation,
             "require_rag_evidence": self._require_rag_evidence,
+            "require_compute_tools": self._require_compute_tools,
+            "compute_tool_names": list(self._compute_tool_names),
         }
         if self._single_agent:
             config["single_agent"] = True
@@ -1284,6 +1295,16 @@ class ResearchDirector:
         stored_evidence_requirement = run.config.get("require_rag_evidence")
         if isinstance(stored_evidence_requirement, bool):
             self._require_rag_evidence = stored_evidence_requirement
+        stored_compute_requirement = run.config.get("require_compute_tools")
+        if isinstance(stored_compute_requirement, bool):
+            self._require_compute_tools = stored_compute_requirement
+        stored_compute_tool_names = run.config.get("compute_tool_names")
+        if (
+            isinstance(stored_compute_tool_names, list)
+            and stored_compute_tool_names
+            and all(isinstance(n, str) and n for n in stored_compute_tool_names)
+        ):
+            self._compute_tool_names = list(stored_compute_tool_names)
         self._rag_generation = (
             str(stored_generation)
             if isinstance(stored_generation, str) and stored_generation
@@ -1297,6 +1318,8 @@ class ResearchDirector:
             "n_critics": self._n_critics,
             "rag_generation": self._rag_generation,
             "require_rag_evidence": self._require_rag_evidence,
+            "require_compute_tools": self._require_compute_tools,
+            "compute_tool_names": list(self._compute_tool_names),
         }
         if self._single_agent:
             effective_config["single_agent"] = True

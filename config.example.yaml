@@ -152,7 +152,10 @@ autoresearch:
   max_adaptations: 2
   lease_seconds: 900
   budget: {} # e.g. {max_tokens: 100000, max_tool_calls: 20}
-  require_rag_evidence: false # true = RAG-grounded claims require evidence IDs
+  # Strict evidence gates (defaults in code are both true):
+  require_rag_evidence: true # RAG-grounded claims require evidence IDs
+  require_compute_tools: true # hypotheses without compute tools hard-pause the run
+  compute_tool_names: [] # job-contract tools arming T4; empty = (run_python, check_job, read_job)
 
 # ── Rsync Backup ──────────────────────────────────────────────────
 # Remote targets for `drbrain backup --target <name>`.
