@@ -80,11 +80,11 @@ def test_unpicklable_handler_timeout_still_reports_timeout():
 
 
 def test_unpicklable_result_yields_model_unavailable():
-    """返回值无法跨进程时报 MODEL_UNAVAILABLE，而不是崩溃或假装成功。"""
+    """返回值无法跨进程时报 PLUGIN_ERROR（P-I5），而不是崩溃或假装成功。"""
     registry = PluginRegistry()
     _register(registry, "iso_lock", _return_lock, timeout_s=10.0)
     result = registry.call("iso_lock", {})
-    assert result.status is ResultStatus.MODEL_UNAVAILABLE
+    assert result.status is ResultStatus.PLUGIN_ERROR
     assert result.error
 
 

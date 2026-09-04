@@ -23,19 +23,43 @@ def _run(task: str) -> str:
     return asyncio.run(_go())
 
 
-def test_loop_runs_end_to_end():
-    result = _run("2D flat-band materials")
+def test_loop_runs_end_to_end(monkeypatch):
+    """端到端完成：注入两个候选（无 LLM 时各节点降级），报告带机读摘要行。"""
+
+    async def _go():
+        wf = ResearchLoopWorkflow(timeout=30)
+
+        async def fake_rag(query, limit=10):
+            return ["Paper A", "Paper B"], None, "ok"
+
+        wf._retrieve_rag_evidence = fake_rag
+        handler = wf.run(task="2D flat-band materials")
+        return await handler
+
+    result = asyncio.run(_go())
     assert isinstance(result, str)
     assert "task='2D flat-band materials'" in result
-    assert "candidates=0" in result
+    assert "candidates=2" in result
 
 
-def test_loop_terminates_on_empty_candidates():
-    # Empty candidates drive the bounded retrieve-again loop; the pipeline must
-    # still complete (no hang) and produce a report with the machine-readable
-    # summary line.
-    result = _run("unretrievable topic")
-    assert "verified=0" in result
+def test_loop_hard_stops_on_exhausted_empty_retrieval():
+    """L-E7: 重试耗尽仍无候选 → 硬暂停报错，绝不放空列表继续跑 extract/gaps。
+
+    有界性保留：RetrieveAgain 循环不能挂死；耗尽后必须以明确错误终止。
+    """
+    from drbrain.loop.store import RunExecutionBlockedError
+
+    async def _go():
+        wf = ResearchLoopWorkflow(timeout=30)
+        return await wf.run(task="unretrievable topic")
+
+    raised = None
+    try:
+        asyncio.run(_go())
+    except RunExecutionBlockedError as exc:
+        raised = exc
+    assert raised is not None, "expected RunExecutionBlockedError on empty retrieval"
+    assert "no candidates" in str(raised)
 
 
 def test_state_schema_defaults():

@@ -58,6 +58,10 @@ class ResultStatus(StrEnum):
     MODEL_UNAVAILABLE = "model_unavailable"
     TIMEOUT = "timeout"
     INVALID_INPUT = "invalid_input"
+    # P-I5: a plugin that CRASHED is not "the model is gone" — callers (and
+    # reports) should be able to tell an infrastructure outage from a broken
+    # plugin implementation.
+    PLUGIN_ERROR = "plugin_error"
 
 
 class JobStatus(StrEnum):

@@ -160,7 +160,11 @@ def _plugin_source_contract(plugins_dir: str | Path | None) -> dict[str, Any] | 
     if not root.is_dir():
         return {"path": str(root), "state": "missing_or_not_directory", "sources": []}
     sources: list[dict[str, str | None]] = []
-    for path in sorted(root.rglob("*.py"), key=lambda item: item.as_posix()):
+    # P-I6: fingerprint exactly what ``PluginRegistry.discover`` loads
+    # (top-level *.py) — rglob'ing nested files made checkpoints testify about
+    # sources that are never loaded, so an unrelated nested edit invalidated
+    # resumes for no reason.
+    for path in sorted(root.glob("*.py"), key=lambda item: item.as_posix()):
         relative = path.relative_to(root)
         if any(part in _IGNORED_PLUGIN_SOURCE_PARTS for part in relative.parts):
             continue

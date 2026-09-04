@@ -273,21 +273,34 @@ def extract_sources(nodes: list[NodeWithScore] | None) -> list[dict[str, Any]]:
     tree/graph…). Missing metadata fields degrade to ``""``/``None`` so the
     CLI JSON stays serializable. ``node_id`` falls back to the node's own id
     when the metadata key is absent.
+
+    R-I3: when the node metadata carries ``line_start``/``line_end`` (raw.md
+    offsets of the section whose text was shown — the parent section for
+    tree/raptor leaves expanded to their parent), they are preserved on the
+    source so downstream settle/verify can re-locate the evidence text.
+    Entries without those metadata keys gain no new keys.
     """
     out: list[dict[str, Any]] = []
     for nws in nodes or []:
         node = getattr(nws, "node", None)
         meta = dict(getattr(node, "metadata", None) or {})
-        out.append(
-            {
-                "paper_id": str(meta.get("paper_id") or ""),
-                "node_id": str(meta.get("node_id") or getattr(node, "node_id", None) or ""),
-                "title": str(meta.get("title") or ""),
-                "score": float(nws.score) if nws.score is not None else None,
-                "sources": list(meta.get("sources") or [])
-                or ([meta["source"]] if meta.get("source") else []),
-            }
-        )
+        entry: dict[str, Any] = {
+            "paper_id": str(meta.get("paper_id") or ""),
+            "node_id": str(meta.get("node_id") or getattr(node, "node_id", None) or ""),
+            "title": str(meta.get("title") or ""),
+            "score": float(nws.score) if nws.score is not None else None,
+            "sources": list(meta.get("sources") or [])
+            or ([meta["source"]] if meta.get("source") else []),
+        }
+        line_start = meta.get("line_start")
+        line_end = meta.get("line_end")
+        if line_start is not None and line_end is not None:
+            try:
+                entry["line_start"] = int(line_start)
+                entry["line_end"] = int(line_end)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
+        out.append(entry)
     return out
 
 

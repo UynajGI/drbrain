@@ -563,8 +563,15 @@ class PluginRegistry:
         clipped to a ``{"truncated", "bytes", "sha256", "preview"}`` digest and
         the result flagged ``truncated`` (P-I3).
         """
-        plugin = self._plugins[name]
-        handler = self._handlers[name]
+        # P-I5: an unknown plugin name must honor the never-raise contract —
+        # a dict KeyError here used to escape into the reasoning loop.
+        plugin = self._plugins.get(name)
+        handler = self._handlers.get(name)
+        if plugin is None or handler is None:
+            return PluginResult(
+                ResultStatus.INVALID_INPUT,
+                error=f"unknown plugin: {name!r}",
+            )
         evidence = make_evidence(plugin, arguments)
 
         kind, payload = self._invoke(handler, arguments, plugin.timeout_s)
@@ -581,8 +588,11 @@ class PluginRegistry:
                 error=f"输入不符合 schema: {payload}",
             )
         if kind == "error":
+            # P-I5: a crashing plugin implementation is PLUGIN_ERROR, not
+            # MODEL_UNAVAILABLE — an unavailable model and a broken plugin
+            # need different operator responses.
             return PluginResult(
-                ResultStatus.MODEL_UNAVAILABLE,
+                ResultStatus.PLUGIN_ERROR,
                 evidence=evidence,
                 error=payload,
             )

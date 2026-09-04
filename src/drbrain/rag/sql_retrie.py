@@ -166,6 +166,8 @@ def _rerank_with_vectors(
         return []
     import numpy as np
 
+    from drbrain.storage import vector_index as vi
+
     q = np.asarray(qvec, dtype=np.float32)
     q /= max(float(np.linalg.norm(q)), 1e-12)
     scored: list[tuple[str, float]] = []
@@ -176,8 +178,8 @@ def _rerank_with_vectors(
         rows = conn.execute(
             "SELECT node_id, embedding FROM tree_vectors "
             f"WHERE tree_layer = 'pageindex' AND node_id IN ({ph}) "
-            "AND length(embedding) = 4096",
-            chunk,
+            "AND length(embedding) = ?",
+            (*chunk, vi.embedding_byte_len(conn)),
         ).fetchall()
         for node_key, blob in rows:
             v = np.frombuffer(blob, dtype=np.float32).copy()
@@ -247,6 +249,8 @@ def _raptor_leg(
         return []
     import numpy as np
 
+    from drbrain.storage import vector_index as vi
+
     q = np.asarray(qvec, dtype=np.float32)
     q /= max(float(np.linalg.norm(q)), 1e-12)
     scored: list[tuple[str, float]] = []
@@ -257,8 +261,8 @@ def _raptor_leg(
         rows = conn.execute(
             "SELECT node_id, embedding FROM tree_vectors "
             f"WHERE tree_layer = 'raptor_L1' AND paper_id IN ({ph}) "
-            "AND length(embedding) = 4096",
-            chunk,
+            "AND length(embedding) = ?",
+            (*chunk, vi.embedding_byte_len(conn)),
         ).fetchall()
         for node_id, blob in rows:
             v = np.frombuffer(blob, dtype=np.float32).copy()

@@ -91,32 +91,86 @@ def _find_title(structure: list[dict], node_id: str) -> str:
     return ""
 
 
-def _pageindex_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str]:
-    """Return ``(title, body)`` for a PageIndex tree node, loaded on demand.
+def _find_node(structure: list[dict], node_id: str) -> dict | None:
+    """Recursive node-dict lookup by node_id in a tree structure."""
+    for node in structure:
+        if node.get("node_id") == node_id:
+            return node
+        children = node.get("nodes")
+        if isinstance(children, list) and children:
+            found = _find_node(children, node_id)
+            if found is not None:
+                return found
+    return None
 
-    Reads ``tree.json`` + ``raw.md`` under ``papers_dir/<paper_id>`` (same
-    source the vector index was built from). Returns ``("", "")`` when either
-    file is missing or the node cannot be resolved.
+
+def _line_offsets(node: Any) -> tuple[int | None, int | None]:
+    """Sanitized ``(line_start, line_end)`` of a tree.json node (None-safe).
+
+    Latex-built trees carry exact 0-based, end-exclusive offsets into
+    ``raw.md`` (see ``parser.latex_md.markdown_to_tree``); trees from the
+    scibase/oa pipeline only carry ``line_num`` → ``(None, None)``.
+    """
+    if not isinstance(node, dict):
+        return None, None
+    ls, le = node.get("line_start"), node.get("line_end")
+    if ls is None or le is None:
+        return None, None
+    try:
+        return int(ls), int(le)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _tree_node_offsets(papers_dir, paper_id: str, node_id: str) -> tuple[int | None, int | None]:
+    """``(line_start, line_end)`` of one PageIndex node, read from tree.json.
+
+    On-demand companion to :func:`_pageindex_section` for paths that already
+    hold the section body from elsewhere (the tree navigator) and only need
+    the locator. Returns ``(None, None)`` when the tree/node/offsets are
+    unavailable.
     """
     if not papers_dir:
-        return "", ""
+        return None, None
+    tree_path = Path(papers_dir) / paper_id / "tree.json"
+    if not tree_path.exists():
+        return None, None
+    try:
+        tree = json.loads(tree_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return None, None
+    structure = tree.get("structure", [])
+    return _line_offsets(_find_node(structure if isinstance(structure, list) else [], node_id))
+
+
+def _pageindex_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, dict | None]:
+    """Return ``(title, body, node)`` for a PageIndex tree node, loaded on demand.
+
+    Reads ``tree.json`` + ``raw.md`` under ``papers_dir/<paper_id>`` (same
+    source the vector index was built from). ``node`` is the resolved
+    tree.json node dict — its ``line_start``/``line_end`` locate ``body`` in
+    ``raw.md`` — or ``None`` when unresolved. Returns ``("", "", None)`` when
+    either file is missing or the node cannot be resolved.
+    """
+    if not papers_dir:
+        return "", "", None
     paper_dir = Path(papers_dir) / paper_id
     try:
         from drbrain.parser.pageindex_parser import get_node_content
         from drbrain.storage.paths import raw_md_path, tree_json_path
     except ImportError:  # pragma: no cover - defensive
-        return "", ""
+        return "", "", None
     tree_path = tree_json_path(paper_dir)
     md_path = raw_md_path(paper_dir)
     if not tree_path.exists() or not md_path.exists():
-        return "", ""
+        return "", "", None
     try:
         tree = json.loads(tree_path.read_text(encoding="utf-8"))
         structure = tree.get("structure", [])
         body = get_node_content(md_path, structure, node_id) or ""
     except (OSError, ValueError):  # pragma: no cover - defensive
-        return "", ""
-    return _find_title(structure, node_id), body.strip()
+        return "", "", None
+    return _find_title(structure, node_id), body.strip(), _find_node(structure, node_id)
 
 
 def _read_tree_summary(db_path, paper_id: str, node_id: str) -> tuple[str, list]:
@@ -208,40 +262,44 @@ def _full_section_body(md_path: str | Path, node: dict) -> str:
     return "\n".join(lines[start:end]).strip()
 
 
-def _parent_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, str]:
-    """Return ``(parent_title, full_parent_body, parent_node_id)``.
+def _parent_section(
+    papers_dir, paper_id: str, node_id: str
+) -> tuple[str, str, str, dict | None]:
+    """Return ``(parent_title, full_parent_body, parent_node_id, parent_node)``.
 
     Resolves the PARENT of ``node_id`` (the "context unit" surrounding a
     matched leaf) from the paper's ``tree.json`` + ``raw.md`` and returns the
     parent's title together with its FULL section body (header + all children).
-    Returns ``("", "", "")`` when ``node_id`` is a top-level node (no parent)
-    or the files cannot be resolved.
+    ``parent_node`` is the resolved tree.json parent dict — its
+    ``line_start``/``line_end`` locate the body in ``raw.md`` — or ``None``.
+    Returns ``("", "", "", None)`` when ``node_id`` is a top-level node (no
+    parent) or the files cannot be resolved.
 
     ``node_id`` must be the bare per-paper id (no ``paper_id:`` prefix) — the
     form ``tree.json`` is keyed by.
     """
     if not papers_dir:
-        return "", "", ""
+        return "", "", "", None
     paper_dir = Path(papers_dir) / paper_id
     try:
         from drbrain.storage.paths import raw_md_path, tree_json_path
     except ImportError:  # pragma: no cover - defensive
-        return "", "", ""
+        return "", "", "", None
     tree_path = tree_json_path(paper_dir)
     md_path = raw_md_path(paper_dir)
     if not tree_path.exists() or not md_path.exists():
-        return "", "", ""
+        return "", "", "", None
     try:
         tree = json.loads(tree_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):  # pragma: no cover - defensive
-        return "", "", ""
+        return "", "", "", None
     structure = tree.get("structure", [])
     parent, _ancestors = _parent_and_path(structure, node_id)
     if parent is None:
-        return "", "", ""
+        return "", "", "", None
     parent_id = str(parent.get("node_id") or "")
     parent_title = str(parent.get("title") or "")
-    return parent_title, _full_section_body(md_path, parent), parent_id
+    return parent_title, _full_section_body(md_path, parent), parent_id, parent
 
 
 if _LLAMA_INDEX_AVAILABLE:
@@ -266,7 +324,11 @@ if _LLAMA_INDEX_AVAILABLE:
         replaced by its PARENT section's full body (header + all children), so
         a section split across sibling chunks reaches the LLM whole. Metadata
         keeps the leaf ``node_id``/``title`` and adds ``parent_node_id``/
-        ``parent_title`` for provenance.
+        ``parent_title`` for provenance, plus ``line_start``/``line_end`` —
+        the raw.md offsets of the section whose text is actually shown (the
+        parent when expanded, else the leaf) so checksummed rows stay
+        re-locatable (R-I3). ``None`` when the tree carries no offsets
+        (line_num-only scibase/oa trees).
         """
 
         def __init__(
@@ -355,20 +417,32 @@ if _LLAMA_INDEX_AVAILABLE:
                     body = str(sec.get("content") or "").strip()
                     if not nid or not body:
                         continue
+                    line_start: int | None = None
+                    line_end: int | None = None
                     parent_node_id = ""
                     parent_title = ""
                     if self._expand_to_parent:
                         # Retrieval unit (leaf) ≠ context unit (parent section):
                         # swap the leaf chunk for its parent's full body so a
                         # section split across siblings reaches the LLM whole.
-                        parent_title, parent_body, parent_node_id = _parent_section(
-                            self._papers_dir, paper_id, nid
+                        parent_title, parent_body, parent_node_id, parent_node = (
+                            _parent_section(self._papers_dir, paper_id, nid)
                         )
                         if parent_node_id and parent_body:
                             body = parent_body
+                            # R-I3: the offsets must locate the text that is
+                            # actually displayed (the parent section), so the
+                            # checksummed excerpt can be re-located in raw.md.
+                            line_start, line_end = _line_offsets(parent_node)
                         else:
                             parent_node_id = ""
                             parent_title = ""
+                    if line_start is None:
+                        # Leaf body shown as-is (no expansion, or no parent):
+                        # travel with the leaf's own raw.md offsets.
+                        line_start, line_end = _tree_node_offsets(
+                            self._papers_dir, paper_id, nid
+                        )
                     node = TextNode(
                         text=_truncate_for_llm(body),
                         id_=f"{paper_id}:{nid}",
@@ -381,6 +455,8 @@ if _LLAMA_INDEX_AVAILABLE:
                             "source": "tree",
                             "pick": str(sec.get("source") or "llm"),
                             "tree_layer": TREE_LAYER_PAGEINDEX,
+                            "line_start": line_start,
+                            "line_end": line_end,
                         },
                     )
                     # LLM picks first (position-derived score, priority order).
@@ -425,7 +501,10 @@ if _LLAMA_INDEX_AVAILABLE:
         With ``expand_to_parent`` (default on) a pageindex leaf's text is
         replaced by its PARENT section's full body (header + all children);
         metadata keeps the leaf ``node_id``/``title`` and adds
-        ``parent_node_id``/``parent_title``.
+        ``parent_node_id``/``parent_title``, plus ``line_start``/``line_end`` —
+        the raw.md offsets of the section whose text is actually shown (the
+        parent when expanded, else the leaf) so checksummed rows stay
+        re-locatable (R-I3).
         """
 
         def __init__(
@@ -511,14 +590,16 @@ if _LLAMA_INDEX_AVAILABLE:
                     },
                 )
             # pageindex leaf: body loaded on demand from raw.md.
-            title, body = _pageindex_section(self._papers_dir, paper_id, local_nid)
+            title, body, leaf_node = _pageindex_section(self._papers_dir, paper_id, local_nid)
+            line_start: int | None = None
+            line_end: int | None = None
             parent_node_id = ""
             parent_title = ""
             if self._expand_to_parent:
                 # Retrieval unit (leaf) ≠ context unit (parent section): swap
                 # the leaf chunk for its parent's full body so a section split
                 # across siblings reaches the LLM whole.
-                parent_title, parent_body, parent_node_id = _parent_section(
+                parent_title, parent_body, parent_node_id, parent_node = _parent_section(
                     self._papers_dir, paper_id, local_nid
                 )
                 if parent_node_id and parent_body:
@@ -526,6 +607,12 @@ if _LLAMA_INDEX_AVAILABLE:
                 else:
                     parent_node_id = ""
                     parent_title = ""
+            if body:
+                # R-I3: offsets of the section whose text is actually shown —
+                # the parent when the leaf was expanded into it, else the leaf
+                # — so checksummed rows can be re-located in raw.md.
+                shown_node = parent_node if parent_node_id else leaf_node
+                line_start, line_end = _line_offsets(shown_node)
             return TextNode(
                 text=_truncate_for_llm(body) if body else f"[section: {local_nid}]",
                 id_=node_id,
@@ -537,6 +624,8 @@ if _LLAMA_INDEX_AVAILABLE:
                     "parent_title": parent_title,
                     "source": "raptor",
                     "tree_layer": layer or TREE_LAYER_PAGEINDEX,
+                    "line_start": line_start,
+                    "line_end": line_end,
                 },
             )
 

@@ -1231,8 +1231,15 @@ class ResearchLoopWorkflow(Workflow):
         state = await self._get_state(ctx)
         state.candidates = ev.candidates
         await self._set_state(ctx, state)
-        if not ev.candidates and ev.attempt < MAX_RETRIEVE_ATTEMPTS:
-            return RetrieveAgain(attempt=ev.attempt + 1, reason="candidates empty")
+        if not ev.candidates:
+            if ev.attempt < MAX_RETRIEVE_ATTEMPTS:
+                return RetrieveAgain(attempt=ev.attempt + 1, reason="candidates empty")
+            # L-E7: retries exhausted on an empty candidate list — continuing
+            # would run extract/gaps/compute on air. Hard-stop the run instead.
+            raise RunExecutionBlockedError(
+                f"retrieval returned no candidates after {MAX_RETRIEVE_ATTEMPTS} "
+                "attempts — check the library/corpus or the retrieval config"
+            )
         return Filtered(selected=ev.candidates)
 
     # 4. PDF 解析
@@ -2001,9 +2008,9 @@ class ResearchLoopWorkflow(Workflow):
                                 tool_call_id=tool_call_id,
                                 code=tool_proposal.get("arguments", {}),
                             )
-            # 账本级兜底回填(2026-08-29):LLM 偶发漏填 job_id 时,扫描本期 compute
-            # 期间新产生的 async 作业(jobs/<id>.json, mtime ≥ compute 起点),按提交
-            # 顺序回填到 job_id 为空的 results 条目。只回填空值,不覆盖显式声明。
+            # 账本级兜底回填(2026-08-29;P-E4 收紧):LLM 偶发漏填 job_id 时,只有
+            # 「恰好一条空缺 + 恰好一个新作业」的无歧义场景才按 mtime 回填——
+            # 多对多的 mtime zip 会把假设 B 的计算记到假设 A 头上,被 T4 门洗白。
             try:
                 if self._jobs_dir:
                     jobs_dir = Path(self._jobs_dir)
@@ -2012,12 +2019,17 @@ class ResearchLoopWorkflow(Workflow):
                         key=lambda p: p.stat().st_mtime,
                     )
                     empty_stmts = [s for s, j in job_ids.items() if not j]
-                    for stmt, jp in zip(empty_stmts, new_jobs):
-                        job_ids[stmt] = jp.stem
-                    if empty_stmts and new_jobs:
+                    if len(empty_stmts) == 1 and len(new_jobs) == 1:
+                        job_ids[empty_stmts[0]] = new_jobs[0].stem
                         logger.info(
-                            "[loop] compute job_id backfill: %d filled from jobs dir",
-                            min(len(empty_stmts), len(new_jobs)),
+                            "[loop] compute job_id backfill: 1 unambiguous fill from jobs dir"
+                        )
+                    elif empty_stmts and new_jobs:
+                        logger.warning(
+                            "[loop] job_id backfill skipped: %d empty statements vs %d new "
+                            "jobs is ambiguous — leaving them unset (P-E4)",
+                            len(empty_stmts),
+                            len(new_jobs),
                         )
             except Exception as exc:  # 兜底失败不阻断主流程
                 logger.warning("[loop] job_id backfill skipped: %s", exc)
@@ -2072,7 +2084,10 @@ class ResearchLoopWorkflow(Workflow):
             data = await self.run_agent_json(agent, verify_prompt)
             if isinstance(data, dict):
                 raw_vs = data.get("verifications")
-                if isinstance(raw_vs, list):
+                # L-E8: an EMPTY verification list is a failed review, not a
+                # verdict — marking it handled made candidates vanish without
+                # prediction *or* pending. Empty → unhandled → predictions path.
+                if isinstance(raw_vs, list) and raw_vs:
                     handled = True
                     statement_counts: dict[str, int] = {}
                     claim_id_counts: dict[str, int] = {}

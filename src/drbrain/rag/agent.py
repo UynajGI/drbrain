@@ -557,7 +557,14 @@ def _retrieval_rows(
     filters: dict[str, Any] | None = None,
     top_k: int = 5,
 ) -> list[dict[str, Any]]:
-    """Map fused nodes to the historic payload plus additive evidence fields."""
+    """Map fused nodes to the historic payload plus additive evidence fields.
+
+    R-I3: when the node metadata carries ``line_start``/``line_end`` (the
+    raw.md offsets of the section whose text is shown — the parent section for
+    tree/raptor leaves expanded to their parent), they travel on the row so
+    settle/verify can re-locate the checksummed text. Rows without offsets in
+    the metadata gain no new keys (additive-only contract).
+    """
     rows: list[dict[str, Any]] = []
     for rank, nws in enumerate(nodes[:top_k], start=1):
         md = dict(nws.node.metadata or {})
@@ -571,6 +578,14 @@ def _retrieval_rows(
             "score": score,
             "text": full_text[:500],
         }
+        line_start = md.get("line_start")
+        line_end = md.get("line_end")
+        if line_start is not None and line_end is not None:
+            try:
+                row["line_start"] = int(line_start)
+                row["line_end"] = int(line_end)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
         row.update(
             build_evidence_record(
                 generation=generation,

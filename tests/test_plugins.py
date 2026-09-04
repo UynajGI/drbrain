@@ -138,7 +138,7 @@ def test_call_timeout():
     assert result.status is ResultStatus.TIMEOUT
 
 
-def test_call_model_unavailable_on_load_error():
+def test_call_plugin_error_on_load_error():
     reg = PluginRegistry()
 
     def handler(args):
@@ -146,8 +146,18 @@ def test_call_model_unavailable_on_load_error():
 
     reg.register(_flatband_plugin(), handler)
     result = reg.call("predict_flatband_score", {"composition": {}})
-    assert result.status is ResultStatus.MODEL_UNAVAILABLE
+    # P-I5: a crashing plugin is PLUGIN_ERROR — distinct from MODEL_UNAVAILABLE
+    # (an offline model) so operators can tell the failures apart.
+    assert result.status is ResultStatus.PLUGIN_ERROR
     assert "not found" in result.error
+
+
+def test_call_unknown_plugin_never_raises():
+    """P-I5: call("unknown") must honor the never-raise contract."""
+    reg = PluginRegistry()
+    result = reg.call("no_such_plugin", {})
+    assert result.status is ResultStatus.INVALID_INPUT
+    assert "no_such_plugin" in (result.error or "")
 
 
 def test_call_invalid_input():

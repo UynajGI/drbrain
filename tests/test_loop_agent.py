@@ -983,3 +983,52 @@ def test_retrieve_reports_rag_status_in_state(monkeypatch, tmp_path):
     result, state = asyncio.run(_go())
     assert state.retrieval_status == "error"
     assert "rag=error" in result
+
+
+def test_dirty_llm_outputs_survive_the_cycle(monkeypatch, tmp_path):
+    """L-I8: 端到端「故意脏输出」用例——critic 给字符串分数、verifier 返回空
+    verifications、语句被改写。循环必须完成且候选降级为 prediction，不允许
+    ValueError 崩轮、也不允许候选无声蒸发。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            # 脏输出①：score 是字符串且 claim_id 被改写
+            {
+                "text": '{"hypotheses": [{"claim_id": "cl-WRONG", "statement": "h1 paraphrased!", "score": "high", "flaw": "looks fine overall but unverified"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            # 脏输出②：verifications 为空列表（L-E8：不算 handled）
+            {
+                "text": '{"verifications": []}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert state is not None
+    assert not state.verifications  # empty counts are not evidence
+    assert state.hypotheses, "candidates must not silently vanish (L-E8)"
+    # 脏 claim_id + 改写语句 → 评论无法归属 → discussion_pending（诚实降级，
+    # 留给下一轮重审），而不是崩溃或无声消失。
+    assert all(
+        h.status in ("prediction", "critiqued", "discarded", "proposed")
+        for h in state.hypotheses
+    )
+    assert "verified=0" in result
