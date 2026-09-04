@@ -1068,10 +1068,10 @@ def test_structured_prediction_code_falsification(tmp_path):
     )
     run_dir = str(jobs)  # 生产里 _jobs_dir 即 jobs 目录本身
 
-    # 数值 0.31 < 0.5 → 判支持
+    # 数值 0.31 < 0.5（以日志落盘值为准）→ 判支持
     assert _classify_verification(ver, 0.9, True, run_dir, hypothesis=h) == "verified"
 
-    # 数值 0.71 ≥ 0.5 → 代码证伪压过 supports=1 的计数
+    # review round-3: LLM 谎报 value=0.71 也无效——判定只看日志里的 0.31
     ver_bad = Verification(
         statement="H",
         job_id="job-42",
@@ -1081,7 +1081,36 @@ def test_structured_prediction_code_falsification(tmp_path):
         refutes=0,
         computed="0.71",
     )
-    assert _classify_verification(ver_bad, 0.9, True, run_dir, hypothesis=h) == "falsified"
+    assert _classify_verification(ver_bad, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 数值 0.71 ≥ 0.5（第二个作业日志落盘 0.71）→ 代码证伪压过 supports=1
+    (jobs / "job-43.log").write_text('{"quantity": "gap", "value": 0.71}', encoding="utf-8")
+    (jobs / "job-43.json").write_text(
+        _json.dumps({"job_id": "job-43", "pid": 99999999, "log_path": str(jobs / "job-43.log")}),
+        encoding="utf-8",
+    )
+    ver_bad2 = Verification(
+        statement="H",
+        job_id="job-43",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.71",
+    )
+    assert _classify_verification(ver_bad2, 0.9, True, run_dir, hypothesis=h) == "falsified"
+
+    # 幻觉 job_id（无落盘日志）→ structured None → T4 拦下 → prediction
+    ver_phantom = Verification(
+        statement="H",
+        job_id="job-404",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31",
+    )
+    assert _classify_verification(ver_phantom, 0.9, True, run_dir, hypothesis=h) == "prediction"
 
     # 混杂计数 + 可机检数值 + 真实作业 → 代码判定说了算
     ver_mixed = Verification(

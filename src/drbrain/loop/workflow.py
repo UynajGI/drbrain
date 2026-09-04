@@ -299,6 +299,40 @@ def _job_log_has_number(run_dir: str | None, job_id: str) -> bool:
     return _extract_result_payload(text) is not None
 
 
+def _job_log_payload(run_dir: str | None, job_id: str) -> dict[str, Any] | None:
+    """Authoritative result payload parsed from the job's on-disk log.
+
+    Same artifact discipline as :func:`_job_log_has_number`, but returns the
+    parsed result JSON (``None`` when the job has no parseable log) so the
+    structured-prediction verdict can judge the LOGGED value instead of an
+    LLM-reported one (review round-3: hallucinated value/unit must never
+    produce a terminal verdict).
+    """
+    if not run_dir or not job_id:
+        return None
+    jobs = Path(run_dir)
+    log_file = jobs / f"{job_id}.log"
+    meta_path = jobs / f"{job_id}.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if isinstance(meta, dict):
+                lp = meta.get("log_path")
+                if lp:
+                    log_file = Path(lp)
+                if meta.get("status") == "failed":
+                    return None
+        except (json.JSONDecodeError, OSError):
+            pass
+    if not log_file.is_file():
+        return None
+    try:
+        text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return _extract_result_payload(text)
+
+
 # "==" is deliberately absent: exact float equality between a computed value
 # and an LLM-chosen threshold would auto-falsify nearly every prediction.
 _COMPARATORS = {
@@ -366,13 +400,29 @@ def _classify_verification(
     """
     if ver.refutes >= FALSIFY_REFUTES and ver.supports == 0:
         return "falsified"
-    # §7.1: 结构化预测（quantity+comparator+threshold）在数值证据通过 T4 后
-    # 由代码直接判定方向——verifier 的计数只做旁证，不再决定证伪。
-    structured = (
-        _structured_prediction_met(hypothesis, ver.value, ver.unit)
-        if ver.value is not None
-        else None
-    )
+    # §7.1: 结构化预测（quantity+comparator+threshold）只信落盘日志解析出的
+    # 权威值——verifier 回报的 value/unit 是人读摘要，幻觉值不得产生终局判定。
+    # 任何能解析的作业日志给出方向即采纳；解析不出 → None → 走计数旁证路径。
+    structured = None
+    if hypothesis is not None and hypothesis.threshold is not None:
+        _job_ids = [ver.job_id] if ver.job_id else []
+        if ver.computed:
+            _job_ids += re.findall(r"\d{9,}-\d+-[0-9a-f]+", ver.computed)
+        for _jid in dict.fromkeys(j for j in _job_ids if j):
+            _payload = _job_log_payload(run_dir, _jid)
+            if _payload is None:
+                continue
+            try:
+                _logged_value = float(_payload.get("value"))
+            except (TypeError, ValueError):
+                continue
+            # T4 契约里 unit 可选——日志没写单位时默认就是预测所要求的单位
+            # （quantity 一致才可能命中），而不是拿空串去撞 pint 报错。
+            _logged_unit = str(_payload.get("unit") or "").strip() or (hypothesis.unit or "")
+            _met = _structured_prediction_met(hypothesis, _logged_value, _logged_unit)
+            if _met is not None:
+                structured = _met
+                break
     if ver.supports >= 1 and ver.refutes == 0:
         if score < VERIFY_LOW_SCORE and ver.supports < STRONG_SUPPORTS:
             return "prediction"
@@ -399,12 +449,9 @@ def _classify_verification(
         if structured is False:
             return "falsified"
         return "verified"
-    if structured is not None and ver.job_id:
-        # 数值证据在手且可机检：代码判定压过含混的计数（supports/refutes 混杂）。
-        # T4 纪律与主分支一致——job_id 是 LLM 填的字符串，落盘产物必须存在且
-        # 能解析，否则可能是幻觉 job_id 伪造的终局判定。
-        if not _job_log_has_number(run_dir, ver.job_id):
-            return "prediction"
+    if structured is not None:
+        # structured 只有在某个作业日志成功解析出数值后才非 None——T4 纪律
+        # 由数据来源本身保证（不信任 LLM 回报的 value/job_id）。
         return "verified" if structured else "falsified"
     return "prediction"
 
