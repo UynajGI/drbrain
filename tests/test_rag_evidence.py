@@ -97,7 +97,7 @@ def test_retrieve_documents_refuses_an_invalid_active_pointer(monkeypatch):
     monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
     cfg = SimpleNamespace(llamaindex=LlamaIndexConfig(rag_engine="llamaindex"))
 
-    with pytest.raises(rag_agent.RetrievalUnavailable):
+    with pytest.raises(rag_agent.RetrievalUnavailableError):
         rag_agent.retrieve_documents(cfg, object(), object(), "perovskite")
     get_retrievers.assert_not_called()
 
@@ -113,7 +113,7 @@ def test_resolved_generation_only_uses_persisted_retrievers(monkeypatch):
     monkeypatch.setattr("drbrain.rag.fusion.get_retrievers", get_retrievers)
     cfg = SimpleNamespace(llamaindex=LlamaIndexConfig(rag_engine="llamaindex"))
 
-    with pytest.raises(rag_agent.RetrievalUnavailable):
+    with pytest.raises(rag_agent.RetrievalUnavailableError):
         rag_agent.retrieve_documents(cfg, object(), object(), "perovskite")
     assert observed == {"generation": "g-pinned", "generation_backed_only": True}
 
@@ -180,7 +180,7 @@ def test_retrieval_rows_carry_tree_line_offsets_from_node_metadata():
     # the historic payload and evidence fields are unchanged
     assert row["node_id"] == "0001"
     assert row["content_checksum"] == hashlib.sha256(
-        "condition list part 1".encode("utf-8")
+        b"condition list part 1"
     ).hexdigest()
 
 

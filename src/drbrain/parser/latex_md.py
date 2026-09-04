@@ -244,7 +244,7 @@ def markdown_to_tree(markdown: str, *, min_node_lines: int = 1) -> dict:
             continue
         level = len(match.group(1))
         _close(level, idx)
-        node = {
+        node: dict = {
             "node_id": "",
             "title": match.group(2).strip(),
             "line_start": idx,

@@ -47,7 +47,7 @@ from drbrain.rag.evidence import (
     has_retrieved_evidence,
 )
 from drbrain.rag.llm import DrbrainLLM
-from drbrain.rag.status import RetrievalStatus, RetrievalUnavailable
+from drbrain.rag.status import RetrievalStatus, RetrievalUnavailableError
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -630,11 +630,11 @@ def retrieve_documents(
         from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
         from drbrain.rag.indexer import capture_index_generation
     except Exception as exc:
-        raise RetrievalUnavailable(f"llama-index stack unavailable: {exc}") from exc
+        raise RetrievalUnavailableError(f"llama-index stack unavailable: {exc}") from exc
     resolved_generation = generation or capture_index_generation(cfg)
     if resolved_generation is None:
         log.warning("[rag] retrieval unavailable (invalid active index pointer)")
-        raise RetrievalUnavailable("invalid active index pointer")
+        raise RetrievalUnavailableError("invalid active index pointer")
     try:
         legs = get_retrievers(
             cfg,
@@ -644,7 +644,7 @@ def retrieve_documents(
             generation_backed_only=True,
         )
         if not legs:
-            raise RetrievalUnavailable("no persisted retrieval legs resolved")
+            raise RetrievalUnavailableError("no persisted retrieval legs resolved")
         fused = build_fusion_retriever(
             cfg,
             vector_index=legs.get("vector"),
@@ -652,13 +652,13 @@ def retrieve_documents(
             custom_retrievers={k: v for k, v in legs.items() if k not in ("bm25", "vector")},
             top_k=top_k,
         )
-    except RetrievalUnavailable:
+    except RetrievalUnavailableError:
         raise
     except Exception as exc:  # pragma: no cover - depends on on-disk index state
         log.warning("[rag] retrieval unavailable (%s)", exc)
-        raise RetrievalUnavailable(str(exc)) from exc
+        raise RetrievalUnavailableError(str(exc)) from exc
     if fused is None:
-        raise RetrievalUnavailable("fusion retriever could not be built")
+        raise RetrievalUnavailableError("fusion retriever could not be built")
     nodes = fused.retrieve(QueryBundle(query_str=query))
     return _retrieval_rows(
         nodes,

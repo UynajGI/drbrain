@@ -144,9 +144,9 @@ def _annotation_for(
                 _safe_identifier(f"{model_name}_{key}_item"), items, base, depth + 1
             )
             if sub is not None:
-                return list[sub]
+                return list[sub]  # type: ignore[valid-type]  # runtime-built alias
         return list
-    annotation: Any = _JSON_TO_PY.get(ptype_raw, Any)
+    annotation: Any = _JSON_TO_PY.get(str(ptype_raw), Any)
     enum = _enum_annotation(prop)
     if enum is not None:
         annotation = enum

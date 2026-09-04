@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
@@ -42,9 +41,9 @@ from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
+    _COMPUTE_TOOL_NAMES,
     CRITIQUE_DISCARD_SCORE,
     ResearchLoopWorkflow,
-    _COMPUTE_TOOL_NAMES,
     _job_log_has_number,
 )
 
@@ -564,25 +563,25 @@ class ResearchDirector:
 
         # knowledge/patterns.md — winning patterns (champion) + dead ends + exhausted axes
         # L-I6: bounded view — long runs must not grow this rewrite O(n) forever.
-        _PATTERNS_MAX = 50
+        _patterns_max = 50
         self._patterns_md(topic).parent.mkdir(parents=True, exist_ok=True)
         lines = ["# 知识 / 模式", ""]
         lines.append("## 已验证结论（winning patterns）")
-        champion_view = state["champion"][-_PATTERNS_MAX:]
+        champion_view = state["champion"][-_patterns_max:]
         if state["champion"]:
-            if len(state["champion"]) > _PATTERNS_MAX:
+            if len(state["champion"]) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['champion']) - _PATTERNS_MAX} 条更早结论，见 champion.md）"
+                    f"- （另有 {len(state['champion']) - _patterns_max} 条更早结论，见 champion.md）"
                 )
             lines.extend(f"- {c['statement']}" for c in champion_view)
         else:
             lines.append("（尚无）")
         lines.append("\n## 已否定假设（dead ends）")
-        rejected_view = state["rejected"][-_PATTERNS_MAX:]
+        rejected_view = state["rejected"][-_patterns_max:]
         if state["rejected"]:
-            if len(state["rejected"]) > _PATTERNS_MAX:
+            if len(state["rejected"]) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['rejected']) - _PATTERNS_MAX} 条更早假设，见 dead_ends.md）"
+                    f"- （另有 {len(state['rejected']) - _patterns_max} 条更早假设，见 dead_ends.md）"
                 )
             lines.extend(f"- {h}" for h in rejected_view)
         else:

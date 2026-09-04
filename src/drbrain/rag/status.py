@@ -51,7 +51,7 @@ class RetrievalError(Exception):
         self.failures: list[tuple[str, RetrievalStatus]] = list(failures or [])
 
 
-class RetrievalUnavailable(RuntimeError):
+class RetrievalUnavailableError(RuntimeError):
     """The retrieval layer itself is unusable — never treat this as "no results".
 
     Raised by :func:`drbrain.rag.agent.retrieve_documents` when the engine

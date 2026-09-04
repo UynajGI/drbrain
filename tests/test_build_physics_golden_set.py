@@ -6,8 +6,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[1]
 
 

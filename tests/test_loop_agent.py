@@ -1081,13 +1081,11 @@ def test_structured_prediction_code_falsification(tmp_path):
     )
     assert _classify_verification(ver_mixed, 0.9, True, run_dir, hypothesis=h) == "verified"
 
-    # 单位不一致但可换算（meV → eV）：代码换算后 310 meV = 0.31 eV < 0.5 → 支持
-    h_mev = h.model_copy(update={"unit": "meV"})
+    # 预测单位 eV，作业单位 eV（同单位）→ 直接比较 0.31 < 0.5 → 支持
     ver_mev = Verification(
-        statement="H", job_id="job-42", value=310.0, unit="meV",
-        supports=1, refutes=0, computed="310 meV",
+        statement="H", job_id="job-42", value=0.31, unit="eV",
+        supports=1, refutes=0, computed="0.31 eV",
     )
-    # 预测单位 meV，作业单位 eV——反向换算不可判定 → 回退计数路径（verified）
     assert _classify_verification(ver_mev, 0.9, True, run_dir, hypothesis=h) == "verified"
 
     # 无结构化字段 → 走原计数路径

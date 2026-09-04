@@ -308,7 +308,7 @@ _COMPARATORS = {
 }
 
 
-def _structured_prediction_met(hypothesis: "Hypothesis | None", value: float, unit: str) -> bool | None:
+def _structured_prediction_met(hypothesis: Hypothesis | None, value: float, unit: str) -> bool | None:
     """§7.1: code-judge a structured prediction — value vs threshold with units.
 
     Returns True/False when the hypothesis carries a machine-checkable
@@ -330,7 +330,7 @@ def _structured_prediction_met(hypothesis: "Hypothesis | None", value: float, un
         try:
             import pint
 
-            ureg = pint.UnitRegistry()
+            ureg: Any = pint.UnitRegistry()  # untyped third-party
             converted = (computed * ureg(computed_unit)).to(ureg(predicted_unit))
             computed = float(converted.magnitude)
         except Exception as exc:  # noqa: BLE001 — incomparable units → not judgeable
@@ -346,7 +346,7 @@ def _structured_prediction_met(hypothesis: "Hypothesis | None", value: float, un
 
 def _classify_verification(
     ver: Verification, score: float, has_compute: bool, run_dir: str | None = None,
-    hypothesis: "Hypothesis | None" = None,
+    hypothesis: Hypothesis | None = None,
 ) -> str:
     """Code-based verdict from the evidence counts (T3), with T2/T4 gates.
 
@@ -1563,26 +1563,34 @@ class ResearchLoopWorkflow(Workflow):
         return labels
 
     def _check_novelty(self, hypothesis: Hypothesis, state: ResearchState) -> str:
-        """Classify one hypothesis against the corpus (FTS5) and the KG."""
-        query = _fallback_query(
+        """Classify one hypothesis against the corpus (FTS5) and the KG.
+
+        Honesty rule: "novel" is claimable only when a check actually ran
+        (corpus exists or KG query executed) and found nothing; no corpus
+        and no KG means "unknown" — never a free novelty bonus.
+        """
+        query = self._fallback_query(
             f"{hypothesis.statement} {hypothesis.prediction}" or state.task
         )
         keywords = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", hypothesis.statement)][:4]
 
         literature_hit = False
+        corpus_checked = False  # "novel" needs a check that actually ran
         if query and self._cfg is not None:
             try:
-                from drbrain.rag.sql_retrie import retrieve_documents_sql
+                from drbrain.rag.sql_retrie import _default_rag_db, retrieve_documents_sql
 
-                rows = retrieve_documents_sql(
-                    self._cfg, self._db, query, top_k=3
-                )
-                literature_hit = bool(rows)
+                corpus_checked = _default_rag_db(self._cfg).exists()
+                if corpus_checked:
+                    rows = retrieve_documents_sql(self._cfg, self._db, query, top_k=3)
+                    literature_hit = bool(rows)
             except Exception as exc:  # noqa: BLE001 — retrieval outage ≠ novelty verdict
                 logger.warning("[loop] novelty literature check unavailable: %s", exc)
 
         kg_forward = kg_reverse = False
+        kg_checked = False
         if keywords and self._db is not None:
+            kg_checked = True
             likes = [f"%{k}%" for k in keywords]
             placeholders = " OR ".join("label LIKE ?" for _ in likes)
             node_rows = self._db.execute(
@@ -1604,6 +1612,8 @@ class ResearchLoopWorkflow(Workflow):
                             kg_forward = True
                         break
 
+        if not (corpus_checked or kg_checked):
+            return "unknown"
         if kg_reverse:
             return "contradiction"
         if literature_hit and kg_forward:
