@@ -41,7 +41,6 @@ from typing import Any, Literal
 # ``gnn``) belong in :attr:`Plugin.metadata`, not in this strict type.
 PluginType = Literal["model", "software", "data", "formula", "other"]
 Backend = Literal["subprocess", "inprocess", "static"]
-OnFailure = Literal["abstain", "stale", "none"]
 PluginSideEffect = Literal["pure", "read", "write", "irreversible", "unspecified"]
 
 
@@ -96,13 +95,10 @@ class Plugin:
     name: str
     description: str
     input_schema: dict[str, Any]
-    output_schema: dict[str, Any] | None = None
     plugin_type: PluginType = "other"
     version: str = ""
     resource: str | None = None
     backend: Backend = "inprocess"
-    entry: str = ""
-    on_failure: OnFailure = "abstain"
     timeout_s: float = 60.0
     summary_fields: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
