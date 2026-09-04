@@ -101,30 +101,41 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             skipped += 1
             continue
 
-        paper_dir.mkdir(parents=True, exist_ok=True)
-        (paper_dir / "raw.md").write_text(doc.markdown, encoding="utf-8")
-        (paper_dir / "tree.json").write_text(
-            _json_dumps(markdown_to_tree(doc.markdown)), encoding="utf-8"
-        )
+        try:
+            paper_dir.mkdir(parents=True, exist_ok=True)
+            (paper_dir / "raw.md").write_text(doc.markdown, encoding="utf-8")
+            (paper_dir / "tree.json").write_text(
+                _json_dumps(markdown_to_tree(doc.markdown)), encoding="utf-8"
+            )
 
-        year = None
-        m = re.match(r"(\d{4})-", str(row.get("update_date") or ""))
-        if m:
-            year = int(m.group(1))
-        db.insert_paper(
-            local_id=arxiv_id,
-            title=str(row.get("title") or arxiv_id).strip(),
-            year=year,
-            status="uploaded",
-            paper_type="preprint",
-            journal=str(row.get("journal-ref") or ""),
-            authors=str(row.get("authors") or ""),
-            categories=str(row.get("categories") or ""),
-        )
-        db.insert_paper_ids(local_id=arxiv_id, doi=row.get("doi") or None, arxiv=arxiv_id)
-        db.set_paper_abstract(arxiv_id, str(row.get("abstract") or ""))
-        db.insert_paper_cite_keys(arxiv_id, doc.citations)
-        db.commit()
+            year = None
+            m = re.match(r"(\d{4})-", str(row.get("update_date") or ""))
+            if m:
+                year = int(m.group(1))
+            db.insert_paper(
+                local_id=arxiv_id,
+                title=str(row.get("title") or arxiv_id).strip(),
+                year=year,
+                status="uploaded",
+                paper_type="preprint",
+                journal=str(row.get("journal-ref") or ""),
+                authors=str(row.get("authors") or ""),
+                categories=str(row.get("categories") or ""),
+            )
+            db.insert_paper_ids(local_id=arxiv_id, doi=row.get("doi") or None, arxiv=arxiv_id)
+            db.set_paper_abstract(arxiv_id, str(row.get("abstract") or ""))
+            # insert_paper 的 upsert 只 bump updated_at——重跑时新分类值会被静默
+            # 丢掉（OCR r6），显式回写一次。
+            categories_value = str(row.get("categories") or "").strip()
+            if categories_value:
+                db.set_paper_categories(arxiv_id, categories_value)
+            db.insert_paper_cite_keys(arxiv_id, doc.citations)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 — 一篇的约束/IO 失败不许停 0.8M 篇
+            # 断点权威是 DB 行：未入库 → 下次运行自动重做（OCR r5/r6）。
+            print(f"[ingest] db/file write failed {arxiv_id}: {exc}", flush=True)
+            skipped += 1
+            continue
         imported += 1
         if imported % args.report_every == 0:
             print(

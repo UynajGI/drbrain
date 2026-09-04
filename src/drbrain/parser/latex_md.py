@@ -27,8 +27,10 @@ _HEADING_COMMANDS = {
     "section": "##",
     "subsection": "###",
     "subsubsection": "####",
-    "paragraph": "####",
-    "subparagraph": "#####",
+    # paragraph/subparagraph 各降一级，避免与 subsubsection 在树里同层折叠
+    # （OCR r6：四级同层会丢一档文档层级）。
+    "paragraph": "#####",
+    "subparagraph": "######",
 }
 
 _VERB_ENVIRONMENTS = {
@@ -178,10 +180,14 @@ def _extract_figure_captions(latex: str) -> str:
     """Drop float bodies, keep captions as plain paragraphs."""
 
     def _float_repl(match: re.Match) -> str:
-        caption = re.search(r"\\caption\s*(\[[^]]*\])?\s*\{([^{}]*)\}", match.group(0))
+        # 容忍一层嵌套花括号（OCR r6）：\caption{Intensity of Fe$_3$Sn$_2$ ...}
+        # 用 \{([^{}]*)\} 匹配不到时整条 float 连同 caption 一起被丢。
+        caption = re.search(
+            r"\\caption\s*(\[[^]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}", match.group(0)
+        )
         if not caption:
             return "\n"
-        return f"\n\n*{caption.group(2).strip()}*\n\n"
+        return f"\n\n*{_clean_heading_text(caption.group(2))}*\n\n"
 
     latex = re.sub(
         r"\\begin\{(figure|table|figure\*|table\*|wraptable|wrapfigure|sidewaysfigure|sidewaystable)\}.*?\\end\{\1\}",
@@ -217,7 +223,8 @@ def latex_to_document(latex: str) -> LatexDocument:
     citations: list[str] = []
     for match in _CITE_RE.finditer(latex):
         for key in match.group(2).split(","):
-            key = key.strip()
+            # 与 [CITE:...] 原子同一归一化（OCR r6）：两侧表示必须能 join。
+            key = key.strip().replace(" ", "")
             if key:
                 citations.append(key)
     latex = _CITE_RE.sub(lambda m: f" [CITE:{m.group(2).replace(' ', '')}] ", latex)
@@ -228,13 +235,18 @@ def latex_to_document(latex: str) -> LatexDocument:
     latex = _simplify_inline(latex)
     markdown = re.sub(r"\n{3,}", "\n\n", latex).strip()
 
+    abstract_md = ""
     if abstract:
         # 摘要与正文走同一套数学原子保护：摘要里的 $$...$$ / \[..\] 不先
         # protect 就进 _simplify_inline 会被原子拆分正则撕碎。
         abstract_md = _simplify_inline(_protect_display_math(abstract)).strip()
         markdown = f"## Abstract\n\n{abstract_md}\n\n{markdown}"
     return LatexDocument(
-        markdown=markdown, citations=list(dict.fromkeys(citations)), abstract=abstract
+        markdown=markdown,
+        citations=list(dict.fromkeys(citations)),
+        # 字段存转换后的文本（OCR r6）：raw LaTeX 的残留（\textbf 等）一旦
+        # 被下游 embed/展示就会漏出去。
+        abstract=abstract_md,
     )
 
 

@@ -63,10 +63,16 @@ def mark_vec_synced(conn: sqlite3.Connection) -> None:
 
 
 def mark_vec_dirty(conn: sqlite3.Connection) -> None:
-    """Invalidate the watermark — vectors changed since the last full sync."""
+    """Invalidate the watermark — vectors changed since the last full sync.
+
+    Deliberately does NOT commit (OCR r6): ``vec_upsert`` calls this per row
+    inside batch loops, and a commit here would fsync per vector and break
+    the caller's surrounding transaction. Batch callers (``embedding.py``,
+    ``vec_backfill.py``) commit their own batches; :func:`mark_vec_synced`
+    commits at completion.
+    """
     _ensure_meta_table(conn)
     conn.execute(f"INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES ('synced', '0')")
-    conn.commit()
 
 
 def vec_synced(conn: sqlite3.Connection) -> bool:

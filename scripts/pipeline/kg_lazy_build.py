@@ -410,8 +410,41 @@ def load_worklist(path: Path) -> dict:
 
 
 def save_worklist(path: Path, wl: dict) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps(wl, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    """Atomically persist the worklist: tmp file + ``os.replace``.
+
+    A crash mid-write must never leave a truncated/empty JSON behind —
+    ``load_worklist`` would then lose every pending entry (OCR r6)."""
+    import os
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(wl, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _worklist_lock(worklist_path: Path):
+    """Exclusive flock context on a sidecar ``.lock`` file (POSIX).
+
+    The lock file is separate from the worklist itself so taking the lock
+    never materializes an empty JSON for :func:`load_worklist` to choke on.
+    """
+    import fcntl
+    from contextlib import contextmanager
+
+    lock_path = Path(worklist_path).with_name(Path(worklist_path).name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def _locked():
+        with lock_path.open("a+") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    return _locked()
 
 
 def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
@@ -425,26 +458,16 @@ def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
     """
     if db is not None and db.get_paper(paper_id) is None:
         print(f"[kg-lazy] warning: {paper_id} not in the library (marking anyway)", flush=True)
-    import fcntl
-
-    # 锁在独立 .lock 文件上：worklist 本体在首次 save 前不存在，
-    # 用 "a+" 打开它会把空文件留给 load_worklist 的 json.loads 炸掉。
-    lock_path = worklist_path.with_name(worklist_path.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
     added = False
-    with lock_path.open("a+") as lock_fh:
-        fcntl.flock(lock_fh, fcntl.LOCK_EX)
-        try:
-            wl = load_worklist(worklist_path)
-            known = {e["paper_id"] for e in wl["pending"]} | {e["paper_id"] for e in wl["done"]}
-            if paper_id in known:
-                print(f"[kg-lazy] {paper_id} already in worklist", flush=True)
-                return False
-            wl["pending"].append({"paper_id": paper_id, "marked_at": _now_iso()})
-            save_worklist(worklist_path, wl)
-            added = True
-        finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+    with _worklist_lock(worklist_path):
+        wl = load_worklist(worklist_path)
+        known = {e["paper_id"] for e in wl["pending"]} | {e["paper_id"] for e in wl["done"]}
+        if paper_id in known:
+            print(f"[kg-lazy] {paper_id} already in worklist", flush=True)
+            return False
+        wl["pending"].append({"paper_id": paper_id, "marked_at": _now_iso()})
+        save_worklist(worklist_path, wl)
+        added = True
     print(f"[kg-lazy] marked retrieved: {paper_id} → {worklist_path}", flush=True)
     return added
 
@@ -510,15 +533,20 @@ def run_l1(
     _ensure_attempted_table(db)
 
     sql = _L1_SELECT + (" LIMIT ?" if limit > 0 else "")
-    rows = db.execute(sql, (limit,) if limit > 0 else ()).fetchall()
-    print(
-        f"[kg-lazy] L1: {len(rows)} papers to process (extractor={extractor}, root={papers_root})",
-        flush=True,
-    )
+    # 流式游标（OCR r6）：新库上 L1 积压可到 ~0.8M 行，fetchall 会把
+    # title+abstract 全量拉进 Python 内存；逐批消费即可。
+    cursor = db.execute(sql, (limit,) if limit > 0 else ())
+    cursor.arraysize = 5_000
 
-    stats = {"selected": len(rows), "processed": 0, "skipped": 0, "inserted": 0}
+    stats = {"selected": 0, "processed": 0, "skipped": 0, "inserted": 0}
     t0 = time.time()
-    for local_id, title, abstract, year in rows:
+    for local_id, title, abstract, year in cursor:
+        stats["selected"] += 1
+        if stats["selected"] == 1:
+            print(
+                f"[kg-lazy] L1: streaming papers (extractor={extractor}, root={papers_root})",
+                flush=True,
+            )
         if db.execute("SELECT 1 FROM concepts WHERE local_id = ? LIMIT 1", (local_id,)).fetchone():
             stats["skipped"] += 1
             continue
@@ -654,7 +682,7 @@ def run_l2(
 
     print(f"[kg-lazy] L2: {len(ids)} papers for full extraction", flush=True)
     stats = {"selected": len(ids), "ok": 0, "skipped": 0, "failed": 0}
-    worklist_changed = False
+    moved_to_done: set[str] = set()
     for pid in ids:
         if db.get_paper(pid) is None:
             print(f"[kg-lazy] L2: {pid} not in library — keeping in worklist", flush=True)
@@ -665,7 +693,7 @@ def run_l2(
             stats["skipped"] += 1
             if worklist_path and pid in _worklist_pending_ids(wl):
                 _worklist_move_to_done(wl, pid)
-                worklist_changed = True
+                moved_to_done.add(pid)
             continue
         try:
             result = _full_extract(db, pid, cfg, papers_root, skip_refine=skip_refine)
@@ -676,13 +704,20 @@ def run_l2(
             stats["ok"] += 1
             if worklist_path and pid in _worklist_pending_ids(wl):
                 _worklist_move_to_done(wl, pid)
-                worklist_changed = True
+                moved_to_done.add(pid)
             print(f"[kg-lazy] L2: {pid} extracted", flush=True)
         else:
             stats["failed"] += 1
             print(f"[kg-lazy] L2: {pid} FAILED: {result.get('error')}", flush=True)
-    if worklist_path and worklist_changed:
-        save_worklist(worklist_path, wl)
+    if worklist_path and moved_to_done:
+        # 锁内合并（OCR r6）：drain 可跑数小时，期间 mark_retrieved 可能追加
+        # 新条目——收尾时在锁内重读磁盘并只回放本 drain 的 pending→done 迁移，
+        # 不整体覆盖陈旧快照。
+        with _worklist_lock(worklist_path):
+            wl = load_worklist(worklist_path)
+            for pid in moved_to_done:
+                _worklist_move_to_done(wl, pid)
+            save_worklist(worklist_path, wl)
     print(
         f"[kg-lazy] L2 done: ok={stats['ok']} skipped={stats['skipped']} failed={stats['failed']}",
         flush=True,

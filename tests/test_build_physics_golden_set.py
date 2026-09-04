@@ -54,6 +54,14 @@ def test_mutual_citations_produce_load_golden_cases(tmp_db):
 
     cases = gold.build_cases(tmp_db, now="2026-09-04T00:00:00+00:00")
     assert len(cases) == 2
+    p1_abs = (
+        "We study topological superconductivity on the kagome lattice with spin orbit "
+        "coupling and find a topological phase transition near van Hove filling."
+    )
+    p2_abs = (
+        "Kagome metals show anisotropic spin transport. We compute the spin "
+        "conductivity with a boltzmann approach and discuss berry curvature effects."
+    )
     for case in cases:
         # exact load_golden schema (plus provenance extras)
         assert set(case) == {
@@ -70,19 +78,22 @@ def test_mutual_citations_produce_load_golden_cases(tmp_db):
         assert case["relevant_papers"][0] in {"p1", "p2"}
         assert case["relevant_nodes"] == []
         assert case["split"] in {"dev", "val", "test"}
-        # reference_answer carries the CITED paper's abstract (eval ground truth)
         assert case["reference_answer"].strip()
         assert case["query"].strip()
         assert case["created_at"] == "2026-09-04T00:00:00+00:00"
 
-    # the case whose query carries p1's title must expect p2 (and vice versa)
-    by_query = {c["query"]: c["relevant_papers"][0] for c in cases}
-    p1_query = next(q for q in by_query if q.startswith(P1_TITLE))
-    p2_query = next(q for q in by_query if q.startswith(P2_TITLE))
-    assert by_query[p1_query] == "p2"
-    assert by_query[p2_query] == "p1"
+    # the case whose query carries p1's title must expect p2 (and vice versa),
+    # and reference_answer must be the CITED paper's abstract — eval scores
+    # answer correctness against it, so the mapping has to be exact
+    by_query = {c["query"]: c for c in cases}
+    p1_case = next(c for q, c in by_query.items() if q.startswith(P1_TITLE))
+    p2_case = next(c for q, c in by_query.items() if q.startswith(P2_TITLE))
+    assert p1_case["relevant_papers"] == ["p2"]
+    assert p2_case["relevant_papers"] == ["p1"]
+    assert p1_case["reference_answer"] == p2_abs
+    assert p2_case["reference_answer"] == p1_abs
     # query = citing title + TF keywords from the citing abstract
-    assert "kagome" in p1_query
+    assert "kagome" in p1_case["query"]
 
 
 def test_output_is_load_golden_jsonl(tmp_db, tmp_path):

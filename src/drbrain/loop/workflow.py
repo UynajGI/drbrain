@@ -343,6 +343,20 @@ _COMPARATORS = {
 }
 
 
+#: Structured-prediction unit registry (OCR r6: cache the ~100ms pint init).
+_UNIT_REGISTRY: Any = None
+
+
+def _unit_registry() -> Any:
+    """Lazily built, process-wide pint registry (OCR r6: construction is ~100ms)."""
+    global _UNIT_REGISTRY
+    if _UNIT_REGISTRY is None:
+        import pint
+
+        _UNIT_REGISTRY = pint.UnitRegistry()
+    return _UNIT_REGISTRY
+
+
 def _structured_prediction_met(
     hypothesis: Hypothesis | None, value: float, unit: str
 ) -> bool | None:
@@ -365,9 +379,7 @@ def _structured_prediction_met(
     predicted_unit = (hypothesis.unit or "").strip()
     if computed_unit != predicted_unit:
         try:
-            import pint
-
-            ureg: Any = pint.UnitRegistry()  # untyped third-party
+            ureg: Any = _unit_registry()  # 模块级缓存（OCR r6）：构造要解析全量单位定义
             converted = (computed * ureg(computed_unit)).to(ureg(predicted_unit))
             computed = float(converted.magnitude)
         except Exception as exc:  # noqa: BLE001 — incomparable units → not judgeable
@@ -1645,7 +1657,10 @@ class ResearchLoopWorkflow(Workflow):
                     rows = retrieve_documents_sql(self._cfg, self._db, query, top_k=3)
                     literature_hit = bool(rows)
             except Exception as exc:  # noqa: BLE001 — retrieval outage ≠ novelty verdict
+                # 检索层故障时不许保留 corpus_checked=True——那会把"没查成"
+                # 洗成"查过没命中"，给假设白送 novel 标签（OCR r6）。
                 logger.warning("[loop] novelty literature check unavailable: %s", exc)
+                corpus_checked = False
 
         kg_forward = kg_reverse = False
         kg_checked = False

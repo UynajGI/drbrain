@@ -78,9 +78,12 @@ _STOPWORDS = frozenset(
 _WORD_RE = re.compile(r"[a-z][a-z0-9\-]{2,}")
 
 _CITE_PAIRS_SQL = """
-    SELECT ck.citing_local_id, ck.cited_local_id, p.title, p.abstract
+    SELECT ck.citing_local_id, ck.cited_local_id,
+           p.title, p.abstract AS citing_abstract,
+           c.abstract AS cited_abstract
     FROM paper_cite_keys ck
     JOIN papers p ON p.local_id = ck.citing_local_id
+    JOIN papers c ON c.local_id = ck.cited_local_id
     WHERE ck.cited_local_id IS NOT NULL
       AND ck.cited_local_id != ck.citing_local_id
     ORDER BY ck.citing_local_id, ck.cited_local_id
@@ -119,10 +122,12 @@ def build_cases(
     """
     created_at = now or datetime.now(UTC).isoformat(timespec="seconds")
     cases: list[dict] = []
-    for citing, cited, title, abstract in conn.execute(_CITE_PAIRS_SQL).fetchall():
+    for citing, cited, title, citing_abstract, cited_abstract in conn.execute(
+        _CITE_PAIRS_SQL
+    ).fetchall():
         title = str(title or "").strip()
-        reference = str(abstract or "").strip()
-        kws = _keywords(reference or title)
+        reference = str(cited_abstract or "").strip()
+        kws = _keywords(str(citing_abstract or title))
         query = re.sub(r"\s+", " ", f"{title} {kws}").strip()
         cases.append(
             {
