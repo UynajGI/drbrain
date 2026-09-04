@@ -14,6 +14,7 @@ Unit tests need no GPU/network (LLM and embedding calls are mocked); the one
 live-LLM test is marked ``integration``.
 """
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -22,6 +23,7 @@ import numpy as np
 import pytest
 
 from drbrain.config import Config, DirsConfig, EmbedConfig, LlamaIndexConfig
+from drbrain.rag.agent import _retrieval_rows
 from drbrain.rag.fusion import FusionRetriever, build_fusion_retriever, get_retrievers
 from drbrain.rag.indexer import build_index, load_index
 from drbrain.rag.retrievers import (
@@ -253,6 +255,72 @@ def _write_nested_paper(papers_dir: Path, pid: str) -> None:
     )
 
 
+def _write_nested_paper_with_offsets(papers_dir: Path, pid: str) -> None:
+    """Same nested paper, but every node carries exact line offsets.
+
+    Mirrors the latex-built tree format (``parser.latex_md.markdown_to_tree``):
+    0-based, end-exclusive ``line_start``/``line_end`` into raw.md, where a
+    parent's range spans its whole section (header + all children).
+    """
+    paper_dir = papers_dir / pid
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    raw = (
+        "# Parent Section\n"
+        "intro to the section\n"
+        "## Child A\n"
+        "condition list part 1\n"
+        "## Child B\n"
+        "condition list part 2\n"
+        "# Sibling Section\n"
+        "unrelated content\n"
+    )
+    (paper_dir / "raw.md").write_text(raw, encoding="utf-8")
+    (paper_dir / "tree.json").write_text(
+        json.dumps(
+            {
+                "doc_name": pid,
+                "line_count": 8,
+                "structure": [
+                    {
+                        "title": "Parent Section",
+                        "node_id": "0000",
+                        "line_num": 1,
+                        "line_start": 0,
+                        "line_end": 6,
+                        "nodes": [
+                            {
+                                "title": "Child A",
+                                "node_id": "0001",
+                                "line_num": 3,
+                                "line_start": 2,
+                                "line_end": 4,
+                                "nodes": [],
+                            },
+                            {
+                                "title": "Child B",
+                                "node_id": "0002",
+                                "line_num": 5,
+                                "line_start": 4,
+                                "line_end": 6,
+                                "nodes": [],
+                            },
+                        ],
+                    },
+                    {
+                        "title": "Sibling Section",
+                        "node_id": "0003",
+                        "line_num": 7,
+                        "line_start": 6,
+                        "line_end": 8,
+                        "nodes": [],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 # PAPER_A: 3 small nodes (0000/0001/0002) — the synthetic stand-in for the
 # former test-run paper used by the tree/fusion/retriever tests.
 _PAPER_A_SECTIONS = [
@@ -378,18 +446,22 @@ def test_parent_section_helper(tmp_path):
     assert path == ["0000"]
 
     # Leaf body stops at its own chunk; parent body spans both children.
-    title, body = _pageindex_section(papers_dir, "pa", "0001")
+    title, body, leaf_node = _pageindex_section(papers_dir, "pa", "0001")
     assert title == "Child A"
     assert "part 1" in body and "part 2" not in body
+    assert leaf_node is not None and leaf_node["node_id"] == "0001"
+    # line_num-only tree: no line offsets on the node dict.
+    assert leaf_node.get("line_start") is None and leaf_node.get("line_end") is None
 
-    ptitle, pbody, pnid = _parent_section(papers_dir, "pa", "0001")
+    ptitle, pbody, pnid, pnode = _parent_section(papers_dir, "pa", "0001")
     assert (ptitle, pnid) == ("Parent Section", "0000")
+    assert pnode is not None and pnode["node_id"] == "0000"
     assert "part 1" in pbody and "part 2" in pbody, "parent body must cover the full section"
     assert "Sibling Section" not in pbody, "parent body must stop before the next sibling"
 
     # Top-level nodes have no parent → empty expansion.
-    assert _parent_section(papers_dir, "pa", "0000") == ("", "", "")
-    assert _parent_section(papers_dir, "pa", "0003") == ("", "", "")
+    assert _parent_section(papers_dir, "pa", "0000") == ("", "", "", None)
+    assert _parent_section(papers_dir, "pa", "0003") == ("", "", "", None)
 
     # _full_section_body mirrors the parent slice directly from raw.md.
     assert _full_section_body(papers_dir / "pa" / "raw.md", parent) == pbody
@@ -437,6 +509,72 @@ def test_tree_retriever_expand_to_parent_disabled(tmp_path, monkeypatch):
     assert node.metadata["node_id"] == "0001"
     assert node.metadata["parent_node_id"] == ""
     assert node.metadata["parent_title"] == ""
+
+
+# ── R-I3: line offsets travel with the displayed text ────────────────────────
+
+
+def test_tree_retriever_expanded_leaf_carries_parent_line_offsets(tmp_path, monkeypatch):
+    """Leaf expanded to the parent body → offsets locate the PARENT section."""
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper_with_offsets(papers_dir, "pa")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _pick_leaf_acall)
+    monkeypatch.setattr("drbrain.services.embedding.search_tree", lambda *a, **k: [])
+
+    retriever = DrbrainTreeRetriever(cfg, paper_id="pa", top_k=5, db_path=None, models=_MODELS)
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert "part 1" in node.text and "part 2" in node.text  # parent body shown
+    assert node.metadata["node_id"] == "0001"  # leaf id kept for provenance
+    assert node.metadata["parent_node_id"] == "0000"
+    # offsets of the displayed parent section (0-based, end-exclusive)
+    assert node.metadata["line_start"] == 0
+    assert node.metadata["line_end"] == 6
+    # the declared parent slice reproduces the displayed body
+    assert (
+        "\n".join(
+            (papers_dir / "pa" / "raw.md").read_text(encoding="utf-8").split("\n")[0:6]
+        ).strip()
+        == node.text
+    )
+
+
+def test_tree_retriever_leaf_keeps_its_own_line_offsets_without_expansion(tmp_path, monkeypatch):
+    """No expansion → the leaf body is shown → the leaf's own offsets travel."""
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper_with_offsets(papers_dir, "pa")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _pick_leaf_acall)
+    monkeypatch.setattr("drbrain.services.embedding.search_tree", lambda *a, **k: [])
+
+    retriever = DrbrainTreeRetriever(
+        cfg, paper_id="pa", top_k=5, db_path=None, models=_MODELS, expand_to_parent=False
+    )
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert "part 2" not in node.text  # leaf chunk only
+    assert node.metadata["line_start"] == 2
+    assert node.metadata["line_end"] == 4
+
+
+def test_tree_retriever_line_offsets_absent_for_line_num_only_trees(tmp_path, monkeypatch):
+    """scibase/oa trees carry line_num only → offsets stay None (key-compatible)."""
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper(papers_dir, "pa")
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr("drbrain.query.tree_retrieval.acall_with_fallback", _pick_leaf_acall)
+    monkeypatch.setattr("drbrain.services.embedding.search_tree", lambda *a, **k: [])
+
+    retriever = DrbrainTreeRetriever(cfg, paper_id="pa", top_k=5, db_path=None, models=_MODELS)
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert "part 1" in node.text and "part 2" in node.text  # expansion still works
+    assert node.metadata["line_start"] is None
+    assert node.metadata["line_end"] is None
 
 
 # ── DrbrainRAPTORRetriever ───────────────────────────────────────────────────
@@ -574,6 +712,52 @@ def test_raptor_retriever_expands_to_parent(tmp_path, monkeypatch):
     assert node.metadata["title"] == "Child A"
     assert node.metadata["parent_node_id"] == "0000"
     assert node.metadata["parent_title"] == "Parent Section"
+
+
+def test_raptor_leaf_row_carries_displayed_text_offsets_and_checksum(tmp_path, monkeypatch):
+    """R-I3 end-to-end: expanded leaf → parent offsets + checksum over shown text.
+
+    The row keeps the leaf ``node_id`` but its checksums must re-verify the
+    text actually displayed (the parent section body), and its line offsets
+    must locate that same text in raw.md — not the leaf chunk's.
+    """
+    papers_dir = tmp_path / "papers"
+    _write_nested_paper_with_offsets(papers_dir, "pa")
+    db_path = tmp_path / "raptor.db"
+    _seed_pageindex_db(db_path, "pa", "0001", [1.0, 0.0, 0.0])
+    cfg = _make_cfg(tmp_path, papers_dir)
+    monkeypatch.setattr(
+        "drbrain.services.embedding._embed_batch",
+        lambda texts, cfg=None: [[1.0, 0.0, 0.0]],
+    )
+
+    retriever = DrbrainRAPTORRetriever(cfg, top_k=5, min_results=3, db_path=db_path)
+    nodes = retriever.retrieve("what are the conditions?")
+    assert len(nodes) == 1
+    node = nodes[0].node
+    assert node.metadata["node_id"] == "0001"  # leaf id kept for provenance
+    assert node.metadata["parent_node_id"] == "0000"
+    assert "part 1" in node.text and "part 2" in node.text  # parent body displayed
+    # offsets of the DISPLAYED parent section, not the matched leaf
+    assert node.metadata["line_start"] == 0
+    assert node.metadata["line_end"] == 6
+
+    rows = _retrieval_rows(nodes, generation="g-1", query="what are the conditions?")
+    row = rows[0]
+    assert row["node_id"] == "0001"
+    assert row["line_start"] == 0
+    assert row["line_end"] == 6
+    # checksums bind the actual displayed text (full chunk + 500-char excerpt)
+    assert row["content_checksum"] == hashlib.sha256(node.text.encode("utf-8")).hexdigest()
+    assert row["excerpt_checksum"] == hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+    leaf_only = "condition list part 1"
+    assert row["content_checksum"] != hashlib.sha256(leaf_only.encode("utf-8")).hexdigest()
+    # the offsets re-locate exactly the checksummed display text in raw.md
+    located = "\n".join(
+        (papers_dir / "pa" / "raw.md").read_text(encoding="utf-8").split("\n")[0:6]
+    ).strip()
+    assert located == node.text
+    assert row["content_checksum"] == hashlib.sha256(located.encode("utf-8")).hexdigest()
 
 
 # ── DrbrainGraphRetriever ────────────────────────────────────────────────────

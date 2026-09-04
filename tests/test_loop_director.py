@@ -16,7 +16,7 @@ import pytest
 
 from drbrain.config import Config, LlamaIndexConfig
 from drbrain.loop import ResearchDirector
-from drbrain.loop.director import _default_state
+from drbrain.loop.director import _default_state, _sanitize_critic_flaws
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 pytestmark = pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
@@ -267,6 +267,85 @@ def test_absorb_no_gain_increments_stagnation():
     assert len(state["champion"]) == 1
 
 
+def test_absorb_counts_falsification_as_information_gain():
+    """L-I1: 新 dead end 也是进展——证伪不再被记成 NO_GAIN。"""
+    from drbrain.loop.events import ResearchState
+
+    d = ResearchDirector(cfg=_cfg())
+    state = _default_state("t")
+    state["champion"].append({"statement": "h1", "cycle": 1, "confidence": 1.0})
+    rs = ResearchState(
+        verified=["h1"],  # already champion → no new champion
+        falsified=["h2"],  # brand-new dead end → information gain
+        hypotheses=[_h("h1"), _h("h2")],
+    )
+    result = d._absorb(state, "report", rs)
+    assert result["scorecard"]["new_dead_end"] == 1
+    assert state["consecutive_no_gain"] == 0
+
+
+def test_absorb_counts_job_consumption_as_information_gain(tmp_path):
+    """L-I1: 预测被实算改写（消费到**有落盘产物**的数值作业）才是进展。
+
+    诚实语义（review round-2）:只有 job 日志可解析的作业算消费——提交了但
+    未完成/失败的 job_id 不算，否则死循环提交的 run 永不触发停滞。
+    """
+    from drbrain.loop.events import ResearchState, Verification
+
+    run_dir = tmp_path / "runs"
+    d = ResearchDirector(cfg=_cfg(), run_dir=str(run_dir))
+    jobs_dir = run_dir / "t" / "jobs"
+    jobs_dir.mkdir(parents=True)
+    (jobs_dir / "job-9.log").write_text('{"value": 1.0}', encoding="utf-8")
+
+    state = _default_state("t")
+    state["champion"].append({"statement": "h1", "cycle": 1, "confidence": 1.0})
+
+    real = ResearchState(
+        verifications=[
+            Verification(statement="p1", job_id="job-9", status="prediction"),
+        ],
+        predictions=["p1"],
+        hypotheses=[_h("h1")],
+    )
+    result = d._absorb(state, "report", real)
+    assert result["scorecard"]["jobs_consumed"] == 1
+    assert state["consecutive_no_gain"] == 0
+
+    # 只有 job_id 字符串、没有落盘产物 → 不算消费（幻觉 job_id 不得续命）
+    phantom = ResearchState(
+        verifications=[
+            Verification(statement="p2", job_id="job-404", status="prediction"),
+        ],
+        predictions=["p2"],
+        hypotheses=[_h("h1")],
+    )
+    result = d._absorb(state, "report", phantom)
+    assert result["scorecard"]["jobs_consumed"] == 0
+    assert state["consecutive_no_gain"] == 1
+
+
+def test_absorb_scorecard_records_contradiction_and_rag_status():
+    """§7.6: 记分卡记录矛盾数与检索健康度。
+
+    证伪一个先前 champion 记为 contradiction（最值钱信号），但按 T3 仲裁
+    语义它不进 dead-ends（h1 保持未被裁决状态，等更强证据）；新 dead end
+    另行计数。
+    """
+    from drbrain.loop.events import ResearchState
+
+    d = ResearchDirector(cfg=_cfg())
+    state = _default_state("t")
+    state["champion"].append({"statement": "h1", "cycle": 1, "confidence": 1.0})
+    rs = ResearchState(verified=[], falsified=["h1", "h2"], retrieval_status="ok")
+    result = d._absorb(state, "report", rs)
+    scorecard = result["scorecard"]
+    assert scorecard["contradictions_found"] == 1  # falsified a prior champion
+    assert scorecard["rag_status"] == "ok"
+    assert scorecard["new_dead_end"] == 1  # h2 only; h1 stays unresolved
+    assert "h1" not in state["rejected"]
+
+
 def _h(statement: str):
     from drbrain.loop.events import Hypothesis
 
@@ -282,17 +361,83 @@ def test_build_prior_context_lists_champion_and_rejected():
     assert "X 是 Y" in prior
 
 
+# ── L-I2: last-round critic flaws inform the next analyst ─────────────────────
+
+
+def test_build_prior_context_includes_bounded_critic_flaws():
+    state = _default_state("t")
+    state["champion"] = [{"statement": "A 是 B", "cycle": 1, "confidence": 1.0}]
+    state["critic_flaws"] = [
+        {"cycle": 1, "text": "旧 flaw"},
+        {"cycle": 2, "text": "h2 的预测缺少数值判据，无法证伪"},
+    ]
+    prior = ResearchDirector._build_prior_context(state)
+    # 克制的段落格式：标题 + 每条一行（带轮次标注）
+    assert "## 上一轮批评要点" in prior
+    assert "- [cycle 2] h2 的预测缺少数值判据，无法证伪" in prior
+    assert "- [cycle 1] 旧 flaw" in prior
+    assert "A 是 B" in prior  # 原有 champion 段落不受影响
+    # 没有 flaw 时不得出现空段落
+    assert "上一轮批评要点" not in ResearchDirector._build_prior_context(_default_state("t"))
+
+
+def test_absorb_critic_flaws_dedupes_by_round_and_bounds():
+    d = ResearchDirector(cfg=_cfg())
+    state = _default_state("t")
+    # 同一轮里多个 critic 重复同一 objection → 只留一条
+    d._last_critic_flaws = ["flaw-a", "flaw-a", "flaw-b"]
+    d._absorb_critic_flaws(state, 1)
+    assert [(e["cycle"], e["text"]) for e in state["critic_flaws"]] == [
+        (1, "flaw-a"),
+        (1, "flaw-b"),
+    ]
+    # 跨轮重复的 flaw 移到最新轮次（不占两个槽位）
+    d._last_critic_flaws = ["flaw-a", "flaw-c"]
+    d._absorb_critic_flaws(state, 2)
+    assert [(e["cycle"], e["text"]) for e in state["critic_flaws"]] == [
+        (1, "flaw-b"),
+        (2, "flaw-a"),
+        (2, "flaw-c"),
+    ]
+    # 超过 PRIOR_FLAWS_MAX=5 → 只保留最近 5 条（L-I6 有界）
+    for i in range(6):
+        d._last_critic_flaws = [f"flaw-{i}"]
+        d._absorb_critic_flaws(state, 3 + i)
+    assert len(state["critic_flaws"]) == 5
+    assert [e["text"] for e in state["critic_flaws"]][-1] == "flaw-5"
+    assert [e["cycle"] for e in state["critic_flaws"]] == [4, 5, 6, 7, 8]
+
+
+def test_sanitize_critic_flaws_rejects_garbage_and_reapplies_bound():
+    raw = [
+        {"cycle": "3", "text": "  a\n b  "},  # 数字串轮次 + 换行折叠为单行
+        "junk",  # 非 dict → 丢弃
+        {"text": ""},  # 空 flaw → 丢弃
+        {"cycle": 9, "text": "x" * 500},  # 单条超长 → 截断
+    ]
+    out = _sanitize_critic_flaws(raw)
+    assert out == [
+        {"cycle": 3, "text": "a b"},
+        {"cycle": 9, "text": "x" * 200},
+    ]
+    assert _sanitize_critic_flaws("not-a-list") == []
+    assert _sanitize_critic_flaws(None) == []
+
+
 def test_checkpoint_roundtrip(tmp_path):
     d = ResearchDirector(cfg=_cfg(), run_dir=str(tmp_path))
     state = _default_state("topological flat band")
     state["cycles"] = 2
     state["champion"].append({"statement": "h1", "cycle": 1, "confidence": 1.0})
     state["rejected"].append("h0 dead end")
+    state["critic_flaws"] = [{"cycle": 2, "text": "h2 的预测缺少数值判据"}]
     d._save_state("topological flat band", state)
     loaded = d._load_state("topological flat band")
     assert loaded["cycles"] == 2
     assert loaded["champion"][0]["statement"] == "h1"
     assert loaded["rejected"] == ["h0 dead end"]
+    # L-I2: flaw feed survives a restart so the next analyst still sees it
+    assert loaded["critic_flaws"] == [{"cycle": 2, "text": "h2 的预测缺少数值判据"}]
     # canonical files exist (AutoScientists-style workspace, not a JSON blob)
     td = tmp_path / "topological-flat-band"
     assert (td / "champion.md").exists()
@@ -366,7 +511,7 @@ def test_director_honors_job_evidence_gate(monkeypatch, tmp_path):
     # cycle starts; pre-write the job artifacts there so the gate finds them.
     jobs_dir = tmp_path / "runs" / "topological-flat-band" / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
-    (jobs_dir / "job-1.log").write_text('{"min_bandwidth_ev": 1.0}', encoding="utf-8")
+    (jobs_dir / "job-1.log").write_text('{"value": 1.0, "quantity": "q"}', encoding="utf-8")
     (jobs_dir / "job-1.json").write_text(
         json.dumps(
             {
@@ -442,14 +587,15 @@ def test_director_writes_role_memory_files(monkeypatch, tmp_path):
     verifier_text = verifier.read_text(encoding="utf-8")
     # critic history: hypotheses + score + verdict; verifier history: counts + status
     assert "[cycle 1] h1" in critic_text
-    assert "score=0.90" in critic_text
+    # §7.3: 0.7×0.9 + 0.3×0.5(unknown) = 0.78
+    assert "score=0.78" in critic_text
     assert "verdict=KEEP" in critic_text
     assert "[cycle 1] h1" in verifier_text
     assert "supports=1" in verifier_text
     assert "→ verified" in verifier_text
     # h1 is a champion dup from cycle 2 on (T6) → only h2 gets re-proposed and
     # DISCARDed; the verifier records real evidence only in cycle 1 (h1).
-    # cycle 1: h1 (KEEP 0.90) + h2 (DISCARD 0.00) → 2 critic lines; cycles 2-3:
+    # cycle 1: h1 (KEEP 0.78) + h2 (DISCARD 0.00) → 2 critic lines; cycles 2-3:
     # h2 DISCARD → 1 critic line each → 4 total; verifier stays at 1.
     assert critic_text.count("[cycle") == 4
     assert verifier_text.count("[cycle") == 1
@@ -479,6 +625,89 @@ _DISCUSSION_SCRIPT = [
     },
     {"text": "cycle report", "tool_calls": None, "usage": None},
 ]
+
+
+# L-I2 integration: the critic's flaw text must reach the NEXT cycle's analyst
+# prompt (previously hypotheses were only filtered, never revised).
+_FLAWS_SCRIPT = [
+    {"text": '{"query": "q1"}', "tool_calls": None, "usage": None},  # retrieve distill
+    {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},  # extract
+    {
+        "text": '{"gaps": ["gap1"], "hypotheses": ['
+        '{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}, '
+        '{"statement": "h2", "prediction": "p2", "falsification": "f2", "conditions": {}}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # identify_gaps
+    {
+        "text": '{"hypotheses": ['
+        '{"statement": "h1", "score": 0.9, "flaw": "h1 机制成立，证据链完整"}, '
+        '{"statement": "h2", "score": 0.1, '
+        '"flaw": "否决理由：h2 的预测缺少数值判据，无法证伪"}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # critique
+    {
+        "text": '{"verifications": [{"statement": "h1", "supports": 1, "refutes": 0, "orthogonal": 0}]}',
+        "tool_calls": None,
+        "usage": None,
+    },  # verify
+    {"text": "cycle report", "tool_calls": None, "usage": None},  # report
+]
+
+
+def _recording_cyclic_llm(monkeypatch, script) -> list[str]:
+    """`_cyclic_llm` + prompt capture: records every call's message blob."""
+    blobs: list[str] = []
+
+    async def fake(messages, models, tools=None, **kw):
+        blobs.append(str(messages))
+        step = script[(len(blobs) - 1) % len(script)]
+        return dict(step)
+
+    monkeypatch.setattr("drbrain.extractor.llm_client.acall_with_messages", fake)
+    return blobs
+
+
+@pytest.mark.timeout(180)
+def test_director_feeds_last_round_flaws_to_next_analyst(monkeypatch, tmp_path):
+    """L-I2: 第二轮 analyst 的 prompt 必须包含第一轮 critic 留下的 flaw 文本。
+
+    第一轮：h1 KEEP（入 champion），h2 被 DISCARD，否决理由落在消息板上。
+    第二轮：h1 是 champion dup（T6 拦截），h2 未被证伪 → 仍会被重新提出 ——
+    这正是 L-I2 的病灶；修复后 analyst 至少能在 prompt 里看到否决理由，
+    从而提出修订版假设而不是原样重提。
+    """
+    prompts = _recording_cyclic_llm(monkeypatch, _FLAWS_SCRIPT)
+    d = ResearchDirector(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        run_dir=str(tmp_path / "runs"),
+        n_critics=1,
+    )
+
+    async def _go():
+        return await d.run(
+            "a research question", max_cycles=2, stagnation_cycles=5, max_adaptations=1
+        )
+
+    state = asyncio.run(_go())
+    assert state["cycles"] == 2
+    analyst_prompts = [p for p in prompts if "识别研究 gap" in p]
+    assert len(analyst_prompts) == 2
+    # 第一轮没有历史批评；第二轮必须带上一轮的否决理由（带轮次标注）
+    assert "上一轮批评要点" not in analyst_prompts[0]
+    assert "## 上一轮批评要点" in analyst_prompts[1]
+    assert "否决理由：h2 的预测缺少数值判据，无法证伪" in analyst_prompts[1]
+    assert "[cycle 1]" in analyst_prompts[1]
+    # 注入列表有界（L-I6）。director 驱动的运行里 durable front-half 每轮把历史
+    # 评论重放回消息板：文本去重保证老 flaw 不占新槽位，只被重新标记为
+    # 「截至本轮仍在场」→ 全部条目都落在最新轮次上。
+    assert len(state["critic_flaws"]) == 2
+    texts = {e["text"] for e in state["critic_flaws"]}
+    assert any("h2 的预测缺少数值判据" in t for t in texts)
+    assert any("h1 机制成立" in t for t in texts)
+    assert all(e["cycle"] == 2 for e in state["critic_flaws"])
 
 
 @pytest.mark.timeout(180)
@@ -512,7 +741,8 @@ def test_director_persists_proposals_and_reviews(monkeypatch, tmp_path):
     # The reviewer is explicitly the critic role — the non-author reviewer
     # independent of the propose role that authored the proposal.
     assert "- [cycle 1] h1" in p_text
-    assert "- [cycle 1] h1（reviewer=critic, score=0.90, verdict=KEEP）" in r_text
+    # §7.3: 最终分 = 0.7×0.9(critic) + 0.3×0.5(novelty unknown 中性) = 0.78
+    assert "- [cycle 1] h1（reviewer=critic, score=0.78, verdict=KEEP）" in r_text
     assert "reviewer=critic" in r_text
     # cycle 2: h1 是 champion dup（T6）→ 只重新提 h2；critic 没评 h2 →
     # discussion_pending（未获非作者评论）→ 只落盘 proposals.md，不落 reviews.md。
@@ -724,7 +954,7 @@ def test_janitor_flags_failed_jobs(tmp_path):
                 "pid": 1,
                 "started_at": time.time() - 3600,
                 "status": "failed",
-                "error": "NameError: name 'min_bandwidth_ev' is not defined",
+                "error": "NameError: name 'x' is not defined",
             }
         ),
         encoding="utf-8",
@@ -748,3 +978,35 @@ def test_janitor_flags_failed_jobs(tmp_path):
     # 不再走 stale 分支
     assert not any(e["event"].endswith("stale") for e in entries)
     assert not any(e["event"] == "[janitor] stale job trusted" for e in entries)
+
+
+def test_absorb_routes_reproductions_away_from_champion():
+    """§7.3: 复现类假设即使 verified 也不进 champion，只进 reproductions 计数。"""
+    from drbrain.loop.events import Hypothesis, ResearchState
+
+    d = ResearchDirector(cfg=_cfg())
+    state = _default_state("t")
+    rs = ResearchState(
+        verified=["h-repro"],
+        hypotheses=[Hypothesis(statement="h-repro", claim_id="cl-repro")],
+        novelty_labels={"cl-repro": "reproduction"},
+    )
+    result = d._absorb(state, "report", rs)
+    assert state["champion"] == []
+    assert result["scorecard"]["reproductions"] == 1
+    assert result["scorecard"]["new_champion"] == 0
+
+
+def test_absorb_novel_hypothesis_still_becomes_champion():
+    """§7.3: novel 标签不影响 champion 准入。"""
+    from drbrain.loop.events import Hypothesis, ResearchState
+
+    d = ResearchDirector(cfg=_cfg())
+    state = _default_state("t")
+    rs = ResearchState(
+        verified=["h-new"],
+        hypotheses=[Hypothesis(statement="h-new", claim_id="cl-new")],
+        novelty_labels={"cl-new": "novel"},
+    )
+    d._absorb(state, "report", rs)
+    assert [c["statement"] for c in state["champion"]] == ["h-new"]

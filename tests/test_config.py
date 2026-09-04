@@ -104,7 +104,8 @@ def test_autoresearch_config_defaults():
     assert c.mcp_servers == []
     assert c.step_capabilities == {}
     assert c.budget == {}
-    assert c.require_rag_evidence is False
+    # Strict RAG mode is the default; hosts without a corpus opt out explicitly.
+    assert c.require_rag_evidence is True
 
 
 def test_config_defaults():

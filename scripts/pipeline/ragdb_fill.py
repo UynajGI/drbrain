@@ -12,11 +12,14 @@ the working copy ``data/drbrain_rag.db``:
                    reusable without re-embedding; rows land in shard JSONL.
   phase load     -- stream shards into ``node_texts``, create FTS5 index.
   phase verify   -- hash-match rate against ``tree_vectors``.
+  phase categories -- sync papers.categories (main DB) → paper_categories
+                   (RAG DB) for category-scoped retrieval.
 
 Usage:
   python scripts/pipeline/ragdb_fill.py extract --workers 24
   python scripts/pipeline/ragdb_fill.py load
   python scripts/pipeline/ragdb_fill.py verify
+  python scripts/pipeline/ragdb_fill.py categories
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 PAPERS_ROOT = REPO / "data" / "papers"
 RAG_DB = REPO / "data" / "drbrain_rag.db"
+MAIN_DB = REPO / "data" / "drbrain.db"
 SHARD_DIR = REPO / "data" / "spool" / "ragdb_shards"
 
 
@@ -189,14 +193,74 @@ def cmd_verify() -> None:
     conn.close()
 
 
+# ── categories ───────────────────────────────────────────────────────────────
+
+
+def cmd_categories() -> None:
+    """Sync ``papers.categories`` (main DB) → ``paper_categories`` (RAG DB).
+
+    The FTS5 BM25 leg reads this table to restrict recall to a category
+    subset (``filters={"categories": [...]}``) — the review §6.2 requirement
+    for keeping 0.8M-paper cross-domain homonyms out of physics retrieval.
+    """
+    if not MAIN_DB.exists():
+        print(f"[categories] main DB missing: {MAIN_DB}", flush=True)
+        return
+    src = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True)
+    conn = sqlite3.connect(str(RAG_DB))
+    try:
+        cols = [r[1] for r in src.execute("PRAGMA table_info(papers)").fetchall()]
+        if "categories" not in cols:
+            print("[categories] papers.categories column missing (run the app once)", flush=True)
+            return
+        with conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS paper_categories (
+                       paper_id TEXT PRIMARY KEY,
+                       categories TEXT NOT NULL DEFAULT ''
+                   )"""
+            )
+            conn.execute("DELETE FROM paper_categories")
+        # 流式游标 + 分块提交：不把 ~0.8M 行 fetchall 进 Python 内存
+        # （OCR r5），也不撑单个巨型写事务。每块独立提交，中断重跑即续写。
+        chunk_size = 50_000
+        cur = src.execute(
+            "SELECT local_id, categories FROM papers "
+            "WHERE categories IS NOT NULL AND categories != ''"
+        )
+        cur.arraysize = 10_000
+        synced = 0
+        while True:
+            chunk = cur.fetchmany(chunk_size)
+            if not chunk:
+                break
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO paper_categories (paper_id, categories) VALUES (?, ?)",
+                    chunk,
+                )
+            synced += len(chunk)
+            print(f"[categories] {synced}", flush=True)
+        with conn:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paper_categories_paper ON paper_categories(paper_id)"
+            )
+        print(f"[categories] synced {synced} papers → {RAG_DB.name}", flush=True)
+    finally:
+        src.close()
+        conn.close()
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("phase", choices=["extract", "load", "verify"])
+    ap.add_argument("phase", choices=["extract", "load", "verify", "categories"])
     ap.add_argument("--workers", type=int, default=24)
     args = ap.parse_args()
     if args.phase == "extract":
         cmd_extract(args.workers)
     elif args.phase == "load":
         cmd_load()
+    elif args.phase == "categories":
+        cmd_categories()
     else:
         cmd_verify()

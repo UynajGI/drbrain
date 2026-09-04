@@ -382,6 +382,8 @@ class RunManager:
                     lease_seconds=settings.lease_seconds,
                     tool_policy=tool_policy,
                     require_rag_evidence=settings.require_rag_evidence,
+                    require_compute_tools=settings.require_compute_tools,
+                    compute_tool_names=list(settings.compute_tool_names) or None,
                     step_timeout_seconds=settings.step_timeout_seconds,
                 )
                 director.run_sync(

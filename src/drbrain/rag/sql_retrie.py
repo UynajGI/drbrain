@@ -30,11 +30,12 @@ from typing import Any
 from loguru import logger as log
 
 from drbrain.rag.evidence import build_evidence_record
+from drbrain.utils.rrf import DEFAULT_K as _RRF_K
+from drbrain.utils.rrf import rrf_fuse_scores
 
 _WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-.]*")
 _MAX_TERMS = 16
 _KNN_POOL = 100
-_RRF_K = 60
 
 
 def _default_rag_db(cfg: Any) -> Path:
@@ -77,18 +78,65 @@ def _fts_query(query: str) -> str | None:
     return " OR ".join(f'"{w}"' for w in words)
 
 
-def _bm25_leg(conn: sqlite3.Connection, query: str, k: int) -> list[tuple[str, float]]:
+def _categories_filter(
+    conn: sqlite3.Connection, categories: list[str] | tuple[str, ...] | str | None
+) -> tuple[str, list[str]]:
+    """Build a paper_id subquery restricting candidates to wanted categories.
+
+    ``categories`` comes from ``filters["categories"]`` (a string, or list of
+    strings). Matching is arXiv token-prefix aware — ``cond-mat`` hits
+    ``cond-mat.mes-hall`` but never ``xcond-mat``. Returns ``("", [])`` when
+    the filter is absent or the corpus predates category metadata (no
+    ``paper_categories`` table): missing metadata must silently widen, never
+    error.
+    """
+    if isinstance(categories, str):
+        raw: list[str] = [categories]
+    else:
+        raw = list(categories or [])
+    wanted = [str(c).strip().lower() for c in raw if str(c).strip()]
+    if not wanted:
+        return "", []
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_categories'"
+    ).fetchone()
+    if not has_table:
+        return "", []
+    clauses: list[str] = []
+    params: list[str] = []
+    for cat in wanted:
+        # 用户输入先转义 LIKE 通配符：math.G_ 里的 "_" 不该匹配任意字符。
+        escaped = cat.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("' ' || categories || ' ' LIKE ? ESCAPE '\\'")
+        params.append(f"% {escaped}%")
+    subquery = (
+        " AND nt.paper_id IN "
+        "(SELECT paper_id FROM paper_categories WHERE (" + " OR ".join(clauses) + "))"
+    )
+    return subquery, params
+
+
+def _bm25_leg(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int,
+    *,
+    categories_filter: tuple[str, list[str]] = ("", []),
+) -> list[tuple[str, float]]:
     fts_q = _fts_query(query)
     if not fts_q:
         return []
+    clause, params = categories_filter
     try:
         rows = conn.execute(
             """SELECT nt.node_key, bm25(node_texts_fts) AS s
                FROM node_texts_fts
                JOIN node_texts nt ON nt.rowid = node_texts_fts.rowid
-               WHERE node_texts_fts MATCH ?
+               WHERE node_texts_fts MATCH ?"""
+            + clause
+            + """
                ORDER BY s LIMIT ?""",
-            (fts_q, k),
+            (fts_q, *params, k),
         ).fetchall()
     except sqlite3.OperationalError as exc:
         log.warning("[rag-sql] FTS5 query failed: {}", exc)
@@ -121,6 +169,8 @@ def _rerank_with_vectors(
         return []
     import numpy as np
 
+    from drbrain.storage import vector_index as vi
+
     q = np.asarray(qvec, dtype=np.float32)
     q /= max(float(np.linalg.norm(q)), 1e-12)
     scored: list[tuple[str, float]] = []
@@ -131,8 +181,8 @@ def _rerank_with_vectors(
         rows = conn.execute(
             "SELECT node_id, embedding FROM tree_vectors "
             f"WHERE tree_layer = 'pageindex' AND node_id IN ({ph}) "
-            "AND length(embedding) = 4096",
-            chunk,
+            "AND length(embedding) = ?",
+            (*chunk, vi.embedding_byte_len(conn)),
         ).fetchall()
         for node_key, blob in rows:
             v = np.frombuffer(blob, dtype=np.float32).copy()
@@ -143,11 +193,8 @@ def _rerank_with_vectors(
 
 
 def _fuse(legs: list[list[tuple[str, float]]]) -> list[tuple[str, float]]:
-    scores: dict[str, float] = {}
-    for leg in legs:
-        for rank, (key, _s) in enumerate(leg, start=1):
-            scores[key] = scores.get(key, 0.0) + 1.0 / (_RRF_K + rank)
-    return sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    # RRF 收敛（R-I7）：实现与常量统一来自 drbrain.utils.rrf，不再自留一份。
+    return rrf_fuse_scores(legs, k=_RRF_K)
 
 
 # Module-level reranker cache: CrossEncoderReranker's model load is lazy but
@@ -202,6 +249,8 @@ def _raptor_leg(
         return []
     import numpy as np
 
+    from drbrain.storage import vector_index as vi
+
     q = np.asarray(qvec, dtype=np.float32)
     q /= max(float(np.linalg.norm(q)), 1e-12)
     scored: list[tuple[str, float]] = []
@@ -212,8 +261,8 @@ def _raptor_leg(
         rows = conn.execute(
             "SELECT node_id, embedding FROM tree_vectors "
             f"WHERE tree_layer = 'raptor_L1' AND paper_id IN ({ph}) "
-            "AND length(embedding) = 4096",
-            chunk,
+            "AND length(embedding) = ?",
+            (*chunk, vi.embedding_byte_len(conn)),
         ).fetchall()
         for node_id, blob in rows:
             v = np.frombuffer(blob, dtype=np.float32).copy()
@@ -326,6 +375,52 @@ def _graph_leg(db: Any, graph: Any, query: str, k: int) -> list[dict[str, Any]]:
     return entries
 
 
+def _claims_leg(db: Any, query: str, k: int) -> list[dict[str, Any]]:
+    """Settled-claims leg (review §7.4): the loop's own conclusions are knowledge.
+
+    Reads the main DB ``claims`` table (verified/falsified/predicted assertions
+    written at settle time) so the next cycle's retrieve step can see — and
+    cite — what earlier cycles concluded. Entries carry their own row metadata
+    because claims have no ``node_texts`` counterpart. Keywords score by
+    hit count × claim confidence; failures degrade to an empty leg.
+    """
+    if db is None:
+        return []
+    words = _WORD_RE.findall(query)[:_MAX_TERMS]
+    if not words:
+        return []
+    try:
+        rows = db.execute(
+            "SELECT claim_id, claim_text, claim_type, confidence FROM claims "
+            "ORDER BY created_at DESC LIMIT 500"
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 — schema drift must not break the leg
+        log.warning("[rag-sql] claims leg read failed: {}", exc)
+        return []
+    lowered = [w.lower() for w in words]
+    scored: list[tuple[float, tuple]] = []
+    for row in rows:
+        text_l = str(row[1]).lower()
+        hits = sum(1 for w in lowered if w in text_l)
+        if hits:
+            scored.append((hits * max(float(row[3] or 0.0), 0.05), row))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    entries: list[dict[str, Any]] = []
+    for score, (claim_id, claim_text, claim_type, confidence) in scored[:k]:
+        entries.append(
+            {
+                "key": f"claim:{claim_id}",
+                "score": max(0.05, min(score, 1.0)),
+                "paper_id": "",
+                "node_id": f"claim:{claim_id}",
+                "title": f"[{claim_type or 'claim'}]",
+                "text": str(claim_text)[:500],
+                "source": "claims",
+            }
+        )
+    return entries
+
+
 def retrieve_documents_sql(
     cfg: Any,
     db: Any,
@@ -357,7 +452,9 @@ def retrieve_documents_sql(
         started = time.perf_counter()
 
         need_pool = any(w in wanted for w in ("bm25", "vector", "raptor"))
-        bm25 = _bm25_leg(conn, query, 1000) if need_pool else []
+        categories = (filters or {}).get("categories")
+        cats_filter = _categories_filter(conn, categories)
+        bm25 = _bm25_leg(conn, query, 1000, categories_filter=cats_filter) if need_pool else []
         pool = [k for k, _ in bm25]
         pool_papers = list(dict.fromkeys(k.split(":", 1)[0] for k in pool))
 
@@ -395,10 +492,19 @@ def retrieve_documents_sql(
             t0 = time.perf_counter()
             legs.append(("graph", _graph_leg(db, graph, query, top_k)))
             leg_ms.append(f"graph={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
+        if "claims" in wanted:
+            t0 = time.perf_counter()
+            legs.append(("claims", _claims_leg(db, query, top_k)))
+            leg_ms.append(f"claims={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
         if not legs:
             return []
 
-        rich = {e["key"]: e for name, entries in legs if name == "graph" for e in entries}
+        rich = {
+            e["key"]: e
+            for name, entries in legs
+            if name in ("graph", "claims")  # self-describing legs
+            for e in entries
+        }
         tuple_legs = [[(e["key"], e["score"]) for e in entries] for _, entries in legs]
         fused = _fuse(tuple_legs)
         membership: dict[str, list[str]] = {}
@@ -469,7 +575,9 @@ def retrieve_documents_sql(
         # it is appended (marked) so downstream consumers see summary-level and
         # graph-level evidence.
         primary_keys = {k for k, _ in primary}
-        for name in ("raptor", "graph"):
+        # claims 与 graph/raptor 一样参与保底：融合头部挤不掉已沉淀结论的
+        # 最佳命中（claims 条目自描述，rich 里已带元数据，渲染无需回查）。
+        for name in ("raptor", "graph", "claims"):
             leg_entries = next((entries for lname, entries in legs if lname == name), [])
             best = max(leg_entries, key=lambda e: e["score"], default=None)
             if best is not None and best["key"] not in primary_keys:

@@ -307,25 +307,12 @@ def _to_function_tool(
 
 
 def _schema_to_model(name: str, schema: dict[str, Any]) -> type | None:
-    """Build a pydantic model from a JSON Schema for ``FunctionTool.fn_schema``."""
-    try:
-        from pydantic import create_model
-    except ImportError:
-        return None
-    properties = schema.get("properties") or {}
-    if schema.get("type") != "object" or not properties:
-        return None
-    required = set(schema.get("required") or [])
-    json_to_py: dict[str, Any] = {
-        "string": str,
-        "integer": int,
-        "number": float,
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-    }
-    fields: dict[str, Any] = {}
-    for key, prop in properties.items():
-        ptype = json_to_py.get(prop.get("type"), Any)
-        fields[key] = (ptype, ...) if key in required else (ptype | None, None)
-    return create_model(f"mcp_{name}_Input", **fields)
+    """Build a pydantic model from a JSON Schema for ``FunctionTool.fn_schema``.
+
+    Delegates to the shared plugins-layer bridge so MCP tools get the same
+    parameter constraints as plugin tools: per-parameter description/enum/
+    default, nested objects recursed, ``additionalProperties: false``.
+    """
+    from drbrain.plugins.registry import json_schema_to_model
+
+    return json_schema_to_model(name, schema)

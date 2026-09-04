@@ -23,19 +23,43 @@ def _run(task: str) -> str:
     return asyncio.run(_go())
 
 
-def test_loop_runs_end_to_end():
-    result = _run("2D flat-band materials")
+def test_loop_runs_end_to_end(monkeypatch):
+    """端到端完成：注入两个候选（无 LLM 时各节点降级），报告带机读摘要行。"""
+
+    async def _go():
+        wf = ResearchLoopWorkflow(timeout=30)
+
+        async def fake_rag(query, limit=10):
+            return ["Paper A", "Paper B"], None, "ok"
+
+        wf._retrieve_rag_evidence = fake_rag
+        handler = wf.run(task="2D flat-band materials")
+        return await handler
+
+    result = asyncio.run(_go())
     assert isinstance(result, str)
     assert "task='2D flat-band materials'" in result
-    assert "candidates=0" in result
+    assert "candidates=2" in result
 
 
-def test_loop_terminates_on_empty_candidates():
-    # Empty candidates drive the bounded retrieve-again loop; the pipeline must
-    # still complete (no hang) and produce a report with the machine-readable
-    # summary line.
-    result = _run("unretrievable topic")
-    assert "verified=0" in result
+def test_loop_hard_stops_on_exhausted_empty_retrieval():
+    """L-E7: 重试耗尽仍无候选 → 硬暂停报错，绝不放空列表继续跑 extract/gaps。
+
+    有界性保留：RetrieveAgain 循环不能挂死；耗尽后必须以明确错误终止。
+    """
+    from drbrain.loop.store import RunExecutionBlockedError
+
+    async def _go():
+        wf = ResearchLoopWorkflow(timeout=30)
+        return await wf.run(task="unretrievable topic")
+
+    raised = None
+    try:
+        asyncio.run(_go())
+    except RunExecutionBlockedError as exc:
+        raised = exc
+    assert raised is not None, "expected RunExecutionBlockedError on empty retrieval"
+    assert "no candidates" in str(raised)
 
 
 def test_state_schema_defaults():
@@ -173,18 +197,26 @@ def test_job_log_has_number_gate(tmp_path):
     # log present but no parseable number
     (jobs / "j1.log").write_text("all done, nothing numeric", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j1") is False
-    # a parseable result JSON (non-empty min_bandwidth_ev) + job finished → evidence
+    # a parseable result JSON (finite numeric value, T4 contract) + job finished → evidence
     (jobs / "j1.log").write_text(
-        '{"min_bandwidth_ev": 0.02, "flat_band_likely": true}', encoding="utf-8"
+        '{"quantity": "band_width", "value": 0.02, "unit": "eV"}', encoding="utf-8"
     )
     assert _job_log_has_number(run_dir, "j1") is True
+    # domain-specific result keys (legacy flat-band) are NOT evidence
+    (jobs / "j1.log").write_text('{"min_bandwidth_ev": 0.02}', encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is False
+    # string / bool values are not numeric evidence
+    (jobs / "j1.log").write_text('{"value": "ok"}', encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is False
+    (jobs / "j1.log").write_text('{"value": true}', encoding="utf-8")
+    assert _job_log_has_number(run_dir, "j1") is False
     # still-running job (alive pid) with a numeric log → NOT final evidence
     (jobs / "j4.json").write_text('{"job_id": "j4", "pid": 1}', encoding="utf-8")
     (jobs / "j4.log").write_text("progress 0.5", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j4") is False
     # log_path from meta is honored (not just <job_id>.log)
     elsewhere = tmp_path / "elsewhere.log"
-    elsewhere.write_text('{"min_bandwidth_ev": 42.0}', encoding="utf-8")
+    elsewhere.write_text('{"value": 42.0}', encoding="utf-8")
     (jobs / "j2.json").write_text(
         json.dumps({"job_id": "j2", "pid": dead_pid, "log_path": str(elsewhere)}),
         encoding="utf-8",
@@ -193,14 +225,12 @@ def test_job_log_has_number_gate(tmp_path):
     # malformed meta json → no evidence
     (jobs / "j3.json").write_text("{broken", encoding="utf-8")
     assert _job_log_has_number(run_dir, "j3") is False
-    # marker substring present but no parseable result JSON → not evidence
+    # value substring present but no parseable result JSON → not evidence
     (jobs / "j6.json").write_text(json.dumps({"job_id": "j6", "pid": dead_pid}), encoding="utf-8")
-    (jobs / "j6.log").write_text("waiting on min_bandwidth_ev ... crashed", encoding="utf-8")
+    (jobs / "j6.log").write_text('waiting on "value" ... crashed', encoding="utf-8")
     assert _job_log_has_number(run_dir, "j6") is False
     # 毒化防护:meta 记了 status=failed 的作业,即使日志含完整结果 JSON 也不许过门
-    (jobs / "j5.log").write_text(
-        '{"min_bandwidth_ev": 0.02, "flat_band_likely": true}', encoding="utf-8"
-    )
+    (jobs / "j5.log").write_text('{"value": 0.02, "quantity": "band_width"}', encoding="utf-8")
     (jobs / "j5.json").write_text(
         json.dumps(
             {
@@ -233,7 +263,9 @@ def test_classify_verification_t4_job_gate(tmp_path):
     ver = Verification(statement="h1", supports=1, refutes=0, computed="1.0", value=1.0)
     assert _classify_verification(ver, 0.9, True, run_dir) == "prediction"
     # job_id 指向真实作业文件、日志含数值、作业已结束 → verified
-    (jobs / "j1.log").write_text('{"min_bandwidth_ev": 2.5}', encoding="utf-8")
+    (jobs / "j1.log").write_text(
+        '{"quantity": "energy", "value": 2.5, "unit": "eV"}', encoding="utf-8"
+    )
     (jobs / "j1.json").write_text(
         json.dumps(
             {
@@ -249,7 +281,7 @@ def test_classify_verification_t4_job_gate(tmp_path):
     )
     assert _classify_verification(ver, 0.9, True, run_dir) == "verified"
     # meta status=failed 的崩溃作业:即使日志含合法结果 JSON 也降级 prediction(不翻转 verified)
-    (jobs / "j2.log").write_text('{"min_bandwidth_ev": 1.0}', encoding="utf-8")
+    (jobs / "j2.log").write_text('{"quantity": "energy", "value": 1.0}', encoding="utf-8")
     (jobs / "j2.json").write_text(
         json.dumps(
             {

@@ -17,6 +17,7 @@ import pytest
 
 from drbrain.config import Config, LlamaIndexConfig
 from drbrain.loop import ResearchLoopWorkflow
+from drbrain.loop.workflow import ComputeToolsUnavailableError
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 pytestmark = pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
@@ -76,11 +77,14 @@ def _write_compute_plugin(tmp_path) -> str:
     return str(tmp_path)
 
 
-def _write_job(run_dir, job_id: str, log_text: str = '{"min_bandwidth_ev": 1.0}') -> Path:
+def _write_job(
+    run_dir, job_id: str, log_text: str = '{"value": 1.0, "quantity": "q", "unit": "u"}'
+) -> Path:
     """Pre-write a fake async job's on-disk artifacts (``<job_id>.json`` + ``<job_id>.log``).
 
     Mirrors what ``run_python(mode=async)`` leaves in ``$DRBRAIN_RUN_DIR``: a
-    meta json (pid / log_path) plus the captured stdout log.
+    meta json (pid / log_path) plus the captured stdout log. The log carries the
+    T4 result contract (a JSON with a finite numeric ``value``).
     """
     jobs = Path(run_dir)
     jobs.mkdir(parents=True, exist_ok=True)
@@ -329,6 +333,56 @@ def test_settle_persists_claims_to_db(tmp_path):
         ).fetchall()
         assert ("h1 confirmed", "Conclusion") in rows
         assert ("p1", "Prediction") in rows
+        # v12 knowledge_snapshots 的生产写入者：settle 落库即登记快照
+        snaps = db.conn.execute(
+            "SELECT snapshot_id, revision_id, description FROM knowledge_snapshots"
+        ).fetchall()
+        assert len(snaps) == 1
+        assert snaps[0][0].startswith("snap-")
+        assert "verified=1" in snaps[0][2] and "predictions=1" in snaps[0][2]
+        # 幂等：同一 outcome 重放不再新增行
+        wf._persist_claims(state)
+        snaps_after = db.conn.execute("SELECT COUNT(*) FROM knowledge_snapshots").fetchone()[0]
+        assert snaps_after == 1
+    finally:
+        db.close()
+
+
+def test_record_claim_preserves_provenance_when_re_recorded_without_it(tmp_path):
+    """OCR r5 bug·high：无溯源参数的重写不得抹掉已有 v19 审计列。"""
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cid = db.record_claim(
+            "task",
+            "statement X",
+            claim_type="Conclusion",
+            run_id="run-1",
+            cycle=2,
+            job_id="job-9",
+            claim_ledger_id="cl-abc",
+            model="test-model",
+            prompt_hash="ph-1",
+            evidence_node_ids="n1,n2",
+        )
+        # record_answer 走的路径：不带任何 v19 参数重写同一 claim
+        db.record_claim("task", "statement X", claim_type="Conclusion", confidence=0.5)
+        row = db.conn.execute(
+            "SELECT run_id, cycle, job_id, claim_ledger_id, model, prompt_hash, "
+            "evidence_node_ids FROM claims WHERE claim_id = ?",
+            (cid,),
+        ).fetchone()
+        assert row == ("run-1", 2, "job-9", "cl-abc", "test-model", "ph-1", "n1,n2")
+
+        # 带新值的重写仍然生效（显式覆盖优先）
+        db.record_claim(
+            "task", "statement X", claim_type="Conclusion", run_id="run-2", job_id="job-10"
+        )
+        row2 = db.conn.execute(
+            "SELECT run_id, job_id, model FROM claims WHERE claim_id = ?", (cid,)
+        ).fetchone()
+        assert row2 == ("run-2", "job-10", "test-model")
     finally:
         db.close()
 
@@ -390,7 +444,11 @@ def test_full_loop_persists_verified_claims(tmp_path, monkeypatch):
 
 def test_verify_requires_real_job_files(monkeypatch, tmp_path):
     """正路径：compute 节点产出的 job_id 指向真实作业文件（json+log 含数值）→ verified。"""
-    jobs = _write_job(tmp_path / "jobs", "job-ok", log_text='{"min_bandwidth_ev": -12.34}')
+    jobs = _write_job(
+        tmp_path / "jobs",
+        "job-ok",
+        log_text='{"value": -12.34, "quantity": "energy", "unit": "eV"}',
+    )
     monkeypatch.setenv("DRBRAIN_RUN_DIR", str(jobs))
     _scripted_llm(
         monkeypatch,
@@ -539,6 +597,39 @@ def test_verify_unchanged_without_compute_tools(monkeypatch, tmp_path):
 
     result = asyncio.run(_go())
     assert "verified=1" in result
+
+
+def test_strict_compute_mode_pauses_without_compute_tools(monkeypatch, tmp_path):
+    """T4 严格模式：有候选但无计算工具 → 硬暂停报错，不再静默走无实算路径。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": 0.9}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        require_compute_tools=True,
+    )
+
+    async def _go() -> str:
+        handler = wf.run(task="flat band")
+        return await handler
+
+    with pytest.raises(ComputeToolsUnavailableError):
+        asyncio.run(_go())
 
 
 # ── T7: per-role cross-cycle memory injection ─────────────────────────────────
@@ -776,3 +867,339 @@ def test_critique_pending_when_no_non_author_comment(monkeypatch, tmp_path):
     assert len(queued) == 1
     assert queued[0].discussion_pending is True
     assert all(h.status == "proposed" for h in state.hypotheses)
+
+
+# ── 通用结果契约 + claim 置信度诚实 + 脏输出鲁棒性 ────────────────────────────
+
+
+def test_t4_gate_rejects_domain_keys_and_accepts_value_contract(tmp_path):
+    """T4 结果契约：只认 ``value``（有限数值）；领域专名键一律无效。"""
+    from drbrain.loop.workflow import _extract_result_payload
+
+    # 新契约：value 有限数值 → 通过
+    assert _extract_result_payload('{"quantity": "gap", "value": 0.3, "unit": "eV"}') is not None
+    # 字符串 / bool / 缺失 value → 拒绝
+    assert _extract_result_payload('{"value": "big"}') is None
+    assert _extract_result_payload('{"value": true}') is None
+    assert _extract_result_payload('{"quantity": "gap"}') is None
+    # 任何领域专名键（旧竞赛残留）都不是证据
+    assert _extract_result_payload('{"min_bandwidth_ev": 1.0}') is None
+
+
+def test_persist_claims_confidence_by_evidence_shape(tmp_path):
+    """无实算产物的 Conclusion/Rejected 置信度封顶 0.6，Prediction 0.3；
+    job_id 通过 T4 落盘校验才 1.0（OCR r6：字符串本身不是证据）。"""
+    from drbrain.loop.events import ResearchState, Verification
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    jobs = _write_job(tmp_path / "jobs", "job-9")
+    try:
+        wf = ResearchLoopWorkflow(db=db, jobs_dir=str(jobs))
+        state = ResearchState(
+            task="generic research task",
+            verified=["lit-supported conclusion"],
+            falsified=["lit-countered claim"],
+            predictions=["bare guess"],
+            verifications=[
+                Verification(statement="lit-supported conclusion", supports=1, job_id=""),
+                Verification(statement="lit-countered claim", refutes=2, job_id=""),
+            ],
+        )
+        wf._persist_claims(state)
+        rows = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows["lit-supported conclusion"] == pytest.approx(0.6)
+        assert rows["lit-countered claim"] == pytest.approx(0.6)
+        assert rows["bare guess"] == pytest.approx(0.3)
+
+        # 无产物的 job_id（LLM 抄写字符串）不算实算证据
+        state_ghost = ResearchState(
+            task="generic research task",
+            verified=["ghost-backed conclusion"],
+            verifications=[
+                Verification(statement="ghost-backed conclusion", supports=1, job_id="job-ghost")
+            ],
+        )
+        wf._persist_claims(state_ghost)
+        rows_ghost = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows_ghost["ghost-backed conclusion"] == pytest.approx(0.6)
+
+        state2 = ResearchState(
+            task="generic research task",
+            verified=["job-backed conclusion"],
+            verifications=[
+                Verification(statement="job-backed conclusion", supports=1, job_id="job-9")
+            ],
+        )
+        wf._persist_claims(state2)
+        rows2 = dict(db.conn.execute("SELECT claim_text, confidence FROM claims").fetchall())
+        assert rows2["job-backed conclusion"] == pytest.approx(1.0)
+    finally:
+        db.close()
+
+
+def test_critic_non_numeric_score_does_not_crash(monkeypatch, tmp_path):
+    """脏输出：critic 把 score 写成字符串（"high"）→ 不崩溃，按 0 分处理走 DISCARD。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "q"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": '{"hypotheses": [{"statement": "h1", "score": "high", "flaw": "x"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), n_critics=1)
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())  # 之前这里会 ValueError → 整轮失败
+    assert "hypotheses=1" in result
+    assert all(h.status == "discarded" for h in state.hypotheses)
+
+
+def test_critic_join_by_claim_id_survives_statement_paraphrase(monkeypatch, tmp_path):
+    """脏输出：critic 改写了 statement 但原样回抄 claim_id → 评论仍能匹配上（不再作废）。"""
+    from drbrain.loop.workflow import _claim_id
+
+    claim_id = _claim_id("h1")
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "q"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["e1"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["g1"], "hypotheses": [{"statement": "h1", '
+                '"prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            {
+                "text": json.dumps(
+                    {
+                        "hypotheses": [
+                            {
+                                "claim_id": claim_id,
+                                "statement": "h1 改写版：机制完全不同的复述",
+                                "score": 0.9,
+                                "flaw": "fine, kept with residual risk noted",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                "tool_calls": None,
+                "usage": None,
+            },
+            {"text": "cycle report", "tool_calls": None, "usage": None},
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path), n_critics=1)
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    _, state = asyncio.run(_go())
+    # statement 字面已对不上，但 claim_id 命中 → 评审生效（critiqued 而非 pending）。
+    assert all(h.status == "critiqued" for h in state.hypotheses)
+    # §7.3: 最终分 = 0.7×0.9(critic) + 0.3×0.5(novelty unknown 中性) = 0.78
+    assert state.hypotheses[0].score == pytest.approx(0.78)
+
+
+def test_retrieve_reports_rag_status_in_state(monkeypatch, tmp_path):
+    """检索故障进 state.retrieval_status：报告可见，绝不与「语料无内容」混淆。"""
+    _scripted_llm(monkeypatch, [{"text": '{"query": "q"}', "tool_calls": None, "usage": None}])
+    wf = ResearchLoopWorkflow(
+        cfg=_cfg(),
+        plugins_dir=_write_search_plugin(tmp_path),
+        evidence_recorder=lambda _bundle: None,  # 使 RAG 路径可用（否则是 unavailable）
+    )
+    # 强制 RAG 路径以 error 收场：generation 存在 → 进入检索，retrieve_documents 抛异常
+    wf._rag_generation = "gen-1"
+    monkeypatch.setattr(
+        "drbrain.rag.agent.retrieve_documents",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("index outage")),
+    )
+
+    async def _go():
+        handler = wf.run(task="some research question")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert state.retrieval_status == "error"
+    assert "rag=error" in result
+
+
+def test_dirty_llm_outputs_survive_the_cycle(monkeypatch, tmp_path):
+    """L-I8: 端到端「故意脏输出」用例——critic 给字符串分数、verifier 返回空
+    verifications、语句被改写。循环必须完成且候选降级为 prediction，不允许
+    ValueError 崩轮、也不允许候选无声蒸发。"""
+    _scripted_llm(
+        monkeypatch,
+        [
+            {"text": '{"query": "flat band"}', "tool_calls": None, "usage": None},
+            {"text": '{"entities": ["flat band"]}', "tool_calls": None, "usage": None},
+            {
+                "text": '{"gaps": ["gap1"], "hypotheses": [{"statement": "h1", "prediction": "p1", "falsification": "f1", "conditions": {}}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            # 脏输出①：score 是字符串且 claim_id 被改写
+            {
+                "text": '{"hypotheses": [{"claim_id": "cl-WRONG", "statement": "h1 paraphrased!", "score": "high", "flaw": "looks fine overall but unverified"}]}',
+                "tool_calls": None,
+                "usage": None,
+            },
+            # 脏输出②：verifications 为空列表（L-E8：不算 handled）
+            {
+                "text": '{"verifications": []}',
+                "tool_calls": None,
+                "usage": None,
+            },
+        ],
+    )
+    wf = ResearchLoopWorkflow(cfg=_cfg(), plugins_dir=_write_search_plugin(tmp_path))
+
+    async def _go():
+        handler = wf.run(task="flat band")
+        result = await handler
+        state = await handler.ctx.store.get("research_state", default=None)
+        return result, state
+
+    result, state = asyncio.run(_go())
+    assert state is not None
+    assert not state.verifications  # empty counts are not evidence
+    assert state.hypotheses, "candidates must not silently vanish (L-E8)"
+    # 脏 claim_id + 改写语句 → 评论无法归属 → discussion_pending（诚实降级，
+    # 留给下一轮重审），而不是崩溃或无声消失。
+    assert all(
+        h.status in ("prediction", "critiqued", "discarded", "proposed") for h in state.hypotheses
+    )
+    assert "verified=0" in result
+
+
+def test_structured_prediction_code_falsification(tmp_path):
+    """§7.1: 结构化预测由代码判定——value vs threshold（含单位换算），计数仅旁证。
+
+    T4 必须先过：数值证据必须来自真实作业日志，否则一律 prediction。
+    """
+    import json as _json
+
+    from drbrain.loop.events import Hypothesis, Verification
+    from drbrain.loop.workflow import _classify_verification
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "job-42.log").write_text('{"quantity": "gap", "value": 0.31}', encoding="utf-8")
+    (jobs / "job-42.json").write_text(
+        _json.dumps({"job_id": "job-42", "pid": 99999999, "log_path": str(jobs / "job-42.log")}),
+        encoding="utf-8",
+    )
+    h = Hypothesis(
+        statement="H",
+        quantity="gap",
+        comparator="<",
+        threshold=0.5,
+        unit="eV",
+    )
+    ver = Verification(
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31",
+    )
+    run_dir = str(jobs)  # 生产里 _jobs_dir 即 jobs 目录本身
+
+    # 数值 0.31 < 0.5（以日志落盘值为准）→ 判支持
+    assert _classify_verification(ver, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # review round-3: LLM 谎报 value=0.71 也无效——判定只看日志里的 0.31
+    ver_bad = Verification(
+        statement="H",
+        job_id="job-42",
+        value=0.71,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.71",
+    )
+    assert _classify_verification(ver_bad, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 数值 0.71 ≥ 0.5（第二个作业日志落盘 0.71）→ 代码证伪压过 supports=1
+    (jobs / "job-43.log").write_text('{"quantity": "gap", "value": 0.71}', encoding="utf-8")
+    (jobs / "job-43.json").write_text(
+        _json.dumps({"job_id": "job-43", "pid": 99999999, "log_path": str(jobs / "job-43.log")}),
+        encoding="utf-8",
+    )
+    ver_bad2 = Verification(
+        statement="H",
+        job_id="job-43",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.71",
+    )
+    assert _classify_verification(ver_bad2, 0.9, True, run_dir, hypothesis=h) == "falsified"
+
+    # 幻觉 job_id（无落盘日志）→ structured None → T4 拦下 → prediction
+    ver_phantom = Verification(
+        statement="H",
+        job_id="job-404",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31",
+    )
+    assert _classify_verification(ver_phantom, 0.9, True, run_dir, hypothesis=h) == "prediction"
+
+    # 混杂计数 + 可机检数值 + 真实作业 → 代码判定说了算
+    ver_mixed = Verification(
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=2,
+        refutes=1,
+        computed="0.31",
+    )
+    assert _classify_verification(ver_mixed, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 预测单位 eV，作业单位 eV（同单位）→ 直接比较 0.31 < 0.5 → 支持
+    ver_mev = Verification(
+        statement="H",
+        job_id="job-42",
+        value=0.31,
+        unit="eV",
+        supports=1,
+        refutes=0,
+        computed="0.31 eV",
+    )
+    assert _classify_verification(ver_mev, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 无结构化字段 → 走原计数路径
+    h_free = Hypothesis(statement="H")
+    assert _classify_verification(ver, 0.9, True, run_dir, hypothesis=h_free) == "verified"

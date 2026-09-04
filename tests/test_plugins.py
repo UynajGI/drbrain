@@ -138,7 +138,7 @@ def test_call_timeout():
     assert result.status is ResultStatus.TIMEOUT
 
 
-def test_call_model_unavailable_on_load_error():
+def test_call_plugin_error_on_load_error():
     reg = PluginRegistry()
 
     def handler(args):
@@ -146,8 +146,18 @@ def test_call_model_unavailable_on_load_error():
 
     reg.register(_flatband_plugin(), handler)
     result = reg.call("predict_flatband_score", {"composition": {}})
-    assert result.status is ResultStatus.MODEL_UNAVAILABLE
+    # P-I5: a crashing plugin is PLUGIN_ERROR — distinct from MODEL_UNAVAILABLE
+    # (an offline model) so operators can tell the failures apart.
+    assert result.status is ResultStatus.PLUGIN_ERROR
     assert "not found" in result.error
+
+
+def test_call_unknown_plugin_never_raises():
+    """P-I5: call("unknown") must honor the never-raise contract."""
+    reg = PluginRegistry()
+    result = reg.call("no_such_plugin", {})
+    assert result.status is ResultStatus.INVALID_INPUT
+    assert "no_such_plugin" in (result.error or "")
 
 
 def test_call_invalid_input():
@@ -208,3 +218,40 @@ def test_discover_skips_broken_module(tmp_path):
     reg = PluginRegistry()
     assert reg.discover(tmp_path) == 1
     assert [p.name for p in reg.list_plugins()] == ["good"]
+
+
+# ── round-4 OCR findings ─────────────────────────────────────────────────────
+
+
+def test_plugin_unknown_kwargs_are_dropped_not_fatal():
+    """OCR r4: the docstring promised extra-kwargs tolerance; the constructor
+    now honors it — plugins written against older protocol revisions keep
+    loading during discovery instead of raising TypeError."""
+    p = _flatband_plugin(on_failure="abstain", entry="models.flatness:predict")
+    assert p.name == "predict_flatband_score"
+    assert p.version == "flatness_prod_v2"
+
+
+def test_required_property_with_explicit_null_default_stays_required():
+    """OCR r4: ``"default": null`` on a REQUIRED property must not turn it
+    optional-with-None — omission is a validation error, not a silent null."""
+    reg = PluginRegistry()
+    reg.register(
+        Plugin(
+            name="needs_q",
+            description="d",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string", "default": None}},
+                "required": ["query"],
+            },
+        ),
+        lambda args: {"q": args["query"]},
+    )
+    result = reg.call("needs_q", {})
+    # with the old behavior the model bridge injected default=None and the
+    # handler blew up (or worse, received None); now omission is INVALID_INPUT
+    assert result.status is ResultStatus.INVALID_INPUT
+
+    ok = reg.call("needs_q", {"query": "topological"})
+    assert ok.ok and ok.data == {"q": "topological"}

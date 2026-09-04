@@ -47,7 +47,7 @@ from drbrain.rag.evidence import (
     has_retrieved_evidence,
 )
 from drbrain.rag.llm import DrbrainLLM
-from drbrain.rag.status import RetrievalStatus
+from drbrain.rag.status import RetrievalStatus, RetrievalUnavailableError
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -557,7 +557,14 @@ def _retrieval_rows(
     filters: dict[str, Any] | None = None,
     top_k: int = 5,
 ) -> list[dict[str, Any]]:
-    """Map fused nodes to the historic payload plus additive evidence fields."""
+    """Map fused nodes to the historic payload plus additive evidence fields.
+
+    R-I3: when the node metadata carries ``line_start``/``line_end`` (the
+    raw.md offsets of the section whose text is shown — the parent section for
+    tree/raptor leaves expanded to their parent), they travel on the row so
+    settle/verify can re-locate the checksummed text. Rows without offsets in
+    the metadata gain no new keys (additive-only contract).
+    """
     rows: list[dict[str, Any]] = []
     for rank, nws in enumerate(nodes[:top_k], start=1):
         md = dict(nws.node.metadata or {})
@@ -571,6 +578,14 @@ def _retrieval_rows(
             "score": score,
             "text": full_text[:500],
         }
+        line_start = md.get("line_start")
+        line_end = md.get("line_end")
+        if line_start is not None and line_end is not None:
+            try:
+                row["line_start"] = int(line_start)
+                row["line_end"] = int(line_end)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                pass
         row.update(
             build_evidence_record(
                 generation=generation,
@@ -614,12 +629,12 @@ def retrieve_documents(
 
         from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
         from drbrain.rag.indexer import capture_index_generation
-    except Exception:
-        return []
+    except Exception as exc:
+        raise RetrievalUnavailableError(f"llama-index stack unavailable: {exc}") from exc
     resolved_generation = generation or capture_index_generation(cfg)
     if resolved_generation is None:
         log.warning("[rag] retrieval unavailable (invalid active index pointer)")
-        return []
+        raise RetrievalUnavailableError("invalid active index pointer")
     try:
         legs = get_retrievers(
             cfg,
@@ -629,7 +644,7 @@ def retrieve_documents(
             generation_backed_only=True,
         )
         if not legs:
-            return []
+            raise RetrievalUnavailableError("no persisted retrieval legs resolved")
         fused = build_fusion_retriever(
             cfg,
             vector_index=legs.get("vector"),
@@ -637,11 +652,13 @@ def retrieve_documents(
             custom_retrievers={k: v for k, v in legs.items() if k not in ("bm25", "vector")},
             top_k=top_k,
         )
+    except RetrievalUnavailableError:
+        raise
     except Exception as exc:  # pragma: no cover - depends on on-disk index state
         log.warning("[rag] retrieval unavailable (%s)", exc)
-        return []
+        raise RetrievalUnavailableError(str(exc)) from exc
     if fused is None:
-        return []
+        raise RetrievalUnavailableError("fusion retriever could not be built")
     nodes = fused.retrieve(QueryBundle(query_str=query))
     return _retrieval_rows(
         nodes,

@@ -926,6 +926,9 @@ def build_index(
                     if hashes.get(_nid) == _h:
                         _matched.append(_nid)
             # Pass 2: fetch blobs for matches only.
+            from drbrain.storage.vector_index import embedding_byte_len as _eb_len
+
+            _expected_bytes = _eb_len(_conn)
             _reuse: dict[str, list[float]] = {}
             for _s in range(0, len(_matched), _batch_size):
                 _batch = _matched[_s : _s + _batch_size]
@@ -934,7 +937,7 @@ def build_index(
                     f"SELECT node_id, embedding FROM tree_vectors WHERE node_id IN ({_q})",
                     _batch,
                 ):
-                    if len(_blob) == 4096:
+                    if len(_blob) == _expected_bytes:
                         _reuse[_nid] = _np.frombuffer(_blob, dtype=_np.float32).tolist()
             _conn.close()
             if _reuse:

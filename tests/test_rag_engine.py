@@ -372,6 +372,33 @@ def test_extract_sources_uses_metadata_sources():
     assert rows[0]["sources"] == ["bm25", "vector"]
 
 
+def test_extract_sources_preserves_line_offsets_from_metadata():
+    """R-I3: node metadata line offsets survive the source-annotation boundary."""
+    node = TextNode(
+        text="body",
+        id_="p1:0001",
+        metadata={
+            "paper_id": "p1",
+            "node_id": "0001",
+            "title": "Child A",
+            "source": "tree",
+            "line_start": 2,
+            "line_end": 4,
+        },
+    )
+    rows = extract_sources([NodeWithScore(node=node, score=0.5)])
+    assert rows[0]["line_start"] == 2
+    assert rows[0]["line_end"] == 4
+
+
+def test_extract_sources_stays_key_clean_without_line_metadata():
+    """Sources without offsets gain no new keys (additive-only contract)."""
+    node = TextNode(text="x", id_="p9:n9")
+    rows = extract_sources([NodeWithScore(node=node, score=None)])
+    assert "line_start" not in rows[0]
+    assert "line_end" not in rows[0]
+
+
 def test_nodes_to_paper_results_aggregates_and_ranks():
     nodes = [
         NodeWithScore(node=_node(node_id="n1", title="T1"), score=0.02),

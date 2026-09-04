@@ -1,9 +1,9 @@
 """Research-loop schemas: shared state, evidence, hypotheses, and node events.
 
 Every node exchanges a typed pydantic :class:`Event` (its input/output schema)
-rather than free-form chat — this is the "非自由群聊 / Schema 交换" contract the
-competition spec requires. The shared :class:`ResearchState` rides through
-``Context.store`` so every node reads/writes the same structured state.
+rather than free-form chat — a fixed schema-exchange contract that keeps the
+pipeline deterministic and auditable. The shared :class:`ResearchState` rides
+through ``Context.store`` so every node reads/writes the same structured state.
 """
 
 from __future__ import annotations
@@ -72,6 +72,13 @@ class Hypothesis(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
     prediction: str = ""  # 可观察预测：什么证据会支持该假设
     falsification: str = ""  # 证伪标准：什么证据会放弃该假设
+    # §7.1 结构化预测（可选）：量化预测的机检形状。给出 quantity+comparator+
+    # threshold 后，证伪判定由代码比较 result.value vs threshold（带单位换算），
+    # 不再依赖 verifier 读字。
+    quantity: str = ""  # 预测量名，如 "formation_energy"
+    comparator: str = ""  # "<" | "<=" | ">" | ">=" | "=="
+    threshold: float | None = None
+    unit: str = ""
     score: float = 0.0
     status: str = "proposed"
 
@@ -114,6 +121,12 @@ class ResearchState(BaseModel):
     prior_champion: list[str] = Field(default_factory=list)  # T6: structured champion list
     prior_rejected: list[str] = Field(default_factory=list)  # T6: structured dead-ends list
     candidates: list[str] = Field(default_factory=list)
+    # RAG retrieval health for this cycle: "ok" | "empty" | "error" |
+    # "unavailable". "error" means the retrieval layer FAILED (index outage,
+    # generation drift) — never to be confused with "the corpus has nothing";
+    # downstream nodes and the report surface it so an unattended run cannot
+    # mistake a broken index for a silent literature.
+    retrieval_status: str = "ok"
     retrieve_candidates: list[str] | None = None  # 检索中间产物（未筛选候选）
     parsed: list[str] = Field(default_factory=list)
     entities: list[str] = Field(default_factory=list)
@@ -126,6 +139,9 @@ class ResearchState(BaseModel):
     verified: list[str] = Field(default_factory=list)
     falsified: list[str] = Field(default_factory=list)  # 证伪的假设（dead ends）
     predictions: list[str] = Field(default_factory=list)
+    # §7.3 新颖性门（代码节点，非提示词）：claim_id → 文献/KG 查重标签。
+    # "novel" | "known" | "reproduction" | "contradiction" | "unknown"。
+    novelty_labels: dict[str, str] = Field(default_factory=dict)
     report: str = ""
 
 

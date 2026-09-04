@@ -20,7 +20,7 @@ from drbrain.storage import vector_index as vi  # noqa: E402
 from drbrain.storage.connection import connect_wal  # noqa: E402
 
 
-def main() -> None:
+def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", type=str, default="data/drbrain.db")
     ap.add_argument("--batch", type=int, default=2000)
@@ -71,13 +71,18 @@ def main() -> None:
             f"ok={done} fail={fail} elapsed={time.monotonic() - t0:.0f}s",
             flush=True,
         )
+    # R-I2: 水位只在整轮回填完成后打——中途打标会让不完整库被读者当成已同步。
+    if fail == 0:
+        vi.mark_vec_synced(conn)
 
     n_vec = conn.execute(f"SELECT COUNT(*) FROM {vi.VEC_TABLE}").fetchone()[0]
     print(
         f"\n回填完成: ok={done} fail={fail}，vec 表现在 {n_vec} 行 ({time.monotonic() - t0:.0f}s)"
     )
     conn.close()
+    # 退出码契约：部分失败必须让 cron/CI 可感知——此时水位也未打，重跑即续传。
+    return 1 if fail else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

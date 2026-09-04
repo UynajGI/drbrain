@@ -36,7 +36,7 @@ flowchart TB
         direction LR
         RETR["retrievers<br/>BM25/vector/tree/graph/raptor"] --> FUSE["FusionRetriever<br/>RRF 融合"]
         FUSE --> AGENT["FunctionAgent<br/>7 图工具 + 融合检索 + 插件 + MCP"]
-        AGENT --> EPI["Epistemic Layer<br/>RAGState/authority/status"]
+        AGENT --> EPI["Epistemic Layer<br/>authority/status"]
     end
 
     subgraph PLUGINS["② Model-as-Tools（外部能力）"]
@@ -115,7 +115,6 @@ get_retrievers(cfg, db, graph)  # 按 llamaindex.retrievers 配置装配 legs
 
 | 模块 | 职责 |
 |---|---|
-| `state.py` — `RAGState` | 逐轮填充的对话状态机（`entity_ids`/`intent`/`attribute`/`period`/`tenant_id`/`user_id`/`snapshot_id`），支持 `resolve_reference` 指代消解 |
 | `authority.py` | 同一 label 冲突 claim 的**确定性**消解（权威层级 → `valid_from` 新鲜度 → 抽取置信度），不交给 LLM 猜；区分 `stale`（事实过期）与 `no_evidence`（无候选） |
 | `status.py` | 检索/合成的状态分类（`classify_failure` → `RetrievalStatus`） |
 

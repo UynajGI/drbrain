@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS papers (
     volume TEXT DEFAULT '',
     pages TEXT DEFAULT '',
     authors TEXT DEFAULT '',
+    categories TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -33,6 +34,14 @@ CREATE TABLE IF NOT EXISTS paper_ids (
     s2_id TEXT UNIQUE,
     openalex_id TEXT UNIQUE
 );
+
+CREATE TABLE IF NOT EXISTS paper_cite_keys (
+    citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    cited_key TEXT NOT NULL,
+    cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
+    PRIMARY KEY (citing_local_id, cited_key)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_cite_keys_cited ON paper_cite_keys(cited_key);
 
 CREATE TABLE IF NOT EXISTS concepts (
     concept_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,6 +330,13 @@ CREATE TABLE IF NOT EXISTS claims (
     confidence REAL DEFAULT 1.0,
     valid_from INTEGER,
     valid_to INTEGER,
+    run_id TEXT DEFAULT '',
+    cycle INTEGER,
+    job_id TEXT DEFAULT '',
+    claim_ledger_id TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    prompt_hash TEXT DEFAULT '',
+    evidence_node_ids TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
@@ -403,6 +419,8 @@ class Database:
             (15, "claims", self._migrate_add_claims),
             (16, "agent_session_principal", self._migrate_add_agent_session_principal),
             (17, "claim_evidence", self._migrate_add_claim_evidence),
+            (18, "paper_categories", self._migrate_add_paper_categories),
+            (19, "claim_provenance", self._migrate_add_claim_provenance),
         ]
 
         for version, name, fn in migrations:
@@ -728,6 +746,40 @@ class Database:
             """
         )
 
+    def _migrate_add_claim_provenance(self) -> None:
+        """v19: per-claim provenance columns (run, cycle, job, model, prompt)."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(claims)").fetchall()]
+        add_column = {
+            "run_id": "TEXT DEFAULT ''",
+            "cycle": "INTEGER",
+            "job_id": "TEXT DEFAULT ''",
+            "claim_ledger_id": "TEXT DEFAULT ''",
+            "model": "TEXT DEFAULT ''",
+            "prompt_hash": "TEXT DEFAULT ''",
+            "evidence_node_ids": "TEXT DEFAULT ''",
+        }
+        for column, decl in add_column.items():
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE claims ADD COLUMN {column} {decl}")
+
+    def _migrate_add_paper_categories(self) -> None:
+        """Add arXiv category metadata + corpus citation edges (physics ingest)."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
+        if "categories" not in cols:
+            self.conn.execute("ALTER TABLE papers ADD COLUMN categories TEXT DEFAULT ''")
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS paper_cite_keys (
+                citing_local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                cited_key TEXT NOT NULL,
+                cited_local_id TEXT REFERENCES papers(local_id) ON DELETE SET NULL,
+                PRIMARY KEY (citing_local_id, cited_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_paper_cite_keys_cited
+                ON paper_cite_keys(cited_key);
+            """
+        )
+
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
         return self.conn.execute(sql, params)
@@ -777,6 +829,7 @@ class Database:
         volume: str = "",
         pages: str = "",
         authors: str = "",
+        categories: str = "",
     ) -> None:
         """Insert or ignore a paper record with full metadata fields.
 
@@ -785,8 +838,8 @@ class Database:
         """
         self.conn.execute(
             "INSERT INTO papers (local_id, title, year, status, paper_type, "
-            "journal, publisher, citation_count, volume, pages, authors, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "journal, publisher, citation_count, volume, pages, authors, categories, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
             (
                 local_id,
@@ -800,6 +853,7 @@ class Database:
                 volume,
                 pages,
                 authors,
+                categories,
             ),
         )
 
@@ -818,6 +872,56 @@ class Database:
             "UPDATE papers SET abstract = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (abstract, local_id),
         )
+
+    def set_paper_categories(self, local_id: str, categories: str) -> None:
+        """Store the space-separated arXiv category list for a paper."""
+        self.conn.execute(
+            "UPDATE papers SET categories = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (categories, local_id),
+        )
+
+    def iter_paper_categories(self) -> list[tuple[str, str]]:
+        """Return ``(local_id, categories)`` for every paper that has categories."""
+        return [
+            (r[0], r[1])
+            for r in self.conn.execute(
+                "SELECT local_id, categories FROM papers WHERE categories != ''"
+            ).fetchall()
+        ]
+
+    def insert_paper_cite_keys(self, citing_local_id: str, cited_keys: list[str]) -> None:
+        """Record raw citation keys (\\cite arguments) extracted from one paper.
+
+        Resolution of ``cited_key`` (arXiv id / DOI / bib key) to an in-corpus
+        ``cited_local_id`` happens later, once the full corpus is ingested.
+        """
+        if not cited_keys:
+            return
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO paper_cite_keys (citing_local_id, cited_key) VALUES (?, ?)",
+            [(citing_local_id, k) for k in cited_keys],
+        )
+
+    def resolve_paper_cite_keys(self, key_to_local_id: dict[str, str]) -> int:
+        """Fill ``cited_local_id`` for citations whose key is now in-corpus.
+
+        Returns the number of citation rows resolved.
+        """
+        with self.conn:
+            rows = self.conn.execute(
+                "SELECT rowid, cited_key FROM paper_cite_keys WHERE cited_local_id IS NULL"
+            ).fetchall()
+            updates = [
+                (key_to_local_id[str(key)], rowid)
+                for rowid, key in rows
+                if key_to_local_id.get(str(key))
+            ]
+            if updates:
+                self.conn.executemany(
+                    "UPDATE paper_cite_keys SET cited_local_id = ? WHERE rowid = ?",
+                    updates,
+                )
+        return len(updates)
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""
@@ -1252,6 +1356,25 @@ class Database:
             (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
         )
 
+    def record_knowledge_snapshot(
+        self, snapshot_id: str, revision_id: str = "", description: str = ""
+    ) -> str:
+        """Register one knowledge snapshot (the v12 table's production writer).
+
+        A snapshot marks the knowledge state a settle (or answer) was grounded
+        in: ``revision_id`` pins the retrieval generation, ``description``
+        carries the human-readable cycle summary. Idempotent on
+        ``snapshot_id`` — a deterministic id (e.g. hash of the settled claim
+        set) makes re-settling the same outcome a no-op.
+        """
+        self.conn.execute(
+            "INSERT INTO knowledge_snapshots (snapshot_id, revision_id, description) "
+            "VALUES (?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING",
+            (snapshot_id, revision_id, description),
+        )
+        self.conn.commit()
+        return snapshot_id
+
     def record_answer(
         self,
         question: str,
@@ -1387,28 +1510,61 @@ class Database:
         valid_from: int | None = None,
         valid_to: int | None = None,
         claim_id: str | None = None,
+        run_id: str = "",
+        cycle: int | None = None,
+        job_id: str = "",
+        claim_ledger_id: str = "",
+        model: str = "",
+        prompt_hash: str = "",
+        evidence_node_ids: str = "",
     ) -> str:
         """Insert or update a first-class claim row. Returns ``claim_id``.
 
         ``claim_id`` defaults to a stable hash of ``label`` + ``claim_text`` so
         re-recording the same assertion is idempotent without replacing the
-        row, preserving claim-to-evidence foreign-key relationships.
+        row, preserving claim-to-evidence foreign-key relationships. The
+        provenance columns (v19) pin a claim to the run/cycle/job/model that
+        produced it — a claim without provenance cannot be audited.
         """
         import hashlib
 
         if claim_id is None:
-            digest = hashlib.sha1(f"{label}\x00{claim_text}".encode()).hexdigest()
+            # claim_type participates in the identity: a statement verified in
+            # one run and falsified in another must coexist (the review's
+            # "Rejected→Conclusion 翻转静默覆盖" bug) so authority rules can
+            # arbitrate instead of last-writer-wins.
+            # NOTE (upgrade window): pre-v19 rows were keyed by
+            # label+claim_text only; the first re-record of the same
+            # assertion inserts a new-keyed row and the legacy row lingers
+            # with empty provenance. authority arbitration sees both — the
+            # stale orphan simply loses on freshness, so no re-key migration
+            # is required, but expect one duplicate per legacy claim.
+            digest = hashlib.sha1(f"{label}\x00{claim_text}\x00{claim_type}".encode()).hexdigest()
             claim_id = f"claim_{digest[:16]}"
         self.conn.execute(
             "INSERT INTO claims "
             "(claim_id, label, claim_text, claim_type, authority, provenance, "
-            " confidence, valid_from, valid_to) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " confidence, valid_from, valid_to, run_id, cycle, job_id, "
+            " claim_ledger_id, model, prompt_hash, evidence_node_ids) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(claim_id) DO UPDATE SET "
             "label = excluded.label, claim_text = excluded.claim_text, "
             "claim_type = excluded.claim_type, authority = excluded.authority, "
             "provenance = excluded.provenance, confidence = excluded.confidence, "
-            "valid_from = excluded.valid_from, valid_to = excluded.valid_to",
+            "valid_from = excluded.valid_from, valid_to = excluded.valid_to, "
+            # v19 溯源列只在传入非空时覆盖：record_answer 走同一条 INSERT 且不
+            # 带溯源参数，无条件 UPDATE 会把 loop 写入的 run_id/job_id/model
+            # 等审计事实抹成空串（OCR r5 bug·high）。
+            "run_id = CASE WHEN excluded.run_id != '' THEN excluded.run_id ELSE claims.run_id END, "
+            "cycle = CASE WHEN excluded.cycle IS NOT NULL THEN excluded.cycle ELSE claims.cycle END, "
+            "job_id = CASE WHEN excluded.job_id != '' THEN excluded.job_id ELSE claims.job_id END, "
+            "claim_ledger_id = CASE WHEN excluded.claim_ledger_id != '' THEN excluded.claim_ledger_id "
+            "ELSE claims.claim_ledger_id END, "
+            "model = CASE WHEN excluded.model != '' THEN excluded.model ELSE claims.model END, "
+            "prompt_hash = CASE WHEN excluded.prompt_hash != '' THEN excluded.prompt_hash "
+            "ELSE claims.prompt_hash END, "
+            "evidence_node_ids = CASE WHEN excluded.evidence_node_ids != '' "
+            "THEN excluded.evidence_node_ids ELSE claims.evidence_node_ids END",
             (
                 claim_id,
                 label,
@@ -1419,6 +1575,13 @@ class Database:
                 confidence,
                 valid_from,
                 valid_to,
+                run_id,
+                cycle,
+                job_id,
+                claim_ledger_id,
+                model,
+                prompt_hash,
+                evidence_node_ids,
             ),
         )
         self.conn.commit()

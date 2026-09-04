@@ -205,9 +205,10 @@ class LlamaIndexConfig(_ConfigBase):
     llm: str = "litellm"
     vector_store: str = "memory"
     storage_dir: str = "data/llamaindex"
-    # "llamaindex" = 并行索引库；"sql" = 主库副本（drbrain_rag.db，node_texts+FTS5
-    # +tree_vectors）直检，目标架构（全文入库，无独立索引构建）
-    rag_engine: str = "llamaindex"
+    # "sql" = 主库副本（drbrain_rag.db，node_texts+FTS5+tree_vectors）直检，
+    # 目标架构（全文入库，无独立索引构建），也是唯一规模就绪的引擎；
+    # "llamaindex" 降级为单库/调试用（全量 docstore 反序列化，0.8M 篇不可用）
+    rag_engine: str = "sql"
     retrievers: list[str] = field(default_factory=lambda: ["bm25", "vector"])
     fusion_mode: str = "reciprocal_rank"
     rerank: bool = True
@@ -270,8 +271,10 @@ class AutoresearchConfig(_ConfigBase):
     """Operator settings for durable autoresearch runs.
 
     The feature remains opt-in so existing deployments do not start research
-    loops accidentally.  ``require_rag_evidence`` enables strict evidence
-    gating for operators that intentionally run against the RAG corpus.
+    loops accidentally.  ``require_rag_evidence`` defaults to strict: claims
+    without durable RAG evidence citations stay predictions. Hosts running
+    without a corpus (compute-only loops governed by the T4 numeric gate)
+    opt out explicitly.
     """
 
     enabled: bool = False
@@ -291,7 +294,15 @@ class AutoresearchConfig(_ConfigBase):
     # Passed through to ResearchDirector, which validates supported limit names
     # and numeric values before a durable run is created or resumed.
     budget: dict[str, int | float] = field(default_factory=dict)
-    require_rag_evidence: bool = False
+    require_rag_evidence: bool = True
+    # Strict compute mode: a durable run proposing hypotheses without any
+    # visible job-contract tool (run_python/check_job/read_job) hard-pauses for
+    # manual review instead of settling literature-only claims. Opt out only
+    # for intentionally literature-only runs.
+    require_compute_tools: bool = True
+    # Explicit job-contract tool names arming the T4 gate (exact match); empty
+    # keeps the built-in (run_python, check_job, read_job).
+    compute_tool_names: list[str] = field(default_factory=list)
 
 
 @dataclass

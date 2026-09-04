@@ -207,7 +207,7 @@ def test_migrate_v10_adds_epistemic_schema():
                 "SELECT version FROM schema_versions ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 18))
+        assert versions == list(range(1, 20))
 
         cols = _concept_cols(db)
         for c in EPISTEMIC_CONCEPT_COLS:
@@ -242,6 +242,6 @@ def test_migration_is_idempotent():
                 "SELECT version FROM schema_versions ORDER BY version"
             ).fetchall()
         ]
-        assert versions == list(range(1, 18))
+        assert versions == list(range(1, 20))
         assert "provenance" in _concept_cols(db2)
         db2.close()

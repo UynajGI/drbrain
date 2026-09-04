@@ -43,14 +43,75 @@ def ensure_vec_table(conn: sqlite3.Connection, dim: int = 1024) -> bool:
         return False
 
 
+META_TABLE = "vector_meta"
+
+
+def _ensure_meta_table(conn: sqlite3.Connection) -> None:
+    conn.execute(f"CREATE TABLE IF NOT EXISTS {META_TABLE} (key TEXT PRIMARY KEY, value TEXT)")
+
+
+def mark_vec_synced(conn: sqlite3.Connection) -> None:
+    """Writer hook (R-I2): stamp the watermark after a COMPLETED vector sync.
+
+    Readers then check one row per query instead of two O(N) COUNT(*) scans.
+    Any incremental ``vec_upsert`` marks the store dirty until the next full
+    sync completes.
+    """
+    _ensure_meta_table(conn)
+    conn.execute(f"INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES ('synced', '1')")
+    conn.commit()
+
+
+def mark_vec_dirty(conn: sqlite3.Connection) -> None:
+    """Invalidate the watermark — vectors changed since the last full sync.
+
+    Deliberately does NOT commit (OCR r6): ``vec_upsert`` calls this per row
+    inside batch loops, and a commit here would fsync per vector and break
+    the caller's surrounding transaction. Batch callers (``embedding.py``,
+    ``vec_backfill.py``) commit their own batches; :func:`mark_vec_synced`
+    commits at completion.
+    """
+    _ensure_meta_table(conn)
+    conn.execute(f"INSERT OR REPLACE INTO {META_TABLE} (key, value) VALUES ('synced', '0')")
+
+
 def vec_synced(conn: sqlite3.Connection) -> bool:
-    """True when every base-table vector has a vec-table counterpart."""
+    """True when the vector store carries a completed-sync watermark (R-I2).
+
+    The old per-query ``COUNT(base) == COUNT(vec)`` check was O(N) on every
+    retrieval and degraded to a full scan on any mismatch. The watermark is
+    written by the sync writers (embedding build / vec_backfill) and cleared
+    by every incremental write, so a missing or cleared watermark means
+    "not synced" without paying for a scan. Hot path (OCR r6): a plain
+    SELECT with no schema DDL — the CREATE runs only on the cold
+    table-missing error path, never on the per-query read.
+    """
     try:
-        n_base = conn.execute(f"SELECT COUNT(*) FROM {BASE_TABLE}").fetchone()[0]
-        n_vec = conn.execute(f"SELECT COUNT(*) FROM {VEC_TABLE}").fetchone()[0]
-        return n_base > 0 and n_base == n_vec
+        row = conn.execute(f"SELECT value FROM {META_TABLE} WHERE key = 'synced'").fetchone()
+    except sqlite3.OperationalError:
+        # 表尚不存在（冷库）：建表一次后重读，之后每查询都是纯 SELECT。
+        _ensure_meta_table(conn)
+        try:
+            row = conn.execute(f"SELECT value FROM {META_TABLE} WHERE key = 'synced'").fetchone()
+        except sqlite3.Error:
+            return False
+        return bool(row and row[0] == "1")
     except sqlite3.Error:
         return False
+    return bool(row and row[0] == "1")
+
+
+def embedding_byte_len(conn: sqlite3.Connection) -> int:
+    """Expected float32 byte length of one embedding, read from the data.
+
+    Callers must stop hardcoding 4096 (R-I2): the corpus decides its own dim.
+    Falls back to the historical 1024-float layout when the corpus is empty.
+    """
+    try:
+        row = conn.execute(f"SELECT length(embedding) FROM {BASE_TABLE} LIMIT 1").fetchone()
+        return int(row[0]) if row and row[0] else 4096
+    except sqlite3.Error:
+        return 4096
 
 
 def vec_stored_dim(conn: sqlite3.Connection) -> int | None:
@@ -96,3 +157,5 @@ def vec_upsert(conn: sqlite3.Connection, node_id: str, blob: bytes) -> None:
         f"INSERT INTO {VEC_TABLE}(node_id, embedding) VALUES (?, ?)",
         (node_id, blob),
     )
+    # R-I2: incremental writes invalidate the completed-sync watermark.
+    mark_vec_dirty(conn)

@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
@@ -42,6 +41,7 @@ from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
 from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
+    _COMPUTE_TOOL_NAMES,
     CRITIQUE_DISCARD_SCORE,
     ResearchLoopWorkflow,
     _job_log_has_number,
@@ -65,6 +65,13 @@ JANITOR_STALE_SECONDS = 1800  # 30 minutes
 # backs the current hypothesis direction.
 CRITIC_ENDORSEMENT_SCORE = CRITIQUE_DISCARD_SCORE
 
+# L-I2: last round's critic flaws (the counter-arguments behind KEEP/DISCARD)
+# are fed back into the next analyst prompt so hypotheses get *revised* instead
+# of being silently re-proposed. The feed must stay bounded (review L-I6:
+# prior_context must not grow without limit), hence both caps below.
+PRIOR_FLAWS_MAX = 5  # keep the most recent N flaw entries across cycles
+PRIOR_FLAWS_CHAR_LIMIT = 200  # per-flaw cap: one long review must not flood the prompt
+
 
 def _default_state(topic: str) -> dict[str, Any]:
     """Fresh in-memory state (exported for tests / first-run bootstrap)."""
@@ -77,9 +84,34 @@ def _default_state(topic: str) -> dict[str, Any]:
         "results": [],
         "consecutive_no_gain": 0,
         "adaptations": 0,  # Phase 4: 停滞转向次数
+        "critic_flaws": [],  # L-I2: bounded last-round critic flaws (for prior_context)
         "started_at": now,
         "updated_at": now,
     }
+
+
+def _sanitize_critic_flaws(raw: Any) -> list[dict[str, Any]]:
+    """Normalize a persisted ``critic_flaws`` list to ``[{cycle, text}]``.
+
+    Defends the resume path against corrupted/hand-edited ``run.json``: only
+    well-formed non-empty entries survive, and the bound is re-applied so a
+    stale oversized file cannot resurrect unbounded prior-context growth.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        text = " ".join(str(entry.get("text", "")).split())
+        if not text:
+            continue
+        try:
+            cycle = int(entry.get("cycle", 0))
+        except (TypeError, ValueError):
+            cycle = 0
+        out.append({"cycle": cycle, "text": text[:PRIOR_FLAWS_CHAR_LIMIT]})
+    return out[-PRIOR_FLAWS_MAX:]
 
 
 _MCP_CONTRACT_FIELDS = (
@@ -127,7 +159,11 @@ def _plugin_source_contract(plugins_dir: str | Path | None) -> dict[str, Any] | 
     if not root.is_dir():
         return {"path": str(root), "state": "missing_or_not_directory", "sources": []}
     sources: list[dict[str, str | None]] = []
-    for path in sorted(root.rglob("*.py"), key=lambda item: item.as_posix()):
+    # P-I6: fingerprint exactly what ``PluginRegistry.discover`` loads
+    # (top-level *.py) — rglob'ing nested files made checkpoints testify about
+    # sources that are never loaded, so an unrelated nested edit invalidated
+    # resumes for no reason.
+    for path in sorted(root.glob("*.py"), key=lambda item: item.as_posix()):
         relative = path.relative_to(root)
         if any(part in _IGNORED_PLUGIN_SOURCE_PARTS for part in relative.parts):
             continue
@@ -223,6 +259,8 @@ class ResearchDirector:
         noise_band: float = 0.0,
         required_repeats: int = 2,
         require_rag_evidence: bool = False,
+        require_compute_tools: bool = False,
+        compute_tool_names: list[str] | None = None,
         step_timeout_seconds: float = 600.0,
     ) -> None:
         self._cfg = cfg
@@ -238,11 +276,18 @@ class ResearchDirector:
         self._noise_band = max(0.0, float(noise_band))
         self._required_repeats = max(1, int(required_repeats))
         self._require_rag_evidence = bool(require_rag_evidence)
+        self._require_compute_tools = bool(require_compute_tools)
+        self._compute_tool_names = (
+            list(compute_tool_names) if compute_tool_names else list(_COMPUTE_TOOL_NAMES)
+        )
         self._step_timeout_seconds = max(30.0, float(step_timeout_seconds))
         self._worker_id = uuid.uuid4().hex
         self._active_checkpoint: WorkflowCheckpointService | None = None
         self._active_checkpoint_id: str | None = None
         self._rag_generation: str | None = None
+        # L-I2: flaw texts harvested from the just-finished cycle's message
+        # board (set by ``_run_cycle``, consumed by ``_absorb_critic_flaws``).
+        self._last_critic_flaws: list[str] = []
 
     def _ledger(self) -> RunLedger:
         """Return this director's isolated, SQLite-only run ledger."""
@@ -445,6 +490,7 @@ class ResearchDirector:
             "adaptations": run.get("adaptations", 0),
             "pending": run.get("pending", []),
             "mode": run.get("mode", "execute"),
+            "critic_flaws": _sanitize_critic_flaws(run.get("critic_flaws", [])),
             "started_at": run.get("started_at", time.time()),
             "updated_at": run.get("updated_at", time.time()),
         }
@@ -516,16 +562,30 @@ class ResearchDirector:
         )
 
         # knowledge/patterns.md — winning patterns (champion) + dead ends + exhausted axes
+        # L-I6: bounded view — long runs must not grow this rewrite O(n) forever.
+        _patterns_max = 50
         self._patterns_md(topic).parent.mkdir(parents=True, exist_ok=True)
         lines = ["# 知识 / 模式", ""]
         lines.append("## 已验证结论（winning patterns）")
-        lines.extend(f"- {c['statement']}" for c in state["champion"]) if state[
-            "champion"
-        ] else lines.append("（尚无）")
+        champion_view = state["champion"][-_patterns_max:]
+        if state["champion"]:
+            if len(state["champion"]) > _patterns_max:
+                lines.append(
+                    f"- （另有 {len(state['champion']) - _patterns_max} 条更早结论，见 champion.md）"
+                )
+            lines.extend(f"- {c['statement']}" for c in champion_view)
+        else:
+            lines.append("（尚无）")
         lines.append("\n## 已否定假设（dead ends）")
-        lines.extend(f"- {h}" for h in state["rejected"]) if state["rejected"] else lines.append(
-            "（尚无）"
-        )
+        rejected_view = state["rejected"][-_patterns_max:]
+        if state["rejected"]:
+            if len(state["rejected"]) > _patterns_max:
+                lines.append(
+                    f"- （另有 {len(state['rejected']) - _patterns_max} 条更早假设，见 dead_ends.md）"
+                )
+            lines.extend(f"- {h}" for h in rejected_view)
+        else:
+            lines.append("（尚无）")
         lines.append("\n## 已耗尽方向（exhausted axes）")
         lines.append(f"- 连续无进展轮次：{state['consecutive_no_gain']}")
         lines.append(f"- 已转向次数：{state.get('adaptations', 0)}")
@@ -540,6 +600,9 @@ class ResearchDirector:
                     "adaptations": state.get("adaptations", 0),
                     "pending": state.get("pending", []),
                     "mode": state.get("mode", "execute"),
+                    # L-I2: survive restarts so the next analyst still sees the
+                    # previous round's criticisms after a resume.
+                    "critic_flaws": _sanitize_critic_flaws(state.get("critic_flaws", [])),
                     "started_at": state["started_at"],
                     "updated_at": state["updated_at"],
                 },
@@ -813,7 +876,15 @@ class ResearchDirector:
         }
         path = self._logs_dir(topic) / "experiments.jsonl"
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
+            # L-I6: read only the tail — a duplicate is always a resumed
+            # attempt of the current (highest) cycle, never an old line, so
+            # scanning a growing file front-to-back each cycle is waste.
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 16384))
+                tail = f.read().decode("utf-8", errors="replace")
+            for line in tail.splitlines()[-20:]:
                 try:
                     existing = json.loads(line)
                 except json.JSONDecodeError:
@@ -965,19 +1036,101 @@ class ResearchDirector:
 
     # ── prior-context (shared memory across cycles) ───────────────────────────
 
-    @staticmethod
-    def _build_prior_context(state: dict[str, Any]) -> str:
+    # L-I6: prior_context must not grow without limit — a 500-cycle physics
+    # run would push every champion/rejected ever recorded into each prompt.
+    # Inject the most recent tail plus an explicit "N older omitted" marker so
+    # the model knows the list is truncated, not exhaustive.
+    PRIOR_CHAMPION_MAX = 20
+    PRIOR_REJECTED_MAX = 20
+
+    @classmethod
+    def _build_prior_context(cls, state: dict[str, Any]) -> str:
         parts: list[str] = []
-        if state.get("champion"):
-            parts.append("已确认结论：" + "；".join(c["statement"] for c in state["champion"]))
-        if state.get("rejected"):
-            parts.append("已否定假设（不要重复提出）：" + "；".join(state["rejected"]))
+        champion = state.get("champion") or []
+        if champion:
+            omitted = len(champion) - cls.PRIOR_CHAMPION_MAX
+            tail = champion[-cls.PRIOR_CHAMPION_MAX :]
+            prefix = f"（另有 {omitted} 条更早结论未列出）" if omitted > 0 else ""
+            parts.append("已确认结论" + prefix + "：" + "；".join(c["statement"] for c in tail))
+        rejected = state.get("rejected") or []
+        if rejected:
+            omitted = len(rejected) - cls.PRIOR_REJECTED_MAX
+            tail = rejected[-cls.PRIOR_REJECTED_MAX :]
+            prefix = f"（另有 {omitted} 条更早假设未列出）" if omitted > 0 else ""
+            parts.append("已否定假设（不要重复提出）" + prefix + "：" + "；".join(tail))
         if state.get("pending"):
             parts.append(
                 "上轮提出但未讨论完的假设（本轮 critic 需重新独立评审）："
                 + "；".join(state["pending"])
             )
+        # L-I2: the critic's counter-arguments must reach the next analyst —
+        # hypotheses were previously only *filtered* by the discussion gate,
+        # never *revised*, because the veto reasons never left the board. The
+        # list is bounded (recent entries only, deduped per cycle in
+        # ``_absorb_critic_flaws``) so prior_context cannot grow without limit.
+        flaws = state.get("critic_flaws") or []
+        if flaws:
+            lines = ["## 上一轮批评要点（修订假设时先对照，不要原样重提被否决的假设）"]
+            lines.extend(f"- [cycle {e['cycle']}] {e['text']}" for e in flaws)
+            parts.append("\n".join(lines))
         return "\n".join(parts)
+
+    @staticmethod
+    def _harvest_critic_flaws(wf: ResearchLoopWorkflow) -> list[str]:
+        """L-I2: collect this cycle's critic flaw texts from its message board.
+
+        The workflow's board is per-cycle (a fresh workflow instance per
+        cycle), so its critic comments are exactly the counter-arguments of the
+        round that just ended — the veto reasons the next analyst never saw.
+        DISCARD verdicts (the actual veto reasons) come first so the bounded
+        window in ``_absorb_critic_flaws`` keeps them when there are more
+        flaws than slots. Best-effort: a board failure must never break the run.
+        """
+        try:
+            posts = wf._board.list_posts()  # noqa: SLF001 — same-package read
+        except Exception as exc:  # noqa: BLE001 — audit aid only
+            logger.warning("[director] critic-flaw harvest failed: %s", exc)
+            return []
+        discards: list[str] = []
+        others: list[str] = []
+        seen: set[str] = set()
+        for post in posts:
+            for comment in post.comments:
+                # One line per entry: collapse whitespace/newlines from the
+                # critic's free-text JSON field; cap length per entry.
+                text = " ".join(str(comment.content or "").split())[:PRIOR_FLAWS_CHAR_LIMIT]
+                if not text or text in seen:
+                    continue  # n critics often repeat the same objection verbatim
+                seen.add(text)
+                if str(comment.verdict or "").upper() == "DISCARD":
+                    discards.append(text)
+                else:
+                    others.append(text)
+        return discards + others
+
+    def _absorb_critic_flaws(self, state: dict[str, Any], cycle_no: int) -> None:
+        """L-I2: merge this cycle's flaws into the bounded prior-context feed.
+
+        Dedup is by text across cycles: a re-raised objection moves to the
+        newest cycle (and thus the newest position) instead of occupying two
+        slots. Only the most recent ``PRIOR_FLAWS_MAX`` entries are kept, so
+        the injection stays bounded on long runs (review L-I6).
+        """
+        merged: dict[str, dict[str, Any]] = {}
+        for entry in state.get("critic_flaws") or []:
+            if not isinstance(entry, dict):
+                continue
+            text = " ".join(str(entry.get("text", "")).split())[:PRIOR_FLAWS_CHAR_LIMIT]
+            if text:
+                merged[text] = {"cycle": entry.get("cycle", 0), "text": text}
+        for text in self._last_critic_flaws:
+            clean = " ".join(str(text).split())[:PRIOR_FLAWS_CHAR_LIMIT]
+            if not clean:
+                continue
+            merged.pop(clean, None)
+            merged[clean] = {"cycle": cycle_no, "text": clean}
+        state["critic_flaws"] = list(merged.values())[-PRIOR_FLAWS_MAX:]
+        self._last_critic_flaws = []
 
     @staticmethod
     def _critic_vetoes_direction(rs: ResearchState | None) -> bool:
@@ -1005,6 +1158,8 @@ class ResearchDirector:
         prior_context: str,
         prior_champion: list[str] | None = None,
         prior_rejected: list[str] | None = None,
+        run_id: str = "",
+        cycle: int | None = None,
     ) -> tuple[str, ResearchState | None]:
         checkpoint = self._active_checkpoint
         tool_broker = None
@@ -1066,6 +1221,10 @@ class ResearchDirector:
             tool_policy=self._tool_policy,
             rag_generation=self._rag_generation,
             require_rag_evidence=self._require_rag_evidence,
+            require_compute_tools=self._require_compute_tools,
+            compute_tool_names=list(self._compute_tool_names),
+            run_id=run_id or (str(checkpoint.run_id) if checkpoint is not None else ""),
+            cycle=cycle,
             evidence_recorder=evidence_recorder,
             durable_front_half=durable_front_half,
             durable_execution=durable_execution,
@@ -1110,6 +1269,9 @@ class ResearchDirector:
                     self._active_checkpoint_id = captured.checkpoint_id
         report = await handler
         rs = await handler.ctx.store.get("research_state", default=None)
+        # L-I2: the board dies with this cycle's workflow instance — harvest the
+        # critic's counter-arguments now; the loop absorbs them into state.
+        self._last_critic_flaws = self._harvest_critic_flaws(wf)
         return report, rs
 
     def _absorb(
@@ -1150,7 +1312,21 @@ class ResearchDirector:
         champion_statements = {c["statement"] for c in state["champion"]}
         rejected = set(state["rejected"])
 
-        new_champion = list(dict.fromkeys(v for v in verified if v not in champion_statements))
+        # §7.3 新颖性门:文献已覆盖的复现假设不进 champion(仍可跑,进
+        # reproductions 计数)——champion 列表只留新知识。
+        novelty_by_claim = dict(getattr(rs, "novelty_labels", {}) or {}) if rs else {}
+        claim_to_stmt = {
+            h.claim_id: h.statement for h in (rs.hypotheses if rs else []) if h.claim_id
+        }
+        reproduction_stmts = {
+            claim_to_stmt[cid] for cid, label in novelty_by_claim.items() if label == "reproduction"
+        }
+
+        new_champion = list(
+            dict.fromkeys(
+                v for v in verified if v not in champion_statements and v not in reproduction_stmts
+            )
+        )
         new_rejected = [f for f in falsified if f not in rejected and f not in champion_statements]
 
         cycle_no = state["cycles"] + 1
@@ -1168,9 +1344,44 @@ class ResearchDirector:
             "verifications": [v.model_dump() for v in verifications],
             "report": report,
         }
+        # §7.6 发现记分卡：结构化指标，停滞判定与 adapt 决策都从这张卡读，
+        # 而不是只看 champion 计数。
+        # L-I1 诚实语义:只数「落盘产物可解析」的作业——提交了但没跑完/失败
+        # 的 job_id 不算消费,否则死循环提交的 run 永不停滞。
+        _jobs_run_dir = str(self._topic_dir(str(state.get("topic", ""))) / "jobs")
+        jobs_consumed = len(
+            {
+                v.job_id
+                for v in verifications
+                if v.job_id and _job_log_has_number(_jobs_run_dir, v.job_id)
+            }
+        )
+        # 本轮证伪了「先前被接受为 champion」的 statement = 文献/旧证据与新
+        # 实算打架——最值钱的信号，单独计数（它不会进 new_rejected）。
+        contradictions = [f for f in falsified if f in champion_statements]
+        reproductions = len([v for v in verified if v in reproduction_stmts])
+        cycle_result["scorecard"] = {
+            "new_champion": len(new_champion),
+            "new_dead_end": len(new_rejected),
+            "reproductions": reproductions,
+            "contradictions_found": len(contradictions),
+            "jobs_submitted": jobs_consumed,  # surfaced job ids this cycle
+            "jobs_consumed": jobs_consumed,
+            "rag_status": rs.retrieval_status if rs else "unavailable",
+            "tokens": None,  # wired to the ledger budget snapshot when queried
+        }
         state["results"].append(cycle_result)
         state["cycles"] = cycle_no
-        state["consecutive_no_gain"] = 0 if new_champion else state["consecutive_no_gain"] + 1
+        # L-I1: 进展 = 信息增益，不只新 champion。证伪（新 dead end）是知识，
+        # 实算结果消费（预测被改写）也是进展——三者任一发生即不算无增益轮。
+        info_gain = bool(new_champion or new_rejected or jobs_consumed)
+        state["consecutive_no_gain"] = 0 if info_gain else state["consecutive_no_gain"] + 1
+        if contradictions:
+            logger.info(
+                "[director] cycle %d contradicts prior champion: %s",
+                cycle_no,
+                "; ".join(contradictions),
+            )
         return cycle_result
 
     # ── the continuous loop ───────────────────────────────────────────────────
@@ -1225,6 +1436,8 @@ class ResearchDirector:
             "n_critics": self._n_critics,
             "rag_generation": captured_generation,
             "require_rag_evidence": self._require_rag_evidence,
+            "require_compute_tools": self._require_compute_tools,
+            "compute_tool_names": list(self._compute_tool_names),
         }
         if self._single_agent:
             config["single_agent"] = True
@@ -1284,6 +1497,16 @@ class ResearchDirector:
         stored_evidence_requirement = run.config.get("require_rag_evidence")
         if isinstance(stored_evidence_requirement, bool):
             self._require_rag_evidence = stored_evidence_requirement
+        stored_compute_requirement = run.config.get("require_compute_tools")
+        if isinstance(stored_compute_requirement, bool):
+            self._require_compute_tools = stored_compute_requirement
+        stored_compute_tool_names = run.config.get("compute_tool_names")
+        if (
+            isinstance(stored_compute_tool_names, list)
+            and stored_compute_tool_names
+            and all(isinstance(n, str) and n for n in stored_compute_tool_names)
+        ):
+            self._compute_tool_names = list(stored_compute_tool_names)
         self._rag_generation = (
             str(stored_generation)
             if isinstance(stored_generation, str) and stored_generation
@@ -1297,6 +1520,8 @@ class ResearchDirector:
             "n_critics": self._n_critics,
             "rag_generation": self._rag_generation,
             "require_rag_evidence": self._require_rag_evidence,
+            "require_compute_tools": self._require_compute_tools,
+            "compute_tool_names": list(self._compute_tool_names),
         }
         if self._single_agent:
             effective_config["single_agent"] = True
@@ -1392,9 +1617,10 @@ class ResearchDirector:
                 checkpoint=checkpoint,
             )
         session_started = time.time()
-        # Agent 自写的后台作业（run_python mode=async）落进本课题工作区，check_job
-        # 从同一目录轮询——长 DFT/计算因此随课题一起沉淀、可审计、可续跑。
-        os.environ["DRBRAIN_RUN_DIR"] = str(self._topic_dir(topic) / "jobs")
+        # P-E5: no process-global DRBRAIN_RUN_DIR here — concurrent directors on
+        # different topics must not cross-write job directories. The workflow
+        # receives its per-topic ``jobs_dir`` explicitly at construction; the
+        # env fallback only serves standalone (non-director) workflows.
         # Team roster (AutoScientists teams/roster.md) — written once per run so
         # the discussion layer's agent identities are visible & auditable.
         self._save_roster(topic)
@@ -1472,6 +1698,8 @@ class ResearchDirector:
                     prior,
                     prior_champion=[c["statement"] for c in state["champion"]],
                     prior_rejected=list(state["rejected"]),
+                    run_id=run.run_id,
+                    cycle=state["cycles"] + 1,
                 )
                 checkpoint_id = self._active_checkpoint_id
             except RunExecutionBlockedError as exc:
@@ -1539,6 +1767,10 @@ class ResearchDirector:
             pending = [h.statement for h in (rs.hypotheses if rs else []) if h.status == "proposed"]
             state["pending"] = pending
             state["mode"] = "discussion" if pending else "execute"
+            # L-I2: feed this cycle's critic flaws into the bounded prior-context
+            # state so the next analyst can propose *revised* hypotheses instead
+            # of re-proposing the vetoed ones verbatim.
+            self._absorb_critic_flaws(state, state["cycles"])
             champion_after = len(state["champion"])
             cycle_result.update(
                 {
