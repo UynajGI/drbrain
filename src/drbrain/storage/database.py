@@ -1552,10 +1552,19 @@ class Database:
             "claim_type = excluded.claim_type, authority = excluded.authority, "
             "provenance = excluded.provenance, confidence = excluded.confidence, "
             "valid_from = excluded.valid_from, valid_to = excluded.valid_to, "
-            "run_id = excluded.run_id, cycle = excluded.cycle, "
-            "job_id = excluded.job_id, claim_ledger_id = excluded.claim_ledger_id, "
-            "model = excluded.model, prompt_hash = excluded.prompt_hash, "
-            "evidence_node_ids = excluded.evidence_node_ids",
+            # v19 溯源列只在传入非空时覆盖：record_answer 走同一条 INSERT 且不
+            # 带溯源参数，无条件 UPDATE 会把 loop 写入的 run_id/job_id/model
+            # 等审计事实抹成空串（OCR r5 bug·high）。
+            "run_id = CASE WHEN excluded.run_id != '' THEN excluded.run_id ELSE claims.run_id END, "
+            "cycle = CASE WHEN excluded.cycle IS NOT NULL THEN excluded.cycle ELSE claims.cycle END, "
+            "job_id = CASE WHEN excluded.job_id != '' THEN excluded.job_id ELSE claims.job_id END, "
+            "claim_ledger_id = CASE WHEN excluded.claim_ledger_id != '' THEN excluded.claim_ledger_id "
+            "ELSE claims.claim_ledger_id END, "
+            "model = CASE WHEN excluded.model != '' THEN excluded.model ELSE claims.model END, "
+            "prompt_hash = CASE WHEN excluded.prompt_hash != '' THEN excluded.prompt_hash "
+            "ELSE claims.prompt_hash END, "
+            "evidence_node_ids = CASE WHEN excluded.evidence_node_ids != '' "
+            "THEN excluded.evidence_node_ids ELSE claims.evidence_node_ids END",
             (
                 claim_id,
                 label,

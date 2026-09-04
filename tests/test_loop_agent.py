@@ -348,6 +348,45 @@ def test_settle_persists_claims_to_db(tmp_path):
         db.close()
 
 
+def test_record_claim_preserves_provenance_when_re_recorded_without_it(tmp_path):
+    """OCR r5 bug·high：无溯源参数的重写不得抹掉已有 v19 审计列。"""
+    from drbrain.storage.database import Database
+
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        cid = db.record_claim(
+            "task",
+            "statement X",
+            claim_type="Conclusion",
+            run_id="run-1",
+            cycle=2,
+            job_id="job-9",
+            claim_ledger_id="cl-abc",
+            model="test-model",
+            prompt_hash="ph-1",
+            evidence_node_ids="n1,n2",
+        )
+        # record_answer 走的路径：不带任何 v19 参数重写同一 claim
+        db.record_claim("task", "statement X", claim_type="Conclusion", confidence=0.5)
+        row = db.conn.execute(
+            "SELECT run_id, cycle, job_id, claim_ledger_id, model, prompt_hash, "
+            "evidence_node_ids FROM claims WHERE claim_id = ?",
+            (cid,),
+        ).fetchone()
+        assert row == ("run-1", 2, "job-9", "cl-abc", "test-model", "ph-1", "n1,n2")
+
+        # 带新值的重写仍然生效（显式覆盖优先）
+        db.record_claim(
+            "task", "statement X", claim_type="Conclusion", run_id="run-2", job_id="job-10"
+        )
+        row2 = db.conn.execute(
+            "SELECT run_id, job_id, model FROM claims WHERE claim_id = ?", (cid,)
+        ).fetchone()
+        assert row2 == ("run-2", "job-10", "test-model")
+    finally:
+        db.close()
+
+
 def test_settle_no_db_is_noop():
     from drbrain.loop.events import ResearchState
 

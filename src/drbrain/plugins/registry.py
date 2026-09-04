@@ -16,6 +16,12 @@ reclaimed instead of leaving a stuck thread parked on the shared executor.
 Handlers/arguments that cannot cross a process boundary automatically fall
 back to the legacy shared-thread path with identical semantics.
 
+Known trade-off (OCR r5, performance): spawn-per-call re-imports the plugin
+module each call (~sub-second for importable handlers). The alternative — a
+persistent warm worker — reintroduces cross-call state into the very surface
+P-E2 isolation exists to contain; it is a deliberate follow-up (worker pool
+with restart-on-death), not an oversight.
+
 Output hygiene (P-I3): every successful output is clipped to a hard byte cap
 (:data:`DEFAULT_MAX_OUTPUT_BYTES`, overridable per plugin or per call) so one
 greedy data plugin cannot blow up the model context.
@@ -359,8 +365,18 @@ def _run_handler_in_process(
                 outcome = recv_conn.recv()
             except EOFError:
                 outcome = ("error", "worker closed the pipe without a result")
+            except Exception as exc:  # noqa: BLE001 — 半截/不可还原的 pickle 流不许炸父进程
+                outcome = ("error", f"worker result unreadable: {exc}")
             break
         if not proc.is_alive():
+            # 竞态窗口（OCR r5）：子进程可能在 poll 超时后、is_alive 检查前
+            # 发送结果并退出——先排空管道再判死，丢已完成的结果比多等更糟。
+            try:
+                if recv_conn.poll(0):
+                    outcome = recv_conn.recv()
+                    break
+            except Exception:  # noqa: BLE001 — 管道已坏则按死亡处理
+                pass
             outcome = ("error", f"worker process died (exitcode={proc.exitcode})")
             break
     recv_conn.close()

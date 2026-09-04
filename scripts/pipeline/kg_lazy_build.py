@@ -419,19 +419,32 @@ def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
 
     Idempotent: a paper already pending or done is not re-appended. Returns
     True when a new entry was added. ``db`` (optional) only enables a warning
-    when the id is not yet in the library.
+    when the id is not yet in the library. The read-modify-write runs under an
+    exclusive ``flock`` so concurrent retrieval processes cannot silently drop
+    each other's entries (OCR r5).
     """
     if db is not None and db.get_paper(paper_id) is None:
         print(f"[kg-lazy] warning: {paper_id} not in the library (marking anyway)", flush=True)
-    wl = load_worklist(worklist_path)
-    known = {e["paper_id"] for e in wl["pending"]} | {e["paper_id"] for e in wl["done"]}
-    if paper_id in known:
-        print(f"[kg-lazy] {paper_id} already in worklist", flush=True)
-        return False
-    wl["pending"].append({"paper_id": paper_id, "marked_at": _now_iso()})
-    save_worklist(worklist_path, wl)
+    import fcntl
+
+    worklist_path = Path(worklist_path)
+    worklist_path.parent.mkdir(parents=True, exist_ok=True)
+    added = False
+    with worklist_path.open("a+") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            wl = load_worklist(worklist_path)
+            known = {e["paper_id"] for e in wl["pending"]} | {e["paper_id"] for e in wl["done"]}
+            if paper_id in known:
+                print(f"[kg-lazy] {paper_id} already in worklist", flush=True)
+                return False
+            wl["pending"].append({"paper_id": paper_id, "marked_at": _now_iso()})
+            save_worklist(worklist_path, wl)
+            added = True
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
     print(f"[kg-lazy] marked retrieved: {paper_id} → {worklist_path}", flush=True)
-    return True
+    return added
 
 
 def _worklist_pending_ids(wl: dict) -> list[str]:
@@ -652,7 +665,11 @@ def run_l2(
                 _worklist_move_to_done(wl, pid)
                 worklist_changed = True
             continue
-        result = _full_extract(db, pid, cfg, papers_root, skip_refine=skip_refine)
+        try:
+            result = _full_extract(db, pid, cfg, papers_root, skip_refine=skip_refine)
+        except Exception as exc:  # noqa: BLE001 — build_one 未捕获的异常算单篇失败，
+            # 不许炸掉整个 worklist drain（OCR r5）
+            result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         if result.get("ok"):
             stats["ok"] += 1
             if worklist_path and pid in _worklist_pending_ids(wl):

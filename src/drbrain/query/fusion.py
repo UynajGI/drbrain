@@ -28,8 +28,6 @@ from __future__ import annotations
 from drbrain.query.types import SearchHit
 from drbrain.utils.rrf import DEFAULT_K  # RRF 收敛（R-I7）：常量单一来源
 
-__all__ = ["DEFAULT_K", "reciprocal_rank_fusion"]
-
 
 def reciprocal_rank_fusion(
     ranked_lists: list[list[SearchHit]],

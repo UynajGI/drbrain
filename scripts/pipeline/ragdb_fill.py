@@ -207,18 +207,12 @@ def cmd_categories() -> None:
         print(f"[categories] main DB missing: {MAIN_DB}", flush=True)
         return
     src = sqlite3.connect(f"file:{MAIN_DB}?mode=ro", uri=True)
+    conn = sqlite3.connect(str(RAG_DB))
     try:
         cols = [r[1] for r in src.execute("PRAGMA table_info(papers)").fetchall()]
         if "categories" not in cols:
             print("[categories] papers.categories column missing (run the app once)", flush=True)
             return
-        rows = src.execute(
-            "SELECT local_id, categories FROM papers WHERE categories IS NOT NULL AND categories != ''"
-        ).fetchall()
-    finally:
-        src.close()
-    conn = sqlite3.connect(str(RAG_DB))
-    try:
         with conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS paper_categories (
@@ -227,24 +221,34 @@ def cmd_categories() -> None:
                    )"""
             )
             conn.execute("DELETE FROM paper_categories")
-        # 分块提交：0.8M 行一次性 executemany 会撑出一个巨型写事务（WAL 暴涨、
-        # 中断即全量回滚重来）。每 50k 行独立提交，中断后重跑脚本即可续写。
+        # 流式游标 + 分块提交：不把 ~0.8M 行 fetchall 进 Python 内存
+        # （OCR r5），也不撑单个巨型写事务。每块独立提交，中断重跑即续写。
         chunk_size = 50_000
-        for i in range(0, len(rows), chunk_size):
-            chunk = rows[i : i + chunk_size]
+        cur = src.execute(
+            "SELECT local_id, categories FROM papers "
+            "WHERE categories IS NOT NULL AND categories != ''"
+        )
+        cur.arraysize = 10_000
+        synced = 0
+        while True:
+            chunk = cur.fetchmany(chunk_size)
+            if not chunk:
+                break
             with conn:
                 conn.executemany(
                     "INSERT OR REPLACE INTO paper_categories (paper_id, categories) VALUES (?, ?)",
                     chunk,
                 )
-            print(f"[categories] {min(i + chunk_size, len(rows))}/{len(rows)}", flush=True)
+            synced += len(chunk)
+            print(f"[categories] {synced}", flush=True)
         with conn:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_paper_categories_paper ON paper_categories(paper_id)"
             )
+        print(f"[categories] synced {synced} papers → {RAG_DB.name}", flush=True)
     finally:
+        src.close()
         conn.close()
-    print(f"[categories] synced {len(rows)} papers → {RAG_DB.name}", flush=True)
 
 
 if __name__ == "__main__":
