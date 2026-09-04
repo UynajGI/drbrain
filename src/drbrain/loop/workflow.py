@@ -299,8 +299,54 @@ def _job_log_has_number(run_dir: str | None, job_id: str) -> bool:
     return _extract_result_payload(text) is not None
 
 
+_COMPARATORS = {
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "==": lambda a, b: a == b,
+}
+
+
+def _structured_prediction_met(hypothesis: "Hypothesis | None", value: float, unit: str) -> bool | None:
+    """§7.1: code-judge a structured prediction — value vs threshold with units.
+
+    Returns True/False when the hypothesis carries a machine-checkable
+    prediction (quantity + comparator + threshold) and the computed value is
+    comparable (unit convertible, pint when available, else same-string);
+    ``None`` means "not judgeable in code" — the caller falls back to the
+    LLM-counts path.
+    """
+    if hypothesis is None:
+        return None
+    comparator = (hypothesis.comparator or "").strip()
+    if hypothesis.threshold is None or comparator not in _COMPARATORS:
+        return None
+    computed = float(value)
+    threshold = float(hypothesis.threshold)
+    computed_unit = (unit or "").strip()
+    predicted_unit = (hypothesis.unit or "").strip()
+    if computed_unit != predicted_unit:
+        try:
+            import pint
+
+            ureg = pint.UnitRegistry()
+            converted = (computed * ureg(computed_unit)).to(ureg(predicted_unit))
+            computed = float(converted.magnitude)
+        except Exception as exc:  # noqa: BLE001 — incomparable units → not judgeable
+            logger.warning(
+                "[loop] structured prediction unit mismatch (%s vs %s): %s",
+                computed_unit,
+                predicted_unit,
+                exc,
+            )
+            return None
+    return bool(_COMPARATORS[comparator](computed, threshold))
+
+
 def _classify_verification(
-    ver: Verification, score: float, has_compute: bool, run_dir: str | None = None
+    ver: Verification, score: float, has_compute: bool, run_dir: str | None = None,
+    hypothesis: "Hypothesis | None" = None,
 ) -> str:
     """Code-based verdict from the evidence counts (T3), with T2/T4 gates.
 
@@ -314,6 +360,13 @@ def _classify_verification(
     """
     if ver.refutes >= FALSIFY_REFUTES and ver.supports == 0:
         return "falsified"
+    # §7.1: 结构化预测（quantity+comparator+threshold）在数值证据通过 T4 后
+    # 由代码直接判定方向——verifier 的计数只做旁证，不再决定证伪。
+    structured = (
+        _structured_prediction_met(hypothesis, ver.value, ver.unit)
+        if ver.value is not None
+        else None
+    )
     if ver.supports >= 1 and ver.refutes == 0:
         if score < VERIFY_LOW_SCORE and ver.supports < STRONG_SUPPORTS:
             return "prediction"
@@ -337,7 +390,12 @@ def _classify_verification(
                     ver.job_id,
                 )
                 return "prediction"
+        if structured is False:
+            return "falsified"
         return "verified"
+    if structured is not None and ver.job_id:
+        # 数值证据在手且可机检：代码判定压过含混的计数（supports/refutes 混杂）。
+        return "verified" if structured else "falsified"
     return "prediction"
 
 
@@ -1326,7 +1384,11 @@ class ResearchLoopWorkflow(Workflow):
                 "不要调用任何检索工具，直接基于给定材料归纳推理，只返回 JSON："
                 '{"gaps": ["...", ...], "hypotheses": [{"statement": "...", '
                 '"prediction": "什么证据会支持它", "falsification": "什么证据会证伪它", '
-                '"conditions": {}}]}。'
+                '"quantity": "<量名，仅数值型预测填>", "comparator": "<|<=|>|>=|==", '
+                '"threshold": <数值阈值>, "unit": "<单位>", "conditions": {}}]}。'
+                "quantity/comparator/threshold/unit 四字段是**机检证伪**的依据："
+                "填了它们，核验门会用代码把实算值与 threshold 直接比较（自动换算单位），"
+                "不填则退回 LLM 计数旁证（置信上限更低）。数值型预测务必填写。"
                 "prediction 必须写成**可机检的数值判据**：明确指出要计算/测量什么量"
                 "（quantity）、用什么工具或方法、阈值多少算支持（比较符 + 数值 + 单位），"
                 "例如「用 <工具/方法> 计算 <量>，若 <量> < 0.5 <单位> 判支持」——"
@@ -1343,6 +1405,11 @@ class ResearchLoopWorkflow(Workflow):
                         conditions=h.get("conditions") or {},
                         prediction=str(h.get("prediction", "")).strip(),
                         falsification=str(h.get("falsification", "")).strip(),
+                        # §7.1: structured machine-checkable prediction (optional)
+                        quantity=str(h.get("quantity", "") or "").strip(),
+                        comparator=str(h.get("comparator", "") or "").strip(),
+                        threshold=_to_float(h.get("threshold")),
+                        unit=str(h.get("unit", "") or "").strip(),
                     )
                     for h in data.get("hypotheses", [])
                     if isinstance(h, dict) and str(h.get("statement", "")).strip()
@@ -2142,7 +2209,7 @@ class ResearchLoopWorkflow(Workflow):
                         )
                         h.evidence_ids = list(evidence_ids)
                         ver.status = (
-                            _classify_verification(ver, h.score, has_compute, run_dir)
+                            _classify_verification(ver, h.score, has_compute, run_dir, hypothesis=h)
                             if _has_required_evidence(
                                 state,
                                 evidence_ids,

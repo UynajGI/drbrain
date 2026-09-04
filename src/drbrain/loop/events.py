@@ -72,6 +72,13 @@ class Hypothesis(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
     prediction: str = ""  # 可观察预测：什么证据会支持该假设
     falsification: str = ""  # 证伪标准：什么证据会放弃该假设
+    # §7.1 结构化预测（可选）：量化预测的机检形状。给出 quantity+comparator+
+    # threshold 后，证伪判定由代码比较 result.value vs threshold（带单位换算），
+    # 不再依赖 verifier 读字。
+    quantity: str = ""  # 预测量名，如 "formation_energy"
+    comparator: str = ""  # "<" | "<=" | ">" | ">=" | "=="
+    threshold: float | None = None
+    unit: str = ""
     score: float = 0.0
     status: str = "proposed"
 

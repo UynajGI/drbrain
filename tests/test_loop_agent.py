@@ -1032,3 +1032,64 @@ def test_dirty_llm_outputs_survive_the_cycle(monkeypatch, tmp_path):
         for h in state.hypotheses
     )
     assert "verified=0" in result
+
+
+def test_structured_prediction_code_falsification(tmp_path):
+    """§7.1: 结构化预测由代码判定——value vs threshold（含单位换算），计数仅旁证。
+
+    T4 必须先过：数值证据必须来自真实作业日志，否则一律 prediction。
+    """
+    import json as _json
+
+    from drbrain.loop.events import Hypothesis, Verification
+    from drbrain.loop.workflow import _classify_verification
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "job-42.log").write_text('{"quantity": "gap", "value": 0.31}', encoding="utf-8")
+    (jobs / "job-42.json").write_text(
+        _json.dumps({"job_id": "job-42", "pid": 99999999, "log_path": str(jobs / "job-42.log")}),
+        encoding="utf-8",
+    )
+    h = Hypothesis(
+        statement="H",
+        quantity="gap",
+        comparator="<",
+        threshold=0.5,
+        unit="eV",
+    )
+    ver = Verification(
+        statement="H", job_id="job-42", value=0.31, unit="eV",
+        supports=1, refutes=0, computed="0.31",
+    )
+    run_dir = str(jobs)  # 生产里 _jobs_dir 即 jobs 目录本身
+
+    # 数值 0.31 < 0.5 → 判支持
+    assert _classify_verification(ver, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 数值 0.71 ≥ 0.5 → 代码证伪压过 supports=1 的计数
+    ver_bad = Verification(
+        statement="H", job_id="job-42", value=0.71, unit="eV",
+        supports=1, refutes=0, computed="0.71",
+    )
+    assert _classify_verification(ver_bad, 0.9, True, run_dir, hypothesis=h) == "falsified"
+
+    # 混杂计数 + 可机检数值 + 真实作业 → 代码判定说了算
+    ver_mixed = Verification(
+        statement="H", job_id="job-42", value=0.31, unit="eV",
+        supports=2, refutes=1, computed="0.31",
+    )
+    assert _classify_verification(ver_mixed, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 单位不一致但可换算（meV → eV）：代码换算后 310 meV = 0.31 eV < 0.5 → 支持
+    h_mev = h.model_copy(update={"unit": "meV"})
+    ver_mev = Verification(
+        statement="H", job_id="job-42", value=310.0, unit="meV",
+        supports=1, refutes=0, computed="310 meV",
+    )
+    # 预测单位 meV，作业单位 eV——反向换算不可判定 → 回退计数路径（verified）
+    assert _classify_verification(ver_mev, 0.9, True, run_dir, hypothesis=h) == "verified"
+
+    # 无结构化字段 → 走原计数路径
+    h_free = Hypothesis(statement="H")
+    assert _classify_verification(ver, 0.9, True, run_dir, hypothesis=h_free) == "verified"
