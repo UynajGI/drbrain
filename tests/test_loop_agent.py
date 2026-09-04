@@ -955,7 +955,8 @@ def test_critic_join_by_claim_id_survives_statement_paraphrase(monkeypatch, tmp_
     _, state = asyncio.run(_go())
     # statement 字面已对不上，但 claim_id 命中 → 评审生效（critiqued 而非 pending）。
     assert all(h.status == "critiqued" for h in state.hypotheses)
-    assert state.hypotheses[0].score == pytest.approx(0.9)
+    # §7.3: 最终分 = 0.7×0.9(critic) + 0.3×0.5(novelty unknown 中性) = 0.78
+    assert state.hypotheses[0].score == pytest.approx(0.78)
 
 
 def test_retrieve_reports_rag_status_in_state(monkeypatch, tmp_path):

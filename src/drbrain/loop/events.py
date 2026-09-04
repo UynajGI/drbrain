@@ -132,6 +132,9 @@ class ResearchState(BaseModel):
     verified: list[str] = Field(default_factory=list)
     falsified: list[str] = Field(default_factory=list)  # 证伪的假设（dead ends）
     predictions: list[str] = Field(default_factory=list)
+    # §7.3 新颖性门（代码节点，非提示词）：claim_id → 文献/KG 查重标签。
+    # "novel" | "known" | "reproduction" | "contradiction" | "unknown"。
+    novelty_labels: dict[str, str] = Field(default_factory=dict)
     report: str = ""
 
 

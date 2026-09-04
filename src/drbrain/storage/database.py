@@ -330,6 +330,13 @@ CREATE TABLE IF NOT EXISTS claims (
     confidence REAL DEFAULT 1.0,
     valid_from INTEGER,
     valid_to INTEGER,
+    run_id TEXT DEFAULT '',
+    cycle INTEGER,
+    job_id TEXT DEFAULT '',
+    claim_ledger_id TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    prompt_hash TEXT DEFAULT '',
+    evidence_node_ids TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
@@ -413,6 +420,7 @@ class Database:
             (16, "agent_session_principal", self._migrate_add_agent_session_principal),
             (17, "claim_evidence", self._migrate_add_claim_evidence),
             (18, "paper_categories", self._migrate_add_paper_categories),
+            (19, "claim_provenance", self._migrate_add_claim_provenance),
         ]
 
         for version, name, fn in migrations:
@@ -737,6 +745,22 @@ class Database:
                 ON claim_evidence(evidence_id);
             """
         )
+
+    def _migrate_add_claim_provenance(self) -> None:
+        """v19: per-claim provenance columns (run, cycle, job, model, prompt)."""
+        cols = [r[1] for r in self.conn.execute("PRAGMA table_info(claims)").fetchall()]
+        add_column = {
+            "run_id": "TEXT DEFAULT ''",
+            "cycle": "INTEGER",
+            "job_id": "TEXT DEFAULT ''",
+            "claim_ledger_id": "TEXT DEFAULT ''",
+            "model": "TEXT DEFAULT ''",
+            "prompt_hash": "TEXT DEFAULT ''",
+            "evidence_node_ids": "TEXT DEFAULT ''",
+        }
+        for column, decl in add_column.items():
+            if column not in cols:
+                self.conn.execute(f"ALTER TABLE claims ADD COLUMN {column} {decl}")
 
     def _migrate_add_paper_categories(self) -> None:
         """Add arXiv category metadata + corpus citation edges (physics ingest)."""
@@ -1469,28 +1493,46 @@ class Database:
         valid_from: int | None = None,
         valid_to: int | None = None,
         claim_id: str | None = None,
+        run_id: str = "",
+        cycle: int | None = None,
+        job_id: str = "",
+        claim_ledger_id: str = "",
+        model: str = "",
+        prompt_hash: str = "",
+        evidence_node_ids: str = "",
     ) -> str:
         """Insert or update a first-class claim row. Returns ``claim_id``.
 
         ``claim_id`` defaults to a stable hash of ``label`` + ``claim_text`` so
         re-recording the same assertion is idempotent without replacing the
-        row, preserving claim-to-evidence foreign-key relationships.
+        row, preserving claim-to-evidence foreign-key relationships. The
+        provenance columns (v19) pin a claim to the run/cycle/job/model that
+        produced it — a claim without provenance cannot be audited.
         """
         import hashlib
 
         if claim_id is None:
-            digest = hashlib.sha1(f"{label}\x00{claim_text}".encode()).hexdigest()
+            # claim_type participates in the identity: a statement verified in
+            # one run and falsified in another must coexist (the review's
+            # "Rejected→Conclusion 翻转静默覆盖" bug) so authority rules can
+            # arbitrate instead of last-writer-wins.
+            digest = hashlib.sha1(f"{label}\x00{claim_text}\x00{claim_type}".encode()).hexdigest()
             claim_id = f"claim_{digest[:16]}"
         self.conn.execute(
             "INSERT INTO claims "
             "(claim_id, label, claim_text, claim_type, authority, provenance, "
-            " confidence, valid_from, valid_to) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            " confidence, valid_from, valid_to, run_id, cycle, job_id, "
+            " claim_ledger_id, model, prompt_hash, evidence_node_ids) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(claim_id) DO UPDATE SET "
             "label = excluded.label, claim_text = excluded.claim_text, "
             "claim_type = excluded.claim_type, authority = excluded.authority, "
             "provenance = excluded.provenance, confidence = excluded.confidence, "
-            "valid_from = excluded.valid_from, valid_to = excluded.valid_to",
+            "valid_from = excluded.valid_from, valid_to = excluded.valid_to, "
+            "run_id = excluded.run_id, cycle = excluded.cycle, "
+            "job_id = excluded.job_id, claim_ledger_id = excluded.claim_ledger_id, "
+            "model = excluded.model, prompt_hash = excluded.prompt_hash, "
+            "evidence_node_ids = excluded.evidence_node_ids",
             (
                 claim_id,
                 label,
@@ -1501,6 +1543,13 @@ class Database:
                 confidence,
                 valid_from,
                 valid_to,
+                run_id,
+                cycle,
+                job_id,
+                claim_ledger_id,
+                model,
+                prompt_hash,
+                evidence_node_ids,
             ),
         )
         self.conn.commit()

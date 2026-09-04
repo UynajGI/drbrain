@@ -156,6 +156,83 @@ def test_retrieval_rows_bind_the_visible_excerpt_separately_from_the_full_chunk(
     assert unscored["score"] is None
 
 
+def test_retrieval_rows_carry_tree_line_offsets_from_node_metadata():
+    """R-I3: node metadata line offsets travel onto the output row untouched."""
+    node = SimpleNamespace(
+        metadata={
+            "paper_id": "paper-1",
+            "node_id": "0001",
+            "title": "Child A",
+            "parent_node_id": "0000",
+            "source": "tree",
+            "line_start": 2,
+            "line_end": 4,
+        },
+        get_content=lambda: "condition list part 1",
+    )
+
+    row = rag_agent._retrieval_rows(
+        [SimpleNamespace(node=node, score=0.9)], generation="g-1", query="conditions"
+    )[0]
+
+    assert row["line_start"] == 2
+    assert row["line_end"] == 4
+    # the historic payload and evidence fields are unchanged
+    assert row["node_id"] == "0001"
+    assert row["content_checksum"] == hashlib.sha256(
+        "condition list part 1".encode("utf-8")
+    ).hexdigest()
+
+
+def test_retrieval_rows_without_line_offsets_stay_key_clean():
+    """Rows whose nodes carry no offsets gain no new keys (additive-only)."""
+    node = SimpleNamespace(
+        metadata={"paper_id": "paper-1", "node_id": "0001", "title": "Child A"},
+        get_content=lambda: "body",
+    )
+
+    row = rag_agent._retrieval_rows(
+        [SimpleNamespace(node=node, score=0.9)], generation="g-1", query="q"
+    )[0]
+
+    assert "line_start" not in row
+    assert "line_end" not in row
+
+
+def test_retrieval_rows_checksum_binds_the_expanded_parent_text_not_the_leaf():
+    """R-I3: tree/raptor leaf expanded to its parent → checksum over shown text.
+
+    The row keeps the leaf ``node_id`` while the node text is the parent
+    section body; the checksums must re-verify exactly the text placed in
+    ``text``/the full chunk — never a hash of the leaf chunk.
+    """
+    leaf_text = "condition list part 1"
+    parent_body = (
+        "# Parent Section\nintro to the section\ncondition list part 1\ncondition list part 2"
+    )
+    node = SimpleNamespace(
+        metadata={
+            "paper_id": "paper-1",
+            "node_id": "0001",  # leaf id kept for provenance
+            "title": "Child A",
+            "parent_node_id": "0000",
+            "source": "tree",
+            "line_start": 0,  # offsets of the displayed parent section
+            "line_end": 4,
+        },
+        get_content=lambda: parent_body,
+    )
+
+    row = rag_agent._retrieval_rows(
+        [SimpleNamespace(node=node, score=0.9)], generation="g-1", query="conditions"
+    )[0]
+
+    assert row["text"] == parent_body[:500]
+    assert row["content_checksum"] == hashlib.sha256(parent_body.encode("utf-8")).hexdigest()
+    assert row["content_checksum"] != hashlib.sha256(leaf_text.encode("utf-8")).hexdigest()
+    assert row["excerpt_checksum"] == hashlib.sha256(row["text"].encode("utf-8")).hexdigest()
+
+
 def test_explicit_unavailable_generation_does_not_recapture_the_active_pointer(monkeypatch):
     capture = Mock(return_value="g-new-active")
     monkeypatch.setattr(indexer, "capture_index_generation", capture)
@@ -518,4 +595,81 @@ def test_loop_persists_verified_claim_with_its_real_retrieval_evidence(tmp_path)
     assert db.conn.execute(
         "SELECT claim_text FROM claims WHERE claim_id = ?", (claim_id,)
     ).fetchone() == ("A supports B",)
+    db.close()
+
+
+def test_persist_claims_writes_provenance(tmp_path):
+    """L-I5: claims carry run/cycle/job/model/prompt provenance into the KG."""
+    from drbrain.storage.database import Database as _Database
+
+    db = _Database(tmp_path / "prov.db")
+    workflow = ResearchLoopWorkflow(db=db, run_id="run-abc", cycle=3)
+    workflow._last_verify_model = "gpt-x"
+    workflow._last_verify_prompt_hash = "p" * 16
+    state = ResearchState(
+        task="physics loop",
+        hypotheses=[Hypothesis(claim_id="cl-9", statement="H1", status="critiqued")],
+        verifications=[
+            Verification(
+                claim_id="cl-9",
+                statement="H1",
+                evidence_ids=["ev-1"],
+                job_id="job-77",
+                status="verified",
+            )
+        ],
+        verified=["H1"],
+    )
+
+    workflow._persist_claims(state)
+
+    row = db.conn.execute(
+        "SELECT run_id, cycle, job_id, claim_ledger_id, model, prompt_hash, "
+        "evidence_node_ids, confidence, claim_type FROM claims"
+    ).fetchone()
+    assert row[0] == "run-abc"
+    assert row[1] == 3
+    assert row[2] == "job-77"
+    assert row[3] == "cl-9"
+    assert row[4] == "gpt-x"
+    assert row[5] == "p" * 16
+    assert row[6] == "ev-1"
+    # numeric job evidence keeps full confidence (4db2d6d contract)
+    assert row[7] == 1.0
+    assert row[8] == "Conclusion"
+    db.close()
+
+
+def test_kg_settlement_writes_claim_edges_and_marks_contested(tmp_path):
+    """§7.4: settle writes claim-anchored KG edges; Conclusion vs Rejected on
+    the same statement coexist and get a contested edge instead of silently
+    overwriting each other."""
+    from drbrain.storage.database import Database as _Database
+
+    db = _Database(tmp_path / "kg.db")
+    workflow = ResearchLoopWorkflow(db=db, run_id="run-1", cycle=1)
+
+    state_ok = ResearchState(task="physics loop", verified=["H1"], falsified=[])
+    persisted = workflow._persist_claims(state_ok)
+    workflow._write_kg_settlement(state_ok, persisted)
+
+    edges = db.conn.execute("SELECT src_id, dst_id, relation FROM edges").fetchall()
+    assert any(
+        src.startswith("claim:") and rel == "supports" for src, _dst, rel in edges
+    ), edges
+
+    state_bad = ResearchState(task="physics loop", falsified=["H1"])
+    persisted = workflow._persist_claims(state_bad)
+    workflow._write_kg_settlement(state_bad, persisted)
+
+    rows = db.conn.execute(
+        "SELECT claim_id, claim_type FROM claims ORDER BY claim_type"
+    ).fetchall()
+    assert [ctype for _cid, ctype in rows] == ["Conclusion", "Rejected"]
+
+    relations = {
+        rel for rel, in db.conn.execute("SELECT relation FROM edges").fetchall()
+    }
+    assert "refutes" in relations
+    assert "contested" in relations
     db.close()

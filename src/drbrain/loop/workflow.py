@@ -63,6 +63,7 @@ from drbrain.loop.front_half import DurableFrontHalf
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
 from drbrain.loop.store import RunBudgetExceededError, RunExecutionBlockedError
 from drbrain.loop.tool_broker import ToolBroker
+from drbrain.rag.authority import resolve_claims
 
 _STATE_KEY = "research_state"
 MAX_RETRIEVE_ATTEMPTS = 3
@@ -471,6 +472,8 @@ class ResearchLoopWorkflow(Workflow):
         require_rag_evidence: bool = True,
         require_compute_tools: bool = False,
         compute_tool_names: list[str] | None = None,
+        run_id: str = "",
+        cycle: int | None = None,
         evidence_recorder: Callable[[Mapping[str, Any]], None] | None = None,
         durable_front_half: DurableFrontHalf | None = None,
         durable_execution: DurableExecution | None = None,
@@ -508,6 +511,12 @@ class ResearchLoopWorkflow(Workflow):
         self._compute_tool_names = (
             tuple(compute_tool_names) if compute_tool_names else _COMPUTE_TOOL_NAMES
         )
+        # L-I5: run-level provenance, set by the durable host so persisted
+        # claims can be audited back to the producing run/cycle.
+        self._provenance_run_id = str(run_id or "")
+        self._provenance_cycle = int(cycle) if cycle is not None else None
+        self._last_verify_model = ""
+        self._last_verify_prompt_hash = ""
         self._rag_generation: str | None = None
         if rag_generation is _RAG_GENERATION_UNSET and cfg is not None:
             try:
@@ -1375,7 +1384,13 @@ class ResearchLoopWorkflow(Workflow):
         return GapsIdentified(gaps=gaps, hypotheses=hypotheses)
 
     async def _run_critic(
-        self, agent: Any, name: str, hypotheses: list[Hypothesis], history: str = "", task: str = ""
+        self,
+        agent: Any,
+        name: str,
+        hypotheses: list[Hypothesis],
+        history: str = "",
+        task: str = "",
+        novelty_labels: dict[str, str] | None = None,
     ) -> Any:
         """Run one critic agent as an independent reviewer tagged ``name``.
 
@@ -1387,8 +1402,12 @@ class ResearchLoopWorkflow(Workflow):
         receives each hypothesis's full falsifiable shape (statement +
         prediction + falsification) — it scores falsifiability, so it must see
         the fields falsifiability lives in; downstream joins prefer
-        ``claim_id`` over verbatim statement text.
+        ``claim_id`` over verbatim statement text. ``score`` covers the
+        falsifiability/mechanism/operability rubric (0.7 weight); the novelty
+        dimension comes from the code gate's label (0.3) and is shown for
+        transparency — the critic never self-assesses novelty.
         """
+        labels = novelty_labels or {}
         history_note = (
             f"\n\n以下是你以往轮次评审过的假设与裁决（最近 {_ROLE_MEMORY_LIMIT} 条，"
             f"供参考，避免重复给出相同结论）：\n{history}"
@@ -1406,6 +1425,7 @@ class ResearchLoopWorkflow(Workflow):
                 "statement": h.statement,
                 "prediction": h.prediction,
                 "falsification": h.falsification,
+                "novelty": labels.get(h.claim_id, "unknown"),
             }
             for h in hypotheses
         ]
@@ -1418,14 +1438,107 @@ class ResearchLoopWorkflow(Workflow):
             '"flaw": "..."}]}。'
             "**claim_id 必须原样回抄对应假设的 claim_id**（这是下游匹配的唯一可靠键，"
             "statement 改写一个字就会匹配失败）。"
-            "评分标尺：可证伪性(prediction/falsification 可机检)0.4 + 机制合理性 0.3 + "
-            "判据可操作性 0.3。**新颖性不是评分维度**——服务本期目标的验证类/复现类假设，"
-            "按其可证伪性与可操作性正常计分。"
+            "评分标尺（你评的 score 只占最终分的 0.7 权重）：可证伪性"
+            "(prediction/falsification 可机检)0.3 + 机制合理性 0.2 + 判据可操作性 0.2。"
+            "**新颖性维度由系统代码查重给出**（目录中每条假设的 novelty 字段："
+            "novel/contradiction=全新或与已知相反，known/reproduction=文献已覆盖），"
+            "占最终分 0.3 权重——你无需自评新颖性，也请勿改动 novelty 字段。"
             "**flaw 字段必须非空且不少于两句话**：写明你给出的 score 的具体依据——"
             "倾向 KEEP 时写主要保留理由与残余风险，倾向 DISCARD 时写机制漏洞或证据缺口；"
             "空串、占位符或只写「无」都视为无效评审。"
             f"假设目录：{json.dumps(catalog, ensure_ascii=False)}{task_note}{history_note}",
         )
+
+    # ── §7.3 novelty gate (a CODE node, not a prompt) ────────────────────────
+
+    NOVELTY_SCORE = {
+        "contradiction": 1.0,  # 与已知记录相反——最值钱，优先探索
+        "novel": 1.0,
+        "unknown": 0.5,  # 无语料/无 KG 可查时保持中性，不奖励也不惩罚
+        "known": 0.2,
+        "reproduction": 0.0,  # 文献已有且数值相近——复现，不进 champion
+    }
+    NOVELTY_WEIGHT = 0.3  # rubric: 可证伪 0.3 + 机制 0.2 + 可操作 0.2 (critic) + 新颖 0.3 (code)
+
+    @classmethod
+    def _compose_novelty_score(cls, critic_score: float, label: str) -> float:
+        """Blend the critic's (0.7-weighted) rubric with the code novelty label."""
+        weight = float(cls.NOVELTY_WEIGHT)
+        novelty = float(cls.NOVELTY_SCORE.get(label, cls.NOVELTY_SCORE["unknown"]))
+        return max(0.0, min(1.0, (1.0 - weight) * critic_score + weight * novelty))
+
+    def _novelty_labels(self, state: ResearchState) -> dict[str, str]:
+        """Literature + KG duplicate check per hypothesis — in code, not prompts.
+
+        Best-effort: no corpus / no KG means every label degrades to
+        ``"unknown"`` (neutral 0.5) instead of failing the cycle.
+        """
+        labels: dict[str, str] = {}
+        if self._cfg is None and self._db is None:
+            return {h.claim_id: "unknown" for h in state.hypotheses if h.claim_id}
+        for h in state.hypotheses:
+            if not h.claim_id:
+                continue
+            label = "unknown"
+            try:
+                label = self._check_novelty(h, state)
+            except Exception as exc:  # noqa: BLE001 — a broken index must not stop critique
+                logger.warning("[loop] novelty check failed for %s: %s", h.claim_id, exc)
+                label = "unknown"
+            labels[h.claim_id] = label
+        return labels
+
+    def _check_novelty(self, hypothesis: Hypothesis, state: ResearchState) -> str:
+        """Classify one hypothesis against the corpus (FTS5) and the KG."""
+        query = _fallback_query(
+            f"{hypothesis.statement} {hypothesis.prediction}" or state.task
+        )
+        keywords = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}", hypothesis.statement)][:4]
+
+        literature_hit = False
+        if query and self._cfg is not None:
+            try:
+                from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+                rows = retrieve_documents_sql(
+                    self._cfg, self._db, query, top_k=3
+                )
+                literature_hit = bool(rows)
+            except Exception as exc:  # noqa: BLE001 — retrieval outage ≠ novelty verdict
+                logger.warning("[loop] novelty literature check unavailable: %s", exc)
+
+        kg_forward = kg_reverse = False
+        if keywords and self._db is not None:
+            likes = [f"%{k}%" for k in keywords]
+            placeholders = " OR ".join("label LIKE ?" for _ in likes)
+            node_rows = self._db.execute(
+                f"SELECT DISTINCT label FROM concepts WHERE {placeholders} LIMIT 8",
+                (*likes,),
+            ).fetchall()
+            known_labels = {str(r[0]).lower() for r in node_rows}
+            if len(known_labels) >= 2:
+                edge_rows = self._db.execute(
+                    "SELECT relation, src_id, dst_id FROM edges LIMIT 400"
+                ).fetchall()
+                for relation, src, dst in edge_rows:
+                    src_hit = any(k in str(src).lower() for k in map(str.lower, keywords))
+                    dst_hit = any(k in str(dst).lower() for k in map(str.lower, keywords))
+                    if src_hit and dst_hit:
+                        if str(relation).lower() in ("refutes", "contradicts", "contested"):
+                            kg_reverse = True
+                        else:
+                            kg_forward = True
+                        break
+
+        if kg_reverse:
+            return "contradiction"
+        if literature_hit and kg_forward:
+            return "known"
+        if literature_hit:
+            return "reproduction"
+        if kg_forward:
+            return "known"
+        return "novel"
 
     # 9. 假设互评（AutoScientists：Discussion-Before-Queuing —— 多 critic 异步评论，
     #    非作者评论门之后才入队；T1 批判者角色 + T5 评审门）
@@ -1485,7 +1598,12 @@ class ResearchLoopWorkflow(Workflow):
                         comment_id=str(review["review_id"]),
                     )
 
-        # 2. 并发 N 个独立 critic agent（非作者 reviewer）对同一批假设评论。
+        # 2. §7.3 新颖性门（代码节点）：文献 FTS + KG 查重，标签注入 critic
+        #    输入；新颖性维度由标签决定，不靠 LLM 自评。
+        novelty_labels = self._novelty_labels(state)
+        state.novelty_labels = novelty_labels
+
+        # 3. 并发 N 个独立 critic agent（非作者 reviewer）对同一批假设评论。
         critic_history = _read_role_history(
             await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "critic"
         )
@@ -1496,7 +1614,12 @@ class ResearchLoopWorkflow(Workflow):
             results = await asyncio.gather(
                 *[
                     self._run_critic(
-                        agent, name, hypotheses_to_review, critic_history, task=state.task or ""
+                        agent,
+                        name,
+                        hypotheses_to_review,
+                        critic_history,
+                        task=state.task or "",
+                        novelty_labels=novelty_labels,
                     )
                     for name, agent in pairs
                 ]
@@ -1521,6 +1644,10 @@ class ResearchLoopWorkflow(Workflow):
                 if claim_id is None:
                     continue
                 score = _to_float(raw.get("score", 0.0)) or 0.0
+                # §7.3: 最终分 = 0.7×critic rubric + 0.3×代码新颖性标签
+                score = self._compose_novelty_score(
+                    score, novelty_labels.get(claim_id, "unknown")
+                )
                 # 理由字段别名兜底:不同模型会把评语放进 flaw 之外的键
                 flaw = ""
                 for key in ("flaw", "content", "rationale", "reason", "comment"):
@@ -1804,8 +1931,6 @@ class ResearchLoopWorkflow(Workflow):
                 'prediction 涉及但工具面没有对应工具的量，才用 run_python(mode="async") '
                 "写代码实算，并用 check_job 轮询作业，把返回的 job_id 填进对应条目；"
                 "禁止用自写代码重复实现已有预测工具的功能。"
-                "run_python 的参数纪律：只传 code 字段（字符串），"
-                "**禁止传 script/python_code/source 别名，禁止传 null 值**——否则 schema 校验拒绝；"
                 "async 提交的返回 JSON 含 job_id 字段，**必须把 job_id 原样复制进 results 对应条目**。"
                 "**claim_id 必须原样回抄对应 hypothesis 的 claim_id**（下游匹配的唯一可靠键）。"
                 "**输入可追溯（实算前置硬约束，违反=作业无效）**：实算所需的输入数据"
@@ -1932,15 +2057,19 @@ class ResearchLoopWorkflow(Workflow):
             verifier_history = _read_role_history(
                 await ctx.store.get(_ROLE_MEMORY_KEY, default=None), "verifier"
             )
-            data = await self.run_agent_json(
-                agent,
-                self._verify_prompt(
-                    candidates,
-                    verifier_history,
-                    evidence=state.evidence,
-                    require_evidence_ids=self._requires_evidence_ids(state),
-                ),
+            verify_prompt = self._verify_prompt(
+                candidates,
+                verifier_history,
+                evidence=state.evidence,
+                require_evidence_ids=self._requires_evidence_ids(state),
             )
+            # L-I5: provenance for claims persisted at settle time — which
+            # model saw which prompt produced the counts behind a claim.
+            self._last_verify_model = str(getattr(agent, "model", "") or "")
+            self._last_verify_prompt_hash = hashlib.sha256(
+                verify_prompt.encode("utf-8")
+            ).hexdigest()[:16]
+            data = await self.run_agent_json(agent, verify_prompt)
             if isinstance(data, dict):
                 raw_vs = data.get("verifications")
                 if isinstance(raw_vs, list):
@@ -2151,11 +2280,12 @@ class ResearchLoopWorkflow(Workflow):
             state.falsified = list(dict.fromkeys(canonical_falsified))
             state.predictions = list(dict.fromkeys(canonical_predictions))
         state.verifications = ev.verifications
-        self._persist_claims(state)
+        persisted = self._persist_claims(state)
+        self._write_kg_settlement(state, persisted)
         await self._set_state(ctx, state)
         return Settled(verified=state.verified, falsified=state.falsified)
 
-    def _persist_claims(self, state: ResearchState) -> None:
+    def _persist_claims(self, state: ResearchState) -> list[tuple[str, str]]:
         """闭环沉淀：把核验结论/证伪/预测写回 KG（``claims`` 表）。
 
         KEEP（verified）→ ``Conclusion``；DISCARD（falsified）→ ``Rejected``
@@ -2170,9 +2300,13 @@ class ResearchLoopWorkflow(Workflow):
         prediction is weakest. The claim type stays honest either way, so the
         champion list cannot silently fill with 1.0 assertions when the
         environment has no compute tools.
+
+        Returns the persisted ``(claim_id, claim_type)`` pairs so the caller
+        can derive KG settlement edges (§7.4) without re-querying.
         """
         if self._db is None:
-            return
+            return []
+        persisted: list[tuple[str, str]] = []
         try:
             evidence_by_id = {item.evidence_id: item for item in state.evidence if item.evidence_id}
             verification_by_statement: dict[str, list[Verification]] = {}
@@ -2181,6 +2315,9 @@ class ResearchLoopWorkflow(Workflow):
                     verification_by_statement.setdefault(verification.statement, []).append(
                         verification
                     )
+            ledger_ids = {
+                h.claim_id: h.claim_id for h in state.hypotheses if h.claim_id
+            }
             for statements, claim_type, no_numeric_confidence in (
                 (state.verified, "Conclusion", 0.6),
                 (state.falsified, "Rejected", 0.6),
@@ -2197,14 +2334,102 @@ class ResearchLoopWorkflow(Workflow):
                         authority="research-loop",
                         provenance="research-loop",
                         confidence=confidence,
+                        run_id=self._provenance_run_id,
+                        cycle=self._provenance_cycle,
+                        job_id=next(
+                            (v.job_id for v in verifications if v.job_id), ""
+                        ),
+                        claim_ledger_id=ledger_ids.get(
+                            next(
+                                (
+                                    v.claim_id
+                                    for v in verifications if v.claim_id
+                                ),
+                                "",
+                            ),
+                            "",
+                        ),
+                        model=self._last_verify_model,
+                        prompt_hash=self._last_verify_prompt_hash,
+                        evidence_node_ids=",".join(
+                            dict.fromkeys(
+                                eid for v in verifications for eid in v.evidence_ids
+                            )
+                        ),
                     )
                     self._record_claim_evidence(
                         claim_id,
                         verifications,
                         evidence_by_id,
                     )
+                    persisted.append((claim_id, claim_type))
         except Exception as exc:  # noqa: BLE001 — persistence must not break the loop
             logger.warning("[loop] settle persist failed: %s", exc)
+        return persisted
+
+    def _write_kg_settlement(self, state: ResearchState, persisted: list[tuple[str, str]]) -> None:
+        """§7.4: settle 同时产出 KG 变更，让下一轮的检索/推理看见上一轮结论。
+
+        - 每条落库 claim 在 KG 里生成一条 claim 锚定边
+          (``claim:<id>`` → ``task:<hash>``，relation=supports/refutes/
+          predicts，provenance 即 ``claim:<id>``)；
+        - 同一 statement 在历史上同时存在 Conclusion 与 Rejected 时，
+          用 ``authority.resolve_claims`` 判定冲突并把两个 claim 节点连成
+          ``contested`` 边——这是最值钱的信号（文献与实算打架），不该被
+          last-writer-wins 静默覆盖。
+        """
+        if self._db is None or not persisted:
+            return
+        try:
+            task_anchor = "task:" + hashlib.sha1(
+                (state.task or "research-loop").encode("utf-8")
+            ).hexdigest()[:16]
+            relation_by_type = {"Conclusion": "supports", "Rejected": "refutes"}
+            for claim_id, claim_type in persisted:
+                relation = relation_by_type.get(claim_type, "predicts")
+                self._db.insert_edge(
+                    f"claim:{claim_id}",
+                    task_anchor,
+                    relation,
+                    f"claim:{claim_id}",
+                )
+            # 冲突检测：按 claim_text 分组，同文不同判 → contested 边
+            rows = self._db.execute(
+                "SELECT claim_id, claim_type, claim_text FROM claims WHERE label = ?",
+                (state.task or "research-loop",),
+            ).fetchall()
+            by_text: dict[str, dict[str, str]] = {}
+            for cid, ctype, text in rows:
+                by_text.setdefault(str(text), {})[str(ctype)] = str(cid)
+            for text, types in by_text.items():
+                if "Conclusion" in types and "Rejected" in types:
+                    a, b = types["Conclusion"], types["Rejected"]
+                    resolution = resolve_claims(
+                        [
+                            {
+                                "label": text,
+                                "value": "Conclusion",
+                                "claim_id": a,
+                                "authority": "research-loop",
+                            },
+                            {
+                                "label": text,
+                                "value": "Rejected",
+                                "claim_id": b,
+                                "authority": "research-loop",
+                            },
+                        ]
+                    )
+                    if resolution and resolution[0].resolution == "conflict":
+                        self._db.insert_edge(f"claim:{a}", f"claim:{b}", "contested", f"claim:{b}")
+                    logger.info(
+                        "[loop] settled claim conflict (%s…): %s",
+                        text[:40],
+                        resolution[0].resolution if resolution else "unknown",
+                    )
+            self._db.commit()
+        except Exception as exc:  # noqa: BLE001 — KG writeback must not break the loop
+            logger.warning("[loop] KG settlement writeback failed: %s", exc)
 
     def _record_claim_evidence(
         self,
