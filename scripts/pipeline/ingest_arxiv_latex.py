@@ -86,7 +86,9 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             skipped += 1
             continue
         paper_dir = papers_root / _safe_paper_dir(arxiv_id)
-        if (paper_dir / "raw.md").exists():
+        # 断点权威是 DB 行，不是 raw.md：崩溃若发生在文件写完之后、DB 提交之前，
+        # 下一次运行必须重做这篇（文件写入是幂等覆盖），否则它永远进不了库。
+        if db.get_paper(arxiv_id) is not None:
             skipped += 1
             continue
         try:

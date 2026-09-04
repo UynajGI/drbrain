@@ -168,8 +168,12 @@ def _build_model(
         prop = raw_prop if isinstance(raw_prop, dict) else {}
         annotation = _annotation_for(key, prop, model_name, base, depth)
         if key in required:
-            # required 参数仍尊重 schema 里的 default（有默认值即可不传）
+            # required 参数仍尊重 schema 里的非 null default（有默认值即可不传）。
+            # 显式 "default": null 不算"有默认值"——否则 required 形同虚设，
+            # 且 LLM 漏传时的报错（None 不是合法 <type>）比「field required」难读。
             default: Any = prop.get("default", ...)
+            if default is None:
+                default = ...
         else:
             default = prop.get("default", None)
             if default is None:
@@ -542,9 +546,11 @@ class PluginRegistry:
     ) -> PluginResult:
         """Invoke ``name`` with ``arguments`` and wrap the outcome.
 
-        Never raises for plugin-side failures: a broken/missing plugin yields a
-        ``MODEL_UNAVAILABLE`` result (the caller abstains) instead of an
-        exception propagating into the reasoning loop.
+        Never raises for plugin-side failures: a broken/missing plugin yields
+        a structured failure result (``PLUGIN_ERROR`` for a crashing handler,
+        ``INVALID_INPUT`` for schema violations or an unknown name, ``TIMEOUT``
+        on expiry) instead of an exception propagating into the reasoning
+        loop.
 
         ``max_output_bytes`` overrides the output cap for this call
         (``0``/negative disables it); otherwise the plugin's declared

@@ -101,3 +101,53 @@ def test_markdown_tree_offsets_are_exact():
     assert "Kagome lattices" in "\n".join(lines[start:end])
     # model subsection must fall inside the introduction's range
     assert intro["line_start"] <= intro["nodes"][0]["line_start"] < intro["line_end"]
+
+
+# ── round-4 OCR findings ─────────────────────────────────────────────────────
+
+
+def test_headings_with_nested_braces_become_markdown():
+    """OCR r4: nested braces (\\texorpdfstring, subscripts) must still yield a heading."""
+    nested = r"""
+\begin{document}
+\section{The \texorpdfstring{$X$}{X} model}
+body one
+\section{Fe$_3$Sn$_2$ \textemdash{} results}
+body two
+\end{document}
+"""
+    markdown = latex_to_markdown(nested)
+    assert "## The X model" in markdown
+    assert "## Fe$_3$Sn$_2$ results" in markdown
+    assert "body one" in markdown
+    assert "body two" in markdown
+    # the heading must be a real tree node, not LaTeX residue in prose
+    tree = markdown_to_tree(markdown)
+    titles = [n["title"] for n in tree["structure"]]
+    assert "The X model" in titles
+    assert "Fe$_3$Sn$_2$ results" in titles
+
+
+def test_abstract_display_math_is_protected():
+    """OCR r4: $$...$$ / \\[..\\] inside the abstract must survive as atoms."""
+    doc = latex_to_document(
+        r"""
+\begin{document}
+\begin{abstract}
+The gap opens as $$\Delta = 2\sqrt{m^2 - b^2}$$ which is the main result.
+\end{abstract}
+\section{Intro}
+text
+\end{document}
+"""
+    )
+    assert r"\Delta = 2\sqrt{m^2 - b^2}" in doc.markdown
+    assert "```math" in doc.markdown
+
+
+def test_markdown_to_tree_has_no_min_node_lines_param():
+    """OCR r4: the unused min_node_lines parameter was removed from the API."""
+    import inspect
+
+    sig = inspect.signature(markdown_to_tree)
+    assert "min_node_lines" not in sig.parameters

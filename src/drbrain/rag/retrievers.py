@@ -31,6 +31,7 @@ the LLM context.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -122,6 +123,24 @@ def _line_offsets(node: Any) -> tuple[int | None, int | None]:
         return None, None
 
 
+@functools.lru_cache(maxsize=256)
+def _paper_tree_structure(papers_dir_str: str, paper_id: str) -> list | None:
+    """Parsed ``tree.json`` structure for one paper, cached per process.
+
+    ``_tree_node_offsets`` runs once per leaf in retrieval loops; re-reading
+    and re-parsing the whole tree each time multiplied I/O by the leaf count.
+    """
+    tree_path = Path(papers_dir_str) / paper_id / "tree.json"
+    if not tree_path.exists():
+        return None
+    try:
+        tree = json.loads(tree_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return None
+    structure = tree.get("structure", [])
+    return structure if isinstance(structure, list) else None
+
+
 def _tree_node_offsets(papers_dir, paper_id: str, node_id: str) -> tuple[int | None, int | None]:
     """``(line_start, line_end)`` of one PageIndex node, read from tree.json.
 
@@ -132,15 +151,10 @@ def _tree_node_offsets(papers_dir, paper_id: str, node_id: str) -> tuple[int | N
     """
     if not papers_dir:
         return None, None
-    tree_path = Path(papers_dir) / paper_id / "tree.json"
-    if not tree_path.exists():
+    structure = _paper_tree_structure(str(papers_dir), str(paper_id))
+    if structure is None:
         return None, None
-    try:
-        tree = json.loads(tree_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # pragma: no cover - defensive
-        return None, None
-    structure = tree.get("structure", [])
-    return _line_offsets(_find_node(structure if isinstance(structure, list) else [], node_id))
+    return _line_offsets(_find_node(structure, node_id))
 
 
 def _pageindex_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, dict | None]:

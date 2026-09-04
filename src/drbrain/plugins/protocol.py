@@ -81,16 +81,40 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+def _drop_unknown_kwargs(cls):
+    """Constructor wrapper for :class:`Plugin`: drop unknown keyword arguments.
+
+    A plain frozen dataclass raises TypeError on unknown kwargs, which would
+    kill plugin discovery for any external plugin written against an older
+    protocol revision. Wrapping ``__init__`` keeps the frozen dataclass
+    semantics while honoring the documented "unknown kwargs are ignored"
+    forward-compatibility contract.
+    """
+    import inspect
+
+    original_init = cls.__init__
+    known = {name for name in inspect.signature(original_init).parameters if name != "self"}
+
+    def init_wrapper(self, *args: Any, **kwargs: Any) -> None:
+        kwargs = {k: v for k, v in kwargs.items() if k in known}
+        original_init(self, *args, **kwargs)
+
+    cls.__init__ = init_wrapper
+    return cls
+
+
+@_drop_unknown_kwargs
 @dataclass(frozen=True)
 class Plugin:
     """Generic descriptor of an external capability exposed as an agent tool.
 
     Frozen: a registered plugin is immutable. Unknown keyword arguments are
-    ignored (extra="ignore") so external plugins written against older
-    protocol revisions (e.g. passing ``on_failure=``/``entry=``) keep
-    loading instead of raising TypeError during discovery. ``summary_fields`` names the keys
-    whose values are worth surfacing to the LLM alongside the raw JSON (the
-    "raw JSON + key-field summary" compromise).
+    silently dropped (see :func:`_drop_unknown_kwargs`) so external plugins
+    written against older protocol revisions (e.g. passing
+    ``on_failure=``/``entry=``) keep loading instead of raising TypeError
+    during discovery. ``summary_fields`` names the keys whose values are worth
+    surfacing to the LLM alongside the raw JSON (the "raw JSON + key-field
+    summary" compromise).
 
     ``plugin_type`` is a coarse capability category (``model`` / ``software`` /
     ``data`` / ``formula`` / ``other``). ``resource`` is the single path/pointer

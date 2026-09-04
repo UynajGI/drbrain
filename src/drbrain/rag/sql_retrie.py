@@ -104,8 +104,10 @@ def _categories_filter(
     clauses: list[str] = []
     params: list[str] = []
     for cat in wanted:
-        clauses.append("' ' || categories || ' ' LIKE ?")
-        params.append(f"% {cat}%")
+        # 用户输入先转义 LIKE 通配符：math.G_ 里的 "_" 不该匹配任意字符。
+        escaped = cat.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("' ' || categories || ' ' LIKE ? ESCAPE '\\'")
+        params.append(f"% {escaped}%")
     subquery = (
         " AND nt.paper_id IN "
         "(SELECT paper_id FROM paper_categories WHERE (" + " OR ".join(clauses) + "))"
@@ -575,7 +577,9 @@ def retrieve_documents_sql(
         # it is appended (marked) so downstream consumers see summary-level and
         # graph-level evidence.
         primary_keys = {k for k, _ in primary}
-        for name in ("raptor", "graph"):
+        # claims 与 graph/raptor 一样参与保底：融合头部挤不掉已沉淀结论的
+        # 最佳命中（claims 条目自描述，rich 里已带元数据，渲染无需回查）。
+        for name in ("raptor", "graph", "claims"):
             leg_entries = next((entries for lname, entries in legs if lname == name), [])
             best = max(leg_entries, key=lambda e: e["score"], default=None)
             if best is not None and best["key"] not in primary_keys:

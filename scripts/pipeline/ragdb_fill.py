@@ -227,10 +227,18 @@ def cmd_categories() -> None:
                    )"""
             )
             conn.execute("DELETE FROM paper_categories")
-            conn.executemany(
-                "INSERT OR REPLACE INTO paper_categories (paper_id, categories) VALUES (?, ?)",
-                rows,
-            )
+        # 分块提交：0.8M 行一次性 executemany 会撑出一个巨型写事务（WAL 暴涨、
+        # 中断即全量回滚重来）。每 50k 行独立提交，中断后重跑脚本即可续写。
+        chunk_size = 50_000
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i : i + chunk_size]
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO paper_categories (paper_id, categories) VALUES (?, ?)",
+                    chunk,
+                )
+            print(f"[categories] {min(i + chunk_size, len(rows))}/{len(rows)}", flush=True)
+        with conn:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_paper_categories_paper ON paper_categories(paper_id)"
             )

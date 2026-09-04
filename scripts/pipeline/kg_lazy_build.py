@@ -35,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -257,14 +258,18 @@ def heuristic_extract(
     scored += [(cnt * 2.0, label) for label, cnt in acronyms.items()]
     scored.sort(key=lambda item: (-item[0], item[1]))
 
-    # 4. greedy top-k with substring dedup (prefer the richer label)
+    # 4. greedy top-k with substring dedup (prefer the richer label).
+    # ``min_concepts`` is a best-effort floor, not a quota: until it is met,
+    # an overlapping lower-ranked term is acceptable over returning fewer
+    # than the advertised 3 — short abstracts still need KG coverage.
     selected: list[dict] = []
     seen_labels: list[str] = []
     for score, label in scored:
         if len(selected) >= max_concepts:
             break
         low = label.lower()
-        if any(low in prev or prev in low for prev in seen_labels):
+        allow_overlap = len(selected) < min_concepts
+        if not allow_overlap and any(low in prev or prev in low for prev in seen_labels):
             continue
         # attach the type of the first sentence that mentions the label
         ctype, section = "Method", ""
@@ -446,8 +451,27 @@ _L1_SELECT = """
     FROM papers p
     WHERE TRIM(COALESCE(p.abstract, '')) != ''
       AND NOT EXISTS (SELECT 1 FROM concepts c WHERE c.local_id = p.local_id)
+      AND NOT EXISTS (SELECT 1 FROM kg_l1_attempted a WHERE a.local_id = p.local_id)
     ORDER BY p.local_id
 """
+
+
+def _ensure_attempted_table(db) -> None:
+    """Papers whose extractor yields ZERO concepts would otherwise be
+    re-selected by ``_L1_SELECT`` on every run (no ``concepts`` row is the
+    only completion signal). Record every L1 attempt here so empty-yield
+    papers leave the work queue after one pass."""
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kg_l1_attempted (
+            local_id TEXT PRIMARY KEY,
+            attempted_at TEXT NOT NULL,
+            extractor TEXT NOT NULL,
+            concept_count INTEGER NOT NULL
+        )
+        """
+    )
+    db.commit()
 
 
 def run_l1(
@@ -463,6 +487,12 @@ def run_l1(
         print(f"[kg-lazy] unknown extractor: {extractor}", file=sys.stderr, flush=True)
         raise SystemExit(2)
     extract_fn = EXTRACTORS[extractor]
+    # spark4b needs the local model: fail BEFORE touching the DB loop, not
+    # lazily on the first paper (a mid-loop SystemExit leaves the batch
+    # half-done and the caller with no clean retry story).
+    if extractor == "spark4b":
+        _load_spark()
+    _ensure_attempted_table(db)
 
     sql = _L1_SELECT + (" LIMIT ?" if limit > 0 else "")
     rows = db.execute(sql, (limit,) if limit > 0 else ()).fetchall()
@@ -501,6 +531,13 @@ def run_l1(
                 section=str(c.get("section") or ""),
             )
             n += 1
+        # Record the attempt even at zero yield — otherwise the NOT EXISTS
+        # predicate re-selects this paper on every future run.
+        db.execute(
+            "INSERT OR REPLACE INTO kg_l1_attempted (local_id, attempted_at, extractor, "
+            "concept_count) VALUES (?, ?, ?, ?)",
+            (local_id, _now_iso(), extractor, n),
+        )
         db.commit()
         stats["processed"] += 1
         stats["inserted"] += n
@@ -521,10 +558,14 @@ def run_l1(
 # ── L2: on-demand full 5-stage extraction ────────────────────────────────────
 
 
+@functools.lru_cache(maxsize=1)
 def _get_build_one():
     """Import ``scripts/pipeline/build.py::build_one`` — the existing 5-stage
     full-extraction entry (tree → ontology → entities → relations → coref →
-    refine → concepts/edges 插入). Reused verbatim, not re-implemented."""
+    refine → concepts/edges 插入). Reused verbatim, not re-implemented.
+
+    Cached: ``exec_module`` re-runs the whole module; loading it per paper
+    inside a worklist drain multiplies startup cost by N."""
     import importlib.util
 
     build_path = REPO / "scripts" / "pipeline" / "build.py"

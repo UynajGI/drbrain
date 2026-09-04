@@ -58,7 +58,6 @@ _GROUP_RE = re.compile(
 _BRACE_CMD_RE = re.compile(r"\\(?:title|author|date|thanks)\s*(\[[^]]*\])?\s*\{")
 _RESIDUAL_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?(\[[^]]*\])?")
 _DOLLAR_DISPLAY_RE = re.compile(r"\$\$(.+?)\$\$", re.DOTALL)
-_INLINE_MATH_RE = re.compile(r"(?<!\\)\$(?!\$)((?:\\.|[^$\\])+?)(?<!\\)\$")
 
 
 def _strip_comments(latex: str) -> str:
@@ -139,10 +138,31 @@ def _simplify_inline(latex: str) -> str:
     return "".join(out)
 
 
+def _clean_heading_text(text: str) -> str:
+    """Reduce a LaTeX heading argument to plain markdown-safe text.
+
+    Tolerates one level of brace nesting (real headings nest:
+    ``\\section{The \\texorpdfstring{$X$}{X} model}``), keeps ``\\texorpdfstring``
+    's second (plain-text) argument, unwraps font commands and drops residual
+    markup so the title survives as a readable markdown heading.
+    """
+    text = re.sub(
+        r"\\texorpdfstring\s*\{((?:[^{}]|\{[^{}]*\})*)\}\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
+        r"\2",
+        text,
+    )
+    text = _GROUP_RE.sub(r"\1", text)
+    text = _RESIDUAL_CMD_RE.sub(" ", text)
+    text = text.replace("{", "").replace("}", "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _headings_and_lists(latex: str) -> str:
+    # 允许一层嵌套花括号：\section{Fe$_3$Sn$_2$ \textemdash{} results} 这类
+    # 真实标题用 \{([^{}]*)\} 匹配不到，会整段漏进散文管线被撕碎。
     latex = re.sub(
-        r"\\(section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(\[[^]]*\])?\s*\{([^{}]*)\}",
-        lambda m: f"\n\n{_HEADING_COMMANDS[m.group(1)]} {m.group(3).strip()}\n\n",
+        r"\\(section|subsection|subsubsection|paragraph|subparagraph)\*?\s*(\[[^]]*\])?\s*\{((?:[^{}]|\{[^{}]*\})*)\}",
+        lambda m: f"\n\n{_HEADING_COMMANDS[m.group(1)]} {_clean_heading_text(m.group(3))}\n\n",
         latex,
     )
     latex = re.sub(r"\\item\s?", "\n- ", latex)
@@ -209,7 +229,9 @@ def latex_to_document(latex: str) -> LatexDocument:
     markdown = re.sub(r"\n{3,}", "\n\n", latex).strip()
 
     if abstract:
-        abstract_md = _simplify_inline(abstract).strip()
+        # 摘要与正文走同一套数学原子保护：摘要里的 $$...$$ / \[..\] 不先
+        # protect 就进 _simplify_inline 会被原子拆分正则撕碎。
+        abstract_md = _simplify_inline(_protect_display_math(abstract)).strip()
         markdown = f"## Abstract\n\n{abstract_md}\n\n{markdown}"
     return LatexDocument(
         markdown=markdown, citations=list(dict.fromkeys(citations)), abstract=abstract
@@ -224,7 +246,7 @@ def latex_to_markdown(latex: str) -> str:
 # ── markdown → PageIndex tree ────────────────────────────────────────────────
 
 
-def markdown_to_tree(markdown: str, *, min_node_lines: int = 1) -> dict:
+def markdown_to_tree(markdown: str) -> dict:
     """Build a ``tree.json`` structure from markdown headings.
 
     Every node carries exact ``line_start``/``line_end`` offsets into the
