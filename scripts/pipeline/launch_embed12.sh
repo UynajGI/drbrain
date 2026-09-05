@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # launch_embed12.sh — 启动 12 路 embed（分片→配置映射固定）
 set -u
+source "$(dirname "$0")/runtime.sh"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 
 declare -A CFG
 CFG[0]=e8006; CFG[1]=e8007; CFG[2]=e8008; CFG[3]=e8009

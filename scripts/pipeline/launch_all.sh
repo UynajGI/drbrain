@@ -2,8 +2,10 @@
 # launch_all.sh — 一次性启动 16 片全量增强管线（8 scibase + 8 openalex）
 # 用法: bash scripts/pipeline/launch_all.sh
 set -u
+source "$(dirname "$0")/runtime.sh"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 
 # 8 scibase 分片（ingest 已完成 → 直接 build，hy3 主抽）
 for i in 0 1 2 3 4 5 6 7; do
