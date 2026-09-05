@@ -39,6 +39,12 @@ from pathlib import Path
 from typing import Any
 
 from drbrain.config import Config
+from drbrain.storage.paths import (
+    iter_paper_dirs,
+    paper_id_from_dir,
+    resolve_paper_dir,
+    tree_json_path,
+)
 
 try:
     from llama_index.core.async_utils import asyncio_run
@@ -130,7 +136,10 @@ def _paper_tree_structure(papers_dir_str: str, paper_id: str) -> list | None:
     ``_tree_node_offsets`` runs once per leaf in retrieval loops; re-reading
     and re-parsing the whole tree each time multiplied I/O by the leaf count.
     """
-    tree_path = Path(papers_dir_str) / paper_id / "tree.json"
+    paper_dir = resolve_paper_dir(Path(papers_dir_str), paper_id)
+    if paper_dir is None:
+        return None
+    tree_path = tree_json_path(paper_dir)
     if not tree_path.exists():
         return None
     try:
@@ -168,14 +177,19 @@ def _pageindex_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, st
     """
     if not papers_dir:
         return "", "", None
-    paper_dir = Path(papers_dir) / paper_id
+    paper_dir = resolve_paper_dir(Path(papers_dir), str(paper_id))
+    if paper_dir is None:
+        return "", "", None
     try:
         from drbrain.parser.pageindex_parser import get_node_content
         from drbrain.storage.paths import raw_md_path, tree_json_path
     except ImportError:  # pragma: no cover - defensive
         return "", "", None
-    tree_path = tree_json_path(paper_dir)
-    md_path = raw_md_path(paper_dir)
+    try:
+        tree_path = tree_json_path(paper_dir)
+        md_path = raw_md_path(paper_dir)
+    except (OSError, TypeError, ValueError):
+        return "", "", None
     if not tree_path.exists() or not md_path.exists():
         return "", "", None
     try:
@@ -292,13 +306,18 @@ def _parent_section(papers_dir, paper_id: str, node_id: str) -> tuple[str, str, 
     """
     if not papers_dir:
         return "", "", "", None
-    paper_dir = Path(papers_dir) / paper_id
+    paper_dir = resolve_paper_dir(Path(papers_dir), str(paper_id))
+    if paper_dir is None:
+        return "", "", "", None
     try:
         from drbrain.storage.paths import raw_md_path, tree_json_path
     except ImportError:  # pragma: no cover - defensive
         return "", "", "", None
-    tree_path = tree_json_path(paper_dir)
-    md_path = raw_md_path(paper_dir)
+    try:
+        tree_path = tree_json_path(paper_dir)
+        md_path = raw_md_path(paper_dir)
+    except (OSError, TypeError, ValueError):
+        return "", "", "", None
     if not tree_path.exists() or not md_path.exists():
         return "", "", "", None
     try:
@@ -386,13 +405,9 @@ if _LLAMA_INDEX_AVAILABLE:
         def _paper_dirs(self) -> list[Path]:
             """Target paper dirs: the filtered paper, or every dir with tree.json."""
             if self.paper_id:
-                target = self._papers_dir / self.paper_id
-                return [target] if target.is_dir() else []
-            if not self._papers_dir.is_dir():
-                return []
-            return sorted(
-                d for d in self._papers_dir.iterdir() if d.is_dir() and (d / "tree.json").exists()
-            )
+                target = resolve_paper_dir(self._papers_dir, self.paper_id)
+                return [target] if target is not None else []
+            return iter_paper_dirs(self._papers_dir)
 
         # ── LlamaIndex protocol ────────────────────────────────────────
 
@@ -422,7 +437,9 @@ if _LLAMA_INDEX_AVAILABLE:
                         str(sec.get("node_id") or ""),
                     ),
                 )
-                paper_id = paper_dir.name
+                # The basename may be a percent-encoded canonical key or only
+                # the suffix of a legacy nested DOI directory.
+                paper_id = self.paper_id or paper_id_from_dir(paper_dir, self._papers_dir)
                 n = len(sections)
                 for i, sec in enumerate(sections):
                     nid = str(sec.get("node_id") or "")
@@ -488,7 +505,7 @@ if _LLAMA_INDEX_AVAILABLE:
                     _cache=self._get_cache(),
                 )
             except Exception as exc:  # pragma: no cover - defensive
-                log.warning("[rag] tree navigation failed for %s: %s", paper_dir.name, exc)
+                log.warning("[rag] tree navigation failed for %s: %s", paper_dir, exc)
                 return None
 
     class DrbrainRAPTORRetriever(BaseRetriever):

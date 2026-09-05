@@ -30,7 +30,7 @@ import numpy as np
 from drbrain.extractor.llm_client import acall_with_fallback
 from drbrain.parser.pageindex_parser import get_document_structure_json, get_node_content
 from drbrain.storage.connection import connect_wal
-from drbrain.storage.paths import raw_md_path, tree_json_path
+from drbrain.storage.paths import paper_id_from_dir, raw_md_path, tree_json_path
 
 log = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ async def query_by_structure(
     use_navigation = len(full_skeleton) > _MAX_SKELETON_CHARS
     log.info(
         "[tree-retrieval] %s — %d leaves, skeleton=%d chars (navigation=%s)",
-        paper_dir.name,
+        paper_id_from_dir(paper_dir),
         len(all_leaf_ids),
         len(full_skeleton),
         use_navigation,
@@ -755,6 +755,7 @@ async def query_by_structure_hybrid(
     top_k: int = 5,
     *,
     _cache: ApiCache | None = None,
+    paper_id: str | None = None,
 ) -> list[dict] | None:
     """LLM-primary tree retrieval with optional vector pre-filtering.
 
@@ -788,8 +789,8 @@ async def query_by_structure_hybrid(
     if not structure:
         return None
 
-    paper_id = paper_dir.name
-    md_path = paper_dir / "raw.md"
+    paper_id = paper_id or paper_id_from_dir(paper_dir)
+    md_path = raw_md_path(paper_dir)
 
     # ── Step 1: LLM navigation (PRIMARY) ──
     # Always run LLM reasoning on the tree structure

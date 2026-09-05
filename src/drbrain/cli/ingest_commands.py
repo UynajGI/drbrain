@@ -232,7 +232,7 @@ def _pipeline_runtime_paths(ctx: typer.Context) -> tuple[str | None, str | None]
         parent = getattr(current, "parent", None)
         # Avoid following dynamically-created attributes on MagicMock/direct
         # test contexts forever; real Click parents are typer.Context objects.
-        current = parent if isinstance(parent, click.Context) else None
+        current = parent if isinstance(parent, click.Context) else None  # type: ignore[assignment]
 
     if not config_path:
         if "DRBRAIN_CONFIG" in os.environ:
@@ -322,7 +322,7 @@ def _run_pipeline_step(
         run_kwargs["cwd"] = root
 
     try:
-        result = _sp.run(args, **run_kwargs)
+        result = _sp.run(args, **run_kwargs)  # type: ignore[call-overload]
     except _sp.CalledProcessError as exc:
         code = _pipeline_exit_code(exc.returncode)
         typer.echo(f"Pipeline failed at step '{name}' (exit {code}).", err=True)

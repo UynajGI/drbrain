@@ -75,6 +75,8 @@ def resolve_steps(
 
     if steps_str:
         names = [s.strip() for s in steps_str.split(",") if s.strip()]
+        if not names:
+            raise ValueError("At least one pipeline step is required")
         seen: set[str] = set()
         result: list[str] = []
         for name in names:

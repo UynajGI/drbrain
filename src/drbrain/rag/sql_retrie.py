@@ -21,6 +21,7 @@ evidence machinery (``build_evidence_record``) works unchanged.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
 import time
@@ -40,9 +41,39 @@ _KNN_POOL = 100
 
 def _default_rag_db(cfg: Any) -> Path:
     from drbrain.config import Config
+    from drbrain.runtime import RuntimeContext, runtime_root
 
-    root = Path(cfg.db.path).parent if isinstance(cfg, Config) else Path("data")
-    return root / "drbrain_rag.db"
+    runtime_selected = "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+    # Let RuntimeContext inspect the selector itself so an explicitly empty
+    # value fails closed instead of being treated as legacy/no-runtime mode.
+    runtime = RuntimeContext.create() if runtime_selected else None
+
+    if isinstance(cfg, Config):
+        if cfg.db.path in ("", ":memory:"):
+            root = runtime_root() / "data"
+        else:
+            db_path = Path(cfg.db.path).expanduser()
+            if not db_path.is_absolute():
+                db_path = runtime_root() / db_path
+            if runtime is not None:
+                db_path = runtime.assert_within_root(db_path, label="RAG source database")
+            root = db_path.resolve().parent
+    else:
+        db_cfg = cfg.get("db", {}) if isinstance(cfg, dict) else {}
+        db_value = db_cfg.get("path") if isinstance(db_cfg, dict) else None
+        if db_value and db_value != ":memory:":
+            db_path = Path(db_value).expanduser()
+            if not db_path.is_absolute():
+                db_path = runtime_root() / db_path
+            if runtime is not None:
+                db_path = runtime.assert_within_root(db_path, label="RAG source database")
+            root = db_path.resolve().parent
+        else:
+            root = runtime_root() / "data"
+    rag_path = root / "drbrain_rag.db"
+    if runtime is not None:
+        return runtime.assert_within_root(rag_path, label="RAG database")
+    return rag_path
 
 
 def _open(cfg: Any) -> sqlite3.Connection | None:

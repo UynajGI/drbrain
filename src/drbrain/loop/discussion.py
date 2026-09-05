@@ -22,6 +22,8 @@ Discussion-Before-Queuing 门：一个 proposal 只有在消息板上收到 **�
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 import uuid
@@ -216,16 +218,39 @@ class MessageBoard:
 
     def save(self, path: str | Path) -> None:
         """Persist the whole board to a JSON file (for director audit)."""
-        Path(path).write_text(
-            json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        from drbrain.security import redact_sensitive
+
+        destination = Path(path)
+        if destination.is_symlink():
+            raise ValueError(f"discussion board path must not be a symlink: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=str(destination.parent), text=True
         )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(redact_sensitive(self.to_dict()), ensure_ascii=False, indent=2)
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, destination)
+        finally:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
 
     @classmethod
     def load(cls, path: str | Path) -> MessageBoard:
         p = Path(path)
-        if not p.is_file():
+        if p.is_symlink() or not p.is_file():
             return cls()
-        return cls.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return cls()
+        return cls.from_dict(data if isinstance(data, dict) else {})
 
 
 @dataclass

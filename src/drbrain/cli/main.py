@@ -209,6 +209,7 @@ def _main_callback(
                 # ``RuntimeContext.create`` checks the resolved overlay
                 # boundary; this second check rejects a final symlink before
                 # it is opened.
+                assert runtime.overlay_path is not None
                 overlay_config = runtime.validate_config_file(
                     runtime.overlay_path,
                     label="config overlay",

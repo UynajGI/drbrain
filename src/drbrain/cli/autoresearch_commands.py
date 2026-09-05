@@ -14,8 +14,17 @@ from drbrain.loop import ResearchDirector, RunGovernance
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.preflight import preflight_mcp_servers
 from drbrain.loop.store import RunLedger
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 autoresearch_app = typer.Typer(help="Durable autoresearch operations")
+
+
+def _configured_secrets(cfg: Any) -> tuple[str, ...]:
+    """Collect credentials without allowing the error boundary to fail again."""
+    try:
+        return configured_secret_values(cfg)
+    except Exception:  # noqa: BLE001 - defensive reporting path
+        return ()
 
 
 def _settings(cfg: Any) -> AutoresearchConfig:
@@ -49,17 +58,31 @@ def _control(cfg: Any) -> RunGovernance:
 
 
 def _emit_operator_result(payload: dict[str, Any], *, json_output: bool, label: str) -> None:
+    # A ledger may have been created by an older process before persistence
+    # redaction was introduced.  Keep the CLI response boundary defensive so
+    # legacy rows cannot leak credentials back to a terminal or API client.
+    safe_payload = redact_sensitive(payload)
+    if not isinstance(safe_payload, dict):  # pragma: no cover - defensive
+        safe_payload = {"error": "invalid operator response"}
     if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(safe_payload, ensure_ascii=False, indent=2))
         return
     typer.echo(
-        f"Autoresearch {label}: topic={payload['topic']!r}; status={payload['status']}; "
-        f"manual_review_steps={len(payload['manual_review_steps'])}"
+        f"Autoresearch {label}: topic={safe_payload['topic']!r}; "
+        f"status={safe_payload['status']}; "
+        f"manual_review_steps={len(safe_payload['manual_review_steps'])}"
     )
 
 
-def _operator_error(exc: Exception) -> NoReturn:
-    typer.echo(f"[autoresearch] operator command failed ({type(exc).__name__}): {exc}", err=True)
+def _operator_error(exc: Exception, cfg: Any | None = None) -> NoReturn:
+    secrets: tuple[str, ...] = ()
+    if cfg is not None:
+        secrets = _configured_secrets(cfg)
+    detail = safe_error(exc, secrets=secrets)
+    typer.echo(
+        f"[autoresearch] operator command failed ({type(exc).__name__}): {detail}",
+        err=True,
+    )
     raise typer.Exit(1) from exc
 
 
@@ -82,7 +105,10 @@ def run_cmd(
     try:
         settings = _settings(cfg)
     except ValueError as exc:
-        typer.echo(f"[autoresearch] invalid config: {exc}", err=True)
+        typer.echo(
+            f"[autoresearch] invalid config: {safe_error(exc, secrets=_configured_secrets(cfg))}",
+            err=True,
+        )
         raise typer.Exit(1) from exc
     if not settings.enabled:
         typer.echo(
@@ -122,7 +148,11 @@ def run_cmd(
                 budget=dict(settings.budget),
             )
     except Exception as exc:  # noqa: BLE001 - CLI reports the durable-run failure
-        typer.echo(f"[autoresearch] durable run failed ({type(exc).__name__}): {exc}", err=True)
+        typer.echo(
+            f"[autoresearch] durable run failed ({type(exc).__name__}): "
+            f"{safe_error(exc, secrets=_configured_secrets(cfg))}",
+            err=True,
+        )
         raise typer.Exit(1) from exc
 
     summary = {
@@ -133,13 +163,18 @@ def run_cmd(
         "workspace": settings.run_dir,
         "budget": dict(settings.budget),
     }
+    safe_summary = redact_sensitive(summary)
+    if not isinstance(safe_summary, dict):  # pragma: no cover - defensive
+        safe_summary = {"topic": "", "cycles": 0, "champion": [], "rejected": []}
     if json_output:
-        typer.echo(json.dumps(summary, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(safe_summary, ensure_ascii=False, indent=2))
         return
     typer.echo(
-        f"Autoresearch returned: topic={summary['topic']!r}; cycles={summary['cycles']}; "
-        f"champion={len(summary['champion'])}; workspace={summary['workspace']}; "
-        f"budget={summary['budget']}"
+        f"Autoresearch returned: topic={safe_summary['topic']!r}; "
+        f"cycles={safe_summary['cycles']}; "
+        f"champion={len(safe_summary['champion'])}; "
+        f"workspace={safe_summary['workspace']}; "
+        f"budget={safe_summary['budget']}"
     )
 
 
@@ -153,7 +188,7 @@ def status_cmd(
     try:
         payload = _control(ctx.obj["config"]).status(identifier)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
+        _operator_error(exc, ctx.obj["config"])
     _emit_operator_result(payload, json_output=json_output, label="status")
 
 
@@ -168,7 +203,7 @@ def pause_cmd(
     try:
         payload = _control(ctx.obj["config"]).pause(identifier, reason=reason)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
+        _operator_error(exc, ctx.obj["config"])
     _emit_operator_result(payload, json_output=json_output, label="pause")
 
 
@@ -183,7 +218,7 @@ def cancel_cmd(
     try:
         payload = _control(ctx.obj["config"]).cancel(identifier, reason=reason)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
+        _operator_error(exc, ctx.obj["config"])
     _emit_operator_result(payload, json_output=json_output, label="cancel")
 
 
@@ -196,8 +231,8 @@ def trace_cmd(
     try:
         payload = _control(ctx.obj["config"]).trace(identifier)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
-    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        _operator_error(exc, ctx.obj["config"])
+    typer.echo(json.dumps(redact_sensitive(payload), ensure_ascii=False, indent=2))
 
 
 @autoresearch_app.command("audit")
@@ -209,8 +244,8 @@ def audit_cmd(
     try:
         payload = _control(ctx.obj["config"]).audit_summary(identifier)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
-    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        _operator_error(exc, ctx.obj["config"])
+    typer.echo(json.dumps(redact_sensitive(payload), ensure_ascii=False, indent=2))
 
 
 @autoresearch_app.command("evidence")
@@ -222,8 +257,8 @@ def evidence_cmd(
     try:
         payload = _control(ctx.obj["config"]).evidence_lineage(identifier)
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
-    typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        _operator_error(exc, ctx.obj["config"])
+    typer.echo(json.dumps(redact_sensitive(payload), ensure_ascii=False, indent=2))
 
 
 @autoresearch_app.command("preflight")
@@ -239,7 +274,7 @@ def preflight_cmd(
             tool_policy=ToolPolicy(step_capabilities=settings.step_capabilities),
         )
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
+        _operator_error(exc, ctx.obj["config"])
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -263,5 +298,5 @@ def resolve_manual_review_cmd(
             identifier, step_id=step_id, reason=reason
         )
     except Exception as exc:  # noqa: BLE001 - CLI reports operator errors consistently
-        _operator_error(exc)
+        _operator_error(exc, ctx.obj["config"])
     _emit_operator_result(payload, json_output=json_output, label="manual-review resolution")

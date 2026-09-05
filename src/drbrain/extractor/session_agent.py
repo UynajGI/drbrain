@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool, kg_validate
 from drbrain.extractor.llm_client import acall_with_messages
+from drbrain.security import public_model_configs, redact_sensitive
 
 if TYPE_CHECKING:
     from drbrain.graph.engine import GraphEngine
@@ -82,15 +83,18 @@ class SessionAgent:
             The new session_id.
         """
         self.db = db
-        self.models = models or []
+        self.models = list(models or [])
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         self.session_id = _new_session_id()
 
         db.insert_agent_session(
             self.session_id,
             title=title,
-            system_prompt=self.system_prompt,
-            model_config=json.dumps(self.models),
+            system_prompt=redact_sensitive(self.system_prompt) or "",
+            # Credentials are runtime inputs, never session data.  Keep only a
+            # routing/audit projection; callers should pass a fresh model list
+            # when loading a session that needs explicit credentials.
+            model_config=json.dumps(public_model_configs(self.models), ensure_ascii=False),
         )
         db.commit()
 
@@ -140,14 +144,21 @@ class SessionAgent:
             log.warning("[session] %s is deleted", session_id)
             return False
 
-        self.system_prompt = row[1] or DEFAULT_SYSTEM_PROMPT
+        # Also scrub legacy rows that may have been written before the durable
+        # model/config boundary was introduced.
+        self.system_prompt = redact_sensitive(row[1]) or DEFAULT_SYSTEM_PROMPT
 
         # Use provided models, or fall back to stored config
         if models:
-            self.models = models
+            self.models = list(models)
         else:
             try:
-                self.models = json.loads(row[2]) if row[2] else []
+                # Rows created by older versions may contain credentials.  Do
+                # not rehydrate those values into a live agent even when the
+                # caller omitted an override; only the safe projection is
+                # eligible for fallback (provider environment keys can still
+                # satisfy providers that support them).
+                self.models = public_model_configs(json.loads(row[2]) if row[2] else [])
             except json.JSONDecodeError:
                 self.models = []
 
@@ -160,11 +171,11 @@ class SessionAgent:
 
         self.messages = []
         for r in rows:
-            msg = {"role": r[0], "content": r[1] or ""}
+            msg = {"role": r[0], "content": redact_sensitive(r[1]) or ""}
             if r[0] == "assistant" and r[2]:
                 try:
-                    msg["tool_calls"] = json.loads(r[2])
-                except json.JSONDecodeError:
+                    msg["tool_calls"] = redact_sensitive(json.loads(r[2]))
+                except (TypeError, ValueError, json.JSONDecodeError):
                     pass
             if r[0] == "tool" and r[3]:
                 msg["tool_call_id"] = r[3]
@@ -508,14 +519,23 @@ class SessionAgent:
             ).fetchone()
             seq = row[0] if row else 0
 
+        # Message content and tool-call JSON are untrusted model/user output;
+        # apply the same one-way projection before writing the database.  The
+        # live in-memory trajectory remains untouched for the current call.
+        safe_content = redact_sensitive(content)
+        safe_tool_calls_json = redact_sensitive(tool_calls_json)
         self.db.insert_agent_message(
             self.session_id,
             seq,
             role,
-            content=content,
-            tool_calls_json=tool_calls_json,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
+            content=safe_content if isinstance(safe_content, str) else str(safe_content),
+            tool_calls_json=(
+                safe_tool_calls_json
+                if isinstance(safe_tool_calls_json, str)
+                else json.dumps(safe_tool_calls_json, ensure_ascii=False)
+            ),
+            tool_call_id=redact_sensitive(tool_call_id) or "",
+            tool_name=redact_sensitive(tool_name) or "",
         )
         self.db.commit()
 

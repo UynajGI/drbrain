@@ -8,10 +8,17 @@ from pathlib import Path
 
 import typer
 
-from drbrain.cli._common import _resolve_node_type, _resolve_workspace_papers, open_db
+from drbrain.cli._common import (
+    _resolve_node_type,
+    _resolve_workspace_papers,
+    open_db,
+    runtime_data_path,
+)
 from drbrain.graph.engine import GraphEngine
 from drbrain.graph.query_embeddings import query_embed
+from drbrain.security import safe_error
 from drbrain.services.graph_to_text import describe_path, describe_subgraph
+from drbrain.storage.paths import iter_paper_dirs, tree_json_path
 
 graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
 
@@ -575,7 +582,7 @@ def graph_query_cmd(
         try:
             query = _json.loads(query_json)
         except _json.JSONDecodeError as e:
-            typer.echo(f"Invalid JSON: {e}", err=True)
+            typer.echo(f"Invalid JSON: {safe_error(e)}", err=True)
             raise typer.Exit(1)
 
         if "type" not in query:
@@ -620,14 +627,15 @@ def traverse_from_cmd(
 
         # Search all papers for tree.json containing the section
         all_section_names: set[str] = {section_title}
-        for pid_dir in sorted(papers_dir.iterdir()):
-            if not pid_dir.is_dir():
+        for pid_dir in iter_paper_dirs(papers_dir):
+            try:
+                tree_path = tree_json_path(pid_dir)
+            except (OSError, ValueError):
                 continue
-            tree_path = pid_dir / "tree.json"
             if not tree_path.exists():
                 continue
             try:
-                tree = json.loads(tree_path.read_text())
+                tree = json.loads(tree_path.read_text(encoding="utf-8"))
                 structure = tree.get("structure", [])
 
                 # Collect matching section and all descendants
@@ -751,6 +759,8 @@ def export_cmd(
     """
     from drbrain.storage.graph_export import export_cypher, export_graphml, export_jsonld
 
+    if isinstance(output, typer.models.OptionInfo):
+        output = output.default
     if format not in ("graphml", "jsonld", "cypher"):
         typer.echo(f"Unknown format '{format}'. Use: graphml, jsonld, or cypher", err=True)
         raise typer.Exit(1)
@@ -759,6 +769,7 @@ def export_cmd(
     ext_map = {"graphml": ".graphml", "jsonld": ".jsonld", "cypher": ".cypher"}
     if not any(output.endswith(ext) for ext in ext_map.values()):
         output = output + ext_map[format]
+    output_path = runtime_data_path(ctx, output, label="graph export output")
 
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
@@ -775,6 +786,6 @@ def export_cmd(
             "jsonld": export_jsonld,
             "cypher": export_cypher,
         }
-        exporters[format](graph, db, output)
+        exporters[format](graph, db, str(output_path))
 
-    typer.echo(f"Exported graph ({format}) → {output}")
+    typer.echo(f"Exported graph ({format}) → {output_path}")

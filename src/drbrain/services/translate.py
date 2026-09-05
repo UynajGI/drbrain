@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,7 +15,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from drbrain.storage.paths import raw_md_path
+from drbrain.storage.inbox import first_symlink_component
+from drbrain.storage.paths import raw_md_path, writable_artifact_dir
 
 CHUNK_SIZE = 3000  # chars per translation chunk
 
@@ -183,6 +186,34 @@ def _translation_part_path(workdir: Path, index: int) -> Path:
     return _translation_parts_dir(workdir) / f"{index + 1:06d}.md"
 
 
+def _assert_translation_path(path: Path, *, label: str) -> Path:
+    """Reject symlink aliases before a translation path is read or written."""
+    path = Path(path)
+    alias = first_symlink_component(path)
+    if alias is not None:
+        raise ValueError(f"{label} must not contain a symlink component: {alias}")
+    return path
+
+
+def _atomic_write_text(path: Path, content: str, *, label: str = "translation artifact") -> None:
+    """Write a translation artifact through a fresh temporary file."""
+    path = _assert_translation_path(path, label=label)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_translation_path(path.parent, label=f"{label} parent")
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
 def _source_digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -194,6 +225,7 @@ def _source_digest(text: str) -> str:
 
 def _load_translation_state(state_path: Path) -> dict | None:
     """Read state.json if it exists and is valid JSON dict."""
+    _assert_translation_path(state_path, label="translation state")
     if not state_path.exists():
         return None
     try:
@@ -229,25 +261,31 @@ def _write_translation_workspace_files(
     chunks: list[str],
 ) -> None:
     """Write state.json and chunks.json atomically (tmp->rename)."""
-    workdir.mkdir(parents=True, exist_ok=True)
+    workdir = writable_artifact_dir(workdir.parent, workdir.name)
 
     # chunks.json — per-chunk digests for resume validation
     chunks_data = [{"index": i, "digest": _source_digest(c)} for i, c in enumerate(chunks)]
-    chunks_tmp = workdir / "chunks.json.tmp"
-    chunks_tmp.write_text(json.dumps(chunks_data, indent=2, ensure_ascii=False), encoding="utf-8")
-    chunks_tmp.rename(workdir / "chunks.json")
+    _atomic_write_text(
+        workdir / "chunks.json",
+        json.dumps(chunks_data, indent=2, ensure_ascii=False),
+        label="translation chunks",
+    )
 
     # state.json
-    state_tmp = workdir / "state.json.tmp"
-    state_tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    state_tmp.rename(workdir / "state.json")
+    _atomic_write_text(
+        workdir / "state.json",
+        json.dumps(state, indent=2, ensure_ascii=False),
+        label="translation state",
+    )
 
 
 def _write_translation_state(workdir: Path, state: dict) -> None:
     """Write state.json atomically (incremental update)."""
-    tmp = workdir / "state.json.tmp"
-    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.rename(workdir / "state.json")
+    _atomic_write_text(
+        workdir / "state.json",
+        json.dumps(state, indent=2, ensure_ascii=False),
+        label="translation state",
+    )
 
 
 def _load_or_init_translation_workspace(
@@ -268,13 +306,17 @@ def _load_or_init_translation_workspace(
     workdir to be removed and a fresh one created.
     """
     workdir = _translation_workdir(paper_dir, lang)
+    _assert_translation_path(workdir, label="translation workdir")
     state_path = _translation_state_path(workdir)
     chunks_path = workdir / "chunks.json"
 
     if force:
         if workdir.exists():
+            if workdir.is_symlink():
+                raise ValueError(f"translation workdir must not be a symlink: {workdir}")
             shutil.rmtree(workdir)
         if out_path.exists():
+            _assert_translation_path(out_path, label="translation output")
             out_path.unlink()
     else:
         existing = _load_translation_state(state_path)
@@ -288,6 +330,7 @@ def _load_or_init_translation_workspace(
             ):
                 # Validate per-chunk digests
                 if chunks_path.exists():
+                    _assert_translation_path(chunks_path, label="translation chunks")
                     try:
                         stored_chunks = json.loads(chunks_path.read_text("utf-8"))
                         if len(stored_chunks) == len(chunks):
@@ -302,6 +345,8 @@ def _load_or_init_translation_workspace(
 
     # Invalid, missing, or force — start fresh
     if workdir.exists():
+        if workdir.is_symlink():
+            raise ValueError(f"translation workdir must not be a symlink: {workdir}")
         shutil.rmtree(workdir)
     state = _build_translation_state(workdir, lang, source_digest_val, chunk_size, chunks)
     _write_translation_workspace_files(workdir, state, chunks)
@@ -316,6 +361,7 @@ def _load_success_prefix(workdir: Path, state: dict) -> list[str]:
         if ci["status"] != "success":
             break
         part_path = _translation_part_path(workdir, ci["index"])
+        _assert_translation_path(part_path, label="translation part")
         if not part_path.exists():
             break
         translated.append(part_path.read_text("utf-8"))
@@ -324,10 +370,13 @@ def _load_success_prefix(workdir: Path, state: dict) -> list[str]:
 
 def _persist_prefix_output(out_path: Path, translated_chunks: list[str]) -> None:
     """Write translated prefix to *out_path*, or remove it if empty."""
+    _assert_translation_path(out_path, label="translation output")
     if translated_chunks:
-        tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-        tmp.write_text("\n\n".join(translated_chunks), encoding="utf-8")
-        tmp.replace(out_path)
+        _atomic_write_text(
+            out_path,
+            "\n\n".join(translated_chunks),
+            label="translation output",
+        )
     elif out_path.exists():
         out_path.unlink()
 
@@ -586,6 +635,8 @@ def translate_paper(
 
     _tt0 = _ttime.monotonic()
     md_path = raw_md_path(paper_dir)
+    _assert_translation_path(Path(paper_dir), label="paper directory")
+    _assert_translation_path(md_path, label="source markdown")
     logger.info("[translate] starting %s → %s (force=%s)", paper_dir.name, target_lang, force)
     if not md_path.exists():
         logger.warning("[translate] %s: raw.md not found", paper_dir.name)
@@ -600,6 +651,7 @@ def translate_paper(
         return TranslateResult(skip_reason=SKIP_SAME_LANG)
 
     out_path = paper_dir / f"paper_{target_lang}.md"
+    _assert_translation_path(out_path, label="translation output")
     workdir = _translation_workdir(paper_dir, target_lang)
 
     # Skip if output already exists and there is no partial workdir to resume
@@ -670,10 +722,7 @@ def translate_paper(
                     translated_text, attempts = future.result()
                     # Write part file
                     part_path = _translation_part_path(workdir, idx)
-                    part_path.parent.mkdir(parents=True, exist_ok=True)
-                    part_tmp = part_path.with_suffix(part_path.suffix + ".tmp")
-                    part_tmp.write_text(translated_text, encoding="utf-8")
-                    part_tmp.replace(part_path)
+                    _atomic_write_text(part_path, translated_text, label="translation part")
                     state["chunks"][idx]["status"] = "success"
                     state["chunks"][idx]["attempts"] = attempts
                 except Exception as exc:

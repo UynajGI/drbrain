@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import os
+from collections.abc import Mapping
 
 # PBKDF2 parameters: SHA-256 with 600k iterations (OWASP 2023 recommendation).
 _ITERATIONS = 600_000
@@ -43,6 +44,23 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
-def has_password(config: dict) -> bool:
-    """Check if an admin password is configured."""
-    return bool(config.get("admin", {}).get("password_hash"))
+def has_password(config: Mapping | object | None) -> bool:
+    """Check if a valid-looking admin password hash is configured.
+
+    Authentication checks are deliberately fail-closed for malformed config
+    objects.  This also keeps the helper safe for callers that still pass
+    legacy dictionaries instead of the typed ``Config`` object.
+    """
+    if config is None:
+        return False
+    getter = config.get if isinstance(config, Mapping) else getattr(config, "get", None)
+    if not callable(getter):
+        return False
+    try:
+        admin = getter("admin", {})
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not isinstance(admin, Mapping):
+        return False
+    password_hash = admin.get("password_hash")
+    return isinstance(password_hash, str) and bool(password_hash)

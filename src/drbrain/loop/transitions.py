@@ -27,6 +27,7 @@ from drbrain.loop.state import (
     validate_step_transition,
 )
 from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
+from drbrain.security import redact_sensitive, redact_sensitive_text
 
 
 class LeaseUnavailableError(RuntimeError):
@@ -605,6 +606,7 @@ class TransitionService:
         """Record a proposal once; replay returns its canonical durable record."""
         if not proposal_id or not claim_id or not author:
             raise ValueError("proposal_id, claim_id and author are required")
+        safe_payload = redact_sensitive(dict(payload))
         with self._ledger.transaction() as conn:
             self._run_status(conn, run_id)
             row = self._proposal_row(conn, proposal_id)
@@ -628,7 +630,7 @@ class TransitionService:
                         run_id,
                         claim_id,
                         author,
-                        json.dumps(dict(payload), ensure_ascii=False),
+                        json.dumps(safe_payload, ensure_ascii=False),
                         now,
                         now,
                     ),
@@ -642,7 +644,7 @@ class TransitionService:
                 )
                 row = self._proposal_row(conn, proposal_id)
             elif str(row["author"]) != author or self._json_roundtrip(
-                self._proposal_contract(dict(payload))
+                self._proposal_contract(safe_payload)
             ) != self._proposal_contract(self._json(row["payload_json"], {})):
                 raise ValueError("durable proposal replay conflicts with its existing contract")
             if row is None or str(row["run_id"]) != run_id:
@@ -661,6 +663,7 @@ class TransitionService:
         content: str,
     ) -> dict[str, Any]:
         """Record one non-author critic review idempotently."""
+        safe_content = redact_sensitive_text(content) or ""
         with self._ledger.transaction() as conn:
             proposal = self._proposal_row(conn, proposal_id)
             if proposal is None or str(proposal["run_id"]) != run_id:
@@ -678,7 +681,7 @@ class TransitionService:
             if row is not None and (
                 not math.isclose(float(row["score"]), float(score), rel_tol=0.0, abs_tol=1e-12)
                 or str(row["verdict"]) != verdict
-                or str(row["content"]) != content
+                or str(row["content"]) != safe_content
             ):
                 self._ledger.append_event(
                     conn,
@@ -700,7 +703,7 @@ class TransitionService:
                         review_id, proposal_id, reviewer, score, verdict, content, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (review_id, proposal_id, reviewer, float(score), verdict, content, now),
+                    (review_id, proposal_id, reviewer, float(score), verdict, safe_content, now),
                 )
                 self._ledger.append_event(
                     conn,
@@ -950,9 +953,9 @@ class TransitionService:
             contract = {
                 "proposal_id": proposal_id,
                 "claim_id": claim_id,
-                "plan": self._json_roundtrip(plan),
-                "environment": self._json_roundtrip(environment),
-                "config": self._json_roundtrip(config),
+                "plan": self._json_roundtrip(redact_sensitive(plan)),
+                "environment": self._json_roundtrip(redact_sensitive(environment)),
+                "config": self._json_roundtrip(redact_sensitive(config)),
                 "seed": seed,
             }
             if row is None:
@@ -1023,6 +1026,11 @@ class TransitionService:
             raise PermissionError("only compute may write experiment artifacts")
         if not artifact_id or not kind or not uri or not sha256:
             raise ValueError("artifact identity, kind, uri and sha256 are required")
+        # Artifact URIs are often URLs or command-generated strings.  Treat
+        # query/header credentials as untrusted text before they enter the
+        # durable artifact table (metadata is redacted below as structured
+        # JSON).
+        safe_uri = redact_sensitive_text(uri) or ""
         with self._ledger.transaction() as conn:
             experiment = conn.execute(
                 "SELECT * FROM research_experiments WHERE experiment_id = ?", (experiment_id,)
@@ -1038,10 +1046,10 @@ class TransitionService:
                 "experiment_id": experiment_id,
                 "kind": kind,
                 "media_type": media_type,
-                "uri": uri,
+                "uri": safe_uri,
                 "sha256": sha256,
                 "byte_size": int(byte_size),
-                "metadata": self._json_roundtrip(metadata),
+                "metadata": self._json_roundtrip(redact_sensitive(metadata)),
                 "tool_call_id": tool_call_id,
             }
             if row is None:
@@ -1050,7 +1058,7 @@ class TransitionService:
                     SELECT * FROM research_artifacts
                     WHERE experiment_id = ? AND kind = ? AND sha256 = ? AND uri = ?
                     """,
-                    (experiment_id, kind, sha256, uri),
+                    (experiment_id, kind, sha256, safe_uri),
                 ).fetchone()
                 if duplicate is not None:
                     row = duplicate
@@ -1070,7 +1078,7 @@ class TransitionService:
                             tool_call_id or None,
                             kind,
                             media_type,
-                            uri,
+                            safe_uri,
                             sha256,
                             int(byte_size),
                             json.dumps(contract["metadata"], ensure_ascii=False),
@@ -1186,7 +1194,8 @@ class TransitionService:
                     )
 
             now = time.time()
-            result = self._json_roundtrip(dict(verification))
+            result = self._json_roundtrip(redact_sensitive(dict(verification)))
+            safe_evidence_ids = redact_sensitive(list(dict.fromkeys(evidence_ids)))
             conn.execute(
                 """
                 INSERT INTO research_claim_settlements(
@@ -1201,7 +1210,7 @@ class TransitionService:
                     claim_id,
                     verdict,
                     reason,
-                    json.dumps(list(dict.fromkeys(evidence_ids)), ensure_ascii=False),
+                    json.dumps(safe_evidence_ids, ensure_ascii=False),
                     json.dumps(result, ensure_ascii=False),
                     expected_champion_version,
                     champion_version,
@@ -1295,7 +1304,9 @@ class TransitionService:
             "experiment_id": str(row["experiment_id"]),
             "kind": str(row["kind"]),
             "media_type": str(row["media_type"]),
-            "uri": str(row["uri"]),
+            # Older ledgers predate write-side URI redaction.  Never replay a
+            # query credential from one of those rows into recovery/UI output.
+            "uri": redact_sensitive_text(str(row["uri"])) or "",
             "sha256": str(row["sha256"]),
             "byte_size": int(row["byte_size"]),
             "metadata": cls._json(row["metadata_json"], {}),
@@ -1311,17 +1322,19 @@ class TransitionService:
 
     @classmethod
     def _settlement_dict(cls, row: Any) -> dict[str, Any]:
-        return {
-            "settlement_id": str(row["settlement_id"]),
-            "experiment_id": str(row["experiment_id"]),
-            "claim_id": str(row["claim_id"]),
-            "verdict": str(row["verdict"]),
-            "reason": str(row["reason"]),
-            "evidence_ids": cls._json(row["evidence_ids_json"], []),
-            "result": cls._json(row["result_json"], {}),
-            "expected_champion_version": row["expected_champion_version"],
-            "champion_version": row["champion_version"],
-        }
+        return redact_sensitive(
+            {
+                "settlement_id": str(row["settlement_id"]),
+                "experiment_id": str(row["experiment_id"]),
+                "claim_id": str(row["claim_id"]),
+                "verdict": str(row["verdict"]),
+                "reason": str(row["reason"]),
+                "evidence_ids": cls._json(row["evidence_ids_json"], []),
+                "result": cls._json(row["result_json"], {}),
+                "expected_champion_version": row["expected_champion_version"],
+                "champion_version": row["champion_version"],
+            }
+        )
 
     @staticmethod
     def _proposal_row(conn: Any, proposal_id: str) -> Any:
@@ -1332,7 +1345,8 @@ class TransitionService:
     @staticmethod
     def _json(value: Any, default: Any) -> Any:
         try:
-            return json.loads(str(value)) if value else default
+            parsed = json.loads(str(value)) if value else default
+            return redact_sensitive(parsed)
         except (TypeError, json.JSONDecodeError):
             return default
 
@@ -1382,34 +1396,40 @@ class TransitionService:
 
     @classmethod
     def _proposal_dict(cls, row: Any) -> dict[str, Any]:
-        return {
-            "proposal_id": str(row["proposal_id"]),
-            "claim_id": str(row["claim_id"]),
-            "author": str(row["author"]),
-            "payload": cls._json(row["payload_json"], {}),
-            "status": str(row["status"]),
-            "review_score": row["review_score"],
-        }
+        return redact_sensitive(
+            {
+                "proposal_id": str(row["proposal_id"]),
+                "claim_id": str(row["claim_id"]),
+                "author": str(row["author"]),
+                "payload": cls._json(row["payload_json"], {}),
+                "status": str(row["status"]),
+                "review_score": row["review_score"],
+            }
+        )
 
     @staticmethod
     def _review_dict(row: Any) -> dict[str, Any]:
-        return {
-            "review_id": str(row["review_id"]),
-            "reviewer": str(row["reviewer"]),
-            "score": float(row["score"]),
-            "verdict": str(row["verdict"]),
-            "content": str(row["content"]),
-        }
+        return redact_sensitive(
+            {
+                "review_id": str(row["review_id"]),
+                "reviewer": str(row["reviewer"]),
+                "score": float(row["score"]),
+                "verdict": str(row["verdict"]),
+                "content": str(row["content"]),
+            }
+        )
 
     @classmethod
     def _queue_item_dict(cls, row: Any) -> dict[str, Any]:
-        return {
-            "queue_item_id": str(row["queue_item_id"]),
-            "proposal_id": str(row["proposal_id"]),
-            "status": str(row["status"]),
-            "score": float(row["score"]),
-            "payload": cls._json(row["payload_json"], {}),
-        }
+        return redact_sensitive(
+            {
+                "queue_item_id": str(row["queue_item_id"]),
+                "proposal_id": str(row["proposal_id"]),
+                "status": str(row["status"]),
+                "score": float(row["score"]),
+                "payload": cls._json(row["payload_json"], {}),
+            }
+        )
 
     @staticmethod
     def _run_status(conn: Any, run_id: str) -> str:

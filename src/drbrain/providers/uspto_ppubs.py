@@ -18,6 +18,7 @@ from html import unescape
 from loguru import logger
 
 from drbrain.providers.base import PatentBase, clean_publication_number
+from drbrain.security import redact_sensitive_text, safe_error
 
 PPUBS_BASE_URL = "https://ppubs.uspto.gov"
 US_PUBLICATION_NUMBER_PATTERN = _re.compile(
@@ -107,7 +108,9 @@ class PpubsClient:
         try:
             self._opener.open(req1)
         except urllib.error.HTTPError as e:
-            raise PpubsError(f"Failed to establish PPUBS session: {e}") from e
+            raise PpubsError(
+                f"Failed to establish PPUBS session: {safe_error(e, secrets=(self._token,))}"
+            ) from e
 
         req2 = urllib.request.Request(
             f"{self.base_url}/api/users/me/session",
@@ -124,7 +127,9 @@ class PpubsClient:
                 self._case_id = session["userCase"]["caseId"]
                 self._token = resp.headers.get("X-Access-Token")
         except (urllib.error.HTTPError, KeyError) as e:
-            raise PpubsError(f"Failed to establish PPUBS session: {e}") from e
+            raise PpubsError(
+                f"Failed to establish PPUBS session: {safe_error(e, secrets=(self._token,))}"
+            ) from e
 
         if not self._token or not self._case_id:
             raise PpubsError("PPUBS session returned empty token or caseId")
@@ -162,15 +167,24 @@ class PpubsClient:
                     detail = e.read().decode("utf-8", "replace")
                 except Exception:
                     detail = ""
-                raise PpubsError(f"HTTP {e.code}: {detail}") from e
+                raise PpubsError(
+                    f"HTTP {e.code}: {safe_error(detail, secrets=(self._token,))}"
+                ) from e
             except urllib.error.URLError as e:
                 if attempt == 0:
-                    logger.debug("[patent] transient PPUBS failure, retrying — %s", e.reason)
+                    logger.debug(
+                        "[patent] transient PPUBS failure, retrying — %s",
+                        safe_error(e.reason, secrets=(self._token,)),
+                    )
                     _time.sleep(0.2)
                     continue
-                raise PpubsError(f"Request failed: {e.reason}") from e
+                raise PpubsError(
+                    f"Request failed: {safe_error(e.reason, secrets=(self._token,))}"
+                ) from e
             except json.JSONDecodeError as e:
-                raise PpubsError(f"Invalid JSON response: {e}") from e
+                raise PpubsError(
+                    f"Invalid JSON response: {safe_error(e, secrets=(self._token,))}"
+                ) from e
 
         raise PpubsError("PPUBS request failed after session refresh")
 
@@ -220,7 +234,11 @@ class PpubsClient:
             "query": query_data,
         }
 
-        logger.info("[patent] PPUBS search — query=%r limit=%d", query, limit)
+        logger.info(
+            "[patent] PPUBS search — query=%r limit=%d",
+            redact_sensitive_text(query) or "",
+            limit,
+        )
         result = self._request_json(
             "POST",
             f"{self.base_url}/api/searches/searchWithBeFamily",

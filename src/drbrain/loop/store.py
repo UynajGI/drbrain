@@ -8,6 +8,7 @@ remain compatibility projections owned by :mod:`drbrain.loop.director`.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 import uuid
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from drbrain.loop.state import RUN_CREATED, RUN_FAILED, RUN_RUNNING
+from drbrain.runtime import RuntimeContext
+from drbrain.security import redact_sensitive, redact_sensitive_text
 from drbrain.storage.connection import connect_wal
 
 LEDGER_SCHEMA_VERSION = 8
@@ -120,12 +123,34 @@ class RunLedger:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        raw_path = Path(path).expanduser()
+        configured_root = None
+        if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+            from drbrain.runtime import RuntimeContext
+
+            configured_root = str(RuntimeContext.create().root)
+        self._runtime: RuntimeContext | None = None
+        if configured_root:
+            self._runtime = RuntimeContext.create(configured_root)
+            self.path = self._runtime.assert_within_root(raw_path, label="autoresearch ledger")
+        else:
+            if raw_path.is_symlink():
+                raise ValueError(f"autoresearch ledger must not be a symlink: {raw_path}")
+            self.path = raw_path
+
+    def _validate_path(self) -> None:
+        """Recheck the durable target immediately before each SQLite open."""
+        if self._runtime is not None:
+            self._runtime.assert_within_root(self.path, label="autoresearch ledger")
+        elif self.path.is_symlink():
+            raise ValueError(f"autoresearch ledger must not be a symlink: {self.path}")
 
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         """Yield a connection with the current ledger schema inside a write tx."""
+        self._validate_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._validate_path()
         conn = connect_wal(self.path)
         conn.row_factory = sqlite3.Row
         try:
@@ -872,6 +897,8 @@ class RunLedger:
         """Store one operator decision for a retried idempotent tool proposal."""
         if decision not in {"approved", "rejected"}:
             raise ValueError(f"unknown approval decision: {decision!r}")
+        safe_actor = redact_sensitive_text(actor) or "operator"
+        safe_reason = redact_sensitive_text(reason) or ""
         with self.transaction() as conn:
             call = conn.execute(
                 "SELECT run_id, idempotency_key FROM research_tool_calls WHERE tool_call_id = ?",
@@ -904,17 +931,17 @@ class RunLedger:
                             consumed_at = NULL, consumed_by_tool_call_id = NULL
                         WHERE run_id = ? AND idempotency_key = ?
                         """,
-                        (tool_call_id, actor, reason, now, run_id, key),
+                        (tool_call_id, safe_actor, safe_reason, now, run_id, key),
                     )
                     self.append_event(
                         conn,
                         run_id,
-                        actor=actor,
+                        actor=safe_actor,
                         event_type="tool_approved",
                         payload={
                             "tool_call_id": tool_call_id,
                             "idempotency_key": key,
-                            "reason": reason,
+                            "reason": safe_reason,
                         },
                     )
                     refreshed = conn.execute(
@@ -937,14 +964,18 @@ class RunLedger:
                     run_id, idempotency_key, tool_call_id, decision, actor, reason, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, key, tool_call_id, decision, actor, reason, now),
+                (run_id, key, tool_call_id, decision, safe_actor, safe_reason, now),
             )
             self.append_event(
                 conn,
                 run_id,
-                actor=actor,
+                actor=safe_actor,
                 event_type=f"tool_{decision}",
-                payload={"tool_call_id": tool_call_id, "idempotency_key": key, "reason": reason},
+                payload={
+                    "tool_call_id": tool_call_id,
+                    "idempotency_key": key,
+                    "reason": safe_reason,
+                },
             )
             row = conn.execute(
                 """
@@ -979,6 +1010,11 @@ class RunLedger:
                 assert existing is not None
                 return existing
 
+            # Run specifications are caller-controlled mappings.  Keep the
+            # durable copy useful for replay while ensuring an accidental API
+            # key/token in a host-supplied config cannot enter the ledger.
+            safe_config = redact_sensitive(dict(config or {}))
+            safe_budget = redact_sensitive(dict(budget or {}))
             now = time.time()
             run_id = uuid.uuid4().hex
             conn.execute(
@@ -993,8 +1029,8 @@ class RunLedger:
                     topic,
                     RUN_CREATED,
                     LEDGER_SCHEMA_VERSION,
-                    _as_json(dict(config or {})),
-                    _as_json(dict(budget or {})),
+                    _as_json(safe_config),
+                    _as_json(safe_budget),
                     now,
                     now,
                 ),
@@ -1014,7 +1050,7 @@ class RunLedger:
                     event_type="legacy_snapshot_imported",
                     payload={"state": dict(legacy_snapshot)},
                 )
-            return LedgerRun(run_id, topic, RUN_CREATED, 0, dict(config or {}), dict(budget or {}))
+            return LedgerRun(run_id, topic, RUN_CREATED, 0, safe_config, safe_budget)
 
     def record_resume(
         self,
@@ -1037,7 +1073,8 @@ class RunLedger:
             if row is None:
                 raise KeyError(f"unknown research run: {run_id}")
             previous_budget = self._json_mapping(row["budget_json"])
-            effective_budget = dict(budget)
+            effective_budget = redact_sensitive(dict(budget))
+            safe_config = redact_sensitive(dict(config))
             conn.execute(
                 "UPDATE research_runs SET budget_json = ?, updated_at = ? WHERE run_id = ?",
                 (_as_json(effective_budget), time.time(), run_id),
@@ -1049,7 +1086,7 @@ class RunLedger:
                 event_type="run_resumed",
                 payload={
                     "session_id": uuid.uuid4().hex,
-                    "config": dict(config),
+                    "config": safe_config,
                     "previous_budget": previous_budget,
                     "budget": effective_budget,
                 },
@@ -1092,7 +1129,10 @@ class RunLedger:
         ).fetchone()
         event_seq = int(row["next_seq"])
         created_at = time.time()
-        event_payload = dict(payload or {})
+        # This is the final append-only audit boundary.  Most callers already
+        # pass redacted payloads, but keeping the invariant here protects
+        # direct integrations and future event types as well.
+        event_payload = redact_sensitive(dict(payload or {}))
         conn.execute(
             """
             INSERT INTO research_events(
@@ -1165,6 +1205,9 @@ class RunLedger:
         lease_seconds: float | None = None,
     ) -> LedgerToolCall:
         """Durably record an authorized intent before an external handler runs."""
+        safe_proposal = redact_sensitive(dict(proposal))
+        if not isinstance(safe_proposal, dict):  # pragma: no cover - defensive
+            safe_proposal = {}
         with self.transaction() as conn:
             self._require_active_tool_attempt(
                 conn,
@@ -1185,7 +1228,7 @@ class RunLedger:
                 side_effect=side_effect,
                 status="intent",
                 idempotency_key=idempotency_key,
-                proposal=dict(proposal),
+                proposal=safe_proposal,
                 observation={},
                 created_at=now,
                 updated_at=now,
@@ -1214,7 +1257,7 @@ class RunLedger:
                     "source": source,
                     "side_effect": side_effect,
                     "idempotency_key": idempotency_key,
-                    "proposal": dict(proposal),
+                    "proposal": safe_proposal,
                 },
             )
             return call
@@ -1239,6 +1282,10 @@ class RunLedger:
         """Persist a denied or approval-waiting proposal that never reached a handler."""
         if status not in {"denied", "waiting_approval"}:
             raise ValueError(f"invalid non-execution tool status {status!r}")
+        safe_proposal = redact_sensitive(dict(proposal))
+        if not isinstance(safe_proposal, dict):  # pragma: no cover - defensive
+            safe_proposal = {}
+        safe_reason = redact_sensitive_text(str(reason)) or ""
         with self.transaction() as conn:
             self._require_active_tool_attempt(
                 conn,
@@ -1259,8 +1306,8 @@ class RunLedger:
                 side_effect=side_effect,
                 status=status,
                 idempotency_key=idempotency_key,
-                proposal=dict(proposal),
-                observation={"reason": reason},
+                proposal=safe_proposal,
+                observation={"reason": safe_reason},
                 created_at=now,
                 updated_at=now,
             )
@@ -1276,8 +1323,8 @@ class RunLedger:
                     "attempt_id": attempt_id,
                     "node_name": node_name,
                     "tool_name": tool_name,
-                    "reason": reason,
-                    "proposal": dict(proposal),
+                    "reason": safe_reason,
+                    "proposal": safe_proposal,
                 },
             )
             return call
@@ -1317,13 +1364,14 @@ class RunLedger:
             if str(row["status"]) != "intent":
                 raise RuntimeError(f"tool call {tool_call_id!r} is not awaiting an observation")
             now = time.time()
+            safe_observation = redact_sensitive(dict(observation))
             conn.execute(
                 """
                 UPDATE research_tool_calls
                 SET status = ?, observation_json = ?, updated_at = ?
                 WHERE tool_call_id = ?
                 """,
-                (status, _as_json(dict(observation)), now, tool_call_id),
+                (status, _as_json(safe_observation), now, tool_call_id),
             )
             if lease_seconds is not None:
                 conn.execute(
@@ -1344,7 +1392,7 @@ class RunLedger:
                     "step_id": step_id,
                     "attempt_id": attempt_id,
                     "status": status,
-                    "observation": dict(observation),
+                    "observation": safe_observation,
                 },
             )
             updated = conn.execute(
@@ -1555,6 +1603,13 @@ class RunLedger:
             ).fetchone()
             checkpoint_seq = int(row["next_seq"])
             checkpoint_id = uuid.uuid4().hex
+            # Checkpoint payloads are supplied by workflow/model code and can
+            # contain arbitrary tool arguments.  They live outside the event
+            # and tool-call tables, so apply the same durable secret boundary
+            # before serializing each mapping.
+            safe_context_payload = redact_sensitive(dict(context_payload))
+            safe_workflow_state = redact_sensitive(dict(workflow_state))
+            safe_manifest = redact_sensitive(dict(manifest))
             checkpoint = LedgerCheckpoint(
                 checkpoint_id=checkpoint_id,
                 run_id=run_id,
@@ -1562,9 +1617,9 @@ class RunLedger:
                 attempt_id=attempt_id,
                 checkpoint_seq=checkpoint_seq,
                 step_name=step_name,
-                context_payload=dict(context_payload),
-                workflow_state=dict(workflow_state),
-                manifest=dict(manifest),
+                context_payload=safe_context_payload,
+                workflow_state=safe_workflow_state,
+                manifest=safe_manifest,
                 created_at=now,
             )
             conn.execute(
@@ -1624,7 +1679,7 @@ class RunLedger:
                     "attempt_id": attempt_id,
                     "checkpoint_seq": checkpoint_seq,
                     "step_name": step_name,
-                    "manifest": dict(manifest),
+                    "manifest": safe_manifest,
                 },
             )
             return checkpoint
@@ -1778,8 +1833,8 @@ class RunLedger:
                 call.side_effect,
                 call.status,
                 call.idempotency_key,
-                _as_json(call.proposal),
-                _as_json(call.observation),
+                _as_json(redact_sensitive(call.proposal)),
+                _as_json(redact_sensitive(call.observation)),
                 call.created_at,
                 call.updated_at,
             ),
@@ -1788,7 +1843,8 @@ class RunLedger:
     @staticmethod
     def _json_mapping(value: str | None) -> dict[str, Any]:
         parsed = _from_json(value, {})
-        return dict(parsed) if isinstance(parsed, Mapping) else {}
+        safe = redact_sensitive(parsed)
+        return dict(safe) if isinstance(safe, Mapping) else {}
 
     @staticmethod
     def _budget_limit(limits: Mapping[str, Any], kind: str) -> float | None:
@@ -1799,22 +1855,26 @@ class RunLedger:
 
     @staticmethod
     def _approval_dict(row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "run_id": str(row["run_id"]),
-            "tool_call_id": str(row["tool_call_id"]),
-            "idempotency_key": str(row["idempotency_key"]),
-            "decision": str(row["decision"]),
-            "actor": str(row["actor"]),
-            "reason": str(row["reason"]),
-            "consumed": row["consumed_at"] is not None,
-        }
+        return dict(
+            redact_sensitive(
+                {
+                    "run_id": str(row["run_id"]),
+                    "tool_call_id": str(row["tool_call_id"]),
+                    "idempotency_key": str(row["idempotency_key"]),
+                    "decision": str(row["decision"]),
+                    "actor": str(row["actor"]),
+                    "reason": str(row["reason"]),
+                    "consumed": row["consumed_at"] is not None,
+                }
+            )
+        )
 
     @staticmethod
     def _run_from_row(row: sqlite3.Row | None) -> LedgerRun | None:
         if row is None:
             return None
-        config = _from_json(row["config_json"], {})
-        budget = _from_json(row["budget_json"], {})
+        config = redact_sensitive(_from_json(row["config_json"], {}))
+        budget = redact_sensitive(_from_json(row["budget_json"], {}))
         return LedgerRun(
             run_id=str(row["run_id"]),
             topic=str(row["topic"]),
@@ -1831,7 +1891,7 @@ class RunLedger:
             event_seq=int(row["event_seq"]),
             actor=str(row["actor"]),
             event_type=str(row["event_type"]),
-            payload=_from_json(row["payload_json"], {}),
+            payload=redact_sensitive(_from_json(row["payload_json"], {})),
             trace_id=row["trace_id"],
             created_at=float(row["created_at"]),
         )
@@ -1840,6 +1900,9 @@ class RunLedger:
     def _checkpoint_from_row(row: sqlite3.Row | None) -> LedgerCheckpoint | None:
         if row is None:
             return None
+        context_payload = redact_sensitive(_from_json(row["context_json"], {}))
+        workflow_state = redact_sensitive(_from_json(row["workflow_state_json"], {}))
+        manifest = redact_sensitive(_from_json(row["manifest_json"], {}))
         return LedgerCheckpoint(
             checkpoint_id=str(row["checkpoint_id"]),
             run_id=str(row["run_id"]),
@@ -1847,9 +1910,9 @@ class RunLedger:
             attempt_id=str(row["attempt_id"]),
             checkpoint_seq=int(row["checkpoint_seq"]),
             step_name=str(row["step_name"]),
-            context_payload=_from_json(row["context_json"], {}),
-            workflow_state=_from_json(row["workflow_state_json"], {}),
-            manifest=_from_json(row["manifest_json"], {}),
+            context_payload=(dict(context_payload) if isinstance(context_payload, Mapping) else {}),
+            workflow_state=(dict(workflow_state) if isinstance(workflow_state, Mapping) else {}),
+            manifest=(dict(manifest) if isinstance(manifest, Mapping) else {}),
             created_at=float(row["created_at"]),
         )
 
@@ -1866,8 +1929,8 @@ class RunLedger:
             side_effect=str(row["side_effect"]),
             status=str(row["status"]),
             idempotency_key=(str(row["idempotency_key"]) if row["idempotency_key"] else None),
-            proposal=dict(_from_json(row["proposal_json"], {})),
-            observation=dict(_from_json(row["observation_json"], {})),
+            proposal=dict(redact_sensitive(_from_json(row["proposal_json"], {}))),
+            observation=dict(redact_sensitive(_from_json(row["observation_json"], {}))),
             created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]),
         )

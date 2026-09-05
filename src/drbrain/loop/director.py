@@ -46,10 +46,14 @@ from drbrain.loop.workflow import (
     ResearchLoopWorkflow,
     _job_log_has_number,
 )
+from drbrain.security import REDACTED, is_sensitive_key
 
 
 def _slug(topic: str) -> str:
     """Filesystem-safe slug for a topic (run dir name)."""
+    # Topics can be supplied by an external prompt or tool.  Redact before the
+    # value reaches a durable path as well as the file contents.
+    topic = str(redact(topic) or "")
     s = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "-", topic.strip()).strip("-")
     return (s or "research")[:80]
 
@@ -179,13 +183,36 @@ def _mcp_contract(server: dict[str, Any]) -> dict[str, Any]:
         if value is None:
             continue
         if isinstance(value, str | int | float | bool):
-            contract[field] = value
+            contract[field] = redact(value)
         elif isinstance(value, (list, tuple, set, frozenset)) and all(
             isinstance(item, str | int | float | bool) for item in value
         ):
             items = list(value)
             if field in _UNORDERED_MCP_FIELDS:
                 items.sort(key=lambda item: json.dumps(item, sort_keys=True))
+            if field == "args":
+                # argv keeps a flag and its value in separate list elements;
+                # redact each pair before serializing the manifest.
+                safe_items: list[Any] = []
+                redact_next = False
+                for item in items:
+                    if redact_next:
+                        if isinstance(item, str) and item.startswith("--"):
+                            redact_next = False
+                        else:
+                            safe_items.append(REDACTED)
+                            redact_next = False
+                            continue
+                    if isinstance(item, str) and item.startswith("--"):
+                        flag, separator, _value = item.partition("=")
+                        if is_sensitive_key(flag.lstrip("-")):
+                            safe_items.append(f"{flag}={REDACTED}" if separator else item)
+                            redact_next = not bool(separator)
+                            continue
+                    safe_items.append(redact(item))
+                items = safe_items
+            else:
+                items = redact(items)
             contract[field] = items
     env = server.get("env")
     if isinstance(env, dict):
@@ -329,7 +356,7 @@ class ResearchDirector:
             value = getattr(self._cfg, name, None)
             if isinstance(value, str | int | float | bool) or value is None:
                 if value is not None:
-                    model_manifest[name] = value
+                    model_manifest[name] = redact(value)
         # The normal CLI passes ``Config`` whose fallback chain lives at
         # ``cfg.llm.models``.  Keep the historical top-level ``models`` shape
         # for lightweight callers, and accept the equivalent dict form used by
@@ -369,7 +396,7 @@ class ResearchDirector:
                     if isinstance(item, dict):
                         value = item.get(name)
                     if isinstance(value, str | int | float | bool):
-                        fields[name] = value
+                        fields[name] = redact(value)
                 if fields:
                     public_models.append(fields)
             if public_models:
@@ -380,14 +407,18 @@ class ResearchDirector:
             if not isinstance(server, dict):
                 continue
             servers.append(_mcp_contract(server))
-        tool_manifest = {
-            "plugins_dir": str(Path(self._plugins_dir).resolve()) if self._plugins_dir else None,
-            "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
-            "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
-            "tool_policy": self._tool_policy.to_manifest()
-            if self._tool_policy is not None
-            else None,
-        }
+        tool_manifest = redact(
+            {
+                "plugins_dir": str(Path(self._plugins_dir).resolve())
+                if self._plugins_dir
+                else None,
+                "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
+                "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
+                "tool_policy": self._tool_policy.to_manifest()
+                if self._tool_policy is not None
+                else None,
+            }
+        )
         return CheckpointManifest(
             workflow_version="research-loop-v1",
             model_manifest=model_manifest,
@@ -541,23 +572,28 @@ class ResearchDirector:
     def _save_state(self, topic: str, state: dict[str, Any]) -> None:
         """Persist the semantic state to its canonical files (single-writer)."""
         state["updated_at"] = time.time()
+        safe_state = redact(state)
+        if not isinstance(safe_state, dict):
+            safe_state = {}
+        safe_champion = safe_state.get("champion") or []
+        safe_rejected = safe_state.get("rejected") or []
 
         # task.md (bootstrap)
         task_path = self._topic_dir(topic) / "task.md"
         if not task_path.exists():
-            task_path.write_text(f"# 研究任务\n\n{state['topic']}\n", encoding="utf-8")
+            task_path.write_text(f"# 研究任务\n\n{safe_state.get('topic', '')}\n", encoding="utf-8")
 
         # champion.md
-        body = "\n".join(f"- [cycle {c['cycle']}] {c['statement']}" for c in state["champion"])
+        body = "\n".join(f"- [cycle {c['cycle']}] {c['statement']}" for c in safe_champion)
         self._champion_md(topic).write_text(
-            _render_frontmatter({"count": len(state["champion"])}, body or "（尚无）"),
+            _render_frontmatter({"count": len(safe_champion)}, body or "（尚无）"),
             encoding="utf-8",
         )
 
         # dead_ends.md
-        body = "\n".join(f"- {h}" for h in state["rejected"])
+        body = "\n".join(f"- {h}" for h in safe_rejected)
         self._dead_ends_md(topic).write_text(
-            _render_frontmatter({"count": len(state["rejected"])}, body or "（尚无）"),
+            _render_frontmatter({"count": len(safe_rejected)}, body or "（尚无）"),
             encoding="utf-8",
         )
 
@@ -567,44 +603,44 @@ class ResearchDirector:
         self._patterns_md(topic).parent.mkdir(parents=True, exist_ok=True)
         lines = ["# 知识 / 模式", ""]
         lines.append("## 已验证结论（winning patterns）")
-        champion_view = state["champion"][-_patterns_max:]
-        if state["champion"]:
-            if len(state["champion"]) > _patterns_max:
+        champion_view = safe_champion[-_patterns_max:]
+        if safe_champion:
+            if len(safe_champion) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['champion']) - _patterns_max} 条更早结论，见 champion.md）"
+                    f"- （另有 {len(safe_champion) - _patterns_max} 条更早结论，见 champion.md）"
                 )
             lines.extend(f"- {c['statement']}" for c in champion_view)
         else:
             lines.append("（尚无）")
         lines.append("\n## 已否定假设（dead ends）")
-        rejected_view = state["rejected"][-_patterns_max:]
-        if state["rejected"]:
-            if len(state["rejected"]) > _patterns_max:
+        rejected_view = safe_rejected[-_patterns_max:]
+        if safe_rejected:
+            if len(safe_rejected) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['rejected']) - _patterns_max} 条更早假设，见 dead_ends.md）"
+                    f"- （另有 {len(safe_rejected) - _patterns_max} 条更早假设，见 dead_ends.md）"
                 )
             lines.extend(f"- {h}" for h in rejected_view)
         else:
             lines.append("（尚无）")
         lines.append("\n## 已耗尽方向（exhausted axes）")
-        lines.append(f"- 连续无进展轮次：{state['consecutive_no_gain']}")
-        lines.append(f"- 已转向次数：{state.get('adaptations', 0)}")
+        lines.append(f"- 连续无进展轮次：{safe_state.get('consecutive_no_gain', 0)}")
+        lines.append(f"- 已转向次数：{safe_state.get('adaptations', 0)}")
         self._patterns_md(topic).write_text("\n".join(lines), encoding="utf-8")
 
         # runtime-only resume state
         self._run_json(topic).write_text(
             json.dumps(
                 {
-                    "cycles": state["cycles"],
-                    "consecutive_no_gain": state["consecutive_no_gain"],
-                    "adaptations": state.get("adaptations", 0),
-                    "pending": state.get("pending", []),
-                    "mode": state.get("mode", "execute"),
+                    "cycles": safe_state.get("cycles", 0),
+                    "consecutive_no_gain": safe_state.get("consecutive_no_gain", 0),
+                    "adaptations": safe_state.get("adaptations", 0),
+                    "pending": safe_state.get("pending", []),
+                    "mode": safe_state.get("mode", "execute"),
                     # L-I2: survive restarts so the next analyst still sees the
                     # previous round's criticisms after a resume.
-                    "critic_flaws": _sanitize_critic_flaws(state.get("critic_flaws", [])),
-                    "started_at": state["started_at"],
-                    "updated_at": state["updated_at"],
+                    "critic_flaws": _sanitize_critic_flaws(safe_state.get("critic_flaws", [])),
+                    "started_at": safe_state.get("started_at"),
+                    "updated_at": safe_state.get("updated_at"),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -614,14 +650,18 @@ class ResearchDirector:
 
     def _save_cycle_result(self, topic: str, result: dict[str, Any]) -> None:
         """Write one cycle's evidence to ``results/cycle-NNN.md`` (append-only)."""
-        path = self._result_md(topic, result["cycle"])
+        safe_result = redact(result)
+        if not isinstance(safe_result, dict):
+            safe_result = {}
+        path = self._result_md(topic, safe_result.get("cycle", result.get("cycle", 0)))
         path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"# 第 {result['cycle']} 轮", ""]
-        lines.append(f"- 验证结论（KEEP）：{result.get('verified') or '（无）'}")
-        lines.append(f"- 证伪假设（DISCARD）：{result.get('falsified') or '（无）'}")
-        lines.append(f"- 预测：{result.get('predictions') or '（无）'}")
-        lines.append(f"- 假设：{result.get('hypotheses') or '（无）'}")
-        verifs = result.get("verifications") or []
+        cycle = safe_result.get("cycle", 0)
+        lines = [f"# 第 {cycle} 轮", ""]
+        lines.append(f"- 验证结论（KEEP）：{safe_result.get('verified') or '（无）'}")
+        lines.append(f"- 证伪假设（DISCARD）：{safe_result.get('falsified') or '（无）'}")
+        lines.append(f"- 预测：{safe_result.get('predictions') or '（无）'}")
+        lines.append(f"- 假设：{safe_result.get('hypotheses') or '（无）'}")
+        verifs = safe_result.get("verifications") or []
         if verifs:
             lines.append("\n## 核验计数（Supports/Refutes/Orthogonal）\n")
             for v in verifs:
@@ -631,7 +671,7 @@ class ResearchDirector:
                     f"→ {v.get('status')}"
                     + (f"，实算={v.get('computed')}" if v.get("computed") else "")
                 )
-        rep = (result.get("report") or "").strip()
+        rep = (safe_result.get("report") or "").strip()
         if rep:
             lines.append("\n## 本轮报告\n")
             lines.append(rep)
@@ -653,6 +693,7 @@ class ResearchDirector:
             payload = rs.model_dump()
         except Exception:  # noqa: BLE001 — fall back to a minimal dict
             payload = {"task": getattr(rs, "task", None)}
+        payload = redact(payload)
         try:
             path.write_text(
                 json.dumps(payload, ensure_ascii=False, default=str, indent=2),
@@ -689,7 +730,9 @@ class ResearchDirector:
         for h in rs.hypotheses:
             verdict = "DISCARD" if h.status == "discarded" else "KEEP"
             critic_lines.append(
-                f"- [cycle {cycle_no}] {h.statement}（score={h.score:.2f}, verdict={verdict}）"
+                redact(
+                    f"- [cycle {cycle_no}] {h.statement}（score={h.score:.2f}, verdict={verdict}）"
+                )
             )
         if critic_lines:
             path = self._role_memory_md(topic, "critic")
@@ -702,8 +745,10 @@ class ResearchDirector:
         verifier_lines = []
         for v in rs.verifications:
             verifier_lines.append(
-                f"- [cycle {cycle_no}] {v.statement}：supports={v.supports}, "
-                f"refutes={v.refutes}, orthogonal={v.orthogonal} → {v.status}"
+                redact(
+                    f"- [cycle {cycle_no}] {v.statement}：supports={v.supports}, "
+                    f"refutes={v.refutes}, orthogonal={v.orthogonal} → {v.status}"
+                )
             )
         if verifier_lines:
             path = self._role_memory_md(topic, "verifier")
@@ -1862,25 +1907,28 @@ class ResearchDirector:
         projections: a write failure must never break the loop.
         """
         try:
+            safe_state = redact(state)
+            if not isinstance(safe_state, dict):
+                safe_state = {}
             lines = [
                 "# 研究终报",
                 "",
-                f"- 任务：{state.get('topic', '')}",
-                f"- 轮次：{state.get('cycles', 0)} | 停止原因：{stop_status}",
-                f"- 转向：{state.get('adaptations', 0)} 次 | 末期连续无进展：{state.get('consecutive_no_gain', 0)}",
+                f"- 任务：{safe_state.get('topic', '')}",
+                f"- 轮次：{safe_state.get('cycles', 0)} | 停止原因：{redact(stop_status)}",
+                f"- 转向：{safe_state.get('adaptations', 0)} 次 | 末期连续无进展：{safe_state.get('consecutive_no_gain', 0)}",
                 "",
                 "## 已验证结论（champion）",
                 "",
             ]
             lines.extend(
-                f"- [cycle {c['cycle']}] {c['statement']}" for c in state["champion"]
-            ) if state["champion"] else lines.append("（尚无）")
+                f"- [cycle {c['cycle']}] {c['statement']}"
+                for c in (safe_state.get("champion") or [])
+            ) if safe_state.get("champion") else lines.append("（尚无）")
             lines += ["", "## 已否定方向（dead ends）", ""]
-            lines.extend(f"- {h}" for h in state["rejected"][:20]) if state[
-                "rejected"
-            ] else lines.append("（无）")
+            rejected = safe_state.get("rejected") or []
+            lines.extend(f"- {h}" for h in rejected[:20]) if rejected else lines.append("（无）")
             lines += ["", "## 各轮摘要", ""]
-            for res in state.get("results", []):
+            for res in safe_state.get("results", []):
                 hyp = res.get("hypotheses") or []
                 ver = res.get("verified") or []
                 fal = res.get("falsified") or []
