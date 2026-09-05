@@ -33,6 +33,9 @@ from drbrain.cli._helpers.enrich import (
     _enrich_doi_from_crossref_doi,
     _enrich_doi_from_openalex,
 )
+from drbrain.cli._helpers.runtime import runtime_data_path
+
+__all__ = ["runtime_data_path"]
 
 __all__ = [
     "_apply_mined_rules",
