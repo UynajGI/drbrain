@@ -12,9 +12,11 @@ import asyncio
 import hashlib
 import itertools
 import json
+import os
 import threading
 import time
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +24,9 @@ import litellm
 from loguru import logger
 from openai import AsyncOpenAI
 from openai import OpenAI as SyncOpenAI
+
+from drbrain.runtime import RuntimeContext
+from drbrain.security import configured_secret_values, redact_sensitive_text, safe_error
 
 if TYPE_CHECKING:
     from drbrain.extractor.cache import ApiCache
@@ -765,6 +770,29 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _safe_error(value: Any, limit: int = 200, *, secrets: tuple[str | None, ...] = ()) -> str:
+    """Bound and redact provider errors before they reach durable logs."""
+    rendered = str(value)
+    # Provider exceptions do not always label a credential as ``api_key`` or
+    # ``Authorization``.  Scrub the exact key used for this attempt before the
+    # pattern-based fallback handles headers, assignments, and query strings.
+    for secret in secrets:
+        if secret:
+            rendered = rendered.replace(secret, "[REDACTED]")
+    rendered = redact_sensitive_text(rendered) or ""
+    return rendered[:limit]
+
+
+def _llm_trace_path() -> Path:
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        runtime = RuntimeContext.create()
+        return runtime.assert_within_root("data/logs/llm_calls.jsonl", label="LLM call trace")
+    path = Path("data/logs/llm_calls.jsonl")
+    if path.is_symlink():
+        raise ValueError(f"LLM call trace must not be a symlink: {path}")
+    return path
+
+
 def _cached_tokens(usage: Any) -> int:
     """Provider-reported prefix-cache hits; 0 unless the field is a real number."""
     value = getattr(usage, "cached_tokens", None) if usage is not None else None
@@ -783,6 +811,7 @@ def _log_llm_call(
     cached_tokens: int = 0,
     duration_ms: int = 0,
     error: str = "",
+    secrets: tuple[str, ...] = (),
 ) -> None:
     """Append one LLM call trace line to ``data/logs/llm_calls.jsonl``.
 
@@ -790,27 +819,41 @@ def _log_llm_call(
     content (only a hash + counts). Logging must never affect the call path.
     """
     try:
-        from pathlib import Path
-
         from drbrain.log import get_session_id
 
-        path = Path("data/logs/llm_calls.jsonl")
+        path = _llm_trace_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Revalidate after creating parents so a symlink swap does not silently
+        # redirect a trace into another worktree.
+        path = _llm_trace_path()
         entry = {
             "ts": time.time(),
             "session_id": get_session_id(),
-            "model": model,
-            "provider": provider,
-            "status": status,
+            "model": redact_sensitive_text(str(model)) or "",
+            "provider": redact_sensitive_text(str(provider)) or "",
+            "status": redact_sensitive_text(str(status)) or "",
             "prompt_hash": prompt_hash,
             "n_messages": _to_int(n_messages),
             "tokens_in": _to_int(tokens_in),
             "tokens_out": _to_int(tokens_out),
             "cached_tokens": _to_int(cached_tokens),
             "duration_ms": _to_int(duration_ms),
-            "error": str(error)[:200],
+            # Durable traces retain only a bounded, credential-free error
+            # classification.  Raw provider text is not an audit field.
+            "error": (
+                safe_error(error, secrets=(*configured_secret_values(os.environ), *secrets))
+                if isinstance(error, BaseException)
+                else ("provider_error" if error else "")
+            ),
         }
-        with open(path, "a", encoding="utf-8") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            f = os.fdopen(fd, "a", encoding="utf-8")
+        except Exception:
+            os.close(fd)
+            raise
+        with f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 — logging must never break the call path
         pass
@@ -895,17 +938,21 @@ def call_with_fallback(
                             prompt_hash=_prompt_hash(prompt),
                             n_messages=1,
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     if _is_retryable(e) and attempt < _max_attempts(model_cfg) - 1:
                         logger.warning(
-                            f"[llm] {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: {e}"
+                            f"[llm] {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: "
+                            f"{_safe_error(e, secrets=(api_key,))}"
                         )
                         time.sleep(2**attempt)
                         continue
                     elapsed = int((time.monotonic() - start) * 1000)
-                    logger.warning(f"[llm] {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"[llm] {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     _log_llm_call(
                         model=model_cfg["model"],
                         provider=model_cfg.get("provider", ""),
@@ -913,7 +960,7 @@ def call_with_fallback(
                         prompt_hash=_prompt_hash(prompt),
                         n_messages=1,
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] all {len(models)} models exhausted")
@@ -1007,18 +1054,20 @@ async def acall_with_fallback(
                             prompt_hash=_prompt_hash(prompt),
                             n_messages=1,
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     if _is_retryable(e) and attempt < _max_attempts(model_cfg) - 1:
                         logger.warning(
-                            f"[llm] async {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: {e}"
+                            f"[llm] async {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: "
+                            f"{_safe_error(e, secrets=(api_key,))}"
                         )
                         await asyncio.sleep(2**attempt)
                         continue
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1027,7 +1076,7 @@ async def acall_with_fallback(
                         prompt_hash=_prompt_hash(prompt),
                         n_messages=1,
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] async all {len(models)} models exhausted")
@@ -1092,7 +1141,10 @@ def call_text_with_fallback(
                             f"trying next key"
                         )
                         continue  # 换下一个 key 重试
-                    logger.warning(f"Text model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"Text model {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     break
     logger.error(f"All {len(models)} models failed for text call")
     return None
@@ -1171,7 +1223,10 @@ async def acall_text_with_fallback(
                             f"Model {name} key rate-limited — cooldown {wait:.0f}s, trying next key"
                         )
                         continue  # 换下一个 key 重试
-                    logger.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"Model {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     break
     logger.error(f"All {len(models)} models failed")
     return None
@@ -1285,12 +1340,14 @@ def call_with_messages(
                             prompt_hash=_messages_prompt_hash(messages),
                             n_messages=len(messages),
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] call_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] call_with_messages {name} failed "
+                        f"(attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1299,7 +1356,7 @@ def call_with_messages(
                         prompt_hash=_messages_prompt_hash(messages),
                         n_messages=len(messages),
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] call_with_messages all {len(models)} models exhausted")
@@ -1413,12 +1470,14 @@ async def acall_with_messages(
                             prompt_hash=_messages_prompt_hash(messages),
                             n_messages=len(messages),
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] acall_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] acall_with_messages {name} failed "
+                        f"(attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1427,7 +1486,7 @@ async def acall_with_messages(
                         prompt_hash=_messages_prompt_hash(messages),
                         n_messages=len(messages),
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] acall_with_messages all {len(models)} models exhausted")
