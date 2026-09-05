@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+import click
 import typer
 from loguru import logger
 from rich.console import Console
@@ -15,17 +21,333 @@ from drbrain.cli._common import (
     _ingest_single_paper,
     _resolve_workspace_papers,
     open_db,
+    runtime_data_path,
 )
 from drbrain.dedup.resolver import DedupEngine
 from drbrain.graph.engine import GraphEngine
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 from drbrain.services.fetch import (  # noqa: F401
     _resolve_identifier,
     download_pdf,
     fetch_paper,
     resolve_pdf_url,
 )
+from drbrain.storage.inbox import first_symlink_component, scan_inbox
+from drbrain.storage.paths import paper_dir as resolve_paper_dir_path
+from drbrain.storage.paths import paper_fs_key, writable_artifact_path
 
 console = Console()
+
+
+def _write_paper_text_atomically(paper_path: Path, filename: str, content: str) -> Path:
+    """Publish a paper text artifact without following a stale symlink."""
+    destination = writable_artifact_path(paper_path, filename)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{filename}.", dir=str(paper_path), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, destination)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+    return destination
+
+
+def _runtime_data_path(ctx: typer.Context, value: str | Path, *, label: str) -> Path:
+    """Resolve a command-owned mutable path inside the active runtime root."""
+    return runtime_data_path(ctx, value, label=label)
+
+
+@contextmanager
+def _scoped_deepxiv_token(cfg) -> Iterator[None]:
+    """Expose the configured DeepXiv token only for the current command.
+
+    The DeepXiv client currently reads its token from the process environment.
+    Preserve a caller-provided value, restore it on every exit path, and never
+    include the token in command output or logs.
+    """
+
+    api = cfg.get("api", {}) if hasattr(cfg, "get") else getattr(cfg, "api", {})
+    token = (
+        api.get("deepxiv_token", "") if hasattr(api, "get") else getattr(api, "deepxiv_token", "")
+    )
+    had_previous = "DEEPXIV_TOKEN" in os.environ
+    previous = os.environ.get("DEEPXIV_TOKEN")
+    if token and not had_previous:
+        os.environ["DEEPXIV_TOKEN"] = str(token)
+    try:
+        yield
+    finally:
+        if had_previous:
+            # ``previous`` is non-None for a present environment entry in the
+            # normal POSIX environment mapping; assign defensively anyway.
+            os.environ["DEEPXIV_TOKEN"] = previous or ""
+        else:
+            os.environ.pop("DEEPXIV_TOKEN", None)
+
+
+def _resolve_report_path(report_dir: Path, local_id: str) -> Path:
+    """Resolve canonical reports with safe compatibility fallbacks.
+
+    Older report writers used ``report_dir/<local_id>.json`` directly, which
+    made slash-containing DOI IDs nested directories.  Read those layouts only
+    when the candidate remains beneath ``report_dir`` and fail closed when
+    multiple legacy candidates exist.
+    """
+    canonical = report_dir / f"{paper_fs_key(local_id)}.json"
+    root = report_dir.resolve()
+    if canonical.is_file():
+        try:
+            canonical.resolve().relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"report path escapes report root: {canonical}") from exc
+        return canonical
+
+    candidates: list[Path] = []
+    value = str(local_id)
+    if "/" in value:
+        parts = value.split("/")
+        if all(part and part not in {".", ".."} for part in parts):
+            candidates.extend(
+                [
+                    report_dir.joinpath(*parts[:-1], f"{parts[-1]}.json"),
+                    report_dir / f"{value.replace('/', '_')}.json",
+                    report_dir.joinpath(parts[0], f"{'_'.join(parts[1:])}.json"),
+                ]
+            )
+    elif value and "/" not in value and "\\" not in value and "\x00" not in value:
+        # Non-DOI IDs may still have been written before canonical encoding
+        # (e.g. a Unicode or boundary-dot local_id).
+        candidates.append(report_dir / f"{value}.json")
+
+    safe_existing: list[Path] = []
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            candidate.resolve().relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"report path escapes report root: {candidate}") from exc
+        if candidate not in safe_existing:
+            safe_existing.append(candidate)
+    if len(safe_existing) > 1:
+        raise ValueError(f"ambiguous report layouts for local_id {local_id!r}")
+    return safe_existing[0] if safe_existing else canonical
+
+
+def _runtime_value(runtime, *names):
+    """Read a value from either a RuntimeContext mapping or dataclass.
+
+    The root CLI callback owns the concrete RuntimeContext type.  Keeping this
+    small adapter here lets the pipeline command remain compatible with older
+    callers that only provide ``ctx.obj["config"]``.
+    """
+    if runtime is None:
+        return None
+    for name in names:
+        if isinstance(runtime, dict):
+            value = runtime.get(name)
+        else:
+            value = getattr(runtime, name, None)
+        if isinstance(value, (str, Path)) and str(value):
+            return str(value)
+    return None
+
+
+def _runtime_path(ctx: typer.Context, value: str | Path) -> Path:
+    """Resolve a command-local path inside the active runtime namespace."""
+    obj = getattr(ctx, "obj", None)
+    runtime = obj.get("runtime") if isinstance(obj, dict) else None
+    resolver = getattr(runtime, "resolve_path", None)
+    if callable(resolver):
+        resolved = resolver(value)
+        if isinstance(resolved, Path):
+            return resolved
+    return Path(value).expanduser()
+
+
+def _runtime_lexical_path(ctx: typer.Context, value: str | Path) -> Path:
+    """Return an input path before runtime resolution dereferences symlinks."""
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    obj = getattr(ctx, "obj", None)
+    runtime = obj.get("runtime") if isinstance(obj, dict) else None
+    root = getattr(runtime, "root", None)
+    if root:
+        return Path(root) / path
+    return Path.cwd() / path
+
+
+def _configured_papers_root(cfg: dict) -> str | Path:
+    """Read the normalized papers directory from typed or dict config."""
+    dirs = cfg.get("dirs", {})
+    if hasattr(dirs, "get"):
+        value = dirs.get("papers")
+        if value:
+            return value
+    return "data/papers"
+
+
+def _fetch_staging_key(identifier: str) -> str:
+    """Return a bounded, traversal-safe directory key for a fetch request."""
+    return f"fetch-{hashlib.sha256(identifier.encode('utf-8')).hexdigest()[:24]}"
+
+
+def _pipeline_runtime_paths(ctx: typer.Context) -> tuple[str | None, str | None]:
+    """Resolve the config file and repository root for pipeline children.
+
+    Newer CLI callbacks put these values in ``ctx.obj["runtime"]``.  The
+    parent Click context and environment fallbacks preserve compatibility with
+    direct command invocations and older wrappers.
+    """
+    obj = getattr(ctx, "obj", None)
+    runtime = obj.get("runtime") if isinstance(obj, dict) else None
+
+    config_path = _runtime_value(runtime, "config_path", "config_file", "config")
+    root = _runtime_value(runtime, "root", "repo_root", "worktree_root")
+
+    if isinstance(obj, dict):
+        config_path = config_path or _runtime_value(
+            obj, "config_path", "config_file", "config_overlay"
+        )
+        root = root or _runtime_value(obj, "root", "repo_root", "worktree_root")
+
+    # Click stores root options on the root context.  Inspect only real dicts so
+    # MagicMock-based direct command tests do not manufacture false values.
+    current = ctx
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        params = getattr(current, "params", None)
+        if isinstance(params, dict):
+            config_path = config_path or _runtime_value(
+                params, "config", "config_path", "config_file"
+            )
+            root = root or _runtime_value(params, "root", "repo_root", "worktree_root")
+        parent = getattr(current, "parent", None)
+        # Avoid following dynamically-created attributes on MagicMock/direct
+        # test contexts forever; real Click parents are typer.Context objects.
+        current = parent if isinstance(parent, click.Context) else None
+
+    if not config_path:
+        if "DRBRAIN_CONFIG" in os.environ:
+            config_path = os.environ["DRBRAIN_CONFIG"]
+        elif "DRBRAIN_CONFIG_PATH" in os.environ:
+            config_path = os.environ["DRBRAIN_CONFIG_PATH"]
+    if not root:
+        if "DRBRAIN_ROOT" in os.environ:
+            root = os.environ["DRBRAIN_ROOT"]
+        elif "DRBRAIN_RUNTIME_ROOT" in os.environ:
+            root = os.environ["DRBRAIN_RUNTIME_ROOT"]
+    return config_path, root
+
+
+def _pipeline_exit_code(value) -> int:
+    """Return a valid process exit code for Typer/Click."""
+    try:
+        code = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return code if 0 < code <= 255 else 1
+
+
+def _pipeline_child_env(ctx: typer.Context, root: str | None) -> dict[str, str]:
+    """Build a child environment from RuntimeContext when available."""
+    obj = getattr(ctx, "obj", None)
+    runtime = obj.get("runtime") if isinstance(obj, dict) else None
+    child_env = None
+    child_env_factory = getattr(runtime, "child_env", None)
+    if callable(child_env_factory):
+        try:
+            candidate = child_env_factory()
+        except (OSError, TypeError, ValueError) as exc:
+            # A failed context export is an isolation failure.  Falling back
+            # to the parent environment can retain a stale temp/config root
+            # from another worktree and make child stages write there.
+            raise ValueError(
+                f"unable to construct pipeline child environment: {safe_error(exc)}"
+            ) from exc
+        if not isinstance(candidate, dict):
+            raise ValueError("RuntimeContext.child_env() must return an environment mapping")
+        child_env = {str(key): str(value) for key, value in candidate.items()}
+    if child_env is None:
+        if root:
+            # Direct/library callers may not have a callback-created context;
+            # construct one so every selector is derived from the same root.
+            from drbrain.runtime import RuntimeContext
+
+            try:
+                child_env = RuntimeContext.create(root).child_env()
+            except (OSError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"unable to construct pipeline child environment: {safe_error(exc)}"
+                ) from exc
+        else:
+            child_env = os.environ.copy()
+    if root:
+        from drbrain.runtime import RuntimeContext
+
+        # Normalize the root written into argv/env and overwrite every runtime
+        # selector, rather than leaving a caller's stale alias in place.
+        effective_root = RuntimeContext.create(root).root
+        child_env["DRBRAIN_ROOT"] = str(effective_root)
+        child_env["DRBRAIN_RUNTIME_ROOT"] = str(effective_root)
+    return child_env
+
+
+def _run_pipeline_step(
+    name: str,
+    args: list[str],
+    *,
+    root: str | None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Run one child command and fail closed on any execution error."""
+    import subprocess as _sp
+
+    child_env = env if env is not None else os.environ.copy()
+    if root:
+        child_env["DRBRAIN_ROOT"] = root
+
+    run_kwargs = {
+        "check": True,
+        "env": child_env,
+    }
+    if root:
+        run_kwargs["cwd"] = root
+
+    try:
+        result = _sp.run(args, **run_kwargs)
+    except _sp.CalledProcessError as exc:
+        code = _pipeline_exit_code(exc.returncode)
+        typer.echo(f"Pipeline failed at step '{name}' (exit {code}).", err=True)
+        raise typer.Exit(code) from exc
+    except _sp.SubprocessError as exc:
+        typer.echo(
+            f"Pipeline failed at step '{name}': {safe_error(exc)}",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+    except OSError as exc:
+        typer.echo(
+            f"Pipeline failed at step '{name}': {safe_error(exc)}",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    # A mocked runner (or a custom subprocess adapter) may return a non-zero
+    # CompletedProcess even when it ignores ``check=True``.  Check explicitly
+    # so the command contract remains fail-fast in that case too.
+    return_code = getattr(result, "returncode", 0)
+    if return_code:
+        code = _pipeline_exit_code(return_code)
+        typer.echo(f"Pipeline failed at step '{name}' (exit {code}).", err=True)
+        raise typer.Exit(code)
 
 
 def ingest_cmd(
@@ -43,21 +365,38 @@ def ingest_cmd(
     Defaults to data/spool/inbox/ when no paths provided.
     """
     cfg = ctx.obj["config"]
-    if not paths:
-        # Expose API tokens to libraries that read them from environment
-        import os as _os
+    with _scoped_deepxiv_token(cfg):
+        return _ingest_cmd_impl(ctx, paths, json_output)
 
-        _dx_token = cfg.get("api", {}).get("deepxiv_token", "")
-        if _dx_token and "DEEPXIV_TOKEN" not in _os.environ:
-            _os.environ["DEEPXIV_TOKEN"] = _dx_token
+
+def _ingest_cmd_impl(
+    ctx: typer.Context,
+    paths: list[str] = typer.Argument(
+        None, help="PDF file(s) or directory. Defaults to data/spool/inbox/."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output machine-readable JSON to stdout"
+    ),
+):
+    """Implementation for :func:`ingest_cmd` under the scoped token context."""
+    cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
+    if not paths:
         inbox_path = cfg.get("dirs", {}).get("inbox", "data/spool/inbox")
         paths = [inbox_path]
 
     pdf_files: list[Path] = []
     for p in paths:
-        path = Path(p)
+        lexical_path = _runtime_lexical_path(ctx, p)
+        symlink_component = first_symlink_component(lexical_path)
+        if symlink_component is not None:
+            if not json_output:
+                typer.echo(f"Skipping symlink input: {p}", err=True)
+            continue
+
+        path = _runtime_path(ctx, p)
         if path.is_dir():
-            pdf_files.extend(sorted(path.glob("*.pdf")))
+            pdf_files.extend(scan_inbox(path))
         elif path.is_file():
             pdf_files.append(path)
         else:
@@ -82,13 +421,38 @@ def ingest_cmd(
                 typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
                 typer.echo(f"{'=' * 60}")
 
-            result = _ingest_single_paper(
-                pdf_path,
-                cfg,
-                db,
-                dedup,
-                json_mode=json_output,
-            )
+            try:
+                result = _ingest_single_paper(
+                    pdf_path,
+                    cfg,
+                    db,
+                    dedup,
+                    json_mode=json_output,
+                )
+                # Keep the batch contract explicit even when an alternate
+                # ingestion adapter returns an unexpected value.
+                if not isinstance(result, dict):
+                    result = {
+                        "ok": False,
+                        "local_id": None,
+                        "error": "ingest returned a non-object result",
+                    }
+            except Exception as exc:  # noqa: BLE001 - isolate one bad PDF
+                # A failed paper may have opened a transaction before raising.
+                # Roll it back so the following paper starts from a clean DB
+                # state, while preserving already committed papers.
+                try:
+                    db.conn.rollback()
+                except Exception:  # noqa: BLE001 - retain the original error
+                    pass
+                result = {
+                    "ok": False,
+                    "local_id": None,
+                    "error": safe_error(
+                        f"{type(exc).__name__}: {exc}",
+                        secrets=config_secrets,
+                    ),
+                }
             results.append(result)
 
         if json_output:
@@ -103,7 +467,14 @@ def ingest_cmd(
                     if not r.get("ok")
                 ],
             }
-            typer.echo(json.dumps(output, indent=2, ensure_ascii=False, default=str))
+            typer.echo(
+                json.dumps(
+                    redact_sensitive(output),
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
         else:
             if len(pdf_files) > 1:
                 typer.echo(f"\n{'=' * 60}")
@@ -113,6 +484,11 @@ def ingest_cmd(
 
         success = sum(1 for r in results if r.get("ok"))
         logger.info("[ingest] batch done — %d/%d papers ingested", success, len(results))
+
+    # A batch can continue to collect independent results, but callers must
+    # still be able to detect that at least one paper failed.
+    if any(not r.get("ok") for r in results):
+        raise typer.Exit(1)
 
 
 def fetch_cmd(
@@ -132,7 +508,13 @@ def fetch_cmd(
     fetch_cfg = cfg.get("fetch", {})
 
     typer.echo(f"Fetching: {identifier}")
-    result = fetch_paper(doi=doi, title=title, arxiv_id=arxiv_id, fetch_config=fetch_cfg)
+    result = fetch_paper(
+        doi=doi,
+        title=title,
+        arxiv_id=arxiv_id,
+        fetch_config=fetch_cfg,
+        papers_root=_configured_papers_root(cfg),
+    )
 
     if not result:
         typer.echo("Could not find a downloadable PDF from any source.", err=True)
@@ -152,7 +534,13 @@ def fetch_cmd(
         typer.echo(f"  Ingested: {ingest_result.get('local_id')}")
         typer.echo(f"  Next: drbrain build {ingest_result.get('local_id')}")
     else:
-        typer.echo(f"  Ingest failed: {ingest_result.get('error', 'unknown error')}", err=True)
+        typer.echo(
+            "  Ingest failed: "
+            + safe_error(
+                ingest_result.get("error", "unknown error"), secrets=configured_secret_values(cfg)
+            ),
+            err=True,
+        )
         raise typer.Exit(1)
 
 
@@ -312,9 +700,9 @@ def report_cmd(
 ):
     """Display single-paper report."""
     cfg = ctx.obj["config"]
-    report_dir = Path(cfg["dirs"]["reports"])
-    report_path = report_dir / f"{local_id}.json"
-    if not report_path.exists():
+    report_dir = _runtime_data_path(ctx, cfg["dirs"]["reports"], label="reports directory")
+    report_path = _resolve_report_path(report_dir, local_id)
+    if not report_path.is_file():
         msg = {"error": f"No report found for {local_id}"}
         if json_output:
             typer.echo(json.dumps(msg))
@@ -513,7 +901,7 @@ def closure_cmd(
 def batch_fetch_cmd(
     ctx: typer.Context,
     input_file: str = typer.Argument(..., help="File containing one DOI or URL per line"),
-    output_dir: str = typer.Option("data/spool/inbox", "--output", "-o"),
+    output_dir: str | None = typer.Option(None, "--output", "-o"),
     delay: float = typer.Option(1.0, "--delay", "-d", help="Delay between fetches (seconds)"),
     skip_existing: bool = typer.Option(True, "--skip-existing", help="Skip DOIs already in DB"),
 ):
@@ -525,16 +913,18 @@ def batch_fetch_cmd(
 
     Lines starting with # are ignored as comments.
     """
-    import re
     import time
 
     # resolve_pdf_url and download_pdf are imported at module top
 
+    if isinstance(output_dir, typer.models.OptionInfo):
+        output_dir = output_dir.default
     cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
     fetch_cfg = cfg.get("fetch", {})
 
     # Validate input file
-    input_path = Path(input_file)
+    input_path = _runtime_path(ctx, input_file)
     if not input_path.exists():
         typer.echo(f"Input file not found: {input_file}", err=True)
         raise typer.Exit(1)
@@ -554,8 +944,12 @@ def batch_fetch_cmd(
 
     typer.echo(f"Batch fetch: {len(entries)} entries from {input_file}")
 
-    # Ensure output directory exists
-    out = Path(output_dir)
+    # Ensure output directory exists inside the selected runtime.
+    if not output_dir:
+        dirs = cfg.get("dirs", {})
+        output_dir = dirs.get("inbox") if hasattr(dirs, "get") else None
+        output_dir = output_dir or "data/spool/inbox"
+    out = _runtime_data_path(ctx, output_dir, label="batch-fetch output")
     out.mkdir(parents=True, exist_ok=True)
 
     fetched = 0
@@ -566,7 +960,6 @@ def batch_fetch_cmd(
     with open_db(cfg) as db:
         for idx, entry in enumerate(entries, 1):
             typer.echo(f"[{idx}/{len(entries)}] {entry}")
-            doi_safe = re.sub(r"[^\w.\-]", "_", entry)
 
             # Resolve identifier type (DOI / arXiv ID / arXiv URL / title)
             doi, title, arxiv_id = _resolve_identifier(entry)
@@ -588,7 +981,11 @@ def batch_fetch_cmd(
                     doi=doi, title=title, arxiv_id=arxiv_id, fetch_config=fetch_cfg
                 )
             except Exception as exc:
-                logger.warning(f"resolve_pdf_url failed for {entry}: {exc}")
+                logger.warning(
+                    "resolve_pdf_url failed for {}: {}",
+                    entry,
+                    safe_error(exc, secrets=config_secrets),
+                )
                 pdf_url = None
 
             # If entry looks like a direct PDF URL, use it directly
@@ -603,12 +1000,12 @@ def batch_fetch_cmd(
                 continue
 
             # Download PDF
-            dest_dir = out / doi_safe
+            dest_dir = out / _fetch_staging_key(entry)
             dest_dir.mkdir(parents=True, exist_ok=True)
             try:
                 pdf_path = download_pdf(pdf_url, dest_dir, fetch_config=fetch_cfg)
             except Exception as exc:
-                msg = f"Download failed for {entry}: {exc}"
+                msg = f"Download failed for {entry}: {safe_error(exc, secrets=config_secrets)}"
                 typer.echo(f"  FAILED: {msg}")
                 errors.append(msg)
                 failed += 1
@@ -636,7 +1033,7 @@ def batch_fetch_cmd(
     if errors:
         typer.echo("\nFailures:")
         for e in errors:
-            typer.echo(f"  - {e}")
+            typer.echo(f"  - {safe_error(e, secrets=config_secrets)}")
 
     logger.info(
         "[batch-fetch] done - %d fetched, %d skipped, %d failed",
@@ -658,8 +1055,9 @@ def ingest_link_cmd(
     Depends on an external qt-web-extractor service (default: http://127.0.0.1:8766).
     Set WEBEXTRACT_URL env var to configure.
     """
+    from drbrain.dedup.resolver import PaperIDs, canonical_paper_id
     from drbrain.providers.webtools import (
-        _slugify_title,
+        canonical_web_url,
         check_webextract_service,
         extract_web,
     )
@@ -681,6 +1079,7 @@ def ingest_link_cmd(
         raise typer.Exit(1)
 
     cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     with open_db(cfg) as db:
         results: list[dict] = []
@@ -694,29 +1093,38 @@ def ingest_link_cmd(
             error = extracted.get("error", "")
 
             if error and not text:
-                typer.echo(f"  Extraction failed: {error}", err=True)
-                results.append({"url": url, "status": "error", "error": error})
+                safe_extraction_error = safe_error(error, secrets=config_secrets)
+                typer.echo(f"  Extraction failed: {safe_extraction_error}", err=True)
+                results.append({"url": url, "status": "error", "error": safe_extraction_error})
                 continue
 
-            # Generate a local_id from title
-            slug = _slugify_title(title, url)
-            local_id = slug
-            paper_dir = papers_dir / local_id
+            ids = PaperIDs(
+                doi=extracted.get("doi"),
+                arxiv=extracted.get("arxiv"),
+                s2_id=extracted.get("s2_id") or extracted.get("semantic_scholar_id"),
+                openalex_id=extracted.get("openalex_id"),
+            ).normalized()
+            local_id = canonical_paper_id(
+                ids,
+                title=title,
+                source_key=canonical_web_url(url),
+            )
+            paper_dir = resolve_paper_dir_path(papers_dir, local_id)
 
-            # Handle duplicates
-            if paper_dir.exists():
-                base = slug
-                for n in range(2, 100):
-                    local_id = f"{base}-{n}"
-                    paper_dir = papers_dir / local_id
-                    if not paper_dir.exists():
-                        break
+            # A pre-existing DB row means this URL was already ingested.  Do
+            # not mint a suffix based on the current title: that made retries
+            # create duplicate papers whenever extraction metadata changed.
+            if db.get_paper(local_id) is not None:
+                results.append(
+                    {"url": url, "local_id": local_id, "title": title, "status": "skipped"}
+                )
+                continue
 
             paper_dir.mkdir(parents=True, exist_ok=True)
 
             # Write markdown
             md_content = _render_extracted_markdown(title, url, text)
-            (paper_dir / "raw.md").write_text(md_content, encoding="utf-8")
+            _write_paper_text_atomically(paper_dir, "raw.md", md_content)
 
             # Register in DB
             db.insert_paper(
@@ -724,6 +1132,14 @@ def ingest_link_cmd(
                 title=title or url,
                 year=None,
                 status="uploaded",
+            )
+            db.insert_paper_ids(
+                local_id,
+                doi=ids.doi,
+                arxiv=ids.arxiv,
+                s2_id=ids.s2_id,
+                openalex_id=ids.openalex_id,
+                strict=True,
             )
 
             results.append(
@@ -741,7 +1157,13 @@ def ingest_link_cmd(
         db.commit()
 
     if json_output:
-        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        typer.echo(
+            json.dumps(
+                redact_sensitive(results),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
 
     ok_count = sum(1 for r in results if r["status"] == "ok")
@@ -765,6 +1187,9 @@ def patent_search_cmd(
     """Search USPTO patents."""
     import os as _os
 
+    cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
+
     # Application number lookup (ODP only)
     if application:
         if source == "ppubs":
@@ -786,7 +1211,7 @@ def patent_search_cmd(
         try:
             result = get_patent_by_application_number(application, api_key=key)
         except USPTOAPIError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e, secrets=(*config_secrets, key)), err=True)
             raise typer.Exit(1)
 
         if not result:
@@ -819,7 +1244,7 @@ def patent_search_cmd(
         try:
             results = odp_search(query_str, api_key=key, limit=limit)
         except USPTOAPIError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e, secrets=(*config_secrets, key)), err=True)
             raise typer.Exit(1)
 
         if json_output:
@@ -840,7 +1265,7 @@ def patent_search_cmd(
     try:
         results: list = ppubs_search(query_str, limit=limit)  # type: ignore[assignment,no-redef]  # PpubsPatent redef  # type: ignore[assignment]
     except PpubsError as e:
-        typer.echo(str(e), err=True)
+        typer.echo(safe_error(e, secrets=config_secrets), err=True)
         raise typer.Exit(1)
 
     if json_output:
@@ -917,7 +1342,7 @@ def pipeline_cmd(
     try:
         step_names = resolve_steps(preset=preset, steps_str=steps)
     except ValueError as e:
-        typer.echo(str(e), err=True)
+        typer.echo(safe_error(e), err=True)
         raise typer.Exit(1)
 
     if dry_run:
@@ -929,36 +1354,49 @@ def pipeline_cmd(
     typer.echo(f"Pipeline ({mode_label}): {' -> '.join(step_names)}")
     typer.echo()
 
-    import subprocess as _sp
     import sys as _sys
+
+    config_path, root = _pipeline_runtime_paths(ctx)
+    child_env = _pipeline_child_env(ctx, root)
+
+    def child_command(step: str, *step_args: str) -> list[str]:
+        args = [_sys.executable, "-m", "drbrain.cli.main"]
+        if config_path:
+            args.extend(["--config", config_path])
+        # ``--root`` is supplied by the root CLI callback in the isolated
+        # runtime.  Keep it conditional so older direct callers still work.
+        if root:
+            args.extend(["--root", root])
+        args.extend([step, *step_args])
+        return args
 
     for i, name in enumerate(step_names, 1):
         typer.echo(f"[{i}/{len(step_names)}] {name} ...")
         if name == "ingest":
-            _sp.run([_sys.executable, "-m", "drbrain.cli.main", "ingest"], check=False)
+            args = child_command("ingest")
         elif name == "build":
             # Incremental (default): no --all → builds only dirty papers.
             # Full: --all → rebuilds every paper.
-            args = [_sys.executable, "-m", "drbrain.cli.main", "build"]
+            args = child_command("build")
             if full:
                 args.append("--all")
-            _sp.run(args, check=False)
         elif name == "embed":
             # Pipeline runs tree-embedding (PageIndex/RAPTOR) which is already
             # content-hash incremental. Standalone 'drbrain embed' (no --tree)
             # does TransE and has its own incremental path; pipeline does not
             # invoke TransE to match prior behavior.
-            _sp.run(
-                [_sys.executable, "-m", "drbrain.cli.main", "embed", "--tree"],
-                check=False,
-            )
+            args = child_command("embed", "--tree")
         elif name == "closure":
             # Incremental (default): --incremental → 2-hop neighborhood.
             # Full: --full flag on closure_cmd → whole-graph scan.
-            args = [_sys.executable, "-m", "drbrain.cli.main", "closure"]
+            args = child_command("closure")
             if full:
                 args.append("--full")
-            _sp.run(args, check=False)
+        else:  # resolve_steps currently prevents this; keep the invariant local.
+            typer.echo(f"Pipeline failed: unsupported step '{name}'.", err=True)
+            raise typer.Exit(1)
+
+        _run_pipeline_step(name, args, root=root, env=child_env)
 
     typer.echo(f"\nPipeline complete ({mode_label}): {', '.join(step_names)}")
 
@@ -982,7 +1420,7 @@ def proceedings_cmd(
         list_proceedings,
     )
 
-    store_path = DEFAULT_PATH
+    store_path = _runtime_data_path(ctx, DEFAULT_PATH, label="proceedings store")
 
     if create:
         parts = create.rsplit(maxsplit=1)
@@ -1003,7 +1441,7 @@ def proceedings_cmd(
         try:
             add_paper(store_path, add[0], add[1])
         except ValueError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e), err=True)
             raise typer.Exit(1)
         typer.echo(f"Added {add[1]} to proceeding {add[0]}")
         return
@@ -1050,8 +1488,6 @@ def explore_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Manage explore silos — lightweight literature discovery collections."""
-    from pathlib import Path as _Path
-
     from drbrain.storage.explore import (
         create_explore_silo,
         delete_explore_silo,
@@ -1060,13 +1496,13 @@ def explore_cmd(
         search_silo,
     )
 
-    root = _Path("data/explore")
+    root = _runtime_data_path(ctx, "data/explore", label="explore data")
 
     if create:
         try:
             silo = create_explore_silo(root, create)
         except ValueError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e), err=True)
             raise typer.Exit(1)
         typer.echo(f"Created explore silo: {silo['name']}")
         return
@@ -1075,7 +1511,7 @@ def explore_cmd(
         try:
             delete_explore_silo(root, delete)
         except Exception as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e), err=True)
             raise typer.Exit(1)
         typer.echo(f"Deleted: {delete}")
         return
@@ -1084,7 +1520,7 @@ def explore_cmd(
         try:
             results = search_silo(root, name, search)
         except ValueError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e), err=True)
             raise typer.Exit(1)
         if json_output:
             typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
@@ -1102,7 +1538,7 @@ def explore_cmd(
         try:
             papers = get_silo_papers(root, name)
         except ValueError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e), err=True)
             raise typer.Exit(1)
         if json_output:
             typer.echo(json.dumps(papers, ensure_ascii=False, indent=2))

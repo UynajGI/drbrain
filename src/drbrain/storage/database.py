@@ -858,9 +858,26 @@ class Database:
         )
 
     def insert_paper_ids(
-        self, local_id: str, doi=None, arxiv=None, s2_id=None, openalex_id=None
+        self,
+        local_id: str,
+        doi=None,
+        arxiv=None,
+        s2_id=None,
+        openalex_id=None,
+        *,
+        strict: bool = False,
     ) -> None:
-        """Insert or ignore external identifier mappings for a paper."""
+        """Insert external identifier mappings, optionally rejecting conflicts."""
+        if strict:
+            existing = self.get_paper_by_external_id
+            for kind, value in (
+                ("doi", doi),
+                ("arxiv", arxiv),
+                ("s2_id", s2_id),
+                ("openalex_id", openalex_id),
+            ):
+                if value and existing(kind, value) not in (None, local_id):
+                    raise ValueError(f"external identifier {kind} already belongs to another paper")
         self.conn.execute(
             "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
             (local_id, doi, arxiv, s2_id, openalex_id),
