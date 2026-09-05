@@ -201,6 +201,7 @@ def redact_sensitive_text(value: str | None) -> str | None:
         return match.group(0).replace(match.group("value"), REDACTED, 1)
 
     redacted = _ASSIGNMENT.sub(_assignment, redacted)
+
     def _flag(match: re.Match[str]) -> str:
         if not is_sensitive_key(match.group("key")):
             return match.group(0)

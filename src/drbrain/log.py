@@ -10,6 +10,7 @@ import traceback
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, cast
 
 from loguru import logger as _logger
 
@@ -227,7 +228,7 @@ def setup_logging(
             level=level,
             format=LOG_FORMAT,
             encoding="utf-8",
-            filter=_redact_log_record,
+            filter=cast(Any, _redact_log_record),
             diagnose=False,
             backtrace=False,
         )
@@ -241,7 +242,7 @@ def setup_logging(
             level="WARNING",
             format=STDERR_FORMAT,
             colorize=True,
-            filter=_redact_log_record,
+            filter=cast(Any, _redact_log_record),
             diagnose=False,
             backtrace=False,
         )

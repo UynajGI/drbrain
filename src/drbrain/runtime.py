@@ -245,7 +245,9 @@ def _normalize_run_id(value: str | None) -> str:
     if (
         redact_sensitive_text(str(raw)) != str(raw)
         or raw_lower.startswith("sk-")
-        or any(token in raw_lower for token in ("api_key", "apikey", "token=", "secret", "password"))
+        or any(
+            token in raw_lower for token in ("api_key", "apikey", "token=", "secret", "password")
+        )
     ):
         digest = hashlib.sha256(str(raw).encode("utf-8")).hexdigest()[:12]
         normalized = f"run-{digest}"
@@ -594,13 +596,16 @@ class RuntimeContext:
         # Backup identity files are local private inputs, even though the
         # remote target itself is intentionally allowed to be shared.
         backup = _get_child(config, "backup") if _has_child(config, "backup") else None
-        targets = _get_child(backup, "targets") if backup is not None and _has_child(backup, "targets") else {}
-        if isinstance(targets, Mapping):
-            values = targets.values()
-        else:
-            values = ()
+        targets = (
+            _get_child(backup, "targets")
+            if backup is not None and _has_child(backup, "targets")
+            else {}
+        )
+        values: Any = targets.values() if isinstance(targets, Mapping) else ()
         for target in values:
-            identity = _get_child(target, "identity_file") if _has_child(target, "identity_file") else ""
+            identity = (
+                _get_child(target, "identity_file") if _has_child(target, "identity_file") else ""
+            )
             if identity:
                 try:
                     self.assert_within_root(identity, label="backup identity file")
