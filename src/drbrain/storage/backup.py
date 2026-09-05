@@ -18,6 +18,17 @@ from drbrain.config import BackupTargetConfig
 BACKUP_DIR = "data/backups"
 
 
+def _default_backup_dir() -> Path:
+    """Resolve implicit local backups beneath the active runtime root."""
+    if "DRBRAIN_ROOT" in _os.environ or "DRBRAIN_RUNTIME_ROOT" in _os.environ:
+        # Keep an explicitly selected namespace fail-closed.  In particular,
+        # an empty DRBRAIN_ROOT must not fall through to the process CWD.
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / BACKUP_DIR
+    return Path(BACKUP_DIR)
+
+
 def _backup_filename() -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     return f"drbrain-{ts}.tar.gz"
@@ -42,7 +53,7 @@ def create_backup(
     Returns:
         Path to the created archive.
     """
-    backup_dir = Path(backup_dir or BACKUP_DIR)
+    backup_dir = Path(backup_dir) if backup_dir is not None else _default_backup_dir()
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = backup_dir / _backup_filename()
@@ -65,7 +76,7 @@ def create_backup(
 
 def list_backups(backup_dir: Path | None = None) -> list[Path]:
     """Return sorted list of backup files (newest first)."""
-    d = Path(backup_dir or BACKUP_DIR)
+    d = Path(backup_dir) if backup_dir is not None else _default_backup_dir()
     if not d.exists():
         return []
     backups = sorted(

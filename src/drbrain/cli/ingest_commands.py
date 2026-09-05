@@ -24,6 +24,7 @@ from drbrain.services.fetch import (  # noqa: F401
     fetch_paper,
     resolve_pdf_url,
 )
+from drbrain.storage.paths import paper_dir as resolve_paper_dir
 
 console = Console()
 
@@ -701,14 +702,14 @@ def ingest_link_cmd(
             # Generate a local_id from title
             slug = _slugify_title(title, url)
             local_id = slug
-            paper_dir = papers_dir / local_id
+            paper_dir = resolve_paper_dir(papers_dir, local_id)
 
             # Handle duplicates
             if paper_dir.exists():
                 base = slug
                 for n in range(2, 100):
                     local_id = f"{base}-{n}"
-                    paper_dir = papers_dir / local_id
+                    paper_dir = resolve_paper_dir(papers_dir, local_id)
                     if not paper_dir.exists():
                         break
 
