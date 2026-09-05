@@ -211,9 +211,21 @@ runtime_env_selector() {
   printf '%s\n' "$value"
 }
 
+runtime_hash_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum
+    return
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256
+    return
+  fi
+  runtime_die "sha256sum/shasum is required to build the run tag"
+}
+
 runtime_run_tag() {
   local root_tag
-  root_tag="$(printf '%s' "$RUNTIME_ROOT" | sha256sum | cut -c1-8)"
+  root_tag="$(printf '%s' "$RUNTIME_ROOT" | runtime_hash_stdin | cut -c1-8)"
   local raw
   if [[ "${DRBRAIN_RUN_ID+x}" == x ]]; then
     [[ -n "$DRBRAIN_RUN_ID" ]] || runtime_die "DRBRAIN_RUN_ID is empty"
@@ -222,15 +234,15 @@ runtime_run_tag() {
     raw="$(basename "$RUNTIME_ROOT")-$root_tag"
   fi
   local raw_lower="${raw,,}"
-  if [[ "$raw_lower" == sk-* || "$raw_lower" == *api_key* || "$raw_lower" == *apikey* || "$raw_lower" == *token* || "$raw_lower" == *secret* || "$raw_lower" == *password* ]]; then
-    raw="run-$(printf '%s' "$raw" | sha256sum | cut -c1-12)"
+  if [[ "$raw_lower" == sk-* || "$raw_lower" == *api_key* || "$raw_lower" == *apikey* || "$raw_lower" == *token=* || "$raw_lower" == *secret* || "$raw_lower" == *password* ]]; then
+    raw="run-$(printf '%s' "$raw" | runtime_hash_stdin | cut -c1-12)"
   fi
   local value="$raw"
   value="${value//[^A-Za-z0-9_.-]/_}"
   [[ -n "$value" ]] || value="run-$root_tag"
   if (( ${#value} > 80 )); then
     local suffix
-    suffix="$(printf '%s' "$raw" | sha256sum | cut -c1-12)"
+    suffix="$(printf '%s' "$raw" | runtime_hash_stdin | cut -c1-12)"
     value="${value:0:67}-$suffix"
   fi
   printf '%s\n' "$value"

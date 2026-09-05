@@ -6,11 +6,13 @@
 #   embed_config 如 config.embed1.yaml（指向 8001 嵌入服务）
 # 每步幂等断点续传；崩溃重启本脚本即可续跑。失败不 touch DONE。
 set -u
+source "$(dirname "$0")/runtime.sh"
 SHARD_DIR="$1"
 SHARD_DB="$2"
 EMBED_CFG="${3:-config.embed1.yaml}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 
 SHARD_NAME="$(basename "$SHARD_DIR")"
 mkdir -p data/shards

@@ -40,7 +40,7 @@ def redact_cli_args(args: Sequence[str]) -> str:
             # A sensitive option consumes exactly one following token, even if
             # that token starts with ``-`` (secrets may legitimately do so).
             redacted.append("<redacted>")
-            redact_next = False
+            redact_next = _is_sensitive_option(arg) and "=" not in arg
             continue
 
         if _is_sensitive_option(arg):

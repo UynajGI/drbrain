@@ -3,8 +3,10 @@
 # 8 片 oa 并行，scibase 已完成跳过。INGEST_CONCURRENCY=8 吃满 ox-alpha-free。
 # 用法: bash scripts/pipeline/launch_ingest_only.sh
 set -u
+source "$(dirname "$0")/runtime.sh"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 
 for i in 0 1 2 3 4 5 6 7; do
   if [ $((i % 2)) -eq 0 ]; then

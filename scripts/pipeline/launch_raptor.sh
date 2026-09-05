@@ -5,7 +5,10 @@
 # 只算不写(embed_batch --raptor-out),跑完统一 load_raptor.py 入库,零锁竞争。
 # OMP_NUM_THREADS=2 限制 GMM/OpenBLAS 线程,防 16 进程 CPU 争抢。
 set -u
-cd /home/jiangyuan/drbrain
+source "$(dirname "$0")/runtime.sh"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 for i in $(seq 0 15); do
   OMP_NUM_THREADS=2 EMBED_WORKERS=4 EMBED_PAPER_TIMEOUT=900     nohup uv run python scripts/pipeline/embed_batch.py \
       --ids-file "/tmp/raptor_shard_${i}.txt" \

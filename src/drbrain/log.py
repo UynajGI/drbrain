@@ -15,7 +15,7 @@ from typing import Any, cast
 from loguru import logger as _logger
 
 from drbrain.runtime import RuntimeContext
-from drbrain.security import REDACTED, redact_sensitive_text
+from drbrain.security import REDACTED, configured_secret_values, redact_sensitive_text
 
 LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} | {message}"
 STDERR_FORMAT = "<level>{level: <8}</level> | {name}:{line} | {message}"
@@ -90,6 +90,9 @@ def _install_std_logging_redaction() -> None:
     """Attach a redacting filter to existing stdlib sinks and lastResort."""
     root_logger = logging.getLogger()
     handlers = list(root_logger.handlers)
+    for name in list(root_logger.manager.loggerDict):
+        logger = logging.getLogger(name)
+        handlers.extend(logger.handlers)
     if logging.lastResort is not None:
         handlers.append(logging.lastResort)
     for handler in handlers:
@@ -170,7 +173,7 @@ def setup_logging(
             key=len,
             reverse=True,
         )
-    )
+    ) + tuple(configured_secret_values(os.environ))
     _install_std_logging_redaction()
     # Presence is significant: an explicitly empty selector is a malformed
     # isolation request, not permission to fall back to the process CWD or a
@@ -185,6 +188,11 @@ def setup_logging(
     else:
         if lexical_path.is_symlink():
             raise ValueError(f"log file must not be a symlink: {lexical_path}")
+        current = lexical_path.parent
+        while current != current.parent:
+            if current.is_symlink():
+                raise ValueError("log file contains a symlink component")
+            current = current.parent
         log_path = lexical_path.resolve()
     if _initialized and _configured_log_path == log_path:
         # A process can invoke the CLI repeatedly (or embed it in a worker)
@@ -220,6 +228,7 @@ def setup_logging(
         if not log_path.exists():
             log_path.touch(mode=0o600)
         os.chmod(log_path, 0o600)
+        os.umask(0o077)
 
         _logger.add(
             str(log_path),
@@ -252,7 +261,9 @@ def setup_logging(
         _logger.remove()
         _initialized = False
         _configured_log_path = None
-        _configured_secrets = ()
+        _configured_secrets = tuple(
+            sorted(set(_configured_secrets).union(requested_secrets), key=len, reverse=True)
+        )
         raise
 
     _configured_log_path = log_path

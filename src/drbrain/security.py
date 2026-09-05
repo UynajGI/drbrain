@@ -101,7 +101,7 @@ _SENSITIVE_TEXT_LABEL = (
 )
 
 _SENSITIVE_QUOTED_ASSIGNMENT = re.compile(
-    rf"(?i)((?<![A-Za-z0-9]){_SENSITIVE_TEXT_LABEL}(?![A-Za-z0-9])\s*[:=]\s*)"
+    rf"(?i)((?<![A-Za-z0-9]){_SENSITIVE_TEXT_LABEL}(?![A-Za-z0-9])(?:\s*[:=]|\s+)\s*)"
     r"(?P<quote>['\"])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
@@ -114,6 +114,9 @@ _URL_USERINFO = re.compile(r"(?i)(https?://)(?:[^/@\s]+(?::[^/@\s]*)?@)")
 _SENSITIVE_FLAG = re.compile(
     rf"(?i)(--{_SENSITIVE_TEXT_LABEL}(?:=|\s+))"
     r"(?P<quote>['\"]?)(?P<value>[^\s,';&]+)(?P=quote)"
+)
+_SENSITIVE_QUOTED_FLAG = re.compile(
+    rf"(?i)(--{_SENSITIVE_TEXT_LABEL}(?:=|\s+))(?P<quote>['\"])(?:\\.|(?!(?P=quote)).)*(?P=quote)"
 )
 # SDKs frequently append a harmless-looking suffix (``apiKeyValue``) or
 # vendor prefix (``openaiApiKey``).  Keep this separate from the delimiter
@@ -188,6 +191,10 @@ def redact_sensitive_text(value: str | None) -> str | None:
         lambda match: f"{match.group(1)}{REDACTED}",
         redacted,
     )
+    redacted = _SENSITIVE_QUOTED_FLAG.sub(
+        lambda match: f"{match.group(1)}{match.group('quote')}{REDACTED}{match.group('quote')}",
+        redacted,
+    )
     redacted = _CAMEL_SENSITIVE_ASSIGNMENT.sub(
         lambda match: f"{match.group(1)}{match.group('quote')}{REDACTED}{match.group('quote')}",
         redacted,
@@ -198,14 +205,24 @@ def redact_sensitive_text(value: str | None) -> str | None:
         key = match.group("key")
         if not is_sensitive_key(key):
             return match.group(0)
-        return match.group(0).replace(match.group("value"), REDACTED, 1)
+        base = match.start(0)
+        return (
+            match.group(0)[: match.start("value") - base]
+            + REDACTED
+            + match.group(0)[match.end("value") - base :]
+        )
 
     redacted = _ASSIGNMENT.sub(_assignment, redacted)
 
     def _flag(match: re.Match[str]) -> str:
         if not is_sensitive_key(match.group("key")):
             return match.group(0)
-        return match.group(0).replace(match.group("value"), REDACTED, 1)
+        base = match.start(0)
+        return (
+            match.group(0)[: match.start("value") - base]
+            + REDACTED
+            + match.group(0)[match.end("value") - base :]
+        )
 
     redacted = _GENERIC_SENSITIVE_FLAG.sub(_flag, redacted)
     return _SENSITIVE_QUERY.sub(lambda match: f"{match.group(1)}{REDACTED}", redacted)
