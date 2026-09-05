@@ -31,7 +31,10 @@ def normalize_doi(raw: str) -> str:
     doi = raw.strip().lower()
     doi = re.sub(r"^doi:\s*", "", doi)
     doi = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", doi)
-    return doi.strip()
+    doi = doi.strip()
+    if not re.fullmatch(r"10\.\d{4,9}/\S+", doi):
+        return ""
+    return doi
 
 
 def normalize_arxiv(raw: str) -> str:
@@ -50,7 +53,7 @@ def normalize_openalex(raw: str) -> str:
     # A bare host (or URL with an empty suffix) is not an external identity.
     if value.lower() in {"openalex.org", "https:", "http:"}:
         return ""
-    return value
+    return value if re.fullmatch(r"W\d+", value, re.IGNORECASE) else ""
 
 
 def _normalize_optional(kind: str, value: str | None) -> str | None:
@@ -71,7 +74,9 @@ def _normalize_optional(kind: str, value: str | None) -> str | None:
     elif kind == "openalex_id":
         normalized = normalize_openalex(value)
     else:
-        normalized = value
+        normalized = value if re.fullmatch(r"[A-Za-z0-9_-]{6,128}", value) else ""
+    if kind == "arxiv" and not re.fullmatch(r"(?:\d{4}\.\d{4,5})(?:v\d+)?", normalized):
+        normalized = ""
     return normalized.strip() or None
 
 
@@ -89,7 +94,8 @@ def canonical_paper_id(
     external identifier fall back to canonical title/year, and finally an
     explicit source key.  A 128-bit SHA-256 prefix avoids the short random-ID
     collision that previously affected large corpus imports while keeping the
-    database ID a single portable path component.
+    database ID a single portable path component. If no external identifier
+    exists, an explicit source key takes precedence over title/year.
 
     ``source_key`` is deliberately explicit: callers with no metadata must
     provide a stable input (for example a content digest) instead of silently
