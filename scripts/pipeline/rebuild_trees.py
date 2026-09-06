@@ -23,35 +23,25 @@ for _import_root in (SOURCE_ROOT, SOURCE_SRC):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
-from drbrain.parser.pageindex.sdk_backend import configure_tree_backend  # noqa: E402
-from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree  # noqa: E402
 from drbrain.runtime import RuntimeContext, runtime_root  # noqa: E402
 from drbrain.security import configured_secret_values, safe_error  # noqa: E402
+
+# Compatibility snapshot only; worker/main paths use runtime_root() afresh.
+ROOT = SOURCE_ROOT
+
+from drbrain.parser.pageindex.sdk_backend import configure_tree_backend  # noqa: E402
+from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree  # noqa: E402
 from drbrain.storage.paths import (  # noqa: E402
     paper_dir,
     paper_fs_key,
     raw_md_path,
     writable_artifact_path,
 )
-from scripts.pipeline.common import (  # noqa: E402
-    load_cfg,
-    run_process_pool_fail_fast,  # noqa: E402
-    runtime_path,
+from scripts.pipeline.common import load_cfg, runtime_path  # noqa: E402
+from scripts.pipeline.ingest_scibase import (  # noqa: E402
+    _process_worker_timeout,
+    _run_process_pool_fail_fast,
 )
-
-DEFAULT_WORKER_TIMEOUT = 900.0
-
-
-def _process_worker_timeout(*names: str, fallback_env: str | None = None) -> float:
-    raw = next((os.environ.get(n) for n in names if os.environ.get(n)), None)
-    if raw is None and fallback_env:
-        raw = os.environ.get(fallback_env)
-    if raw is None:
-        return DEFAULT_WORKER_TIMEOUT
-    value = float(raw)
-    if value <= 0 or not __import__("math").isfinite(value):
-        raise ValueError("worker timeout must be a finite positive number")
-    return value
 
 
 def _safe_pipeline_error(value: object, cfg: object | None = None) -> str:
@@ -292,7 +282,7 @@ def main() -> int:
         return {"lid": lid, "ok": False, "error": _safe_pipeline_error(exc, task_cfg)}
 
     try:
-        run_process_pool_fail_fast(
+        _run_process_pool_fail_fast(
             tasks,
             rebuild_one,
             max_workers=args.workers,
@@ -304,13 +294,10 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         # Executor startup/shutdown failures must produce a non-zero status,
         # while keeping the diagnostic bounded and free of configured secrets.
-        diagnostic = _safe_pipeline_error(exc, cfg)
-        print(f"rebuild aborted: {diagnostic}", file=sys.stderr)
-        consume_result({"lid": "__pipeline__", "ok": False, "error": diagnostic})
-    if fail:
-        print(f"\n重建中止: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)", file=sys.stderr)
-    else:
-        print(f"\n重建完成: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)")
+        consume_result(
+            {"lid": "__pipeline__", "ok": False, "error": _safe_pipeline_error(exc, cfg)}
+        )
+    print(f"\n重建完成: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)")
     return 1 if fail else 0
 
 
