@@ -39,9 +39,9 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         document.close()
         pdf = temporary_pdf
 
-    mode = getattr(config, "sdk_mode", "local")
-    model = getattr(config, "sdk_model", None) or "gpt-5.6-luna"
-    storage = getattr(config, "sdk_storage_path", None) or str(md.parent / ".pageindex")
+    mode = getattr(config, "sdk_mode", None) or getattr(config, "mode", "local")
+    model = getattr(config, "sdk_model", None) or getattr(config, "model", None) or "gpt-5.6-luna"
+    storage = getattr(config, "sdk_storage_path", None) or getattr(config, "storage_path", None) or str(md.parent / ".pageindex")
     api_key = os.getenv("PAGEINDEX_API_KEY") if mode == "cloud" else None
     kwargs: dict[str, Any] = {"index": "cloud" if mode == "cloud" else model}
     if api_key:

@@ -47,6 +47,10 @@ class _ConfigBase:
 @dataclass
 class LLMConfig(_ConfigBase):
     models: list[dict] = field(default_factory=list)
+    # Role-specific fallback chains. ``models`` remains the legacy default.
+    index: list[dict] = field(default_factory=list)
+    chat: list[dict] = field(default_factory=list)
+    loop: list[dict] = field(default_factory=list)
     # 节点级模型覆盖（autoresearch workflow step_name → 该节点的完整 fallback 链）。
     # 未命中的节点用全局 models；列表需写全（不自动追加全局链）。
     node_models: dict[str, list[dict]] = field(default_factory=dict)
@@ -82,6 +86,17 @@ class ApiConfig(_ConfigBase):
     ref_base_url: str = ""
     ref_model: str = ""
     ref_api_key: str = ""
+
+
+@dataclass
+class PageIndexConfig(_ConfigBase):
+    """PageIndex index backend settings (local SDK or cloud API)."""
+
+    backend: str = "legacy"
+    mode: str = "local"
+    model: str = "gpt-5.6-luna"
+    storage_path: str = "data/pageindex"
+    api_key: str = ""
 
 
 @dataclass
@@ -320,6 +335,7 @@ class Config(_ConfigBase):
     llm: LLMConfig = field(default_factory=LLMConfig)
     mineru: MinerUConfig = field(default_factory=MinerUConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
+    pageindex: PageIndexConfig = field(default_factory=PageIndexConfig)
     dirs: DirsConfig = field(default_factory=DirsConfig)
     db: DBConfig = field(default_factory=DBConfig)
     extract: ExtractConfig = field(default_factory=ExtractConfig)
@@ -400,6 +416,7 @@ class Config(_ConfigBase):
                 "llm",
                 "mineru",
                 "api",
+                "pageindex",
                 "dirs",
                 "db",
                 "extract",
@@ -433,6 +450,7 @@ class Config(_ConfigBase):
                 llm=LLMConfig(**sections["llm"]),
                 mineru=MinerUConfig(**sections["mineru"]),
                 api=ApiConfig(**sections["api"]),
+                pageindex=PageIndexConfig(**sections["pageindex"]),
                 dirs=DirsConfig(**sections["dirs"]),
                 db=DBConfig(**sections["db"]),
                 extract=ExtractConfig(**sections["extract"]),
