@@ -14,8 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
@@ -294,13 +294,13 @@ def main() -> int:
     for doi, rec in records.items():
         try:
             paper_path = paper_dir(papers_dir, rec["local_id"])
-            tree_path = _safe_artifact_path(
+            _safe_artifact_path(
                 paper_path / "tree.json",
                 papers_root=papers_dir,
                 context=runtime,
                 label=f"tree.json for {rec['local_id']}",
             )
-            raw_path = _safe_artifact_path(
+            _safe_artifact_path(
                 paper_path / "raw.md",
                 papers_root=papers_dir,
                 context=runtime,

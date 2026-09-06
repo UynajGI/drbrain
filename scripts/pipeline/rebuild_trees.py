@@ -23,20 +23,21 @@ for _import_root in (SOURCE_ROOT, SOURCE_SRC):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
-from drbrain.runtime import RuntimeContext, runtime_root  # noqa: E402
-from drbrain.security import configured_secret_values, safe_error  # noqa: E402
-
-
 from drbrain.parser.pageindex.sdk_backend import configure_tree_backend  # noqa: E402
 from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree  # noqa: E402
+from drbrain.runtime import RuntimeContext, runtime_root  # noqa: E402
+from drbrain.security import configured_secret_values, safe_error  # noqa: E402
 from drbrain.storage.paths import (  # noqa: E402
     paper_dir,
     paper_fs_key,
     raw_md_path,
     writable_artifact_path,
 )
-from scripts.pipeline.common import load_cfg, runtime_path  # noqa: E402
-from scripts.pipeline.common import run_process_pool_fail_fast  # noqa: E402
+from scripts.pipeline.common import (  # noqa: E402
+    load_cfg,
+    run_process_pool_fail_fast,  # noqa: E402
+    runtime_path,
+)
 
 DEFAULT_WORKER_TIMEOUT = 900.0
 
