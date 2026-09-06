@@ -4,9 +4,11 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 import typer
 
 from drbrain.cli.ingest_commands import batch_fetch_cmd
+from drbrain.runtime import RuntimeContext
 
 
 def _make_minimal_config(db_path: str) -> dict:
@@ -112,6 +114,56 @@ class TestFileParsing:
                 assert False, "Should have raised Exit"
             except typer.Exit as e:
                 assert e.exit_code == 1
+
+    def test_runtime_scopes_default_output_and_relative_input(self, tmp_path):
+        runtime = RuntimeContext.create(tmp_path, run_id="batch")
+        input_file = tmp_path / "dois.txt"
+        input_file.write_text("10.1234/one\n", encoding="utf-8")
+        cfg = _make_minimal_config(str(tmp_path / "test.db"))
+        cfg["dirs"]["inbox"] = "data/private-inbox"
+        ctx = _make_ctx(cfg)
+        ctx.obj["runtime"] = runtime
+        cm_mock, _ = _make_mock_db(return_value_for_get=None)
+
+        with (
+            mock.patch("drbrain.cli.ingest_commands.open_db", return_value=cm_mock),
+            mock.patch(
+                "drbrain.cli.ingest_commands.resolve_pdf_url",
+                return_value="https://example.com/paper.pdf",
+            ),
+            mock.patch(
+                "drbrain.cli.ingest_commands.download_pdf",
+                return_value=tmp_path / "downloaded.pdf",
+            ) as download,
+        ):
+            batch_fetch_cmd(
+                ctx,
+                "dois.txt",
+                output_dir=None,
+                delay=0.0,
+                skip_existing=False,
+            )
+
+        destination = download.call_args.args[1]
+        assert destination.parent == tmp_path / "data" / "private-inbox"
+        assert destination.name.startswith("fetch-")
+
+    def test_runtime_rejects_output_escape(self, tmp_path):
+        runtime = RuntimeContext.create(tmp_path, run_id="batch")
+        input_file = tmp_path / "dois.txt"
+        input_file.write_text("10.1234/one\n", encoding="utf-8")
+        cfg = _make_minimal_config(str(tmp_path / "test.db"))
+        ctx = _make_ctx(cfg)
+        ctx.obj["runtime"] = runtime
+
+        with pytest.raises(ValueError, match="escapes runtime root"):
+            batch_fetch_cmd(
+                ctx,
+                "dois.txt",
+                output_dir="../outside",
+                delay=0.0,
+                skip_existing=False,
+            )
 
 
 class TestSkipExisting:

@@ -183,6 +183,116 @@ def test_run_manager_runs_in_background_and_reports_errors(cfg, monkeypatch):
     assert rm.status("goal A")["error"] == "RuntimeError: boom"
 
 
+def test_run_manager_redacts_error_details(cfg, monkeypatch):
+    cfg["autoresearch"]["enabled"] = True
+    rm = service.RunManager()
+    finished = threading.Event()
+
+    def fake_run(self, cfg_, settings, topic, max_cycles):
+        finished.set()
+        raise RuntimeError("Authorization: Bearer manager-secret")
+
+    monkeypatch.setattr(service.RunManager, "_execute", fake_run)
+    rm.start(cfg, "secret-free topic")
+    assert finished.wait(2)
+    rm._threads["secret-free topic"].join(2)
+    error = rm.status("secret-free topic")["error"]
+    assert "manager-secret" not in error
+    assert "[REDACTED]" in error
+
+
+def test_run_manager_redacts_unlabelled_configured_secret(cfg, monkeypatch):
+    cfg["autoresearch"]["enabled"] = True
+    secret = "opaque-manager-provider-secret"
+    cfg["llm"]["models"] = [{"api_key": secret}]
+    rm = service.RunManager()
+
+    def fake_run(self, cfg_, settings, topic, max_cycles):
+        raise RuntimeError(f"provider rejected {secret}")
+
+    monkeypatch.setattr(service.RunManager, "_execute", fake_run)
+    rm.start(cfg, "opaque-secret topic")
+    rm._threads["opaque-secret topic"].join(2)
+
+    error = rm.status("opaque-secret topic")["error"]
+    assert secret not in error
+    assert "[REDACTED]" in error
+
+
+def test_run_manager_rejects_run_directory_outside_runtime_root(cfg, tmp_path, monkeypatch):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    cfg["autoresearch"]["enabled"] = True
+    cfg["autoresearch"]["run_dir"] = str(tmp_path / "outside")
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        service.RunManager().start(cfg, "isolated goal")
+
+
+def test_run_manager_snapshots_normalized_config_for_background_thread(tmp_path, monkeypatch):
+    """A worker keeps absolute runtime paths after its caller returns."""
+    root = tmp_path / "runtime"
+    root.mkdir()
+    cfg = {
+        "db": {"path": "data/library.sqlite"},
+        "autoresearch": {
+            "enabled": True,
+            "run_dir": "workspace/runs",
+            "plugins_dir": "",
+        },
+    }
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+    captured: dict = {}
+    finished = threading.Event()
+
+    def fake_run(self, cfg_, settings, topic, max_cycles):
+        captured["cfg"] = cfg_
+        captured["settings"] = settings
+        finished.set()
+
+    monkeypatch.setattr(service.RunManager, "_execute", fake_run)
+    rm = service.RunManager()
+    rm.start(cfg, "isolated snapshot")
+    assert finished.wait(2)
+    rm._threads["isolated snapshot"].join(2)
+    assert captured["cfg"]["db"]["path"] == str(root / "data" / "library.sqlite")
+    assert captured["settings"].run_dir == str(root / "workspace" / "runs")
+
+
+def test_service_readers_redact_legacy_ledger_payload(cfg):
+    run_id, _ = _seed_ledger(cfg)
+    ledger = RunLedger(Path(cfg["autoresearch"]["run_dir"]) / "ledger.sqlite3")
+    with ledger.transaction() as conn:
+        conn.execute(
+            "INSERT INTO research_events(run_id, event_seq, actor, event_type, payload_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, 99, "legacy", "legacy", json.dumps({"api_key": "legacy-secret"}), time.time()),
+        )
+    payload = service.run_events(cfg, run_id)[-1]["payload"]
+    assert payload["api_key"] == "[REDACTED]"
+
+
+def test_http_error_response_redacts_exception_details(server, monkeypatch):
+    _srv, base = server
+
+    def explode(_cfg):
+        # Deliberately omit a recognizable key/authorization label.  Internal
+        # errors must be opaque even when pattern-based redaction cannot help.
+        raise RuntimeError("opaque-http-secret")
+
+    monkeypatch.setattr(service, "dashboard", explode)
+    try:
+        _get(base + "/api/dashboard")
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        body = json.loads(exc.read().decode())
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("the failing route should return HTTP 500")
+    assert status == 500
+    assert body["error"] == "internal server error"
+
+
 # ── HTTP router ──
 
 
