@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 import typer
 
 from drbrain.storage.database import Database
@@ -421,3 +422,54 @@ def test_session_export_writes_file():
         written = json.loads(out_file.read_text())
         assert written["session_id"] == sid
         assert written["title"] == "ToFile"
+
+
+def test_session_export_runtime_rejects_escape(tmp_path, monkeypatch):
+    """An explicitly selected runtime must contain session export files."""
+    from drbrain.cli.session_commands import session_export_cmd
+
+    db_path = tmp_path / "test.db"
+    cfg = _make_minimal_config(str(db_path))
+    ctx = _make_ctx(cfg)
+    sid = _seed_session(db_path)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        session_export_cmd(ctx, sid, output=str(tmp_path.parent / "escape.json"), fmt="json")
+
+
+def test_session_export_runtime_rejects_symlink_target(tmp_path, monkeypatch):
+    """A symlinked output parent cannot redirect an export outside the root."""
+    from drbrain.cli.session_commands import session_export_cmd
+
+    db_path = tmp_path / "test.db"
+    cfg = _make_minimal_config(str(db_path))
+    ctx = _make_ctx(cfg)
+    sid = _seed_session(db_path)
+    outside = tmp_path.parent / "session-export-outside"
+    outside.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="symlink|escapes runtime root"):
+        session_export_cmd(ctx, sid, output=str(alias / "export.json"), fmt="json")
+
+
+def test_session_export_atomic_replace_failure_preserves_existing(tmp_path, monkeypatch):
+    """A failed publication must leave the previous export intact."""
+    from drbrain.cli import session_commands
+
+    target = tmp_path / "export.json"
+    target.write_text("previous", encoding="utf-8")
+    parent = target.parent
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(session_commands.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        session_commands._write_session_export((target, parent), "new")
+
+    assert target.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.glob(".export.json.*")) == []

@@ -368,6 +368,16 @@ def test_reason_llamaindex_session_new_persists_to_agent_tables(tmp_path, monkey
     assert rows[3][4] == "search_concepts"
     assert rows[4][1] == "证据不足，无法基于当前检索结果回答"
 
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        model_config = db.conn.execute(
+            "SELECT model_config FROM agent_sessions WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+    finally:
+        db.close()
+    assert "k" not in model_config
+    assert json.loads(model_config) == [{"provider": "openai", "model": "gpt-4o", "base_url": None}]
+
 
 def test_reason_llamaindex_session_not_found(tmp_path, monkeypatch):
     _scripted_llm(monkeypatch, [{"text": "x", "tool_calls": None, "usage": None}])
