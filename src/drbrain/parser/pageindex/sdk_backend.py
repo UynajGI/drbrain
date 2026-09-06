@@ -27,6 +27,9 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
     tree_config.sdk_chat_model = get("chat_model")
     tree_config.sdk_storage_path = get("storage_path")
     tree_config.sdk_api_key = get("api_key", "")
+    tree_config.sdk_base_url = get("base_url", "")
+    tree_config.sdk_index_backend = get("index_backend", {}) or {}
+    tree_config.sdk_chat_backend = get("chat_backend", {}) or {}
     return tree_config
 
 
@@ -84,6 +87,13 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         "index": "cloud" if mode == "cloud" else model,
         "chat": chat_model,
     }
+    if getattr(config, "sdk_base_url", ""):
+        kwargs["index_backend"] = {"base_url": config.sdk_base_url}
+        kwargs["chat_backend"] = {"base_url": config.sdk_base_url}
+    if getattr(config, "sdk_index_backend", None):
+        kwargs["index_backend"] = dict(config.sdk_index_backend)
+    if getattr(config, "sdk_chat_backend", None):
+        kwargs["chat_backend"] = dict(config.sdk_chat_backend)
     if api_key:
         kwargs["api_key"] = api_key
     if mode == "local":

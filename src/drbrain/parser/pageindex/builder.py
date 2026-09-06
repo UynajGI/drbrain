@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import litellm
@@ -33,6 +33,9 @@ class TreeConfig:
     sdk_chat_model: str | None = None
     sdk_storage_path: str | None = None
     sdk_api_key: str = ""
+    sdk_base_url: str = ""
+    sdk_index_backend: dict = field(default_factory=dict)
+    sdk_chat_backend: dict = field(default_factory=dict)
 
 
 @dataclass
