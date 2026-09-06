@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import os
 import re
 import sys
 import time
@@ -46,6 +47,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+
+from drbrain.security import configured_secret_values, safe_error  # noqa: E402
+from drbrain.storage.paths import paper_fs_key, raw_md_path  # noqa: E402
 
 MAIN_DB = REPO / "data" / "drbrain.db"
 PAPERS_ROOT = REPO / "data" / "papers"
@@ -65,6 +69,14 @@ def _safe_paper_dir(arxiv_id: str) -> str:
 
     Same rule as ``ingest_arxiv_latex.py`` so raw.md lookup matches on disk.
     """
+    try:
+        if not isinstance(arxiv_id, str) or any(
+            part in {"", ".", ".."} for part in arxiv_id.replace("\\", "/").split("/")
+        ):
+            raise ValueError("invalid paper_id")
+        paper_fs_key(arxiv_id)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid paper_id") from exc
     return arxiv_id.replace("/", "_")
 
 
@@ -406,6 +418,8 @@ def load_worklist(path: Path) -> dict:
     wl = json.loads(Path(path).read_text(encoding="utf-8"))
     wl.setdefault("pending", [])
     wl.setdefault("done", [])
+    for entry in wl["pending"] + wl["done"]:
+        _safe_paper_dir(entry["paper_id"])
     return wl
 
 
@@ -456,6 +470,7 @@ def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
     exclusive ``flock`` so concurrent retrieval processes cannot silently drop
     each other's entries (OCR r5).
     """
+    _safe_paper_dir(paper_id)
     if db is not None and db.get_paper(paper_id) is None:
         print(f"[kg-lazy] warning: {paper_id} not in the library (marking anyway)", flush=True)
     added = False
@@ -538,7 +553,7 @@ def run_l1(
     cursor = db.execute(sql, (limit,) if limit > 0 else ())
     cursor.arraysize = 5_000
 
-    stats = {"selected": 0, "processed": 0, "skipped": 0, "inserted": 0}
+    stats = {"selected": 0, "processed": 0, "skipped": 0, "inserted": 0, "failed": 0}
     t0 = time.time()
     for local_id, title, abstract, year in cursor:
         stats["selected"] += 1
@@ -551,14 +566,25 @@ def run_l1(
             stats["skipped"] += 1
             continue
         chunks: list[tuple[str, str]] = [(abstract, "abstract")]
-        raw_md_path = papers_root / _safe_paper_dir(local_id) / "raw.md"
-        if raw_md_path.exists():
-            conclusion = _extract_conclusion_section(
-                raw_md_path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            md_path = raw_md_path(papers_root / _safe_paper_dir(local_id))
+            if md_path.exists():
+                conclusion = _extract_conclusion_section(
+                    md_path.read_text(encoding="utf-8", errors="ignore")
+                )
+                if conclusion:
+                    chunks.append((conclusion, "conclusion"))
+            concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
+        except Exception as exc:  # noqa: BLE001 - keep one paper failure isolated
+            stats["failed"] += 1
+            print(
+                safe_error(
+                    f"[kg-lazy] L1 failed for {local_id}: {exc}",
+                    secrets=configured_secret_values(os.environ),
+                ),
+                flush=True,
             )
-            if conclusion:
-                chunks.append((conclusion, "conclusion"))
-        concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
+            continue
         n = 0
         for c in concepts:
             label = str(c.get("label") or "").strip()
@@ -664,6 +690,8 @@ def run_l2(
     """Full 5-stage extraction for selected papers (or the worklist backlog)."""
     wl = load_worklist(worklist_path) if worklist_path else {"pending": [], "done": []}
     ids = list(paper_ids) if paper_ids else _worklist_pending_ids(wl)
+    for pid in ids:
+        _safe_paper_dir(pid)
     if limit > 0:
         ids = ids[:limit]
     if not ids:
@@ -766,7 +794,7 @@ def main(argv: list[str] | None = None) -> int:
     db = Database(str(args.db))
     try:
         if args.command == "l1":
-            run_l1(
+            result = run_l1(
                 db,
                 args.papers_root,
                 extractor=args.extractor,
@@ -774,7 +802,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             cfg = _load_cfg(config_path=args.config, papers_root=args.papers_root)
-            run_l2(
+            result = run_l2(
                 db,
                 args.papers_root,
                 paper_ids=args.papers,
@@ -785,7 +813,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     finally:
         db.close()
-    return 0
+    return 1 if result.get("failed", 0) else 0
 
 
 if __name__ == "__main__":
