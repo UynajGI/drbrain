@@ -1,7 +1,11 @@
 """Tests for setup.py config generation."""
 
+import os
+import stat
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from drbrain.cli.setup import generate_local_config
 
@@ -156,3 +160,90 @@ def test_generate_local_config_writes_and_contains_keys(tmp_path):
     assert "api" in data
     assert "embed" in data
     assert data["embed"]["provider"] == "local"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_generate_local_config_restricts_file_permissions(tmp_path, monkeypatch):
+    """Generated config.local.yaml must not be readable by other users."""
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    out = generate_local_config(
+        output_path=tmp_path / "config.local.yaml",
+        llm_primary={"provider": "openai", "model": "gpt-4o", "api_key": "secret"},
+    )
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_private_yaml_writer_restricts_existing_file_permissions(tmp_path, monkeypatch):
+    """Updating an existing local config also tightens an overly broad mode."""
+    from drbrain.cli.setup import _write_private_yaml
+
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+
+    out = tmp_path / "config.local.yaml"
+    out.write_text("old: value\n", encoding="utf-8")
+    out.chmod(0o644)
+
+    _write_private_yaml(out, {"api": {"deepxiv_token": "secret"}})
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+def test_private_yaml_failure_preserves_previous_config(tmp_path, monkeypatch):
+    import yaml
+
+    from drbrain.cli.setup import _write_private_yaml
+
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    out = tmp_path / "config.local.yaml"
+    out.write_text("previous: value\n", encoding="utf-8")
+
+    def fail_dump(data, stream, **kwargs):
+        stream.write("partial: secret")
+        raise ValueError("serialization failed")
+
+    monkeypatch.setattr(yaml, "dump", fail_dump)
+    with pytest.raises(ValueError, match="serialization failed"):
+        _write_private_yaml(out, {})
+    assert out.read_text() == "previous: value\n"
+    assert list(tmp_path.iterdir()) == [out]
+
+
+def test_private_yaml_rejects_legacy_selector_escape(tmp_path, monkeypatch):
+    from drbrain.cli.setup import _write_private_yaml
+
+    root = tmp_path / "runtime"
+    root.mkdir()
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    monkeypatch.setenv("DRBRAIN_RUNTIME_ROOT", str(root.resolve()))
+    out = tmp_path / "outside" / "config.local.yaml"
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        _write_private_yaml(out, {})
+    assert not out.parent.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior is not portable on Windows")
+def test_setup_paths_stay_inside_active_runtime_root(tmp_path, monkeypatch):
+    """Setup helpers cannot create dirs or secret files in another root."""
+    from drbrain.cli.setup import _ensure_directories, generate_local_config
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    outside = tmp_path / "outside"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_TEMP_ROOT", raising=False)
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        _ensure_directories({"dirs": {"papers": str(outside / "papers")}})
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        generate_local_config(
+            output_path=outside / "config.local.yaml",
+            llm_primary={"provider": "openai", "model": "gpt-4", "api_key": "secret"},
+        )
+    assert not outside.exists()

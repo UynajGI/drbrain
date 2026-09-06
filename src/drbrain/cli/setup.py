@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import typer
@@ -13,9 +15,29 @@ from loguru import logger
 from drbrain.cli._setup_i18n import t as _t
 
 
+def _write_private_yaml(path: Path, data: dict) -> Path:
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        from drbrain.runtime import RuntimeContext
+
+        path = RuntimeContext.create().assert_within_root(path, label="config.local.yaml")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return path
+
+
 def _config_local_path() -> Path:
     """Resolve setup's writable config inside an explicitly selected root."""
-    if "DRBRAIN_ROOT" in __import__("os").environ:
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
         from drbrain.runtime import runtime_root
 
         return runtime_root() / "config.local.yaml"
@@ -94,10 +116,12 @@ def generate_local_config(
     config["embed"] = embed_cfg
 
     out = Path(output_path)
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        from drbrain.runtime import RuntimeContext
+
+        out = RuntimeContext.create().assert_within_root(out, label="config.local.yaml")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-    return out
+    return _write_private_yaml(out, config)
 
 
 def _ensure_directories(cfg: dict) -> int:
@@ -119,6 +143,10 @@ def _ensure_directories(cfg: dict) -> int:
     created = 0
     for d in dir_paths:
         p = Path(d)
+        if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+            from drbrain.runtime import RuntimeContext
+
+            p = RuntimeContext.create().assert_within_root(p, label=f"setup directory {d!r}")
         if not p.exists():
             p.mkdir(parents=True, exist_ok=True)
             created += 1
@@ -252,7 +280,7 @@ def setup_cmd(
         else:
             local = {}
         local.setdefault("admin", {})["password_hash"] = hash_password(new_pw)
-        config_path.write_text(yaml.dump(local, default_flow_style=False, allow_unicode=True))
+        _write_private_yaml(config_path, local)
         typer.echo("Admin password updated.")
         return
 
@@ -351,8 +379,7 @@ def setup_cmd(
 
         out = _config_local_path()
         out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        _write_private_yaml(out, config)
         typer.echo(_t("quick_config_written", "en", path=str(out)))
 
         from drbrain.config import load_config
@@ -558,8 +585,7 @@ def setup_cmd(
 
     out = _config_local_path()
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    _write_private_yaml(out, config)
     typer.echo(f"\n  {_t('review_config_written', lang)} {out}")
 
     # ── Initialize environment ──
