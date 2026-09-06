@@ -16,7 +16,11 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
     """Apply typed ``Config.pageindex`` settings to a ``TreeConfig``."""
     if pageindex_config is None:
         return tree_config
-    get = pageindex_config.get if isinstance(pageindex_config, dict) else lambda k, d=None: getattr(pageindex_config, k, d)
+    get = (
+        pageindex_config.get
+        if isinstance(pageindex_config, dict)
+        else lambda k, d=None: getattr(pageindex_config, k, d)
+    )
     tree_config.backend = get("backend", "sdk")
     tree_config.sdk_mode = get("mode", "local")
     tree_config.sdk_model = get("model")
@@ -54,15 +58,25 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         pdf = temporary_pdf
 
     mode = getattr(config, "sdk_mode", None) or getattr(config, "mode", "local")
-    model = getattr(config, "sdk_model", None) or getattr(config, "model", None) or "deepseek-v4-flash"
-    chat_model = getattr(config, "sdk_chat_model", None) or getattr(config, "chat_model", None) or "pro"
+    model = (
+        getattr(config, "sdk_model", None) or getattr(config, "model", None) or "deepseek-v4-flash"
+    )
+    chat_model = (
+        getattr(config, "sdk_chat_model", None)
+        or getattr(config, "chat_model", None)
+        or "deepseek-v4-pro"
+    )
     storage = (
         getattr(config, "sdk_storage_path", None)
         or getattr(config, "storage_path", None)
         or str(md.parent / ".pageindex")
     )
     api_key = (
-        (getattr(config, "sdk_api_key", None) or getattr(config, "api_key", None) or os.getenv("PAGEINDEX_API_KEY"))
+        (
+            getattr(config, "sdk_api_key", None)
+            or getattr(config, "api_key", None)
+            or os.getenv("PAGEINDEX_API_KEY")
+        )
         if mode == "cloud"
         else None
     )
