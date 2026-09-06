@@ -95,7 +95,7 @@ class PageIndexConfig(_ConfigBase):
     backend: str = "sdk"
     mode: str = "local"
     model: str = "deepseek-v4-flash"
-    chat_model: str = "pro"
+    chat_model: str = "deepseek-v4-pro"
     storage_path: str = "data/pageindex"
     api_key: str = ""
 
