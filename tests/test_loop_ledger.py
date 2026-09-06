@@ -41,6 +41,69 @@ def test_ledger_adds_config_json_to_preexisting_run_table(tmp_path):
     assert "config_json" in columns
 
 
+def test_ledger_config_and_events_are_secret_free(tmp_path):
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run(
+        "secret projection",
+        config={"api_key": "run-secret", "nested": {"token": "nested-secret"}},
+    )
+
+    assert "run-secret" not in json.dumps(run.config)
+    assert "nested-secret" not in json.dumps(run.config)
+    with ledger.transaction() as conn:
+        ledger.append_event(
+            conn,
+            run.run_id,
+            actor="test",
+            event_type="secret_probe",
+            payload={"password": "event-secret", "message": "token=embedded-secret"},
+        )
+    event = ledger.events(run.run_id)[-1]
+    assert "event-secret" not in json.dumps(event.payload)
+    assert "embedded-secret" not in json.dumps(event.payload)
+
+
+def test_ledger_checkpoints_are_secret_free(tmp_path):
+    """Checkpoint state must obey the same durable redaction boundary as events."""
+    ledger = RunLedger(tmp_path / "ledger.sqlite3")
+    run = ledger.get_or_create_run("checkpoint secret projection")
+    transitions = TransitionService(ledger)
+    transitions.start_run(run.run_id)
+    step_id = transitions.begin_cycle(run.run_id, cycle=1, worker_id="worker-1", lease_seconds=60)
+    with sqlite3.connect(ledger.path) as conn:
+        attempt_id = conn.execute(
+            "SELECT attempt_id FROM research_attempts WHERE step_id = ?", (step_id,)
+        ).fetchone()[0]
+
+    checkpoint = ledger.record_checkpoint(
+        run_id=run.run_id,
+        step_id=step_id,
+        attempt_id=attempt_id,
+        worker_id="worker-1",
+        lease_seconds=60,
+        step_name="retrieve",
+        context_payload={"api_key": "context-secret", "safe": "ok"},
+        workflow_state={"nested": {"token": "state-secret"}},
+        manifest={"authorization": "Bearer manifest-secret"},
+    )
+
+    with sqlite3.connect(ledger.path) as conn:
+        raw = conn.execute(
+            "SELECT context_json, workflow_state_json, manifest_json "
+            "FROM research_checkpoints WHERE checkpoint_id = ?",
+            (checkpoint.checkpoint_id,),
+        ).fetchone()
+    assert raw is not None
+    assert "context-secret" not in json.dumps(raw)
+    assert "state-secret" not in json.dumps(raw)
+    assert "manifest-secret" not in json.dumps(raw)
+    loaded = ledger.latest_checkpoint_for_step(step_id)
+    assert loaded is not None
+    assert loaded.context_payload["api_key"] == "[REDACTED]"
+    assert loaded.workflow_state["nested"]["token"] == "[REDACTED]"
+    assert loaded.manifest["authorization"] == "[REDACTED]"
+
+
 def test_ledger_rejects_a_newer_schema_before_altering_research_runs(tmp_path):
     path = tmp_path / "ledger.sqlite3"
     with sqlite3.connect(path) as conn:
@@ -77,6 +140,21 @@ def test_ledger_rejects_a_newer_schema_before_altering_research_runs(tmp_path):
         }
     assert "config_json" not in columns
     assert "research_proposals" not in tables
+
+
+def test_ledger_rejects_external_and_symlink_targets_under_runtime_root(tmp_path, monkeypatch):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    outside = tmp_path / "outside.sqlite3"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        RunLedger(outside)
+
+    link = root / "ledger.sqlite3"
+    link.symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink|escapes runtime root"):
+        RunLedger(link)
 
 
 def test_ledger_migrates_v4_runs_to_the_durable_front_half_tables(tmp_path):

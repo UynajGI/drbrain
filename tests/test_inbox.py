@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from drbrain.storage.inbox import (
     PENDING_LOG,
     move_to_pending,
@@ -33,6 +35,31 @@ def test_scan_inbox_empty(tmp_path):
 def test_scan_inbox_nonexistent():
     """Non-existent directory returns empty list."""
     assert scan_inbox(Path("/nonexistent/inbox")) == []
+
+
+def test_scan_inbox_skips_symlinked_pdf(tmp_path):
+    """A PDF symlink is not treated as an ingest source."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"external PDF")
+    (inbox / "linked.pdf").symlink_to(outside)
+    safe = inbox / "safe.pdf"
+    safe.write_bytes(b"local PDF")
+
+    assert scan_inbox(inbox) == [safe]
+    assert outside.read_bytes() == b"external PDF"
+
+
+def test_scan_inbox_rejects_symlinked_root(tmp_path):
+    """A symlinked inbox root cannot expose another directory's files."""
+    real_inbox = tmp_path / "real-inbox"
+    real_inbox.mkdir()
+    (real_inbox / "paper.pdf").write_bytes(b"external PDF")
+    linked_inbox = tmp_path / "inbox"
+    linked_inbox.symlink_to(real_inbox, target_is_directory=True)
+
+    assert scan_inbox(linked_inbox) == []
 
 
 def test_move_to_pending(tmp_path):
@@ -67,6 +94,24 @@ def test_move_to_pending_creates_pending_dir(tmp_path):
 
     assert pending.exists()
     assert not pdf.exists()
+
+
+def test_move_to_pending_rejects_symlink_source(tmp_path):
+    """Moving a failed symlink must not move or delete its external target."""
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"external PDF")
+    linked = inbox / "failed.pdf"
+    linked.symlink_to(outside)
+    pending = tmp_path / "pending"
+
+    with pytest.raises(ValueError, match="symlink"):
+        move_to_pending(linked, pending, reason="parse error")
+
+    assert linked.is_symlink()
+    assert outside.read_bytes() == b"external PDF"
+    assert not pending.exists()
 
 
 def test_read_pending_log_empty(tmp_path):

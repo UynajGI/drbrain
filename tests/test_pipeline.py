@@ -5,7 +5,12 @@ TDD: tests written before implementation.
 
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+from unittest import mock
+
 import pytest
+import typer
 
 # ── Pipeline step definitions (will move to services/pipeline.py) ──
 
@@ -109,6 +114,12 @@ class TestResolveSteps:
         steps = resolve_steps(steps_str="build,build,embed")
         assert steps == ["build", "embed"]
 
+    def test_empty_custom_steps_raises(self):
+        from drbrain.services.pipeline import resolve_steps
+
+        with pytest.raises(ValueError, match="At least one pipeline step"):
+            resolve_steps(steps_str=" , ")
+
 
 class TestListSteps:
     """Test that list_steps returns structured data."""
@@ -128,3 +139,72 @@ class TestListSteps:
             assert "name" in s
             assert "scope" in s
             assert "description" in s
+
+
+def _pipeline_context(*, config_path: str | None = None, root: str | None = None):
+    """Build the smallest context accepted by ``pipeline_cmd``.
+
+    The command normally receives a runtime object from the root CLI callback;
+    using a plain namespace here also keeps this test independent of Click's
+    context construction details.
+    """
+    runtime = SimpleNamespace(config_path=config_path, root=root)
+    return SimpleNamespace(obj={"runtime": runtime, "config": {}})
+
+
+def _invoke_pipeline(ctx, **kwargs):
+    from drbrain.cli.ingest_commands import pipeline_cmd
+
+    defaults = {
+        "preset": None,
+        "steps": "build,embed",
+        "list_steps_flag": False,
+        "dry_run": False,
+        "full": False,
+    }
+    defaults.update(kwargs)
+    return pipeline_cmd(ctx, **defaults)
+
+
+def test_pipeline_stops_on_failed_step_and_returns_exit_code(capsys):
+    """A failed child must stop the chain and never print completion."""
+    ctx = _pipeline_context()
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 7)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        with pytest.raises(typer.Exit) as exc_info:
+            _invoke_pipeline(ctx)
+
+    captured = capsys.readouterr()
+    assert exc_info.value.exit_code == 7
+    assert len(calls) == 1
+    assert "Pipeline failed at step 'build'" in captured.err
+    assert "Pipeline complete" not in captured.out
+    assert calls[0][1]["check"] is True
+
+
+def test_pipeline_propagates_runtime_config_and_root(tmp_path):
+    """Child commands must use the same config and repository root."""
+    runtime_root = str(tmp_path)
+    ctx = _pipeline_context(config_path="config.local.yaml", root=runtime_root)
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args, 0)
+
+    with mock.patch("subprocess.run", side_effect=fake_run):
+        _invoke_pipeline(ctx, steps="build,embed")
+
+    assert len(calls) == 2
+    for args, kwargs in calls:
+        assert args[:3] == [args[0], "-m", "drbrain.cli.main"]
+        assert args[3:5] == ["--config", "config.local.yaml"]
+        assert args[5:7] == ["--root", runtime_root]
+        assert kwargs["check"] is True
+        assert kwargs["cwd"] == runtime_root
+        assert kwargs["env"]["DRBRAIN_ROOT"] == runtime_root

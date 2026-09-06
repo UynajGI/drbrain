@@ -150,6 +150,37 @@ def test_l1_limit_controls_batch(tmp_db, papers_root):
     assert done == 1
 
 
+def test_l1_counts_extractor_failures(tmp_db, papers_root, monkeypatch):
+    """A per-paper extractor error is reported in stats for CLI aggregation."""
+    _make_paper(tmp_db, "p1", "Extractor failure", abstract=ABSTRACT)
+
+    def failing_extractor(*_args, **_kwargs):
+        raise RuntimeError("synthetic extractor failure")
+
+    monkeypatch.setitem(kg.EXTRACTORS, "failing", failing_extractor)
+    stats = kg.run_l1(tmp_db, papers_root, extractor="failing")
+    assert stats["selected"] == 1
+    assert stats["failed"] == 1
+    assert stats["processed"] == 0
+
+
+def test_l1_failure_output_redacts_configured_secret(tmp_db, papers_root, monkeypatch, capsys):
+    """Provider/extractor errors must not echo an API credential."""
+    _make_paper(tmp_db, "p1", "Extractor failure", abstract=ABSTRACT)
+    secret = "sk-lazy-build-test-secret"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    def failing_extractor(*_args, **_kwargs):
+        raise RuntimeError(f"provider rejected key={secret}")
+
+    monkeypatch.setitem(kg.EXTRACTORS, "failing-secret", failing_extractor)
+    stats = kg.run_l1(tmp_db, papers_root, extractor="failing-secret")
+    assert stats["failed"] == 1
+    output = capsys.readouterr().out
+    assert secret not in output
+    assert "[REDACTED]" in output
+
+
 # ── spark4b extractor: missing model must exit cleanly ───────────────────────
 
 
@@ -176,6 +207,46 @@ def test_mark_retrieved_appends_idempotently(tmp_db, tmp_path):
     assert [e["paper_id"] for e in wl["pending"]] == ["2401.01234"]
     assert wl["pending"][0]["marked_at"]
     assert wl["done"] == []
+
+
+def test_worklist_rejects_traversal_paper_id(tmp_path):
+    wl_path = tmp_path / "kg_worklist.json"
+    wl_path.write_text('{"pending": [{"paper_id": "../outside"}], "done": []}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid paper_id"):
+        kg.load_worklist(wl_path)
+
+
+def test_mark_retrieved_rejects_traversal_without_writing(tmp_path):
+    wl_path = tmp_path / "kg_worklist.json"
+    with pytest.raises(ValueError, match="paper_id"):
+        kg.mark_retrieved("../outside", wl_path)
+    assert not wl_path.exists()
+
+
+def test_l1_rejects_symlinked_raw_artifact(tmp_db, tmp_path):
+    papers = tmp_path / "papers"
+    paper = papers / "p1"
+    paper.mkdir(parents=True)
+    external = tmp_path / "external.md"
+    external.write_text(CONCLUSION_MD, encoding="utf-8")
+    (paper / "raw.md").symlink_to(external)
+    _make_paper(tmp_db, "p1", "Symlinked raw", abstract=ABSTRACT)
+
+    stats = kg.run_l1(tmp_db, papers, extractor="heuristic")
+    assert stats["failed"] == 1
+    assert stats["processed"] == 0
+    assert tmp_db.execute("SELECT COUNT(*) FROM concepts").fetchone()[0] == 0
+
+
+def test_l2_rejects_invalid_explicit_id(tmp_db, tmp_path, papers_root):
+    with pytest.raises(ValueError, match="paper_id"):
+        kg.run_l2(
+            tmp_db,
+            papers_root,
+            paper_ids=["../outside"],
+            worklist_path=tmp_path / "wl.json",
+            cfg={"llm": {"models": ["stub"]}},
+        )
 
 
 # ── L2: worklist consumption (extraction stubbed) ────────────────────────────
@@ -260,3 +331,24 @@ def test_l2_explicit_papers_list(tmp_db, tmp_path, papers_root, monkeypatch):
 def test_l2_requires_llm_models(tmp_db, tmp_path, papers_root):
     with pytest.raises(SystemExit):
         kg.run_l2(tmp_db, papers_root, paper_ids=["missing"], cfg={})
+
+
+@pytest.mark.parametrize("command", ["l1", "l2"])
+def test_main_returns_nonzero_when_layer_reports_failures(tmp_path, monkeypatch, command):
+    """The CLI must propagate failed counts from either lazy-build layer."""
+    root = tmp_path / "runtime"
+    root.mkdir()
+    db_path = root / "data" / "drbrain.db"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+    monkeypatch.setattr(kg, "run_l1", lambda *args, **kwargs: {"failed": 1})
+    monkeypatch.setattr(kg, "run_l2", lambda *args, **kwargs: {"failed": 1})
+    if command == "l2":
+        monkeypatch.setattr(
+            kg,
+            "_load_cfg",
+            lambda *args, **kwargs: {"llm": {"models": ["stub"]}},
+        )
+        argv = [command, "--db", str(db_path), "--papers", "p1"]
+    else:
+        argv = [command, "--db", str(db_path)]
+    assert kg.main(argv) == 1
