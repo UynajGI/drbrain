@@ -125,7 +125,6 @@ def _ingest_single_paper(
                 publisher=parsed.publisher,
                 citation_count=parsed.citation_count,
             )
-            db.commit()
         else:
             local_id = f"p{uuid.uuid4().hex[:6]}"
             db.insert_paper(
@@ -137,14 +136,17 @@ def _ingest_single_paper(
                 publisher=parsed.publisher,
                 citation_count=parsed.citation_count,
             )
-            db.insert_paper_ids(
-                local_id,
-                doi=ids.doi,
-                arxiv=ids.arxiv,
-                s2_id=parsed.s2_id,
-                openalex_id=parsed.openalex_id,
-            )
-            db.commit()
+            try:
+                db.insert_paper_ids(
+                    local_id,
+                    doi=ids.doi,
+                    arxiv=ids.arxiv,
+                    s2_id=parsed.s2_id,
+                    openalex_id=parsed.openalex_id,
+                )
+            except Exception:
+                db.conn.rollback()
+                raise
             echo(f"  [new] {local_id}")
     else:
         db.upgrade_placeholder(local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
@@ -156,13 +158,16 @@ def _ingest_single_paper(
             publisher=parsed.publisher,
             citation_count=parsed.citation_count,
         )
-        db.commit()
         echo(f"  [upgrade] {local_id}")
 
     # Insert OpenAlex-derived Actor concepts (deduplicated author IDs)
     from drbrain.extractor.openalex import search_authors_by_work
 
-    oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title)
+    try:
+        oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title)
+    except Exception:
+        db.conn.rollback()
+        raise
     if oa_authors:
         echo(f"  Authors: {len(oa_authors)} via OpenAlex")
         for author in oa_authors:
@@ -181,7 +186,11 @@ def _ingest_single_paper(
     papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     paper_dir = papers_base / local_id  # type: ignore[operator]  # pre-existing: see mypy debt
     paper_dir.mkdir(parents=True, exist_ok=True)
-    _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+    try:
+        _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+    except Exception:
+        db.conn.rollback()
+        raise
 
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
