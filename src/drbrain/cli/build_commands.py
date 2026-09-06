@@ -216,6 +216,7 @@ def build_cmd(
 
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     all_results = []
+    failures = 0
 
     for paper in papers:
         pid = paper["local_id"]
@@ -252,6 +253,7 @@ def build_cmd(
                 continue
         elif not md_path.exists():
             typer.echo("  No raw.md — ingest this paper first")
+            failures += 1
             continue
 
         import json as _json
@@ -264,11 +266,12 @@ def build_cmd(
 
         # Run 5-stage pipeline
         typer.echo("  Stage 1: Ontology...")
-        result = asyncio.run(
-            build_graph_from_tree(
-                md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
-            )
-        )
+        try:
+            result = asyncio.run(build_graph_from_tree(md_path, structure, llm_models, skip_refine=skip_refine, cache=cache))
+        except Exception as exc:
+            failures += 1
+            typer.echo(f"  Extraction failed: {exc}", err=True)
+            continue
 
         concepts = result.get("concepts", [])
         relations = result.get("relations", [])
@@ -364,6 +367,8 @@ def build_cmd(
         )
 
     db.close()
+    if failures:
+        raise typer.Exit(1)
 
 
 def embed_cmd(
