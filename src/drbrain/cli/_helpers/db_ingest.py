@@ -223,6 +223,7 @@ def _ingest_single_paper(
     tree_path = tree_json_path(paper_dir)
     echo("  Structuring document tree...")
     try:
+        from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
         from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
 
         pageindex_cfg = TreeConfig(
@@ -237,6 +238,7 @@ def _ingest_single_paper(
             if_add_node_id=True,
             max_node_tokens=10000,
         )
+        configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
         _t3 = _time.monotonic()

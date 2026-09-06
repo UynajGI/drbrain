@@ -29,6 +29,7 @@ from drbrain.security import configured_secret_values, safe_error  # noqa: E402
 # Compatibility snapshot only; worker/main paths use runtime_root() afresh.
 ROOT = SOURCE_ROOT
 
+from drbrain.parser.pageindex.sdk_backend import configure_tree_backend  # noqa: E402
 from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree  # noqa: E402
 from drbrain.storage.paths import (  # noqa: E402
     paper_dir,
@@ -155,6 +156,7 @@ def rebuild_one(args: tuple) -> dict:
             max_node_tokens=10000,
             summary_token_threshold=2000,
         )
+        configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         # 无 markdown 标题的纯文本片段（书摘/表格等）切不出章节——
         # 合成单节点全文树，保证可进向量检索
