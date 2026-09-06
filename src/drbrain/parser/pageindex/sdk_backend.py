@@ -17,7 +17,7 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
     if pageindex_config is None:
         return tree_config
     get = pageindex_config.get if isinstance(pageindex_config, dict) else lambda k, d=None: getattr(pageindex_config, k, d)
-    tree_config.backend = get("backend", "legacy")
+    tree_config.backend = get("backend", "sdk")
     tree_config.sdk_mode = get("mode", "local")
     tree_config.sdk_model = get("model")
     tree_config.sdk_storage_path = get("storage_path")
