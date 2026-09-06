@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -863,6 +864,7 @@ class Database:
         On conflict (existing local_id), bump updated_at to signal downstream
         incremental stages that this paper changed.
         """
+        self._validate_paper_id(local_id)
         if strict and self.get_paper(local_id) is not None:
             raise ValueError("paper identity already exists")
         self.conn.execute(
@@ -992,6 +994,8 @@ class Database:
 
         Returns the number of citation rows resolved.
         """
+        for local_id in key_to_local_id.values():
+            self._validate_paper_id(local_id)
         with self.conn:
             rows = self.conn.execute(
                 "SELECT rowid, cited_key FROM paper_cite_keys WHERE cited_local_id IS NULL"
@@ -1054,6 +1058,7 @@ class Database:
         citation_count: int = 0,
     ) -> None:
         """Update paper metadata after ingest (for upgraded placeholders)."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET title = ?, year = ?, journal = ?, publisher = ?, "
             "citation_count = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
@@ -1146,6 +1151,7 @@ class Database:
         weight: float = 1.0,
     ) -> None:
         """Insert a co-occurrence edge; accumulate weight on re-assertion."""
+        self._validate_paper_id(paper_id)
         self.conn.execute(
             "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
             "VALUES (?, ?, ?, ?, ?) "
@@ -1263,6 +1269,7 @@ class Database:
         whole row. Bumps updated_at. ``field`` is validated against an
         allowlist to prevent SQL injection via column names.
         """
+        self._validate_paper_id(local_id)
         if field not in self._VALID_PAPER_FIELDS:
             raise ValueError(f"unknown paper field: {field}")
         self.conn.execute(
@@ -1458,12 +1465,14 @@ class Database:
         ``snapshot_id`` — a deterministic id (e.g. hash of the settled claim
         set) makes re-settling the same outcome a no-op.
         """
+        owns_transaction = not self.conn.in_transaction
         self.conn.execute(
             "INSERT INTO knowledge_snapshots (snapshot_id, revision_id, description) "
             "VALUES (?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING",
             (snapshot_id, revision_id, description),
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         return snapshot_id
 
     def record_answer(
@@ -1486,40 +1495,42 @@ class Database:
         """
         import json
 
-        evidence_json = json.dumps(list(evidence_ids or []), ensure_ascii=False)
-        cur = self.conn.execute(
-            "INSERT INTO answer_records "
-            "(session_id, question, answer, evidence_ids, provenance, "
-            " model_version, snapshot_id, retriever_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                session_id,
-                question,
-                answer,
-                evidence_json,
-                provenance,
-                model_version,
-                snapshot_id,
-                retriever_version,
-            ),
-        )
-        self.conn.commit()
+        identifiers = list(evidence_ids or [])
+        parsed_ids = [_split_evidence_id(identifier) for identifier in identifiers]
+        for paper_id, _ in parsed_ids:
+            self._validate_paper_id(paper_id)
 
-        # Materialize first-class evidence rows: each ``paper:node`` identifier
-        # becomes an ``evidence`` row. At answer time we only have the grounding
-        # id and provenance — page/snippet/value are left blank rather than
-        # fabricated.
-        for identifier in list(evidence_ids or []):
-            paper_id, node_id = _split_evidence_id(identifier)
-            if paper_id or node_id:
+        owns_transaction = not self.conn.in_transaction
+        savepoint = f"record_answer_{uuid.uuid4().hex}"
+        self.conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            cur = self.conn.execute(
+                "INSERT INTO answer_records "
+                "(session_id, question, answer, evidence_ids, provenance, "
+                " model_version, snapshot_id, retriever_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    question,
+                    answer,
+                    json.dumps(identifiers, ensure_ascii=False),
+                    provenance,
+                    model_version,
+                    snapshot_id,
+                    retriever_version,
+                ),
+            )
+            for paper_id, node_id in parsed_ids:
                 self.record_evidence(paper_id, node_id, provenance=provenance)
-
-        # Materialize the answer itself as a first-class claim. The TBox type
-        # (Problem/Method/Conclusion/…) is not known at answer time, so it is
-        # left blank rather than guessed.
-        self.record_claim(question, answer, provenance=provenance)
-
-        return cur.lastrowid or 0
+            self.record_claim(question, answer, provenance=provenance)
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            if owns_transaction:
+                self.conn.commit()
+            return cur.lastrowid or 0
+        except BaseException:
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
 
     def record_evidence(
         self,
@@ -1542,6 +1553,8 @@ class Database:
         record with the same id replaces the row, letting richer fields (page /
         snippet / value) overwrite the sparse answer-time grounding.
         """
+        owns_transaction = not self.conn.in_transaction
+        self._validate_paper_id(paper_id)
         if evidence_id is None:
             evidence_id = (
                 f"{paper_id}:{node_id}" if (paper_id and node_id) else (paper_id or node_id)
@@ -1569,7 +1582,8 @@ class Database:
                 authority,
             ),
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         return evidence_id
 
     def record_claim_evidence(self, claim_id: str, evidence_ids: list[str]) -> list[str]:
@@ -1578,6 +1592,7 @@ class Database:
         The relation is additive and idempotent. SQLite foreign keys prevent
         unknown claim/evidence identifiers from becoming dangling provenance.
         """
+        owns_transaction = not self.conn.in_transaction
         unique_ids = list(dict.fromkeys(str(value) for value in evidence_ids if str(value)))
         if not unique_ids:
             return []
@@ -1586,7 +1601,8 @@ class Database:
             "ON CONFLICT(claim_id, evidence_id) DO NOTHING",
             [(claim_id, evidence_id) for evidence_id in unique_ids],
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         return unique_ids
 
     def record_claim(
@@ -1618,6 +1634,8 @@ class Database:
         produced it — a claim without provenance cannot be audited.
         """
         import hashlib
+
+        owns_transaction = not self.conn.in_transaction
 
         if claim_id is None:
             # claim_type participates in the identity: a statement verified in
@@ -1675,7 +1693,8 @@ class Database:
                 evidence_node_ids,
             ),
         )
-        self.conn.commit()
+        if owns_transaction:
+            self.conn.commit()
         return claim_id
 
     # -- Embeddings --
@@ -1901,6 +1920,7 @@ class Database:
         self, source_paper: str, item_type: str, item_data: str, confidence: float
     ) -> int:
         """Insert a confidence queue item. Returns queue_id."""
+        self._validate_paper_id(source_paper)
         cur = self.conn.execute(
             "INSERT INTO confidence_queue (source_paper, item_type, item_data, confidence, status) "
             "VALUES (?, ?, ?, ?, 'pending')",
