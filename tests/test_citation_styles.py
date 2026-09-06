@@ -280,8 +280,8 @@ class TestListStyles:
     def test_default_styles_dir_follows_runtime_root(self, tmp_path, monkeypatch):
         from drbrain.services.citation_styles import default_styles_dir
 
-        monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
-        assert default_styles_dir() == tmp_path / "data" / "citation_styles"
+        monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path.resolve()))
+        assert default_styles_dir() == tmp_path.resolve() / "data" / "citation_styles"
 
     def test_builtins_always_present(self):
         styles = list_styles()
