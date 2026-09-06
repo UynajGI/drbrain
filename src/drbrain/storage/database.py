@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 from loguru import logger
@@ -830,6 +831,7 @@ class Database:
         pages: str = "",
         authors: str = "",
         categories: str = "",
+        strict: bool = False,
     ) -> None:
         """Insert or ignore a paper record with full metadata fields.
 
@@ -2190,3 +2192,7 @@ class Database:
         ).fetchone()[0]
 
         return stats
+    @contextmanager
+    def write_lock(self):
+        """Compatibility lock for serialized ingest; SQLite serializes writes."""
+        yield

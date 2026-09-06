@@ -255,6 +255,8 @@ def _ingest_single_paper(
     # Backfill every identifier even when dedup resolved to an existing paper.
     # This keeps later source passes from losing a newly discovered arXiv/S2/
     # OpenAlex mapping and makes divergent ownership a hard ingest error.
+    if not local_id:
+        return {}
     try:
         db.insert_paper_ids(
             local_id,
