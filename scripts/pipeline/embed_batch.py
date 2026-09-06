@@ -154,6 +154,7 @@ def _import_staged_rows(
                         pass
         except Exception:  # noqa: BLE001 - sqlite-vec is optional
             pass
+        target_db.commit()
     return imported
 
 
@@ -258,19 +259,7 @@ def _load_cfg(config_name: str, *, root: Path | None = None) -> dict:
 def _safe_input_file(value: str, root: Path) -> Path:
     """Resolve the IDs file without following a symlink alias."""
 
-    candidate = runtime_path(value, root)
-    lexical = Path(value).expanduser()
-    if not lexical.is_absolute():
-        lexical = root / lexical
-    try:
-        relative = lexical.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"ids file escapes runtime root {root}: {lexical}") from exc
-    current = root
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise ValueError(f"ids file must not contain symlink components: {lexical}")
+    candidate = runtime_path(value, root, allow_external=True)
     if not candidate.is_file():
         raise ValueError(f"ids file is not a regular file: {candidate}")
     return candidate
@@ -305,7 +294,7 @@ def main() -> int:
         return 1
     try:
         ids_text = ids_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"ids file read error: {_safe_pipeline_error(exc, cfg)}", file=sys.stderr)
         return 1
     ids = [x.strip() for x in ids_text.replace(",", "\n").splitlines() if x.strip()]
@@ -358,12 +347,12 @@ def main() -> int:
         workers = int(os.environ.get("EMBED_WORKERS", "8"))
         per_timeout = float(os.environ.get("EMBED_PAPER_TIMEOUT", "900"))
     except (TypeError, ValueError):
-        print("EMBED_WORKERS and EMBED_PAPER_TIMEOUT must be positive integers", file=sys.stderr)
+        print("EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number", file=sys.stderr)
         return 1
     import math
 
     if workers <= 0 or not math.isfinite(per_timeout) or per_timeout <= 0:
-        print("EMBED_WORKERS and EMBED_PAPER_TIMEOUT must be positive integers", file=sys.stderr)
+        print("EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number", file=sys.stderr)
         return 1
 
     total_vec = done = 0
