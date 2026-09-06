@@ -30,11 +30,18 @@ def _get_cache(config: dict) -> ApiCache | None:
     if cache_ttl and cache_ttl > 0:
         if _cache is None:
             cache_dir = config.get("dirs", {}).get("cache", "data/cache")
-            _cache = ApiCache(
-                cache_dir,
-                ttl=cache_ttl,
-                secrets=(config.get("s2_api_key"), config.get("openalex_api_key")),
-            )
+            try:
+                _cache = ApiCache(
+                    cache_dir,
+                    ttl=cache_ttl,
+                    secrets=(
+                        config.get("api", {}).get("s2_api_key"),
+                        config.get("api", {}).get("openalex_api_key"),
+                    ),
+                )
+            except (OSError, ValueError) as exc:
+                _cit_log.warning("citation cache disabled: {}", type(exc).__name__)
+                _cache = None
         return _cache
     return None
 
