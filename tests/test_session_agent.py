@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -57,6 +58,33 @@ def test_create_session(sess_db, fake_models):
     assert row is not None
     assert row[0] == "Test Session"
     assert row[1] == "active"
+
+    model_config = sess_db.conn.execute(
+        "SELECT model_config FROM agent_sessions WHERE session_id = ?", (sid,)
+    ).fetchone()[0]
+    assert "sk-test" not in model_config
+    assert json.loads(model_config) == [{"provider": "openai", "model": "gpt-4o"}]
+
+
+def test_session_message_persistence_redacts_tool_payloads(sess_db, fake_models):
+    """User/model payloads cannot reintroduce credentials through messages."""
+    agent = SessionAgent()
+    sid = agent.create_session(sess_db, models=fake_models)
+    agent._persist_message(
+        "assistant",
+        "Authorization: Bearer answer-secret",
+        tool_calls_json=(
+            '{"function":{"name":"x","arguments":"{\\"api_key\\":\\"call-secret\\"}"}}'
+        ),
+    )
+
+    rows = sess_db.conn.execute(
+        "SELECT content, tool_calls_json FROM agent_messages WHERE session_id = ? ORDER BY seq",
+        (sid,),
+    ).fetchall()
+    rendered = "\n".join(str(value) for row in rows for value in row)
+    assert "answer-secret" not in rendered
+    assert "call-secret" not in rendered
 
 
 def test_load_session(sess_db, fake_models):

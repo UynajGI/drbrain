@@ -29,6 +29,7 @@ from drbrain.rag.indexer import (
     collect_tree_nodes,
     load_index,
 )
+from drbrain.storage.paths import paper_dir
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 
@@ -204,6 +205,26 @@ def test_collect_tree_nodes_real_paper(tmp_path):
     # ids unique across the paper
     ids = [d.id_ for d in docs]
     assert len(set(ids)) == len(ids)
+
+
+def test_collect_tree_nodes_preserves_doi_local_id_for_encoded_directory(tmp_path):
+    """The document key uses the DB DOI, not its percent-encoded basename."""
+    papers_dir = tmp_path / "papers"
+    doi = "10.1234/a"
+    paper_path = paper_dir(papers_dir, doi)
+    paper_path.mkdir(parents=True)
+    (paper_path / "raw.md").write_text("# Intro\nDOI body\n", encoding="utf-8")
+    (paper_path / "tree.json").write_text(
+        json.dumps(
+            {"structure": [{"title": "Intro", "node_id": "0000", "line_num": 1, "nodes": []}]}
+        ),
+        encoding="utf-8",
+    )
+
+    docs = collect_tree_nodes(paper_path)
+    assert len(docs) == 1
+    assert docs[0].metadata["paper_id"] == doi
+    assert docs[0].id_ == f"{doi}:0000"
 
 
 def test_collect_tree_nodes_from_dict_with_line_ranges(tmp_path):
@@ -737,6 +758,21 @@ def test_build_index_missing_paper_dir_skips(tmp_path):
     )
     assert stats["papers"] == 1  # missing dir skipped
     assert stats["nodes"] == 3
+
+
+def test_build_index_reads_legacy_nested_doi_directory(tmp_path):
+    """Existing DOI nested assets remain indexable after key migration."""
+    papers_dir = tmp_path / "papers"
+    doi = "10.1234/a"
+    _write_structured_paper(papers_dir / "10.1234", "a", _PAPER_A_SECTIONS)
+    # The helper above creates <papers>/10.1234/a and labels the tree with the
+    # suffix; build_index must still use the DB DOI for document metadata.
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB([doi])
+    stats = build_index(cfg, db, paper_ids=[doi], embed_model=_CountingEmbed())
+    assert stats["papers"] == 1
+    manifest = json.loads((tmp_path / "li" / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert any(key.startswith(f"{doi}:") for key in manifest["papers"][doi])
 
 
 @pytest.mark.integration

@@ -82,6 +82,16 @@ def _simple_namespace_config():
     )
 
 
+def test_default_rag_db_rejects_external_db_under_active_runtime(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    external_db = tmp_path / "other" / "drbrain.db"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+
+    with pytest.raises(ValueError, match="RAG source database"):
+        sql_retrie._default_rag_db({"db": {"path": str(external_db)}})
+
+
 def _patch_embed(monkeypatch, qvec):
     import drbrain.services.embedding as emb
 

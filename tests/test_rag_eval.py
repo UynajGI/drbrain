@@ -655,6 +655,89 @@ def test_run_qagen_honors_out_path(monkeypatch, tmp_path):
     assert not (tmp_path / "golden.jsonl").exists()
 
 
+def test_run_qagen_does_not_invent_placeholder_api_key(monkeypatch, tmp_path):
+    """Missing model credentials remain SDK/environment responsibility."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    cfg["llm"]["models"] = [{"provider": "openai", "model": "gpt-test", "api_keys": []}]
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    import llama_index.llms.openai as openai_module
+
+    seen: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    class FakeDatasetGenerator:
+        def __init__(self, nodes, llm, num_questions_per_chunk):
+            assert llm is not None
+
+        def generate_questions_from_nodes(self):
+            return ["Question?"]
+
+    monkeypatch.setattr(openai_module, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr("llama_index.core.evaluation.DatasetGenerator", FakeDatasetGenerator)
+
+    result = run_qagen(cfg, n_nodes=1, num_questions_per_chunk=1)
+
+    assert result["status"] == "ok"
+    assert "api_key" not in seen
+    assert "sk-none" not in str(seen)
+
+
+def test_run_qagen_redacts_llm_initialization_error(monkeypatch, tmp_path):
+    """A provider construction error must not echo its credential value."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    import llama_index.llms.openai as openai_module
+
+    class ExplodingOpenAI:
+        def __init__(self, **kwargs):
+            raise RuntimeError("provider rejected api_key=super-secret")
+
+    monkeypatch.setattr(openai_module, "OpenAI", ExplodingOpenAI)
+
+    result = run_qagen(cfg, n_nodes=1)
+
+    assert result["status"] == "error"
+    assert "super-secret" not in result["reason"]
+    assert "[REDACTED]" in result["reason"]
+
+
+def test_run_qagen_runtime_rejects_output_escape(monkeypatch, tmp_path):
+    """Golden-set writes stay inside an explicitly selected runtime."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    cfg["llm"]["models"] = []
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    class FakeDatasetGenerator:
+        def __init__(self, nodes, llm, num_questions_per_chunk):
+            pass
+
+        def generate_questions_from_nodes(self):
+            return ["Question?"]
+
+    monkeypatch.setattr("llama_index.core.evaluation.DatasetGenerator", FakeDatasetGenerator)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        run_qagen(cfg, n_nodes=1, out_path=str(tmp_path.parent / "escape.jsonl"))
+
+
 # ── score parsing / context assembly ─────────────────────────────────────────
 
 
