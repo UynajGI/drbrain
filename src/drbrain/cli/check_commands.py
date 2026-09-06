@@ -702,9 +702,11 @@ def clean_cmd(
     # could clear the caller's CWD instead of the selected worktree.
     explicit_runtime = "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
     runtime = RuntimeContext.create()
-    config_file = runtime.validate_config_file(
-        config_path, label="config file", required=True
-    ) if explicit_runtime else runtime.resolve_path(config_path)
+    config_file = (
+        runtime.validate_config_file(config_path, label="config file", required=True)
+        if explicit_runtime
+        else runtime.resolve_path(config_path)
+    )
     cfg_raw = load_config(config_file)
     if explicit_runtime:
         runtime.validate_config(cfg_raw)
