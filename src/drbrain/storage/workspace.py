@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,7 +26,7 @@ def validate_workspace_name(name: str) -> bool:
     Rejects: empty, ".", "..", absolute paths, path separators,
     ".." anywhere, ":" (Windows drive), leading/trailing whitespace.
     """
-    if not name:
+    if not isinstance(name, str) or not name:
         return False
     if name != name.strip():
         return False
@@ -40,8 +41,27 @@ def validate_workspace_name(name: str) -> bool:
     return True
 
 
+def _default_workspace_root() -> Path:
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        # ``runtime_root`` rejects an explicitly empty selector and symlinked
+        # aliases before any workspace file is opened.
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / "workspace"
+    return Path("workspace")
+
+
 def _ws_dir(name: str, root: Path | None = None) -> Path:
-    return (root or Path("workspace")) / name
+    if not validate_workspace_name(name):
+        raise WorkspaceError(f"Invalid workspace name: {name!r}")
+    base = Path(root) if root is not None else _default_workspace_root()
+    base = base.expanduser().resolve()
+    candidate = (base / name).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
+        raise WorkspaceError(f"Workspace path escapes root: {name!r}") from exc
+    return candidate
 
 
 def _papers_json(name: str, root: Path | None = None) -> Path:
@@ -129,7 +149,7 @@ def remove_papers(name: str, local_ids: list[str], root: Path | None = None) -> 
 
 def list_workspaces(root: Path | None = None) -> list[str]:
     """Return sorted list of workspace names."""
-    root = root or Path("workspace")
+    root = Path(root).expanduser().resolve() if root is not None else _default_workspace_root()
     if not root.exists():
         return []
     names = []

@@ -7,7 +7,7 @@ reranker reorders them — all without touching the callers' existing formats.
 
 Design note: fusion happens at the paper granularity. BM25 documents share
 ``local_id == paper_id`` (see ``build_bm25_index``), and embedding rows carry
-``paper_id == paper_dir.name`` (see ``build_tree_vectors``), so both sides
+the database paper ID (filesystem keys are resolved centrally), so both sides
 align on ``paper_id``. Section-level detail survives as ``payload``.
 """
 

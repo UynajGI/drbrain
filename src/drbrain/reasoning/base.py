@@ -14,6 +14,7 @@ Design principles:
 from __future__ import annotations
 
 import asyncio
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -114,6 +115,12 @@ class ReasoningWorkflow:
             logger.info("[workflow:%s] step: %s (llm=%s)", self.name, step.name, step.requires_llm)
             try:
                 result = step.run(ctx)
+                # Test doubles and plugin adapters may expose an awaitable
+                # despite the synchronous WorkflowStep contract.  Resolve it
+                # before caching so the first and subsequent executions share
+                # the same durable value rather than a coroutine repr.
+                if inspect.isawaitable(result):
+                    result = _run_async(result)
                 ctx.results[step.name] = result
             except Exception as e:
                 logger.warning("[workflow:%s] step %s failed: %s", self.name, step.name, e)

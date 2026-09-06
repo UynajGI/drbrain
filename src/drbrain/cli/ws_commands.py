@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import json
+from typing import NoReturn
 
 import typer
 
+from drbrain.security import safe_error
+
 ws_app = typer.Typer(help="Manage paper workspaces")
+
+
+def _workspace_error(exc: Exception, *, json_output: bool) -> NoReturn:
+    """Emit a bounded, redacted workspace error and stop the command."""
+    message = safe_error(exc)
+    if json_output:
+        typer.echo(json.dumps({"error": message}))
+    else:
+        typer.echo(message, err=True)
+    raise typer.Exit(1) from exc
 
 
 @ws_app.command("create")
@@ -25,11 +38,7 @@ def ws_create_cmd(
         else:
             typer.echo(f"Workspace created: {name}")
     except WorkspaceError as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
 
 
 @ws_app.command("add")
@@ -51,11 +60,7 @@ def ws_add_cmd(
                 f"Added {len(local_ids)} paper(s) to '{name}' ({(ws or {}).get('paper_count', 0)} total)"
             )
     except WorkspaceError as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
 
 
 @ws_app.command("remove")
@@ -67,8 +72,11 @@ def ws_remove_cmd(
     """Remove papers from a workspace."""
     from drbrain.storage.workspace import get_workspace, remove_papers
 
-    remove_papers(name, local_ids)
-    ws = get_workspace(name)
+    try:
+        remove_papers(name, local_ids)
+        ws = get_workspace(name)
+    except Exception as exc:  # noqa: BLE001 - keep CLI errors bounded
+        _workspace_error(exc, json_output=json_output)
     if json_output:
         typer.echo(json.dumps(ws, indent=2))
     else:
@@ -164,11 +172,7 @@ def ws_rename_cmd(
         else:
             typer.echo(f"Workspace renamed: {old_name} -> {new_name}")
     except (ValueError, FileNotFoundError, FileExistsError) as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
 
 
 # -- repair + import commands --

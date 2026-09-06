@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from drbrain.storage.paths import paper_id_from_dir, raw_md_path, tree_json_path
+
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
 
@@ -656,16 +658,16 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
 
 def _collect_tree_nodes(paper_dir: Path) -> list[dict]:
     """Collect all tree nodes from a paper's tree.json, with their text content."""
-    tree_path = paper_dir / "tree.json"
-    if not tree_path.exists():
+    tree_path = tree_json_path(paper_dir)
+    if not tree_path.is_file():
         return []
 
     tree = json.loads(tree_path.read_text(encoding="utf-8"))
     structure = tree.get("structure", [])
 
-    raw_md_path = paper_dir / "raw.md"
-    if raw_md_path.exists():
-        raw_text = raw_md_path.read_text(encoding="utf-8")
+    raw_path = raw_md_path(paper_dir)
+    if raw_path.is_file():
+        raw_text = raw_path.read_text(encoding="utf-8")
     else:
         raw_text = ""
 
@@ -711,6 +713,8 @@ def build_tree_vectors(
     db_path: Path,
     paper_dir: Path,
     cfg: EmbedConfig | None = None,
+    *,
+    paper_id: str | None = None,
 ) -> int:
     """Embed all tree nodes for a paper and store in tree_vectors.
 
@@ -737,7 +741,9 @@ def build_tree_vectors(
     conn = connect_wal(db_path)
     try:
         # 只查本篇节点的 hash（索引 IN 查询）——全表扫描 187 万行/篇是 O(N²) 瓶颈
-        paper_id = paper_dir.name
+        # ``paper_dir.name`` is a filesystem key, not necessarily the DB ID
+        # (canonical DOI keys are percent-encoded; legacy DOI dirs may nest).
+        paper_id = paper_id or paper_id_from_dir(paper_dir)
         all_node_keys = [
             (node["node_id"], _global_node_id(paper_id, node["node_id"])) for node in nodes
         ]
@@ -808,6 +814,8 @@ async def build_paper_tree_vectors(
     llm_models: list[dict] | None = None,
     sink: list[dict] | None = None,
     cache=None,
+    *,
+    paper_id: str | None = None,
 ) -> int:
     """Build PageIndex tree vectors + RAPTOR recursive summaries for a single paper.
 
@@ -830,17 +838,23 @@ async def build_paper_tree_vectors(
     """
     from drbrain.extractor.raptor import build_raptor_tree
 
-    pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg)
+    pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg, paper_id=paper_id)
     raptor_count = 0
     if llm_models:
         try:
             raptor_count = await build_raptor_tree(
-                paper_dir, db_path, embed_cfg, llm_models, sink=sink, cache=cache
+                paper_dir,
+                db_path,
+                embed_cfg,
+                llm_models,
+                sink=sink,
+                cache=cache,
+                paper_id=paper_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "RAPTOR tree build failed for {} ({}), PageIndex vectors still created",
-                paper_dir.name,
+                paper_id_from_dir(paper_dir),
                 exc,
             )
 

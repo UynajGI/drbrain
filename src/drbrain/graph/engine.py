@@ -37,6 +37,12 @@ class GraphEngine(ClosureMixin, EmbeddingsMixin):  # type: ignore[misc]  # _tran
         # Must be initialized here so embedding/closure reads (self._transE)
         # work on a freshly-constructed engine; see engine_embeddings.py.
         self._transE = None
+        # Generation and source identity for the cached model.  Database
+        # merges/deletes invalidate the persisted model; keeping these fields
+        # separate from the model itself lets EmbeddingsMixin detect that
+        # change before a stale vector can answer a query.
+        self._transE_revision = None
+        self._transE_source_db = None
 
     def add_edge(
         self, src: str, dst: str, relation: str, source_paper: str, weight: float = 1.0

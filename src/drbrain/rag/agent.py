@@ -48,6 +48,7 @@ from drbrain.rag.evidence import (
 )
 from drbrain.rag.llm import DrbrainLLM
 from drbrain.rag.status import RetrievalStatus, RetrievalUnavailableError
+from drbrain.security import public_model_configs, redact_sensitive
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -1349,16 +1350,19 @@ def load_session_history(
 
     messages: list[dict[str, Any]] = []
     for r in rows:
-        msg: dict[str, Any] = {"role": r[0], "content": r[1] or ""}
+        msg: dict[str, Any] = {
+            "role": r[0],
+            "content": redact_sensitive(r[1]) or "",
+        }
         if r[0] == "assistant" and r[2]:
             try:
-                msg["tool_calls"] = json.loads(r[2])
-            except (ValueError, TypeError):
+                msg["tool_calls"] = redact_sensitive(json.loads(r[2]))
+            except (ValueError, TypeError, json.JSONDecodeError):
                 pass
         if r[0] == "tool" and r[3]:
-            msg["tool_call_id"] = r[3]
+            msg["tool_call_id"] = redact_sensitive(r[3]) or ""
             if r[4]:
-                msg["name"] = r[4]
+                msg["name"] = redact_sensitive(r[4]) or ""
         messages.append(msg)
 
     if not messages:
@@ -1429,8 +1433,10 @@ def _persist_reason_session(
         db.insert_agent_session(
             session_id,
             title="reason",
-            system_prompt=system_prompt,
-            model_config=json.dumps(models, ensure_ascii=False),
+            system_prompt=redact_sensitive(system_prompt) or "",
+            # Persist only non-secret routing metadata.  A later invocation
+            # supplies the current runtime model list (and its credentials).
+            model_config=json.dumps(public_model_configs(models), ensure_ascii=False),
             owner_principal=principal or "",
         )
         created = True
@@ -1447,9 +1453,19 @@ def _persist_reason_session(
     seq = seq_row[0] if seq_row else 0
 
     if created:
-        db.insert_agent_message(session_id, seq, "system", content=system_prompt)
+        db.insert_agent_message(
+            session_id,
+            seq,
+            "system",
+            content=redact_sensitive(system_prompt) or "",
+        )
         seq += 1
-    db.insert_agent_message(session_id, seq, "user", content=question)
+    db.insert_agent_message(
+        session_id,
+        seq,
+        "user",
+        content=redact_sensitive(question) or "",
+    )
     seq += 1
     for tc in tool_calls:
         call_id = f"call_{seq}"
@@ -1458,23 +1474,31 @@ def _persist_reason_session(
             "type": "function",
             "function": {
                 "name": tc.get("name", ""),
-                "arguments": json.dumps(tc.get("args") or {}, ensure_ascii=False),
+                "arguments": json.dumps(redact_sensitive(tc.get("args") or {}), ensure_ascii=False),
             },
         }
+        safe_tcall_json = json.dumps(redact_sensitive(tcall), ensure_ascii=False)
         db.insert_agent_message(
-            session_id, seq, "assistant", content="", tool_calls_json=json.dumps(tcall)
+            session_id, seq, "assistant", content="", tool_calls_json=safe_tcall_json
         )
         seq += 1
         db.insert_agent_message(
             session_id,
             seq,
             "tool",
-            content=(tc.get("result_summary") or "")[:MAX_RESULT_SUMMARY_CHARS],
-            tool_call_id=call_id,
-            tool_name=tc.get("name", ""),
+            content=(redact_sensitive(str(tc.get("result_summary") or "")) or "")[
+                :MAX_RESULT_SUMMARY_CHARS
+            ],
+            tool_call_id=redact_sensitive(call_id) or "",
+            tool_name=redact_sensitive(str(tc.get("name", ""))) or "",
         )
         seq += 1
-    db.insert_agent_message(session_id, seq, "assistant", content=answer or "")
+    db.insert_agent_message(
+        session_id,
+        seq,
+        "assistant",
+        content=redact_sensitive(answer or "") or "",
+    )
     db.touch_session(session_id)
     db.commit()
     return session_id

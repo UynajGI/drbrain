@@ -6,15 +6,18 @@ and returns extracted text, HTML, and metadata — DrBrain never renders pages i
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os as _os
 import re as _re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from loguru import logger
 
+from drbrain.security import redact_sensitive_text, safe_error
 from drbrain.utils.http_retry import http_retry
 
 _DEFAULT_WEBEXTRACT_URL = "http://127.0.0.1:8766"
@@ -43,14 +46,20 @@ def _http_json_post(url: str, payload: dict, timeout: float) -> dict:
             return json.loads(body) if body else {}
     except HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:500]
-        logger.warning("[webtools] HTTP %s from %s — %s", e.code, url, detail)
-        return {"error": f"HTTP {e.code}: {detail}"}
+        safe_url = redact_sensitive_text(url) or ""
+        safe_detail = safe_error(detail)
+        logger.warning("[webtools] HTTP %s from %s — %s", e.code, safe_url, safe_detail)
+        return {"error": f"HTTP {e.code}: {safe_detail}"}
     except URLError as e:
-        logger.warning("[webtools] connection error %s — %s", url, e.reason)
-        return {"error": str(e.reason)}
+        safe_url = redact_sensitive_text(url) or ""
+        safe_reason = safe_error(e.reason)
+        logger.warning("[webtools] connection error %s — %s", safe_url, safe_reason)
+        return {"error": safe_reason}
     except (OSError, ValueError) as e:
-        logger.warning("[webtools] request failed %s — %s", url, e)
-        return {"error": str(e)}
+        safe_url = redact_sensitive_text(url) or ""
+        safe_reason = safe_error(e)
+        logger.warning("[webtools] request failed %s — %s", safe_url, safe_reason)
+        return {"error": safe_reason}
 
 
 def _slugify_title(title: str, url: str) -> str:
@@ -64,6 +73,43 @@ def _slugify_title(title: str, url: str) -> str:
         raw = Path(parsed.path).stem or parsed.netloc
     slug = _re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:120].strip("-")
     return slug or "web-link"
+
+
+def canonical_web_url(url: str) -> str:
+    """Return a stable URL identity key, ignoring cosmetic URL differences."""
+    value = str(url or "").strip()
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return value
+    hostname = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    default_port = (parsed.scheme.lower() == "http" and port == 80) or (
+        parsed.scheme.lower() == "https" and port == 443
+    )
+    host = hostname
+    if ":" in hostname and not hostname.startswith("["):
+        host = f"[{hostname}]"
+    if port is not None and not default_port:
+        host = f"{host}:{port}"
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/") or "/"
+    return urlunsplit((parsed.scheme.lower(), host, path, parsed.query, ""))
+
+
+def web_local_id(url: str) -> str:
+    """Create a deterministic, path-safe local_id for a web URL.
+
+    The URL digest is the identity; a URL-derived slug is only a readable
+    prefix and therefore cannot collide when two pages have the same title.
+    """
+    canonical = canonical_web_url(url)
+    slug = _slugify_title("", canonical)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+    return f"{slug}-{digest}"
 
 
 @http_retry(max_retries=2, base_delay=0.5)
@@ -93,11 +139,19 @@ def extract_web(
     if pdf is not None:
         payload["pdf"] = pdf
 
-    logger.info("[webtools] extracting %s — timeout=%.0fs", url, timeout_val)
+    logger.info(
+        "[webtools] extracting %s — timeout=%.0fs",
+        redact_sensitive_text(url) or "",
+        timeout_val,
+    )
     result = _http_json_post(endpoint, payload, timeout_val)
 
     if result.get("error") and not result.get("title"):
-        logger.warning("[webtools] extraction failed for %s — %s", url, result["error"])
+        logger.warning(
+            "[webtools] extraction failed for %s — %s",
+            redact_sensitive_text(url) or "",
+            safe_error(result["error"]),
+        )
         return {
             "url": url,
             "title": "",
@@ -115,7 +169,7 @@ def extract_web(
         "html": result.get("html", ""),
         "images": result.get("images", []),
         "extracted_at": result.get("extracted_at", ""),
-        "error": result.get("error", ""),
+        "error": safe_error(result.get("error", "")) if result.get("error") else "",
     }
 
 

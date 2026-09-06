@@ -8,7 +8,6 @@ import inspect
 import json
 import logging
 import math
-import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -23,12 +22,8 @@ from drbrain.loop.store import (
     RunExecutionBlockedError,
     RunLedger,
 )
+from drbrain.security import redact_sensitive, redact_sensitive_text
 
-_SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|authorization|cookie|password|secret|token)", re.I)
-_SENSITIVE_ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*"
-    r"(?:bearer\s+)?[^,\s]+"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -626,18 +621,7 @@ def _contains_value(value: Any, needle: str) -> bool:
 
 
 def _redact(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): "[REDACTED]" if _SENSITIVE_KEY.search(str(key)) else _redact(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, list | tuple | set | frozenset):
-        return [_redact(item) for item in value]
-    if isinstance(value, str):
-        return _redact_text(value)
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    return _redact_text(str(value))
+    return redact_sensitive(value)
 
 
 def redact(value: Any) -> Any:
@@ -646,9 +630,7 @@ def redact(value: Any) -> Any:
 
 
 def _redact_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return _SENSITIVE_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=[REDACTED]", value)
+    return redact_sensitive_text(value)
 
 
 def _bounded(value: Any, max_output_bytes: int | None) -> Any:

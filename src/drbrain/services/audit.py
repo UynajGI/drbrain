@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.table import Table
 
 from drbrain.storage.database import Database
-from drbrain.storage.paths import raw_md_path, tree_json_path
+from drbrain.storage.paths import paper_dir, raw_md_path, resolve_paper_dir, tree_json_path
 
 SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
@@ -75,7 +75,9 @@ def audit_papers(
         arxiv = p.get("arxiv")
         s2_id = p.get("s2_id")
 
-        paper_dir = paper_dirs / pid
+        # Resolve the database identity through the canonical filesystem key,
+        # with read compatibility for legacy nested/underscore DOI layouts.
+        paper_path = resolve_paper_dir(paper_dirs, pid) or paper_dir(paper_dirs, pid)
         concepts = db.get_concepts_by_paper(pid)
 
         # --- error rules ---
@@ -94,7 +96,7 @@ def audit_papers(
                 )
 
         # missing_md
-        md_path = raw_md_path(paper_dir)
+        md_path = raw_md_path(paper_path)
         if not md_path.exists():
             if SEVERITY_ORDER["error"] <= min_severity:
                 issues.append(
@@ -103,7 +105,7 @@ def audit_papers(
                         "title": title,
                         "rule": "missing_md",
                         "severity": "error",
-                        "message": f"No raw.md in {paper_dir}",
+                        "message": f"No raw.md in {paper_path}",
                     }
                 )
 
@@ -191,7 +193,7 @@ def audit_papers(
                     )
 
         # empty_tree
-        tree_path = tree_json_path(paper_dir)
+        tree_path = tree_json_path(paper_path)
         if not tree_path.exists() or tree_path.stat().st_size == 0:
             if SEVERITY_ORDER["warning"] <= min_severity:
                 issues.append(

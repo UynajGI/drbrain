@@ -13,8 +13,10 @@ from drbrain.cli._common import (
     _enrich_tree_with_sections,
     _render_landscape,
     _resolve_workspace_papers,
+    runtime_data_path,
 )
 from drbrain.graph.engine import GraphEngine
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 from drbrain.storage.database import Database
 
 
@@ -131,6 +133,7 @@ def reason_cmd(
         json_output = json_output.default
 
     cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
     graph.load_from_db(db)
@@ -148,7 +151,7 @@ def reason_cmd(
         try:
             wf = get_workflow(workflow)
         except ValueError as e:
-            typer.echo(str(e), err=True)
+            typer.echo(safe_error(e, secrets=config_secrets), err=True)
             db.close()
             raise typer.Exit(1)
 
@@ -191,13 +194,15 @@ def reason_cmd(
                     typer.echo(f"\n{'─' * 60}")
                     typer.echo(f"Result [{step_name}]:")
                     typer.echo(f"{'─' * 60}")
-                    typer.echo(result)
+                    typer.echo(safe_error(result, limit=20_000, secrets=config_secrets))
                 elif isinstance(result, dict):
-                    typer.echo(f"[{step_name}] {result}")
+                    typer.echo(
+                        f"[{step_name}] {safe_error(result, limit=20_000, secrets=config_secrets)}"
+                    )
                 elif isinstance(result, list) and result:
                     typer.echo(f"[{step_name}] {len(result)} items")
                     for item in result[:3]:
-                        typer.echo(f"  - {item}")
+                        typer.echo(f"  - {safe_error(item, limit=20_000, secrets=config_secrets)}")
 
         db.close()
         return
@@ -247,19 +252,28 @@ def reason_cmd(
             closure_context=closure_ctx,
         )
         if json_output:
-            typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+            typer.echo(
+                json.dumps(
+                    redact_sensitive(result),
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            )
         else:
-            typer.echo(result.get("answer", ""))
+            typer.echo(safe_error(result.get("answer", ""), secrets=config_secrets))
             tool_calls = result.get("tool_calls", [])
             if tool_calls:
                 typer.echo(f"\nTool calls ({len(tool_calls)}):")
                 for tc in tool_calls:
                     typer.echo(
-                        f"  - {tc.get('name')}({json.dumps(tc.get('args') or {}, ensure_ascii=False)})"
+                        f"  - {tc.get('name')}({safe_error(json.dumps(tc.get('args') or {}, ensure_ascii=False), secrets=config_secrets)})"
                     )
                     summary = (tc.get("result_summary") or "").strip()
                     if summary:
-                        typer.echo(f"      {summary[:200]}")
+                        typer.echo(
+                            f"      {safe_error(summary, limit=200, secrets=config_secrets)}"
+                        )
             typer.echo(f"\n[turns: {result.get('turns', 0)}, engine: llamaindex]")
             if result.get("session_id"):
                 typer.echo(f"[Session: {result['session_id']}]")
@@ -289,9 +303,15 @@ def reason_cmd(
     typer.echo(f"Bidirectional reasoning (session): {question}\n")
     result = asyncio.run(agent.reason_bidirectional(question, max_rounds=max_rounds))
     if "error" in result:
-        typer.echo(f"Error: {result['error']}", err=True)
+        typer.echo(
+            f"Error: {safe_error(result['error'], secrets=config_secrets)}",
+            err=True,
+        )
     else:
-        typer.echo(f"Answer (round {result['rounds']}): {result['answer']}\n")
+        typer.echo(
+            f"Answer (round {result['rounds']}): "
+            f"{safe_error(result['answer'], secrets=config_secrets)}\n"
+        )
         typer.echo(f"Hypotheses explored: {len(result['hypotheses'])}")
         for i, (h, v) in enumerate(zip(result["hypotheses"], result["kg_validations"]), 1):
             typer.echo(
@@ -346,7 +366,11 @@ def ask_cmd(
         try:
             _ask_llamaindex_cli(cfg, db, question_text, top_k=top_k, json_output=json_output)
         except Exception as exc:
-            typer.echo(f"[ask] llamaindex query failed: {exc}", err=True)
+            typer.echo(
+                f"[ask] llamaindex query failed: "
+                f"{safe_error(exc, secrets=configured_secret_values(cfg))}",
+                err=True,
+            )
             raise typer.Exit(1)
     finally:
         db.close()
@@ -363,14 +387,25 @@ def _ask_llamaindex_cli(
     from drbrain.rag.config import get_llamaindex_config
     from drbrain.rag.engine import ask_llamaindex
 
+    config_secrets = configured_secret_values(cfg)
     streaming = bool(get_llamaindex_config(cfg).streaming)
     if json_output:
         result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
-        typer.echo(json.dumps(result, indent=2, ensure_ascii=False))
+        typer.echo(
+            json.dumps(
+                redact_sensitive(result),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
         return
 
     if not streaming:
-        _render_ask_llamaindex(ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False))
+        _render_ask_llamaindex(
+            ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False),
+            secrets=config_secrets,
+        )
         return
 
     typer.echo(f"\nQ: {question}\n")
@@ -378,30 +413,30 @@ def _ask_llamaindex_cli(
     final: dict[str, Any] | None = None
     for item in result:
         if "chunk" in item:
-            typer.echo(item["chunk"], nl=False)
+            typer.echo(safe_error(item["chunk"], secrets=config_secrets), nl=False)
         else:
             final = item
     typer.echo("\n")
     if final is None:  # pragma: no cover - defensive: empty stream
         final = {"question": question, "answer": "", "sources": [], "engine": "llamaindex"}
-    _render_ask_sources(final)
+    _render_ask_sources(final, secrets=config_secrets)
 
 
-def _render_ask_llamaindex(result: dict[str, Any]) -> None:
+def _render_ask_llamaindex(result: dict[str, Any], *, secrets: tuple[str, ...] = ()) -> None:
     """Plain rendering of the llamaindex ask result dict (Q / A / sources)."""
-    typer.echo(f"\nQ: {result.get('question', '')}\n")
-    typer.echo(f"A: {result.get('answer', '')}\n")
-    _render_ask_sources(result)
+    typer.echo(f"\nQ: {safe_error(result.get('question', ''), secrets=secrets)}\n")
+    typer.echo(f"A: {safe_error(result.get('answer', ''), secrets=secrets)}\n")
+    _render_ask_sources(result, secrets=secrets)
 
 
-def _render_ask_sources(result: dict[str, Any]) -> None:
+def _render_ask_sources(result: dict[str, Any], *, secrets: tuple[str, ...] = ()) -> None:
     """Print the structured source back-links of an ask result."""
     sources = result.get("sources") or []
     typer.echo(f"Sources ({len(sources)}, engine: {result.get('engine', 'llamaindex')}):")
     for i, src in enumerate(sources, start=1):
-        title = src.get("title") or ""
-        nid = src.get("node_id") or ""
-        pid = src.get("paper_id") or ""
+        title = safe_error(src.get("title") or "", secrets=secrets)
+        nid = safe_error(src.get("node_id") or "", secrets=secrets)
+        pid = safe_error(src.get("paper_id") or "", secrets=secrets)
         score = src.get("score")
         score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
         label = title if title else (nid if nid else pid)
@@ -530,9 +565,19 @@ def landscape_cmd(
     result = landscape_workspace(db, workspace_path=workspace, paper_ids=paper_ids)
 
     if json_output:
-        typer.echo(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        typer.echo(
+            json.dumps(
+                redact_sensitive(result),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
     elif "error" in result:
-        typer.echo(f"Error: {result['error']}", err=True)
+        typer.echo(
+            f"Error: {safe_error(result['error'], secrets=configured_secret_values(cfg))}",
+            err=True,
+        )
     else:
         _render_landscape(result, top_n)
 
@@ -902,6 +947,8 @@ def survey_cmd(
     if isinstance(top_n, typer.models.OptionInfo):
         top_n = int(top_n.default or 10)
 
+    output_path = runtime_data_path(ctx, output, label="survey output") if output else None
+
     cfg = ctx.obj["config"]
     db = Database(cfg["db"]["path"])
     graph = GraphEngine()
@@ -915,11 +962,9 @@ def survey_cmd(
             typer.echo(json.dumps(data, indent=2, ensure_ascii=False, default=str))
         else:
             md = generate_survey(db, topic, graph=graph, top_n=top_n)
-            if output:
-                from pathlib import Path
-
-                Path(output).write_text(md, encoding="utf-8")
-                typer.echo(f"Survey written to {output}")
+            if output_path:
+                output_path.write_text(md, encoding="utf-8")
+                typer.echo(f"Survey written to {output_path}")
             else:
                 typer.echo(md)
     finally:

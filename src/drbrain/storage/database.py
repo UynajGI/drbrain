@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from loguru import logger
@@ -382,6 +384,7 @@ class Database:
         connection is safe; ``busy_timeout`` below absorbs write contention.
         """
         self.path = Path(db_path)
+        self._write_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -830,17 +833,24 @@ class Database:
         pages: str = "",
         authors: str = "",
         categories: str = "",
+        strict: bool = False,
     ) -> None:
         """Insert or ignore a paper record with full metadata fields.
 
         On conflict (existing local_id), bump updated_at to signal downstream
         incremental stages that this paper changed.
         """
+        if strict and self.get_paper(local_id) is not None:
+            raise ValueError("paper identity already exists")
         self.conn.execute(
             "INSERT INTO papers (local_id, title, year, status, paper_type, "
             "journal, publisher, citation_count, volume, pages, authors, categories, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
+            + (
+                ""
+                if strict
+                else "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP"
+            ),
             (
                 local_id,
                 title,
@@ -858,9 +868,26 @@ class Database:
         )
 
     def insert_paper_ids(
-        self, local_id: str, doi=None, arxiv=None, s2_id=None, openalex_id=None
+        self,
+        local_id: str,
+        doi=None,
+        arxiv=None,
+        s2_id=None,
+        openalex_id=None,
+        *,
+        strict: bool = False,
     ) -> None:
-        """Insert or ignore external identifier mappings for a paper."""
+        """Insert external identifier mappings, optionally rejecting conflicts."""
+        if strict:
+            existing = self.get_paper_by_external_id
+            for kind, value in (
+                ("doi", doi),
+                ("arxiv", arxiv),
+                ("s2_id", s2_id),
+                ("openalex_id", openalex_id),
+            ):
+                if value and existing(kind, value) not in (None, local_id):
+                    raise ValueError(f"external identifier {kind} already belongs to another paper")
         self.conn.execute(
             "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
             (local_id, doi, arxiv, s2_id, openalex_id),
@@ -2173,3 +2200,9 @@ class Database:
         ).fetchone()[0]
 
         return stats
+
+    @contextmanager
+    def write_lock(self):
+        """Serialize callers sharing this database's batch-write lock."""
+        with self._write_lock:
+            yield

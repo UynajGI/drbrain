@@ -15,6 +15,7 @@ from drbrain.cli._common import (
 )
 from drbrain.config import Config
 from drbrain.graph.engine import GraphEngine
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 console = Console()
 
@@ -34,7 +35,7 @@ def seed_cmd(
         seeds = graph.detect_research_seeds(db)
 
     if json_output:
-        typer.echo(json.dumps(seeds, indent=2, ensure_ascii=False, default=str))
+        typer.echo(json.dumps(redact_sensitive(seeds), indent=2, ensure_ascii=False, default=str))
         return
 
     typer.echo(f"Research seeds found: {len(seeds)}")
@@ -53,7 +54,7 @@ def list_cmd(
         papers = db.get_all_papers()
 
     if json_output:
-        typer.echo(json.dumps(papers, indent=2, ensure_ascii=False, default=str))
+        typer.echo(json.dumps(redact_sensitive(papers), indent=2, ensure_ascii=False, default=str))
         return
 
     if not papers:
@@ -106,7 +107,7 @@ def stats_cmd(
     }
 
     if json_output:
-        typer.echo(json.dumps(data, indent=2, default=str))
+        typer.echo(json.dumps(redact_sensitive(data), indent=2, default=str))
         return
 
     table = Table(title="DrBrain Statistics")
@@ -278,7 +279,11 @@ def query_cmd(
     try:
         _query_llamaindex_cli(cfg, text, _limit, _json_output, _jsonl)
     except Exception as exc:
-        typer.echo(f"[query] llamaindex query failed: {exc}", err=True)
+        typer.echo(
+            f"[query] llamaindex query failed: "
+            f"{safe_error(exc, secrets=configured_secret_values(cfg))}",
+            err=True,
+        )
         raise typer.Exit(1)
 
 
@@ -386,7 +391,14 @@ def fsearch_cmd(
                 typer.echo(detail)
 
     if json_output:
-        typer.echo(json.dumps(output, ensure_ascii=False, indent=2, default=str))
+        typer.echo(
+            json.dumps(
+                redact_sensitive(output),
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
 
 
 def search_cmd(
@@ -415,13 +427,13 @@ def search_cmd(
 
     if not results:
         if json_output:
-            typer.echo(json.dumps({"query": query, "results": []}))
+            typer.echo(json.dumps(redact_sensitive({"query": query, "results": []})))
         else:
             typer.echo(f"No results for: {query}")
         return
 
     if json_output:
-        typer.echo(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        typer.echo(json.dumps(redact_sensitive(results), indent=2, ensure_ascii=False, default=str))
         return
 
     typer.echo(f'Search: "{query}" — {len(results)} results')
@@ -468,7 +480,11 @@ def hybrid_cmd(
     try:
         _hybrid_llamaindex_cli(cfg, query, _limit, _json_output)
     except Exception as exc:
-        typer.echo(f"[hybrid] llamaindex retrieval failed: {exc}", err=True)
+        typer.echo(
+            f"[hybrid] llamaindex retrieval failed: "
+            f"{safe_error(exc, secrets=configured_secret_values(cfg))}",
+            err=True,
+        )
         raise typer.Exit(1)
 
 
@@ -495,7 +511,7 @@ def _query_llamaindex_cli(
     if json_output:
         typer.echo(
             json.dumps(
-                {"query": query, "engine": "llamaindex", "results": rows},
+                redact_sensitive({"query": query, "engine": "llamaindex", "results": rows}),
                 indent=2,
                 ensure_ascii=False,
             )
@@ -503,7 +519,7 @@ def _query_llamaindex_cli(
         return
     if jsonl:
         for r in rows:
-            typer.echo(json.dumps(r, ensure_ascii=False, default=str))
+            typer.echo(json.dumps(redact_sensitive(r), ensure_ascii=False, default=str))
         return
     if not rows:
         typer.echo(f"No results for: {query}")
@@ -545,7 +561,7 @@ def _hybrid_llamaindex_cli(cfg: dict, query: str, limit: int, json_output: bool)
     if json_output:
         typer.echo(
             json.dumps(
-                {"query": query, "engine": "llamaindex", "results": results},
+                redact_sensitive({"query": query, "engine": "llamaindex", "results": results}),
                 indent=2,
                 ensure_ascii=False,
             )

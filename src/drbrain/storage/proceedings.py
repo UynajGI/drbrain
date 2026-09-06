@@ -8,10 +8,25 @@ name, year, venue, and a list of associated paper local_ids.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
 DEFAULT_PATH = Path("data/proceedings.json")
+
+
+def default_path() -> Path:
+    """Return the proceedings store under the active runtime root.
+
+    Keep ``DEFAULT_PATH`` relative for backwards compatibility, but resolve
+    the implicit store lazily so embedded/CLI runs can switch worktrees in a
+    single process without writing into the caller's cwd.
+    """
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / DEFAULT_PATH
+    return DEFAULT_PATH
 
 
 def _read_store(path: Path) -> list[dict]:

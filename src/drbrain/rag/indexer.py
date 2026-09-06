@@ -54,6 +54,12 @@ from loguru import logger
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.storage.paths import (
+    paper_id_from_dir,
+    raw_md_path,
+    resolve_paper_dir,
+    tree_json_path,
+)
 
 try:  # pragma: no cover - exercised in environments without llama-index
     from llama_index.core import VectorStoreIndex, load_index_from_storage
@@ -204,6 +210,8 @@ def collect_tree_nodes(
     paper_dir: str | Path,
     tree_json: str | Path | dict | None = None,
     max_node_tokens: int | None = None,
+    *,
+    paper_id: str | None = None,
 ) -> list[Document]:
     """Collect one :class:`Document` per PageIndex tree node.
 
@@ -236,10 +244,14 @@ def collect_tree_nodes(
         raise RuntimeError("llama-index is not installed; cannot collect Documents")
 
     paper_dir = Path(paper_dir)
-    paper_id = paper_dir.name
+    # ``paper_id`` is the DB identity, not necessarily the directory basename:
+    # canonical DOI keys are percent-encoded and legacy DOI assets may be
+    # nested.  Index builds pass the DB id explicitly; direct callers get a
+    # best-effort decode from the path.
+    resolved_paper_id = paper_id or paper_id_from_dir(paper_dir)
 
     if tree_json is None or isinstance(tree_json, (str, Path)):
-        tree_path = Path(tree_json) if tree_json else paper_dir / "tree.json"
+        tree_path = Path(tree_json) if tree_json else tree_json_path(paper_dir)
         if not tree_path.exists():
             return []
         try:
@@ -277,7 +289,7 @@ def collect_tree_nodes(
         or (node.get("line_start") is not None and node.get("line_end") is not None)
         for node in flat
     ):
-        raw_path = paper_dir / "raw.md"
+        raw_path = raw_md_path(paper_dir)
         if raw_path.exists():
             raw_lines = raw_path.read_text(encoding="utf-8").split("\n")
 
@@ -314,9 +326,9 @@ def collect_tree_nodes(
         docs.append(
             Document(
                 text=text,
-                id_=_node_key(paper_id, nid),
+                id_=_node_key(resolved_paper_id, nid),
                 metadata={
-                    "paper_id": paper_id,
+                    "paper_id": resolved_paper_id,
                     "node_id": nid,
                     "title": title,
                     "line_start": line_start,
@@ -687,15 +699,7 @@ def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
     papers are nested one level (``<papers>/<prefix>/<suffix>``) or use an
     underscore-sanitized flat name.  Returns the first existing layout.
     """
-    candidates = [papers_root / pid]
-    if "/" in pid:
-        prefix, _, suffix = pid.partition("/")
-        candidates.append(papers_root / prefix / suffix.replace("/", "_"))
-        candidates.append(papers_root / pid.replace("/", "_"))
-    for cand in candidates:
-        if cand.is_dir():
-            return cand
-    return None
+    return resolve_paper_dir(papers_root, pid)
 
 
 # ── Build ────────────────────────────────────────────────────────────────────
@@ -839,7 +843,7 @@ def build_index(
         paper_dir = _resolve_paper_dir(papers_root, pid)
         if paper_dir is None:
             return pid, None
-        return pid, collect_tree_nodes(paper_dir)
+        return pid, collect_tree_nodes(paper_dir, paper_id=pid)
 
     missing_dirs = 0
     sorted_ids = sorted(str(p) for p in target_ids)

@@ -13,15 +13,25 @@ configuration.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from drbrain.config import AutoresearchConfig
+from drbrain.runtime import RuntimeContext
+from drbrain.security import (
+    configured_secret_values,
+    redact_sensitive,
+    redact_sensitive_text,
+    safe_error,
+)
 from drbrain.storage.database import Database
+from drbrain.storage.inbox import first_symlink_component
 
 _LEDGER_FILE = "ledger.sqlite3"
 
@@ -39,12 +49,46 @@ def autoresearch_settings(cfg: Any) -> AutoresearchConfig:
     raise ValueError("autoresearch settings must be a mapping")
 
 
+def _active_runtime() -> RuntimeContext | None:
+    """Return the selected runtime, preserving fail-closed empty semantics."""
+    if "DRBRAIN_ROOT" not in os.environ and "DRBRAIN_RUNTIME_ROOT" not in os.environ:
+        return None
+    return RuntimeContext.create()
+
+
+def _runtime_path(value: str | Path, *, label: str) -> Path:
+    """Resolve a service-owned path against the active runtime namespace.
+
+    CLI callers pass an already-normalized config, but the service is also a
+    public Python API.  Apply the same environment boundary for raw configs so
+    a WebUI started in a data-only root cannot silently fall back to CWD.
+    """
+    raw = Path(value).expanduser()
+    runtime = _active_runtime()
+    if runtime is not None:
+        lexical = raw if raw.is_absolute() else runtime.root / raw
+    else:
+        lexical = raw if raw.is_absolute() else Path.cwd() / raw
+    link = first_symlink_component(lexical)
+    if link is not None:
+        raise ValueError(f"{label} must not contain a symlink: {link}")
+    if runtime is not None:
+        return runtime.assert_within_root(lexical, label=label)
+    return lexical.resolve()
+
+
 def ledger_path(cfg: Any) -> Path:
-    return Path(autoresearch_settings(cfg).run_dir) / _LEDGER_FILE
+    return _runtime_path(
+        Path(autoresearch_settings(cfg).run_dir) / _LEDGER_FILE,
+        label="autoresearch ledger",
+    )
 
 
 def db_path(cfg: Any) -> str:
-    return str(cfg["db"]["path"])
+    value = cfg["db"]["path"]
+    if str(value) == ":memory:":
+        return ":memory:"
+    return str(_runtime_path(value, label="database path"))
 
 
 @contextmanager
@@ -60,10 +104,15 @@ def _db(cfg: Any) -> Iterator[Database]:
 def _ledger(cfg: Any) -> Iterator[sqlite3.Connection | None]:
     """Read-only connection to the autoresearch ledger, or ``None`` if absent."""
     path = ledger_path(cfg)
-    if not path.is_file():
+    # Never read a symlinked ledger: this endpoint is read-only, but following
+    # an alias could disclose another worktree's research history.
+    if path.is_symlink() or not path.is_file():
         yield None
         return
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+    # ``Path.as_uri`` escapes spaces and query characters before SQLite parses
+    # the URI; string interpolation of a raw path can otherwise alter mode or
+    # the database filename.
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -75,7 +124,7 @@ def _loads(value: Any, default: Any) -> Any:
     if not value:
         return default
     try:
-        return json.loads(value)
+        return redact_sensitive(json.loads(value))
     except (TypeError, ValueError):
         return default
 
@@ -179,7 +228,7 @@ def runs(cfg: Any) -> list[dict[str, Any]]:
             ).fetchall()
         except sqlite3.OperationalError:
             return []
-    return [dict(r) for r in rows]
+    return [redact_sensitive(dict(r)) for r in rows]
 
 
 def run_events(cfg: Any, run_id: str, after: int = 0, limit: int = 200) -> list[dict[str, Any]]:
@@ -198,13 +247,15 @@ def run_events(cfg: Any, run_id: str, after: int = 0, limit: int = 200) -> list[
         except sqlite3.OperationalError:
             return []
     return [
-        {
-            "seq": r["event_seq"],
-            "actor": r["actor"],
-            "type": r["event_type"],
-            "payload": _loads(r["payload_json"], {}),
-            "created_at": r["created_at"],
-        }
+        redact_sensitive(
+            {
+                "seq": r["event_seq"],
+                "actor": r["actor"],
+                "type": r["event_type"],
+                "payload": _loads(r["payload_json"], {}),
+                "created_at": r["created_at"],
+            }
+        )
         for r in rows
     ]
 
@@ -247,19 +298,21 @@ def run_claims(cfg: Any, run_id: str) -> list[dict[str, Any]]:
         payload = _loads(p["payload_json"], {})
         st = settled.get(p["claim_id"])
         out.append(
-            {
-                "proposal_id": p["proposal_id"],
-                "claim_id": p["claim_id"],
-                "author": p["author"],
-                "status": p["status"],
-                "review_score": p["review_score"],
-                "statement": payload.get("statement") or payload.get("hypothesis") or "",
-                "reviews": by_proposal.get(p["proposal_id"], []),
-                "verdict": st["verdict"] if st else None,
-                "reason": st["reason"] if st else None,
-                "evidence_ids": _loads(st["evidence_ids_json"], []) if st else [],
-                "created_at": p["created_at"],
-            }
+            redact_sensitive(
+                {
+                    "proposal_id": p["proposal_id"],
+                    "claim_id": p["claim_id"],
+                    "author": p["author"],
+                    "status": p["status"],
+                    "review_score": p["review_score"],
+                    "statement": payload.get("statement") or payload.get("hypothesis") or "",
+                    "reviews": by_proposal.get(p["proposal_id"], []),
+                    "verdict": st["verdict"] if st else None,
+                    "reason": st["reason"] if st else None,
+                    "evidence_ids": _loads(st["evidence_ids_json"], []) if st else [],
+                    "created_at": p["created_at"],
+                }
+            )
         )
     return out
 
@@ -287,20 +340,22 @@ def experiments(cfg: Any, run_id: str | None = None) -> list[dict[str, Any]]:
         except sqlite3.OperationalError:
             return []
     return [
-        {
-            "experiment_id": r["experiment_id"],
-            "run_id": r["run_id"],
-            "claim_id": r["claim_id"],
-            "status": r["status"],
-            "seed": r["seed"],
-            "artifacts": r["artifacts"],
-            "verdict": r["verdict"],
-            "reason": r["reason"],
-            "plan": _loads(r["plan_json"], {}),
-            "config": _loads(r["config_json"], {}),
-            "result": _loads(r["result_json"], {}),
-            "created_at": r["created_at"],
-        }
+        redact_sensitive(
+            {
+                "experiment_id": r["experiment_id"],
+                "run_id": r["run_id"],
+                "claim_id": r["claim_id"],
+                "status": r["status"],
+                "seed": r["seed"],
+                "artifacts": r["artifacts"],
+                "verdict": r["verdict"],
+                "reason": r["reason"],
+                "plan": _loads(r["plan_json"], {}),
+                "config": _loads(r["config_json"], {}),
+                "result": _loads(r["result_json"], {}),
+                "created_at": r["created_at"],
+            }
+        )
         for r in rows
     ]
 
@@ -329,13 +384,41 @@ class RunManager:
             raise RuntimeError(
                 "autoresearch disabled: set `autoresearch.enabled: true` in config.yaml"
             )
+        # Validate every write-bearing path before creating the background
+        # thread.  Read endpoints already go through ``ledger_path`` and
+        # ``db_path``; without this normalization the director could still use
+        # raw config values and write outside an active RuntimeContext.
+        settings = replace(
+            settings,
+            run_dir=str(_runtime_path(settings.run_dir, label="autoresearch run directory")),
+            plugins_dir=(
+                str(
+                    _runtime_path(
+                        settings.plugins_dir,
+                        label="autoresearch plugins directory",
+                    )
+                )
+                if settings.plugins_dir
+                else ""
+            ),
+        )
+        # A Click invocation restores its process environment as soon as the
+        # command returns, while this worker may continue for hours.  Capture
+        # an absolute, validated config snapshot before starting the thread so
+        # later DB/ledger access cannot fall back to the caller's CWD or an
+        # unrelated runtime namespace.
+        runtime_cfg = cfg
+        runtime = _active_runtime()
+        if runtime is not None:
+            runtime.validate_config(cfg)
+            runtime_cfg = runtime.apply_config(cfg)
         with self._lock:
             t = self._threads.get(topic)
             if t is not None and t.is_alive():
                 return {"topic": topic, "status": "running", "started": False}
             self._errors.pop(topic, None)
             t = threading.Thread(
-                target=self._run, args=(cfg, settings, topic, max_cycles), daemon=True
+                target=self._run, args=(runtime_cfg, settings, topic, max_cycles), daemon=True
             )
             self._threads[topic] = t
             t.start()
@@ -344,9 +427,9 @@ class RunManager:
     def status(self, topic: str) -> dict[str, Any]:
         t = self._threads.get(topic)
         return {
-            "topic": topic,
+            "topic": redact_sensitive_text(topic) or "",
             "alive": bool(t and t.is_alive()),
-            "error": self._errors.get(topic),
+            "error": redact_sensitive_text(self._errors.get(topic)),
         }
 
     def _run(
@@ -355,7 +438,12 @@ class RunManager:
         try:
             self._execute(cfg, settings, topic, max_cycles)
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI via status()
-            self._errors[topic] = f"{type(exc).__name__}: {exc}"
+            try:
+                secrets = configured_secret_values(cfg)
+            except Exception:  # noqa: BLE001 - reporting must never mask the failure
+                secrets = ()
+            message = safe_error(exc, secrets=secrets) or "internal error"
+            self._errors[topic] = f"{type(exc).__name__}: {message[:500]}"
 
     def _execute(
         self, cfg: Any, settings: AutoresearchConfig, topic: str, max_cycles: int | None
@@ -401,24 +489,29 @@ class RunManager:
 def plugins(cfg: Any) -> list[dict[str, Any]]:
     """Model-as-Tool plugins discovered from ``autoresearch.plugins_dir``."""
     plugins_dir = autoresearch_settings(cfg).plugins_dir
-    if not plugins_dir or not Path(plugins_dir).is_dir():
+    if not plugins_dir:
+        return []
+    plugin_path = _runtime_path(plugins_dir, label="autoresearch plugins directory")
+    if first_symlink_component(plugin_path) is not None or not plugin_path.is_dir():
         return []
     from drbrain.plugins.registry import PluginRegistry
 
     registry = PluginRegistry()
     try:
-        registry.discover(plugins_dir)
+        registry.discover(plugin_path)
     except Exception:  # noqa: BLE001 - a broken plugin dir must not take the UI down
         return []
     return [
-        {
-            "name": p.name,
-            "type": p.plugin_type,
-            "backend": p.backend,
-            "version": p.version,
-            "description": p.description,
-            "resource": p.resource,
-        }
+        redact_sensitive(
+            {
+                "name": p.name,
+                "type": p.plugin_type,
+                "backend": p.backend,
+                "version": p.version,
+                "description": p.description,
+                "resource": p.resource,
+            }
+        )
         for p in registry.list_plugins()
     ]
 

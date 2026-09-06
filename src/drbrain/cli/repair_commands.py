@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import typer
 
 from drbrain.cli._common import _resolve_workspace_papers, open_db
+from drbrain.dedup.resolver import PaperIDs, canonical_paper_id, normalize_doi
+from drbrain.security import redact_sensitive, safe_error
 from drbrain.storage.database import Database
+from drbrain.storage.paths import paper_dir, writable_artifact_path
 
 
 def repair_cmd(
@@ -55,7 +61,9 @@ def repair_cmd(
                 )
 
     if json_output:
-        typer.echo(json.dumps(all_repairs, indent=2, ensure_ascii=False, default=str))
+        typer.echo(
+            json.dumps(redact_sensitive(all_repairs), indent=2, ensure_ascii=False, default=str)
+        )
         return
 
     total_fixed = sum(len(r["repairs"]) for r in all_repairs)
@@ -103,8 +111,6 @@ def import_cmd(
       bibtex  - BibTeX .bib file
       endnote - Endnote .xml or .ris export
     """
-    import uuid
-
     if source not in ("zotero", "bibtex", "endnote"):
         typer.echo("Source must be: zotero, bibtex, or endnote", err=True)
         raise typer.Exit(1)
@@ -121,7 +127,7 @@ def import_cmd(
             try:
                 collections = list_collections_api(library_id, api_key, library_type=library_type)
             except ImportError as e:
-                typer.echo(str(e), err=True)
+                typer.echo(safe_error(e, secrets=(api_key,)), err=True)
                 raise typer.Exit(1)
         else:
             p = Path(path)
@@ -133,11 +139,11 @@ def import_cmd(
             try:
                 collections = list_collections_local(p)
             except Exception as e:
-                typer.echo(f"Failed to list collections: {e}", err=True)
+                typer.echo(f"Failed to list collections: {safe_error(e)}", err=True)
                 raise typer.Exit(1)
 
         if json_output:
-            typer.echo(json.dumps(collections, indent=2, ensure_ascii=False))
+            typer.echo(json.dumps(redact_sensitive(collections), indent=2, ensure_ascii=False))
         else:
             if not collections:
                 typer.echo("No collections found.")
@@ -164,7 +170,7 @@ def import_cmd(
                     collection_key=collection,
                 )
             except ImportError as e:
-                typer.echo(str(e), err=True)
+                typer.echo(safe_error(e, secrets=(api_key,)), err=True)
                 raise typer.Exit(1)
         else:
             # Local SQLite mode
@@ -219,7 +225,7 @@ def import_cmd(
             try:
                 papers = parse_endnote_xml(p)
             except ImportError as e:
-                typer.echo(str(e), err=True)
+                typer.echo(safe_error(e), err=True)
                 raise typer.Exit(1)
         else:
             typer.echo("Endnote source requires .ris or .xml file", err=True)
@@ -235,7 +241,7 @@ def import_cmd(
         if json_output:
             typer.echo(
                 json.dumps(
-                    {"dry_run": True, "count": len(papers), "papers": papers},
+                    redact_sensitive({"dry_run": True, "count": len(papers), "papers": papers}),
                     indent=2,
                     ensure_ascii=False,
                 )
@@ -263,25 +269,43 @@ def import_cmd(
                     "SELECT doi FROM paper_ids WHERE local_id = ?", (pid,)
                 ).fetchone()
                 if row and row[0]:
-                    existing_dois.add(row[0].lower().strip())
-    except Exception:
-        pass
+                    existing_dois.add(normalize_doi(row[0]))
+    except (OSError, TypeError, ValueError) as exc:
+        db.close()
+        typer.echo(f"Unable to read existing paper identifiers: {safe_error(exc)}", err=True)
+        raise typer.Exit(1) from exc
 
     imported = []
     skipped_dupes = 0
     for paper in papers:
         # DOI dedup check
-        doi = (paper.get("doi") or "").lower().strip()
+        doi = normalize_doi(paper["doi"]) if paper.get("doi") else ""
         if doi and doi in existing_dois:
             skipped_dupes += 1
             continue
 
-        local_id = f"p{uuid.uuid4().hex[:6]}"
+        ids = PaperIDs(
+            doi=paper.get("doi"),
+            arxiv=paper.get("arxiv"),
+            s2_id=paper.get("s2_id"),
+            openalex_id=paper.get("openalex_id"),
+        ).normalized()
+        local_id = canonical_paper_id(
+            ids,
+            title=paper.get("title", ""),
+            year=paper.get("year"),
+            source_key=paper.get("key") or paper.get("citekey") or str(paper),
+        )
+        if db.get_paper(local_id) is not None:
+            raise ValueError(
+                f"canonical paper ID collision for {local_id!r}; refusing to merge records"
+            )
         db.insert_paper(
             local_id,
             paper["title"],
             paper.get("year"),
             "placeholder",
+            strict=True,
             paper_type=paper.get("paper_type", "paper"),
             journal=paper.get("journal", ""),
             publisher=paper.get("publisher", ""),
@@ -289,8 +313,14 @@ def import_cmd(
             volume=paper.get("volume", ""),
             pages=paper.get("pages", ""),
         )
-        if paper.get("doi"):
-            db.insert_paper_ids(local_id, doi=paper["doi"])
+        db.insert_paper_ids(
+            local_id,
+            doi=ids.doi,
+            arxiv=ids.arxiv,
+            s2_id=ids.s2_id,
+            openalex_id=ids.openalex_id,
+            strict=True,
+        )
         if paper.get("authors"):
             for author in paper["authors"].split(" and "):
                 author = author.strip()
@@ -302,12 +332,27 @@ def import_cmd(
         pdf_src = paper.get("pdf_path", "")
         if pdf_src and not no_pdf:
             pdf_src_path = Path(pdf_src)
-            if pdf_src_path.exists():
-                import shutil as _shutil
+            from drbrain.storage.inbox import first_symlink_component
 
-                paper_dir = Path(cfg["db"]["path"]).parent / "papers" / local_id
-                paper_dir.mkdir(parents=True, exist_ok=True)
-                _shutil.copy2(str(pdf_src_path), str(paper_dir / pdf_src_path.name))
+            if first_symlink_component(pdf_src_path) is not None:
+                raise ValueError(f"PDF source must not contain a symlink: {pdf_src_path}")
+            if pdf_src_path.is_file():
+                papers_root = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+                paper_path = paper_dir(papers_root, local_id)
+                paper_path.mkdir(parents=True, exist_ok=True)
+                destination = writable_artifact_path(paper_path, pdf_src_path.name)
+                fd, temporary_name = tempfile.mkstemp(
+                    prefix=f".{pdf_src_path.name}.", dir=str(paper_path)
+                )
+                os.close(fd)
+                try:
+                    shutil.copy2(pdf_src_path, temporary_name)
+                    os.replace(temporary_name, destination)
+                finally:
+                    try:
+                        os.unlink(temporary_name)
+                    except FileNotFoundError:
+                        pass
 
         imported.append({"local_id": local_id, "title": paper["title"]})
         if doi:
@@ -399,13 +444,9 @@ def enrich_cmd(
                 merged = merge_enrichment(meta, enriched)
                 # Update DB
                 if merged.get("year") and merged["year"] != paper.get("year"):
-                    try:
-                        db.conn.execute(
-                            "UPDATE papers SET year = ? WHERE local_id = ?",
-                            (merged["year"], pid),
-                        )
-                    except Exception:
-                        pass
+                    # Keep application writes on Database's validated write
+                    # surface; a failed repair must be visible to the caller.
+                    db.set_paper_field(pid, "year", merged["year"])
                 result["enriched"] = True
 
         results.append(result)
@@ -414,7 +455,7 @@ def enrich_cmd(
     db.close()
 
     if json_output:
-        typer.echo(json.dumps(results, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(redact_sensitive(results), ensure_ascii=False, indent=2))
         return
 
     enriched_count = sum(1 for r in results if r["enriched"])

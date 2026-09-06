@@ -16,7 +16,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from drbrain.cli._common import open_db
+from drbrain.cli._common import open_db, runtime_data_path
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 rag_app = typer.Typer(help="LlamaIndex RAG layer operations")
 
@@ -144,6 +145,19 @@ def rag_eval_cmd(
     (``docs/llamaindex-eval-baseline.md`` by default).
     """
     cfg = ctx.obj["config"]
+    if isinstance(out, typer.models.OptionInfo):
+        out = out.default
+    if isinstance(no_write_report, typer.models.OptionInfo):
+        no_write_report = no_write_report.default
+    skip_report = bool(no_write_report)
+    # Validate the destination before optional model imports, network calls,
+    # or database access.  ``--no-write-report`` deliberately skips this
+    # check because no filesystem output is produced in that mode.
+    out_path = (
+        runtime_data_path(ctx, out, label="RAG evaluation report")
+        if not skip_report
+        else Path(out).expanduser()
+    )
 
     llama_available = True
     format_eval_report: Any = None
@@ -225,7 +239,14 @@ def rag_eval_cmd(
             payload["semantic"] = semantic_results
         if qagen_results is not None:
             payload["qagen"] = qagen_results
-        typer.echo(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
+        typer.echo(
+            json.dumps(
+                redact_sensitive(payload),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
+        )
     else:
         for label, results in (
             ("Retriever", retriever_results),
@@ -265,18 +286,15 @@ def rag_eval_cmd(
                 )
                 typer.echo(f"  note: {results['note']}")
             if results.get("reason"):
-                typer.echo(f"  reason: {results['reason']}")
+                typer.echo(
+                    "  reason: "
+                    + safe_error(
+                        results["reason"],
+                        secrets=configured_secret_values(cfg),
+                    )
+                )
 
     report = format_eval_report(cfg, retriever_results, ragas_results)
-    out_path = Path(out)
-    # Direct Python callers historically invoke Typer command functions too;
-    # an omitted option is then an OptionInfo object rather than its bool
-    # default. CLI invocation itself always supplies a bool.
-    skip_report = (
-        no_write_report
-        if isinstance(no_write_report, bool)
-        else bool(getattr(no_write_report, "default", False))
-    )
     if not skip_report:
         from drbrain.rag.eval import _write_text_atomically
 

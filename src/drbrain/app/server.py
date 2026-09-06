@@ -27,8 +27,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from drbrain.app import service
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 STATIC_DIR = Path(__file__).parent / "static"
+_MAX_REQUEST_BYTES = 1_048_576
 
 
 class WebUIServer(ThreadingHTTPServer):
@@ -51,7 +53,12 @@ class WebUIHandler(BaseHTTPRequestHandler):
 
     # ── plumbing ──
     def _json(self, payload: Any, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        # Keep this as the final response boundary: service implementations
+        # and future routes may return legacy rows that predate persistence
+        # redaction, and exception strings can embed credentials.
+        body = json.dumps(redact_sensitive(payload), ensure_ascii=False, default=str).encode(
+            "utf-8"
+        )
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -78,9 +85,14 @@ class WebUIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self) -> dict[str, Any]:
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Content-Length") from exc
         if n <= 0:
             return {}
+        if n > _MAX_REQUEST_BYTES:
+            raise ValueError("request body too large")
         raw = self.rfile.read(n)
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -137,10 +149,8 @@ class WebUIHandler(BaseHTTPRequestHandler):
             if url.path == "/api/assets":
                 return self._json(service.assets(cfg))
             return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-        except Exception as exc:  # noqa: BLE001 - report to the client, keep serving
-            return self._json(
-                {"error": f"{type(exc).__name__}: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR
-            )
+        except Exception:  # noqa: BLE001 - keep serving without exposing internals
+            return self._json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib name
         url = urlparse(self.path)
@@ -161,15 +171,24 @@ class WebUIHandler(BaseHTTPRequestHandler):
                         cfg, str(body.get("topic", "")), max_cycles=max_cycles
                     )
                 except (ValueError, RuntimeError) as exc:
-                    return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                    return self._json(
+                        {
+                            "error": safe_error(
+                                exc,
+                                secrets=configured_secret_values(cfg),
+                            )
+                        },
+                        HTTPStatus.BAD_REQUEST,
+                    )
                 return self._json(started, HTTPStatus.ACCEPTED)
             return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
-            return self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        except Exception as exc:  # noqa: BLE001
             return self._json(
-                {"error": f"{type(exc).__name__}: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR
+                {"error": safe_error(exc, secrets=configured_secret_values(cfg))},
+                HTTPStatus.BAD_REQUEST,
             )
+        except Exception:  # noqa: BLE001 - keep serving without exposing internals
+            return self._json({"error": "internal server error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
 
 def serve(

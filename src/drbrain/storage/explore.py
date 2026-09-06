@@ -9,10 +9,13 @@ literature search.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+
+from drbrain.runtime import RuntimeContext, _first_symlink_component
 
 _SILO_NAME_RE = re.compile(r"^[a-zA-Z0-9][-a-zA-Z0-9_.]{0,63}$")
 
@@ -25,9 +28,46 @@ def _validate_silo_name(name: str) -> None:
         )
 
 
+def _safe_root(root: Path) -> Path:
+    """Resolve an explore root without following a mutable alias.
+
+    Explore silos are mutable runtime state.  When a runtime is selected, the
+    root must stay inside it; even without a selector, reject lexical symlink
+    components so a stale alias cannot redirect a create/delete operation.
+    """
+    if not isinstance(root, Path):
+        root = Path(root)
+    root = root.expanduser()
+    if not str(root):
+        raise ValueError("explore root must not be empty")
+    selected = None
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        selected = RuntimeContext.create()
+        root = selected.assert_within_root(root, label="explore root")
+    lexical = root if root.is_absolute() else Path.cwd() / root
+    alias = _first_symlink_component(lexical)
+    if alias is not None:
+        raise ValueError(f"explore root must not contain a symlink component: {alias}")
+    resolved = lexical.resolve()
+    if selected is not None and not selected.is_within_root(resolved):
+        raise ValueError(f"explore root escapes runtime root: {resolved}")
+    return resolved
+
+
 def _silo_dir(root: Path, name: str) -> Path:
     _validate_silo_name(name)
-    return (root / name).resolve()
+    safe_root = _safe_root(root)
+    candidate = safe_root / name
+    alias = _first_symlink_component(candidate)
+    if alias is not None:
+        raise ValueError(f"explore silo must not contain a symlink component: {alias}")
+    try:
+        candidate.resolve().relative_to(safe_root)
+    except ValueError as exc:
+        raise ValueError(f"explore silo escapes root: {candidate}") from exc
+    if candidate.exists() and not candidate.is_dir():
+        raise ValueError(f"explore silo path is not a directory: {candidate}")
+    return candidate
 
 
 def _silo_json(root: Path, name: str) -> Path:
@@ -179,12 +219,21 @@ def list_explore_silos(root: Path) -> list[dict]:
     Returns:
         List of silo metadata dicts.
     """
+    root = _safe_root(root)
     if not root.exists():
         return []
     silos: list[dict] = []
     for d in sorted(root.iterdir()):
+        if d.is_symlink() or not d.is_dir():
+            continue
+        try:
+            d = _silo_dir(root, d.name)
+        except ValueError:
+            continue
         if d.is_dir():
             jp = d / "silo.json"
+            if jp.is_symlink() or not jp.is_file():
+                continue
             if jp.exists():
                 silos.append(_read_json(jp))
     return silos
@@ -198,5 +247,7 @@ def delete_explore_silo(root: Path, name: str) -> None:
         name: Silo name.
     """
     d = _silo_dir(root, name)
+    if d.is_symlink():
+        raise ValueError(f"explore silo must not be a symlink: {d}")
     if d.exists():
         shutil.rmtree(d)

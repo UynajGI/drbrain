@@ -185,9 +185,12 @@ def get_document_structure(papers_dir: Path | None, paper_id: str) -> list[dict]
     if papers_dir is None:
         return []
 
-    from drbrain.storage.paths import tree_json_path
+    from drbrain.storage.paths import resolve_paper_dir, tree_json_path
 
-    tree_path = tree_json_path(papers_dir / paper_id)
+    paper_dir = resolve_paper_dir(papers_dir, paper_id)
+    if paper_dir is None:
+        return []
+    tree_path = tree_json_path(paper_dir)
     if not tree_path.exists():
         return []
 
@@ -228,9 +231,11 @@ def get_section_content(
         return ""
 
     from drbrain.parser.pageindex_parser import get_node_content
-    from drbrain.storage.paths import raw_md_path, tree_json_path
+    from drbrain.storage.paths import raw_md_path, resolve_paper_dir, tree_json_path
 
-    paper_dir = papers_dir / paper_id
+    paper_dir = resolve_paper_dir(papers_dir, paper_id)
+    if paper_dir is None:
+        return ""
     tree_path = tree_json_path(paper_dir)
     md_path = raw_md_path(paper_dir)
     if not tree_path.exists() or not md_path.exists():

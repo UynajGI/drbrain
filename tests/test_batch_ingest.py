@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import pytest
 import typer
 
 from drbrain.cli.commands import ingest_cmd
@@ -205,7 +206,9 @@ def test_ingest_skips_failed_papers():
         with mock.patch(
             "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
         ):
-            ingest_cmd(ctx, [str(pdfs_dir)])
+            with pytest.raises(typer.Exit) as exc_info:
+                ingest_cmd(ctx, [str(pdfs_dir)])
+            assert exc_info.value.exit_code == 1
 
         # Should have attempted all 3 files.
         assert calls[0] == 3

@@ -389,8 +389,8 @@ class TestResolveMetadata:
     def test_from_doi_via_openalex(self):
         with patch("drbrain.extractor.openalex.get_work_by_doi") as gw:
             gw.return_value = {"title": "T", "publication_year": 2023}
-            result = _resolve_metadata(doi="10.1/x")
-        assert result["doi"] == "10.1/x"
+            result = _resolve_metadata(doi="10.1234/x")
+        assert result["doi"] == "10.1234/x"
         assert result["title"] == "T"
         assert result["year"] == 2023
         assert result["arxiv"] is None
@@ -399,8 +399,8 @@ class TestResolveMetadata:
     def test_from_arxiv_id(self):
         with patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata") as fm:
             fm.return_value = ("Arxiv Title", 2020)
-            result = _resolve_metadata(arxiv_id="2301.001")
-        assert result["arxiv"] == "2301.001"
+            result = _resolve_metadata(arxiv_id="2301.00001")
+        assert result["arxiv"] == "2301.00001"
         assert result["title"] == "Arxiv Title"
         assert result["doi"] is None
 
@@ -409,10 +409,10 @@ class TestResolveMetadata:
             patch("drbrain.extractor.openalex.get_work_by_doi", side_effect=Exception("x")),
             patch("drbrain.extractor.openalex.search_work_by_title") as st,
         ):
-            st.return_value = {"title": "FT", "publication_year": 2019, "doi": "10.1/z"}
+            st.return_value = {"title": "FT", "publication_year": 2019, "doi": "10.1234/z"}
             result = _resolve_metadata(title="anything")
         assert result["title"] == "FT"
-        assert result["doi"] == "10.1/z"
+        assert result["doi"] == "10.1234/z"
 
     def test_returns_none_when_all_fail(self):
         with (

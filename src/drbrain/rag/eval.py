@@ -52,6 +52,13 @@ from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.security import redact_sensitive_text
+from drbrain.storage.paths import (
+    raw_md_path,
+    resolve_paper_dir,
+    tree_json_path,
+    writable_artifact_path,
+)
 
 try:
     from llama_index.core.schema import NodeWithScore
@@ -99,6 +106,51 @@ _CONTENT_TITLE_PREFIXES = (
 _ABSTRACT_TITLE_PREFIXES = ("abstract", "summary")
 
 
+def _runtime_selected() -> bool:
+    """Return whether an invocation explicitly selected a runtime root."""
+    return "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+
+
+def _ensure_eval_parent(path: Path) -> Path:
+    """Create an evaluation-output parent without following symlinks."""
+    parent = path.parent
+    for ancestor in (parent, *parent.parents):
+        if ancestor.is_symlink():
+            raise ValueError(f"evaluation output directory contains a symlink: {ancestor}")
+    current = parent
+    missing: list[Path] = []
+    while not current.exists():
+        missing.append(current)
+        next_parent = current.parent
+        if next_parent == current:
+            break
+        current = next_parent
+    if current.is_symlink() or not current.is_dir():
+        raise ValueError(f"evaluation output directory is not a real directory: {current}")
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError(f"evaluation output directory is not a real directory: {directory}")
+    if parent.is_symlink() or not parent.is_dir():
+        raise ValueError(f"evaluation output directory is not a real directory: {parent}")
+    return parent
+
+
+def _safe_eval_output(path: str | Path) -> Path:
+    """Resolve an evaluation output under the selected runtime, if any."""
+    candidate = Path(path).expanduser()
+    if _runtime_selected():
+        from drbrain.runtime import RuntimeContext
+
+        candidate = RuntimeContext.create().assert_within_root(candidate, label="evaluation output")
+    if not candidate.name or candidate.name in {".", ".."}:
+        raise ValueError("evaluation output must be a regular file path")
+    if candidate.exists() and not candidate.is_file():
+        raise ValueError(f"evaluation output is not a regular file: {candidate}")
+    parent = _ensure_eval_parent(candidate)
+    return writable_artifact_path(parent, candidate.name)
+
+
 def _write_text_atomically(path: Path, content: str) -> None:
     """Atomically replace ``path`` through same-directory staging.
 
@@ -106,7 +158,7 @@ def _write_text_atomically(path: Path, content: str) -> None:
     file beside its destination avoids cross-volume moves, so readers never
     observe a partially rewritten baseline or golden set.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _safe_eval_output(path)
     fd, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
     )
@@ -130,6 +182,7 @@ def _write_text_atomically(path: Path, content: str) -> None:
 
 def _append_text_atomically(path: Path, content: str) -> None:
     """Append text through an atomic replace, retaining the old file on error."""
+    path = _safe_eval_output(path)
     previous = path.read_text(encoding="utf-8") if path.exists() else ""
     _write_text_atomically(path, previous + content)
 
@@ -469,7 +522,11 @@ def _paper_nodes(paper_dir: Path) -> list[dict[str, str]]:
             log.warning("[rag] collect_tree_nodes failed for %s: %s", paper_dir, exc)
     # Fallback: flatten tree.json titles only.
     out: list[dict[str, str]] = []
-    tree_path = paper_dir / "tree.json"
+    try:
+        tree_path = tree_json_path(paper_dir)
+    except (OSError, TypeError, ValueError) as exc:
+        log.warning("[rag] unsafe tree.json path at %s: %s", paper_dir, exc)
+        return out
     if not tree_path.exists():
         return out
     try:
@@ -560,7 +617,10 @@ def _relevant_nodes_for(papers_dir: Path, paper_id: str) -> tuple[list[dict[str,
     The reference answer is the abstract/summary node text (raw.md heuristic
     fallback), truncated.
     """
-    nodes = _paper_nodes(papers_dir / paper_id)
+    paper_path = resolve_paper_dir(papers_dir, paper_id)
+    if paper_path is None:
+        return [], None
+    nodes = _paper_nodes(paper_path)
     if not nodes:
         return [], None
     content = [n for n in nodes if _is_content_title(n["title"])]
@@ -574,8 +634,12 @@ def _relevant_nodes_for(papers_dir: Path, paper_id: str) -> tuple[list[dict[str,
         if reference:
             break
     if not reference:
-        raw_path = papers_dir / paper_id / "raw.md"
-        if raw_path.exists():
+        try:
+            raw_path = raw_md_path(paper_path)
+        except (OSError, TypeError, ValueError) as exc:
+            log.warning("[rag] unsafe raw.md path at %s: %s", paper_path, exc)
+            raw_path = None
+        if raw_path is not None and raw_path.is_file():
             reference = _reference_paragraph(raw_path.read_text(encoding="utf-8"))
     reference = reference.strip()
     if reference:
@@ -659,7 +723,7 @@ def build_golden_set(
     lines: list[str] = []
     for entry in entries:
         qid, query = entry["id"], entry["q"]
-        existing = [(papers_dir / p).is_dir() for p in entry["papers"]]
+        existing = [resolve_paper_dir(papers_dir, p) is not None for p in entry["papers"]]
         relevant_papers = [p for p, ok in zip(entry["papers"], existing) if ok]
         missing.extend(p for p, ok in zip(entry["papers"], existing) if not ok)
         seen_papers.update(relevant_papers)
@@ -1301,16 +1365,26 @@ def run_qagen(
             }
 
         m = models[0]
-        llm = LIOpenAI(
-            model=str(m.get("model", "gpt-4o-mini")),
-            api_key=str(
-                m.get("api_key") or m.get("api_keys", ["sk-none"])[0]
-                if isinstance(m.get("api_keys"), list)
-                else m.get("api_key") or "sk-none"
-            ),
-            api_base=str(m.get("base_url") or "https://api.openai.com/v1").replace("/v1", ""),
-            temperature=0.1,
-        )
+        # Keep YAML-key compatibility for qagen, but never invent a fake key:
+        # a missing key should be resolved by the SDK's environment/provider
+        # configuration (or fail with a useful, redacted error).  ``api_keys``
+        # is reduced to one ephemeral value only for this live client; it is
+        # not included in any generated record or returned payload.
+        api_key = m.get("api_key")
+        if not api_key and isinstance(m.get("api_keys"), list):
+            api_key = next((key for key in m["api_keys"] if key), None)
+        llm_kwargs: dict[str, Any] = {
+            "model": str(m.get("model", "gpt-4o-mini")),
+            "api_base": str(m.get("base_url") or "https://api.openai.com/v1").replace("/v1", ""),
+            "temperature": 0.1,
+        }
+        if api_key:
+            llm_kwargs["api_key"] = str(api_key)
+        try:
+            llm = LIOpenAI(**llm_kwargs)
+        except Exception as exc:
+            reason = redact_sensitive_text(str(exc)) or "LLM initialization failed"
+            return {"status": "error", "reason": f"LLM initialization failed: {reason}"}
     try:
         # llama-index-core >=0.14 removed ``generate_question_context_pairs``;
         # DatasetGenerator is the replacement. Generate per node so each
@@ -1326,7 +1400,8 @@ def run_qagen(
                 queries[qid] = str(q)
                 relevant_docs[qid] = [str(node.node_id)]
     except Exception as exc:
-        return {"status": "error", "reason": f"generation failed: {exc}"}
+        reason = redact_sensitive_text(str(exc)) or "generation failed"
+        return {"status": "error", "reason": f"generation failed: {reason}"}
 
     li = get_llamaindex_config(cfg)
     golden_path = Path(out_path) if out_path else Path(li.eval.golden_set)

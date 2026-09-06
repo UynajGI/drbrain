@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from drbrain.providers.base import PatentBase, clean_publication_number
+from drbrain.security import redact_sensitive_text, safe_error
 
 USPTO_ODP_BASE_URL = "https://api.uspto.gov"
 
@@ -206,11 +207,11 @@ def _request_json(
             detail = e.read().decode("utf-8")
         except Exception:
             detail = ""
-        raise USPTOAPIError(f"HTTP {e.code}: {detail}") from e
+        raise USPTOAPIError(f"HTTP {e.code}: {safe_error(detail, secrets=(api_key,))}") from e
     except urllib.error.URLError as e:
-        raise USPTOAPIError(f"Request failed: {e.reason}") from e
+        raise USPTOAPIError(f"Request failed: {safe_error(e.reason, secrets=(api_key,))}") from e
     except json.JSONDecodeError as e:
-        raise USPTOAPIError(f"Invalid JSON response: {e}") from e
+        raise USPTOAPIError(f"Invalid JSON response: {safe_error(e, secrets=(api_key,))}") from e
 
 
 def search_patents(
@@ -241,7 +242,11 @@ def search_patents(
         "pagination": {"offset": offset, "limit": min(max(limit, 1), 100)},
     }
 
-    logger.info("[patent] ODP search — query=%r limit=%d", query, limit)
+    logger.info(
+        "[patent] ODP search — query=%r limit=%d",
+        redact_sensitive_text(query) or "",
+        limit,
+    )
     data = _request_json(url, api_key=api_key, method="POST", data=payload, timeout=timeout)
 
     count = data.get("count", 0)
@@ -276,7 +281,7 @@ def get_patent_by_application_number(
     try:
         data = _request_json(url, api_key=api_key, method="GET", timeout=timeout)
     except USPTOAPIError as e:
-        if "404" in str(e):
+        if "404" in safe_error(e, secrets=(api_key,)):
             return None
         raise
 
