@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 
-
 def _sleep_worker(task: tuple[str, float]) -> dict:
     """Top-level picklable worker used by the real ProcessPool test."""
 
