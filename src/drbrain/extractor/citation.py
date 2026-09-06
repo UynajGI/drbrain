@@ -21,6 +21,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 2.0  # exponential backoff multiplier in seconds
 
 _cache: ApiCache | None = None
+_cache_by_namespace: dict[str, ApiCache] = {}
 
 
 def _get_cache(config: dict) -> ApiCache | None:
@@ -28,7 +29,13 @@ def _get_cache(config: dict) -> ApiCache | None:
     global _cache
     cache_ttl = config.get("api", {}).get("cache_ttl")
     if cache_ttl and cache_ttl > 0:
-        if _cache is None:
+        try:
+            from drbrain.runtime import runtime_root
+
+            namespace = str(runtime_root())
+        except Exception:
+            namespace = "default"
+        if namespace not in _cache_by_namespace:
             cache_dir = config.get("dirs", {}).get("cache", "data/cache")
             try:
                 _cache = ApiCache(
@@ -39,10 +46,11 @@ def _get_cache(config: dict) -> ApiCache | None:
                         config.get("api", {}).get("openalex_api_key"),
                     ),
                 )
+                _cache_by_namespace[namespace] = _cache
             except (OSError, ValueError) as exc:
                 _cit_log.warning("citation cache disabled: {}", type(exc).__name__)
                 _cache = None
-        return _cache
+        return _cache_by_namespace.get(namespace)
     return None
 
 
