@@ -12,27 +12,6 @@ from pathlib import Path
 from typing import Any
 
 
-def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
-    """Apply typed ``Config.pageindex`` settings to a ``TreeConfig``."""
-    if pageindex_config is None:
-        return tree_config
-    get = (
-        pageindex_config.get
-        if isinstance(pageindex_config, dict)
-        else lambda k, d=None: getattr(pageindex_config, k, d)
-    )
-    tree_config.backend = get("backend", "sdk")
-    tree_config.sdk_mode = get("mode", "local")
-    tree_config.sdk_model = get("model")
-    tree_config.sdk_chat_model = get("chat_model")
-    tree_config.sdk_storage_path = get("storage_path")
-    tree_config.sdk_api_key = get("api_key", "")
-    tree_config.sdk_base_url = get("base_url", "")
-    tree_config.sdk_index_backend = get("index_backend", {}) or {}
-    tree_config.sdk_chat_backend = get("chat_backend", {}) or {}
-    return tree_config
-
-
 def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
     """Build a tree with PageIndex local or cloud indexing.
 
@@ -60,40 +39,11 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         document.close()
         pdf = temporary_pdf
 
-    mode = getattr(config, "sdk_mode", None) or getattr(config, "mode", "local")
-    model = (
-        getattr(config, "sdk_model", None) or getattr(config, "model", None) or "deepseek-v4-flash"
-    )
-    chat_model = (
-        getattr(config, "sdk_chat_model", None)
-        or getattr(config, "chat_model", None)
-        or "deepseek-v4-pro"
-    )
-    storage = (
-        getattr(config, "sdk_storage_path", None)
-        or getattr(config, "storage_path", None)
-        or str(md.parent / ".pageindex")
-    )
-    api_key = (
-        (
-            getattr(config, "sdk_api_key", None)
-            or getattr(config, "api_key", None)
-            or os.getenv("PAGEINDEX_API_KEY")
-        )
-        if mode == "cloud"
-        else None
-    )
-    kwargs: dict[str, Any] = {
-        "index": "cloud" if mode == "cloud" else model,
-        "chat": chat_model,
-    }
-    if getattr(config, "sdk_base_url", ""):
-        kwargs["index_backend"] = {"base_url": config.sdk_base_url}
-        kwargs["chat_backend"] = {"base_url": config.sdk_base_url}
-    if getattr(config, "sdk_index_backend", None):
-        kwargs["index_backend"] = dict(config.sdk_index_backend)
-    if getattr(config, "sdk_chat_backend", None):
-        kwargs["chat_backend"] = dict(config.sdk_chat_backend)
+    mode = getattr(config, "sdk_mode", "local")
+    model = getattr(config, "sdk_model", None) or "gpt-5.6-luna"
+    storage = getattr(config, "sdk_storage_path", None) or str(md.parent / ".pageindex")
+    api_key = os.getenv("PAGEINDEX_API_KEY") if mode == "cloud" else None
+    kwargs: dict[str, Any] = {"index": "cloud" if mode == "cloud" else model}
     if api_key:
         kwargs["api_key"] = api_key
     if mode == "local":
