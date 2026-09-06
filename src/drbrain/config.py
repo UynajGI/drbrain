@@ -92,7 +92,7 @@ class ApiConfig(_ConfigBase):
 class PageIndexConfig(_ConfigBase):
     """PageIndex index backend settings (local SDK or cloud API)."""
 
-    backend: str = "legacy"
+    backend: str = "sdk"
     mode: str = "local"
     model: str = "gpt-5.6-luna"
     storage_path: str = "data/pageindex"
