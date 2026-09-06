@@ -31,6 +31,7 @@ class TreeConfig:
     sdk_mode: str = "local"
     sdk_model: str | None = None
     sdk_storage_path: str | None = None
+    sdk_api_key: str = ""
 
 
 @dataclass
