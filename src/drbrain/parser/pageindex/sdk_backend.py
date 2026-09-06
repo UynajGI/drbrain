@@ -20,6 +20,7 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
     tree_config.backend = get("backend", "sdk")
     tree_config.sdk_mode = get("mode", "local")
     tree_config.sdk_model = get("model")
+    tree_config.sdk_chat_model = get("chat_model")
     tree_config.sdk_storage_path = get("storage_path")
     tree_config.sdk_api_key = get("api_key", "")
     return tree_config
@@ -53,7 +54,8 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         pdf = temporary_pdf
 
     mode = getattr(config, "sdk_mode", None) or getattr(config, "mode", "local")
-    model = getattr(config, "sdk_model", None) or getattr(config, "model", None) or "gpt-5.6-luna"
+    model = getattr(config, "sdk_model", None) or getattr(config, "model", None) or "deepseek-v4-flash"
+    chat_model = getattr(config, "sdk_chat_model", None) or getattr(config, "chat_model", None) or "pro"
     storage = (
         getattr(config, "sdk_storage_path", None)
         or getattr(config, "storage_path", None)
@@ -64,7 +66,10 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         if mode == "cloud"
         else None
     )
-    kwargs: dict[str, Any] = {"index": "cloud" if mode == "cloud" else model}
+    kwargs: dict[str, Any] = {
+        "index": "cloud" if mode == "cloud" else model,
+        "chat": chat_model,
+    }
     if api_key:
         kwargs["api_key"] = api_key
     if mode == "local":
