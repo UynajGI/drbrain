@@ -32,6 +32,20 @@ def test_has_password_false():
     assert not has_password({"admin": {}})
 
 
+def test_has_password_rejects_malformed_admin_section():
+    """Malformed config must fail closed instead of raising during auth."""
+    assert not has_password({"admin": "password-hash"})
+    assert not has_password({"admin": ["password-hash"]})
+    assert not has_password({"admin": {"password_hash": None}})
+
+
+def test_has_password_accepts_typed_config():
+    """The typed Config remains compatible with the dict-style auth helper."""
+    from drbrain.config import Config
+
+    assert has_password(Config(admin={"password_hash": "abc:def"}))
+
+
 def test_verify_empty_or_invalid_stored():
     assert not verify_password("pw", "")
     assert not verify_password("pw", "not-valid-format")

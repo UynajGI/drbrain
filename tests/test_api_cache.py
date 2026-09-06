@@ -4,6 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import pytest
+
 from drbrain.extractor.cache import ApiCache
 
 
@@ -115,3 +117,46 @@ def test_cache_handles_non_dict_data():
         data = [{"paperId": "a"}, {"paperId": "b"}]
         cache.set("list_key", data)
         assert cache.get("list_key") == data
+
+
+def test_cache_rejects_external_directory_when_runtime_is_selected(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    outside = tmp_path / "outside"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime))
+
+    with pytest.raises(ValueError, match="API cache directory.*escapes runtime root"):
+        ApiCache(outside)
+
+
+def test_cache_rejects_symlinked_entry_and_preserves_existing_target(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache = ApiCache(cache_dir)
+    target = tmp_path / "outside.json"
+    target.write_text("outside", encoding="utf-8")
+    entry = cache._path("key")
+    entry.symlink_to(target)
+
+    cache.set("key", {"safe": True})
+
+    assert target.read_text(encoding="utf-8") == "outside"
+    assert cache.get("key") is None
+
+
+def test_cache_redacts_credential_fields_before_persisting(tmp_path):
+    cache = ApiCache(tmp_path / "cache")
+
+    cache.set("provider-error", {"token": "echoed-secret", "message": "failed"})
+
+    assert cache.get("provider-error") == {
+        "token": "[REDACTED]",
+        "message": "failed",
+    }
+    raw = next((tmp_path / "cache").glob("*.json")).read_text(encoding="utf-8")
+    assert "echoed-secret" not in raw
+
+
+@pytest.mark.parametrize("value", ["", None, "https://example.test/cache"])
+def test_cache_rejects_empty_or_uri_directory(value):
+    with pytest.raises(ValueError, match="cache directory"):
+        ApiCache(value)
