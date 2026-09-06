@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -223,9 +224,18 @@ class LlamaIndexConfig(_ConfigBase):
     @classmethod
     def from_dict(cls, data: dict) -> LlamaIndexConfig:
         """Build from a raw YAML dict, nesting the ``eval`` sub-config."""
-        raw = dict(data or {})
-        eval_raw = raw.pop("eval", None) or {}
-        return cls(eval=LlamaIndexEvalConfig(**eval_raw), **raw)
+        if data is None:
+            data = {}
+        if not isinstance(data, Mapping):
+            raise ValueError("Config section 'llamaindex' must be a mapping")
+        raw = dict(data)
+        eval_raw = raw.pop("eval", {})
+        if not isinstance(eval_raw, Mapping):
+            raise ValueError("Config section 'llamaindex.eval' must be a mapping")
+        try:
+            return cls(eval=LlamaIndexEvalConfig(**dict(eval_raw)), **raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid llamaindex config: {exc}") from exc
 
 
 @dataclass
@@ -327,53 +337,126 @@ class Config(_ConfigBase):
         cls,
         base_path: str | Path,
         local_path: str | Path | None = None,
+        overlay_path: str | Path | None = None,
     ) -> Config:
-        """Load config from YAML, deep-merge local overlay, resolve env vars.
+        """Load config layers from YAML and resolve environment variables.
 
         Args:
             base_path: Path to config.yaml.
-            local_path: Path to config.local.yaml. Defaults to "config.local.yaml" if None.
+            local_path: Path to the local layer. When omitted, the loader looks
+                for ``config.local.yaml`` next to ``base_path``. Passing an
+                explicit path preserves the legacy API and disables that
+                sibling lookup (a missing path is ignored).
+            overlay_path: Optional highest-precedence overlay. This is useful
+                for a command-specific config while retaining the normal
+                ``base -> config.local.yaml -> overlay`` order. An explicitly
+                requested overlay must exist.
 
         Returns:
             Typed Config instance.
         """
-        base = Path(base_path)
-        if not base.exists():
-            raise FileNotFoundError(f"Config not found: {base}")
+        runtime = _active_runtime_context()
+        base = _prepare_config_path(
+            base_path,
+            runtime=runtime,
+            label="base config",
+            required=True,
+        )
 
-        with open(base, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        cfg = _read_yaml_mapping(base)
 
-        local = Path(local_path) if local_path is not None else Path("config.local.yaml")
-        if local.exists():
-            with open(local, encoding="utf-8") as f:
-                overlay = yaml.safe_load(f) or {}
-            cfg = merge_dicts(cfg, overlay)
+        # Resolve the implicit local layer relative to the base file, rather
+        # than the process CWD. This keeps custom/test configurations isolated
+        # from an unrelated config.local.yaml in the caller's directory.
+        local = Path(local_path) if local_path is not None else base.parent / "config.local.yaml"
+        if runtime is not None and not local.is_absolute():
+            local = runtime.root / local
+        if local.exists() or local.is_symlink():
+            local = _prepare_config_path(
+                local,
+                runtime=runtime,
+                label="local config",
+                required=True,
+            )
+            cfg = merge_dicts(cfg, _read_yaml_mapping(local))
+
+        if overlay_path is not None:
+            overlay = Path(overlay_path)
+            if runtime is not None and not overlay.is_absolute():
+                overlay = runtime.root / overlay
+            overlay = _prepare_config_path(
+                overlay,
+                runtime=runtime,
+                label="config overlay",
+                required=True,
+            )
+            cfg = merge_dicts(cfg, _read_yaml_mapping(overlay))
 
         cfg = _resolve_env_vars(cfg)
 
-        backup_raw = cfg.get("backup", {})
+        sections = {
+            name: _mapping_section(cfg, name)
+            for name in (
+                "llm",
+                "mineru",
+                "api",
+                "dirs",
+                "db",
+                "extract",
+                "bm25",
+                "queue",
+                "fetch",
+                "embed",
+                "llamaindex",
+                "backup",
+                "autoresearch",
+            )
+        }
+        backup_raw = sections["backup"]
         backup_targets_raw = backup_raw.get("targets", {})
-        backup_targets = {name: BackupTargetConfig(**t) for name, t in backup_targets_raw.items()}
-        return cls(
-            llm=LLMConfig(**cfg.get("llm", {})),
-            mineru=MinerUConfig(**cfg.get("mineru", {})),
-            api=ApiConfig(**cfg.get("api", {})),
-            dirs=DirsConfig(**cfg.get("dirs", {})),
-            db=DBConfig(**cfg.get("db", {})),
-            extract=ExtractConfig(**cfg.get("extract", {})),
-            bm25=BM25Config(**cfg.get("bm25", {})),
-            queue=QueueConfig(**cfg.get("queue", {})),
-            fetch=FetchConfig(**cfg.get("fetch", {})),
-            embed=EmbedConfig(**cfg.get("embed", {})),
-            llamaindex=LlamaIndexConfig.from_dict(cfg.get("llamaindex", {})),
-            backup=BackupConfig(
-                ssh_bin=backup_raw.get("ssh_bin", "ssh"),
-                rsync_bin=backup_raw.get("rsync_bin", "rsync"),
-                targets=backup_targets,
-            ),
-            autoresearch=AutoresearchConfig(**cfg.get("autoresearch", {})),
-        )
+        if not isinstance(backup_targets_raw, Mapping):
+            raise ValueError("Config section 'backup.targets' must be a mapping")
+        backup_targets: dict[str, BackupTargetConfig] = {}
+        for name, target in backup_targets_raw.items():
+            if not isinstance(target, Mapping):
+                raise ValueError(f"Config backup target {name!r} must be a mapping")
+            try:
+                backup_targets[str(name)] = BackupTargetConfig(**dict(target))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid backup target {name!r}: {exc}") from exc
+
+        admin_raw = cfg.get("admin", {})
+        if not isinstance(admin_raw, Mapping):
+            raise ValueError("Config section 'admin' must be a mapping")
+        try:
+            result = cls(
+                llm=LLMConfig(**sections["llm"]),
+                mineru=MinerUConfig(**sections["mineru"]),
+                api=ApiConfig(**sections["api"]),
+                dirs=DirsConfig(**sections["dirs"]),
+                db=DBConfig(**sections["db"]),
+                extract=ExtractConfig(**sections["extract"]),
+                bm25=BM25Config(**sections["bm25"]),
+                queue=QueueConfig(**sections["queue"]),
+                fetch=FetchConfig(**sections["fetch"]),
+                embed=EmbedConfig(**sections["embed"]),
+                llamaindex=LlamaIndexConfig.from_dict(sections["llamaindex"]),
+                backup=BackupConfig(
+                    ssh_bin=backup_raw.get("ssh_bin", "ssh"),
+                    rsync_bin=backup_raw.get("rsync_bin", "rsync"),
+                    targets=backup_targets,
+                ),
+                autoresearch=AutoresearchConfig(**sections["autoresearch"]),
+                admin=dict(admin_raw),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid config: {exc}") from exc
+        if runtime is not None:
+            # Direct library callers do not pass through the CLI callback.  A
+            # selected runtime must therefore validate the typed paths here as
+            # well, before any service can open its database or artifact dirs.
+            runtime.validate_config(result)
+        return result
 
 
 # ── Deep merge ──
@@ -404,6 +487,95 @@ def _resolve_env_vars(obj: Any) -> Any:
     return obj
 
 
+def _active_runtime_context():
+    """Return the environment-selected runtime, if one is active.
+
+    Import lazily to keep configuration usable in minimal deployments and to
+    avoid making the runtime module depend on the typed config classes.
+    """
+    if "DRBRAIN_ROOT" not in os.environ and "DRBRAIN_RUNTIME_ROOT" not in os.environ:
+        return None
+    from drbrain.runtime import RuntimeContext
+
+    # Let RuntimeContext enforce primary/legacy precedence and reject an
+    # explicitly empty selector instead of treating it as unset.
+    return RuntimeContext.create()
+
+
+def _prepare_config_path(
+    path: str | Path,
+    *,
+    runtime,
+    label: str,
+    required: bool,
+) -> Path:
+    """Validate a config layer before it is opened.
+
+    With an active runtime, every layer must be beneath that root.  Without
+    one, retain the legacy ability to load an explicitly supplied absolute
+    config while still rejecting lexical symlink aliases (including ancestors).
+    """
+    candidate = Path(path).expanduser()
+    if runtime is not None:
+        if not candidate.is_absolute():
+            candidate = runtime.root / candidate
+        return runtime.validate_config_file(candidate, label=label, required=required)
+
+    from drbrain.runtime import _first_symlink_component
+
+    alias = _first_symlink_component(candidate)
+    if alias is not None:
+        raise ValueError(f"{label} must not contain a symlink component: {alias}")
+    if not candidate.exists():
+        if required:
+            raise FileNotFoundError(f"{label} not found: {candidate}")
+        return candidate
+    if not candidate.is_file():
+        raise ValueError(f"{label} is not a regular file: {candidate}")
+    return candidate
+
+
+def _read_yaml_mapping(path: Path) -> dict:
+    """Read a YAML config layer and require a mapping at its root."""
+    path = Path(path)
+    # Config layers can contain credentials.  Never follow a symlink here:
+    # callers outside the CLI (pipeline workers and library integrations) must
+    # receive the same isolation guarantee as the root callback.
+    from drbrain.runtime import _first_symlink_component
+
+    alias = _first_symlink_component(path)
+    if alias is not None:
+        raise ValueError(f"Config file must not contain a symlink component: {alias}")
+    if path.is_symlink():
+        raise ValueError(f"Config file must not be a symlink: {path}")
+    if not path.exists():
+        raise FileNotFoundError(f"Config not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"Config file is not a regular file: {path}")
+    try:
+        with open(path, encoding="utf-8") as f:
+            value = yaml.safe_load(f) or {}
+    except yaml.YAMLError as exc:
+        # Parser diagnostics include the offending source line.  That line can
+        # contain an inline API key, so scrub it before the exception reaches
+        # a CLI/logging boundary or a library caller.
+        raise ValueError(f"Invalid YAML config: {path.name}: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"Config file must contain a YAML mapping: {path}")
+    return value
+
+
+def _mapping_section(config: Mapping[str, Any], name: str) -> dict:
+    """Return a config section as a mapping, or fail closed with context."""
+    # Missing sections are valid and use dataclass defaults.  An explicitly
+    # supplied falsey value (``null``, ``[]``, ``''``) is malformed, however;
+    # coercing it to ``{}`` would silently discard a deployment mistake.
+    value = config[name] if name in config else {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Config section '{name}' must be a mapping")
+    return dict(value)
+
+
 def _env_replace(match: re.Match) -> str:
     """Replace a single ${VAR} match with environment variable value."""
     return os.environ.get(match.group(1), "")
@@ -415,9 +587,40 @@ def _env_replace(match: re.Match) -> str:
 def load_config(
     base_path: str | Path = "config.yaml",
     local_path: str | Path | None = None,
+    overlay_path: str | Path | None = None,
 ) -> Config:
-    """Load base config and optionally merge local overlay.
+    """Load base config and optional local/command overlays.
 
     Returns a typed Config object with full dict-like backward compatibility.
     """
-    return Config.from_yaml(base_path, local_path)
+    # Standalone workers launched with ``DRBRAIN_ROOT`` may have a different
+    # current working directory.  Keep the default config lookup in the same
+    # runtime namespace while preserving explicit ``base_path`` behavior.
+    if str(base_path) == "config.yaml":
+        if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+            from drbrain.runtime import RuntimeContext
+
+            runtime_base = RuntimeContext.create().base_config_path
+            base_path = runtime_base
+        env_overlay = None
+        if overlay_path is None:
+            if "DRBRAIN_CONFIG" in os.environ:
+                env_overlay = os.environ["DRBRAIN_CONFIG"]
+            elif "DRBRAIN_CONFIG_PATH" in os.environ:
+                env_overlay = os.environ["DRBRAIN_CONFIG_PATH"]
+            if env_overlay == "":
+                raise ValueError("DRBRAIN_CONFIG must not be empty")
+            if env_overlay:
+                candidate = Path(env_overlay).expanduser()
+                if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+                    if not candidate.is_absolute():
+                        candidate = Path(base_path).parent / candidate
+                    try:
+                        is_base = candidate.resolve() == Path(base_path).resolve()
+                    except OSError:
+                        is_base = False
+                    if not is_base:
+                        overlay_path = candidate
+                else:
+                    overlay_path = candidate
+    return Config.from_yaml(base_path, local_path, overlay_path)

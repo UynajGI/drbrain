@@ -13,6 +13,15 @@ from loguru import logger
 from drbrain.cli._setup_i18n import t as _t
 
 
+def _config_local_path() -> Path:
+    """Resolve setup's writable config inside an explicitly selected root."""
+    if "DRBRAIN_ROOT" in __import__("os").environ:
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / "config.local.yaml"
+    return Path("config.local.yaml")
+
+
 def _check_python_package(module: str) -> bool:
     """Check if a Python module is importable."""
     try:
@@ -235,11 +244,9 @@ def setup_cmd(
             typer.echo("Passwords don't match.", err=True)
             raise typer.Exit(1)
 
-        from pathlib import Path
-
         import yaml
 
-        config_path = Path("config.local.yaml")
+        config_path = _config_local_path()
         if config_path.exists():
             local = yaml.safe_load(config_path.read_text()) or {}
         else:
@@ -250,7 +257,7 @@ def setup_cmd(
         return
 
     # If config.local.yaml already exists, offer to re-run or validate only
-    if Path("config.local.yaml").exists() and not quick:
+    if _config_local_path().exists() and not quick:
         typer.echo("config.local.yaml already exists.\n")
         choice = typer.prompt(
             "  [r]e-run setup  [v]alidate environment only  [q]uit",
@@ -342,7 +349,7 @@ def setup_cmd(
         elif embed_provider == "local" and embed_model:
             config["embed"]["model"] = embed_model  # type: ignore[index]  # pre-existing: see mypy debt
 
-        out = Path("config.local.yaml")
+        out = _config_local_path()
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w") as f:
             yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
@@ -549,7 +556,7 @@ def setup_cmd(
         embed_cfg["model"] = embed_model
     config["embed"] = embed_cfg
 
-    out = Path("config.local.yaml")
+    out = _config_local_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)

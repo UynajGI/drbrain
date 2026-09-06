@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -19,7 +20,34 @@ from drbrain.cli._common import (
 )
 from drbrain.config import load_config
 from drbrain.graph.engine import GraphEngine
+from drbrain.runtime import RuntimeContext
+from drbrain.security import configured_secret_values, safe_error
 from drbrain.storage.database import Database
+
+
+def _runtime_path(
+    ctx: typer.Context,
+    value: str | Path,
+    *,
+    label: str,
+    strict: bool = False,
+) -> Path:
+    """Resolve check-owned paths against the active runtime namespace."""
+    obj = getattr(ctx, "obj", None)
+    runtime = obj.get("runtime") if isinstance(obj, dict) else None
+    runtime_selected = "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+    if runtime is None:
+        if runtime_selected:
+            runtime = RuntimeContext.create()
+    path = Path(value).expanduser()
+    if strict:
+        assert_path = getattr(runtime, "assert_within_root", None)
+        if callable(assert_path):
+            return assert_path(path, label=label)
+    if not path.is_absolute():
+        root = getattr(runtime, "root", None) or Path.cwd()
+        path = Path(root) / path
+    return path.resolve()
 
 
 def check_cmd(ctx: typer.Context):
@@ -29,6 +57,7 @@ def check_cmd(ctx: typer.Context):
     errors = []
 
     cfg = ctx.obj["config"]
+    config_secrets = configured_secret_values(cfg)
 
     console.print("\n[bold]DrBrain — Dependency & Configuration Check[/bold]\n")
 
@@ -161,14 +190,17 @@ def check_cmd(ctx: typer.Context):
                         f"sudo apt install tesseract-ocr-{lang.replace('_', '-')}"
                     )
         except Exception as e:
-            logger.debug("tesseract --list-langs failed: {}", e)
+            logger.debug(
+                "tesseract --list-langs failed: {}",
+                safe_error(e, secrets=config_secrets),
+            )
 
     # -- Config files --
     console.print("\n[bold]Configuration[/bold]")
     table3 = Table(show_header=False, box=None, padding=(0, 2))
 
-    base_config = Path("config.yaml")
-    local_config = Path("config.local.yaml")
+    base_config = _runtime_path(ctx, "config.yaml", label="base config", strict=True)
+    local_config = _runtime_path(ctx, "config.local.yaml", label="local config", strict=True)
 
     if base_config.exists():
         table3.add_row("  config.yaml", "[green]Found[/green]")
@@ -195,8 +227,9 @@ def check_cmd(ctx: typer.Context):
             label = f"  LLM [{i}] {m.get('provider', '?')}/{m.get('model', '?')}"
             api_key = m.get("api_key", "")
             if api_key and not api_key.startswith("${"):
-                masked = api_key[:4] + "..." + api_key[-4:] if len(api_key) > 8 else "***"
-                table4.add_row(label, f"[green]Set[/green] ({masked})")
+                # Even a prefix/suffix is credential material and can be
+                # correlated with provider logs.  Report presence only.
+                table4.add_row(label, "[green]Set[/green]")
             else:
                 table4.add_row(label, "[yellow]Not configured[/yellow]")
                 warnings.append(f"LLM model {m.get('provider')}/{m.get('model')} has no API key")
@@ -214,7 +247,10 @@ def check_cmd(ctx: typer.Context):
         # CrossRef email
         crossref_email = cfg.get("api", {}).get("crossref_email", "")
         if crossref_email and not crossref_email.startswith("${"):
-            table4.add_row("  CrossRef email", f"[green]Set[/green] ({crossref_email})")
+            table4.add_row(
+                "  CrossRef email",
+                f"[green]Set[/green] ({safe_error(crossref_email, secrets=config_secrets)})",
+            )
         else:
             table4.add_row(
                 "  CrossRef email", "[yellow]Not set[/yellow]", "(optional, polite pool)"
@@ -263,7 +299,13 @@ def check_cmd(ctx: typer.Context):
             embed_api_base = embed_cfg.get("api_base", "")
             embed_api_key = embed_cfg.get("api_key", "")
             if embed_api_base:
-                table4.add_row("    API base", embed_api_base)
+                table4.add_row(
+                    "    API base",
+                    safe_error(
+                        embed_api_base,
+                        secrets=(*config_secrets, embed_api_key),
+                    ),
+                )
             else:
                 table4.add_row("    API base", "[yellow]Not set[/yellow]")
                 warnings.append("Embedding API base not configured")
@@ -276,7 +318,7 @@ def check_cmd(ctx: typer.Context):
         console.print(table4)
 
     except FileNotFoundError as e:
-        console.print(f"  [red]{e}[/red]")
+        console.print(f"  [red]{safe_error(e, secrets=config_secrets)}[/red]")
 
     # -- Directories --
     console.print("\n[bold]Directories[/bold]")
@@ -296,16 +338,16 @@ def check_cmd(ctx: typer.Context):
             ]
         )
         for dir_path in dir_paths:
-            p = Path(dir_path)
+            p = _runtime_path(ctx, dir_path, label="data directory")
             if p.exists():
                 table5.add_row(f"  {dir_path}", "[green]Exists[/green]")
             else:
                 p.mkdir(parents=True, exist_ok=True)
                 table5.add_row(f"  {dir_path}", "[green]Created[/green]")
     except (KeyError, TypeError, OSError) as e:
-        logger.debug("Directory config error: {}", e)
+        logger.debug("Directory config error: {}", safe_error(e, secrets=config_secrets))
         for d in ["data/spool/inbox", "data/spool/pending", "data/papers"]:
-            p = Path(d)
+            p = _runtime_path(ctx, d, label="data directory", strict=True)
             if p.exists():
                 table5.add_row(f"  {d}", "[green]Exists[/green]")
             else:
@@ -317,7 +359,7 @@ def check_cmd(ctx: typer.Context):
     table6 = Table(show_header=False, box=None, padding=(0, 2))
     try:
         db_path = cfg.get("db", {}).get("path", "data/drbrain.db")
-        p = Path(db_path)
+        p = _runtime_path(ctx, db_path, label="database path")
         if p.exists():
             table6.add_row(f"  {db_path}", "[green]Exists[/green]")
         else:
@@ -327,7 +369,7 @@ def check_cmd(ctx: typer.Context):
                 "(run `drbrain ingest` to initialize)",
             )
     except (KeyError, TypeError, OSError) as e:
-        logger.debug("Database path config error: {}", e)
+        logger.debug("Database path config error: {}", safe_error(e, secrets=config_secrets))
         table6.add_row("  (config unavailable)", "[yellow]Unknown[/yellow]")
     console.print(table6)
 
@@ -335,21 +377,21 @@ def check_cmd(ctx: typer.Context):
     console.print("\n[bold]Library[/bold]")
     table_lib = Table(show_header=False, box=None, padding=(0, 2))
     try:
-        db = Database(cfg["db"]["path"])
+        db = Database(_runtime_path(ctx, cfg["db"]["path"], label="database path"))
         paper_count = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
         concept_count = db.conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
         table_lib.add_row("  Papers", f"[green]{paper_count}[/green]")
         table_lib.add_row("  Concepts", f"[green]{concept_count}[/green]")
         db.close()
     except Exception as e:
-        logger.debug("Database query error: {}", e)
+        logger.debug("Database query error: {}", safe_error(e, secrets=config_secrets))
         table_lib.add_row("  (db unavailable)", "[yellow]Unknown[/yellow]")
     console.print(table_lib)
 
     # -- Disk space --
     console.print("\n[bold]Disk Space[/bold]")
     table_disk = Table(show_header=False, box=None, padding=(0, 2))
-    data_path = Path("data")
+    data_path = _runtime_path(ctx, "data", label="data directory", strict=True)
     if data_path.exists():
         usage = shutil.disk_usage(data_path)
         free_gb = usage.free / (1024**3)
@@ -391,7 +433,7 @@ def check_cmd(ctx: typer.Context):
                 _urllib.urlopen(req, timeout=5)
                 table_api.add_row("  MinerU API", "[green]Reachable[/green]")
             except Exception as e:
-                logger.debug("MinerU API unreachable: {}", e)
+                logger.debug("MinerU API unreachable: {}", safe_error(e, secrets=config_secrets))
                 table_api.add_row(
                     "  MinerU API", "[yellow]Unreachable[/yellow]", "(check token/network)"
                 )
@@ -401,7 +443,7 @@ def check_cmd(ctx: typer.Context):
                 "  MinerU API", "[yellow]Not configured[/yellow]", "(flash mode will be used)"
             )
     except (KeyError, TypeError) as e:
-        logger.debug("MinerU API config error: {}", e)
+        logger.debug("MinerU API config error: {}", safe_error(e, secrets=config_secrets))
         table_api.add_row("  MinerU API", "[yellow]Unknown[/yellow]")
 
     # -- MinerU CLI --
@@ -418,7 +460,7 @@ def check_cmd(ctx: typer.Context):
                 "  MinerU CLI", "[yellow]Not found[/yellow]", "(install: npm i -g mineru-open-api)"
             )
     except (OSError, AttributeError) as e:
-        logger.debug("MinerU CLI check error: {}", e)
+        logger.debug("MinerU CLI check error: {}", safe_error(e, secrets=config_secrets))
         table_api.add_row("  MinerU CLI", "[yellow]Unknown[/yellow]")
 
     # Only warn about fallback path if no MinerU CLI is available
@@ -439,7 +481,7 @@ def check_cmd(ctx: typer.Context):
                 r.brief("1706.03762")
                 table_api.add_row("  DeepXiv", "[green]Reachable[/green]")
             except Exception as e:
-                logger.debug("DeepXiv unreachable: {}", e)
+                logger.debug("DeepXiv unreachable: {}", safe_error(e, secrets=config_secrets))
                 table_api.add_row(
                     "  DeepXiv", "[yellow]Unreachable[/yellow]", "(check token at data.rag.ac.cn)"
                 )
@@ -450,7 +492,7 @@ def check_cmd(ctx: typer.Context):
                 "(register at https://data.rag.ac.cn/register)",
             )
     except (KeyError, TypeError) as e:
-        logger.debug("DeepXiv config error: {}", e)
+        logger.debug("DeepXiv config error: {}", safe_error(e, secrets=config_secrets))
         table_api.add_row("  DeepXiv", "[yellow]Unknown[/yellow]")
 
     # -- LLM API connectivity --
@@ -479,12 +521,12 @@ def check_cmd(ctx: typer.Context):
                 _llm.completion(**kwargs)
                 table_api.add_row(label, "[green]Reachable[/green]")
             except Exception as e:
-                err_msg = str(e)[:60]
+                err_msg = safe_error(e, limit=60, secrets=config_secrets)
                 logger.debug("LLM {} unreachable: {}", label, err_msg)
                 table_api.add_row(label, "[yellow]Unreachable[/yellow]", f"({err_msg})")
                 warnings.append(f"LLM [{i}] {m.get('model', '?')} unreachable")
     except (KeyError, TypeError) as e:
-        logger.debug("LLM config error: {}", e)
+        logger.debug("LLM config error: {}", safe_error(e, secrets=config_secrets))
         table_api.add_row("  LLM", "[yellow]Not configured[/yellow]", "(run `drbrain setup`)")
 
     console.print(table_api)
@@ -654,19 +696,45 @@ def clean_cmd(
     config_path: str = typer.Option("config.yaml", "--config", "-c", help="Config file path"),
 ) -> None:
     """Clear data directories (db, cache, logs, papers, reports). Keeps inbox (PDFs) intact."""
-    cfg = load_config(config_path)
+    # ``clean`` is also callable directly (outside the root callback), so it
+    # must establish the same runtime namespace itself.  Without this, a
+    # relative config loaded under ``--root`` produced relative targets and
+    # could clear the caller's CWD instead of the selected worktree.
+    explicit_runtime = "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+    runtime = RuntimeContext.create()
+    config_file = runtime.validate_config_file(
+        config_path, label="config file", required=True
+    ) if explicit_runtime else runtime.resolve_path(config_path)
+    cfg_raw = load_config(config_file)
+    if explicit_runtime:
+        runtime.validate_config(cfg_raw)
+    cfg = runtime.apply_config(cfg_raw)
     dirs = cfg.get("dirs", {})
 
     targets = [
         cfg.get("db", {}).get("path", "data/drbrain.db"),
-        "data/metrics.db",
+        runtime.resolve_path("data/metrics.db"),
         dirs.get("cache", "data/cache"),
         dirs.get("logs", "data/logs"),
         dirs.get("papers", "data/papers"),
         dirs.get("reports", "data/reports"),
     ]
 
-    existing = [t for t in targets if Path(t).exists()]
+    safe_targets: list[Path] = []
+    for target in targets:
+        if isinstance(target, str) and target == ":memory:":
+            continue
+        path = Path(target)
+        if explicit_runtime:
+            # Resolve before checking existence so a symlink cannot redirect a
+            # destructive clean outside the selected worktree.
+            path = runtime.assert_within_root(path, label="clean target")
+            original = Path(target).expanduser()
+            if original.is_symlink():
+                raise ValueError(f"clean target must not be a symlink: {original}")
+        safe_targets.append(path)
+
+    existing = [t for t in safe_targets if t.exists()]
     if not existing:
         typer.echo("Nothing to clean — data directories are already empty.")
         return
@@ -704,7 +772,7 @@ def clean_cmd(
             typer.echo(f"  Cleared {d}/")
 
     # Recreate directories (skip file paths)
-    for t in targets:
+    for t in safe_targets:
         p = Path(t)
         if not p.suffix:  # directory path (no extension)
             p.mkdir(parents=True, exist_ok=True)

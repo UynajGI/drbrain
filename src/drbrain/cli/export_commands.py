@@ -14,6 +14,7 @@ from drbrain.cli._common import (
     _show_actor,
     open_db,
 )
+from drbrain.storage.paths import paper_dir as resolve_paper_dir
 
 console = Console()
 
@@ -288,7 +289,7 @@ def delete_cmd(
     if rm_files:
         _dvcfg = cfg if isinstance(cfg, dict) else {}
         papers_dir = Path(_dvcfg.get("dirs", {}).get("papers", "data/papers"))
-        paper_dir = papers_dir / local_id
+        paper_dir = resolve_paper_dir(papers_dir, local_id)
         if paper_dir.exists():
             _shutil.rmtree(paper_dir)
             file_deleted = True
@@ -457,12 +458,19 @@ def backup_cmd(
         return
 
     # Tar.gz mode (default)
-    _cfg = cfg if isinstance(cfg, dict) else {}
-    papers_dir = Path(_cfg.get("dirs", {}).get("papers", "data/papers"))
-    db_path = Path(_cfg.get("db", {}).get("path", "data/drbrain.db"))
-    backup_dir = Path(_cfg.get("dirs", {}).get("backups", "data/backups"))
-    workspace_dir = Path("workspace")
-    reports_dir = Path(_cfg.get("dirs", {}).get("reports", "data/reports"))
+    if cfg is not None and hasattr(cfg, "__getitem__"):
+        papers_dir = Path(cfg["dirs"]["papers"])
+        db_path = Path(cfg["db"]["path"])
+        backup_dir = Path(cfg["dirs"]["backups"])
+        workspace_dir = Path(cfg["dirs"].get("workspace", "workspace"))
+        reports_dir = Path(cfg["dirs"]["reports"])
+    else:
+        _cfg = cfg if isinstance(cfg, dict) else {}
+        papers_dir = Path(_cfg.get("dirs", {}).get("papers", "data/papers"))
+        db_path = Path(_cfg.get("db", {}).get("path", "data/drbrain.db"))
+        backup_dir = Path(_cfg.get("dirs", {}).get("backups", "data/backups"))
+        workspace_dir = Path("workspace")
+        reports_dir = Path(_cfg.get("dirs", {}).get("reports", "data/reports"))
 
     if output:
         path = create_backup(
