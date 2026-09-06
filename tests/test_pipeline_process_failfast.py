@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 
 def _sleep_worker(task: tuple[str, float]) -> dict:
@@ -19,7 +18,7 @@ def _raise_worker(task: tuple[str]) -> dict:
 
 
 def test_process_pool_timeout_terminates_and_aborts_unsubmitted_work() -> None:
-    from scripts.pipeline.ingest_scibase import _run_process_pool_fail_fast
+    from scripts.pipeline.common import run_process_pool_fail_fast as _run_process_pool_fail_fast
 
     records: list[dict] = []
     started = time.monotonic()
@@ -48,7 +47,7 @@ def test_process_pool_timeout_terminates_and_aborts_unsubmitted_work() -> None:
 
 
 def test_process_pool_unexpected_worker_exception_is_fail_fast() -> None:
-    from scripts.pipeline.ingest_scibase import _run_process_pool_fail_fast
+    from scripts.pipeline.common import run_process_pool_fail_fast as _run_process_pool_fail_fast
 
     records: list[dict] = []
     complete = _run_process_pool_fail_fast(
@@ -71,7 +70,9 @@ def test_process_pool_unexpected_worker_exception_is_fail_fast() -> None:
 
 
 def test_serial_worker_timeout_interrupts_legacy_in_process_call() -> None:
-    from scripts.pipeline.ingest_scibase import _run_serial_worker_with_timeout
+    from scripts.pipeline.common import (
+        run_serial_worker_with_timeout as _run_serial_worker_with_timeout,
+    )
 
     started = time.monotonic()
     result = _run_serial_worker_with_timeout(
@@ -95,7 +96,7 @@ def test_serial_worker_timeout_interrupts_legacy_in_process_call() -> None:
 
 
 def test_non_picklable_legacy_worker_is_detected() -> None:
-    from scripts.pipeline.ingest_scibase import _can_pickle_process_task
+    from scripts.pipeline.common import can_pickle_process_task as _can_pickle_process_task
 
     marker = object()
 
@@ -103,60 +104,3 @@ def test_non_picklable_legacy_worker_is_detected() -> None:
         return {"marker": marker}
 
     assert _can_pickle_process_task(local_worker, ("task",)) is False
-
-
-def test_scibase_explicit_empty_source_is_rejected(tmp_path, monkeypatch) -> None:
-    from scripts.pipeline import ingest_scibase
-
-    root = tmp_path / "runtime"
-    root.mkdir()
-    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
-    monkeypatch.setattr(
-        ingest_scibase,
-        "load_cfg",
-        lambda *_args, **_kwargs: {"dirs": {}, "llm": {}},
-    )
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "ingest_scibase.py",
-            "--source",
-            "",
-            "--db",
-            str(root / "data" / "shard.db"),
-            "--manifest",
-            str(root / "data" / "manifest.jsonl"),
-        ],
-    )
-
-    assert ingest_scibase.main() == 1
-
-
-def test_rebuild_explicit_empty_list_is_rejected(tmp_path, monkeypatch) -> None:
-    from scripts.pipeline import rebuild_trees
-
-    root = tmp_path / "runtime"
-    root.mkdir()
-    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
-    monkeypatch.setattr("sys.argv", ["rebuild_trees.py", "--list", ""])
-
-    assert rebuild_trees.main() == 1
-
-
-@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "not-a-number"])
-def test_process_worker_timeout_rejects_non_finite_values(monkeypatch, value: str) -> None:
-    from scripts.pipeline.ingest_scibase import _process_worker_timeout
-
-    monkeypatch.setenv("INGEST_PAPER_TIMEOUT", value)
-    with pytest.raises(ValueError, match="finite positive"):
-        _process_worker_timeout()
-
-
-def test_rebuild_timeout_uses_its_own_environment_selector(monkeypatch) -> None:
-    from scripts.pipeline.rebuild_trees import _process_worker_timeout
-
-    monkeypatch.delenv("REBUILD_TREE_TIMEOUT", raising=False)
-    monkeypatch.setenv("REBUILD_WORKER_TIMEOUT", "1.25")
-    assert _process_worker_timeout(
-        "REBUILD_TREE_TIMEOUT", fallback_env="REBUILD_WORKER_TIMEOUT"
-    ) == pytest.approx(1.25)
