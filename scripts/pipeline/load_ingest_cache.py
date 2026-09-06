@@ -200,7 +200,9 @@ def main() -> int:
                     if isinstance(legacy_file, str) and legacy_file.endswith(".json"):
                         raw_doi = legacy_file[:-5].replace("_", "/")
                     else:
-                        parse_errors.append(f"{mf.name}:{line_no}: successful record requires an explicit DOI")
+                        parse_errors.append(
+                            f"{mf.name}:{line_no}: successful record requires an explicit DOI"
+                        )
                         continue
                 if r.get("title") is not None and not isinstance(r.get("title"), str):
                     parse_errors.append(f"{mf.name}:{line_no}: title must be a string")
@@ -366,7 +368,11 @@ def main() -> int:
             ).fetchone()
             if doi_row and doi_row[0] != lid:
                 conflicts.append(f"DOI {doi!r} already belongs to {doi_row[0]!r}")
-            for kind, value in (("arxiv", rec.get("arxiv")), ("s2_id", rec.get("s2_id")), ("openalex_id", rec.get("openalex_id"))):
+            for kind, value in (
+                ("arxiv", rec.get("arxiv")),
+                ("s2_id", rec.get("s2_id")),
+                ("openalex_id", rec.get("openalex_id")),
+            ):
                 if value:
                     owner = db.get_paper_by_external_id(kind, value)
                     if owner and owner != lid:

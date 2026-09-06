@@ -40,6 +40,7 @@ from scripts.pipeline.common import run_process_pool_fail_fast  # noqa: E402
 
 DEFAULT_WORKER_TIMEOUT = 900.0
 
+
 def _process_worker_timeout(*names: str, fallback_env: str | None = None) -> float:
     raw = next((os.environ.get(n) for n in names if os.environ.get(n)), None)
     if raw is None and fallback_env:
@@ -47,7 +48,7 @@ def _process_worker_timeout(*names: str, fallback_env: str | None = None) -> flo
     if raw is None:
         return DEFAULT_WORKER_TIMEOUT
     value = float(raw)
-    if value <= 0 or not __import__('math').isfinite(value):
+    if value <= 0 or not __import__("math").isfinite(value):
         raise ValueError("worker timeout must be a finite positive number")
     return value
 

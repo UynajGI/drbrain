@@ -347,12 +347,18 @@ def main() -> int:
         workers = int(os.environ.get("EMBED_WORKERS", "8"))
         per_timeout = float(os.environ.get("EMBED_PAPER_TIMEOUT", "900"))
     except (TypeError, ValueError):
-        print("EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number", file=sys.stderr)
+        print(
+            "EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number",
+            file=sys.stderr,
+        )
         return 1
     import math
 
     if workers <= 0 or not math.isfinite(per_timeout) or per_timeout <= 0:
-        print("EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number", file=sys.stderr)
+        print(
+            "EMBED_WORKERS must be a positive integer and EMBED_PAPER_TIMEOUT a positive finite number",
+            file=sys.stderr,
+        )
         return 1
 
     total_vec = done = 0
