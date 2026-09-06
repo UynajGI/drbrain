@@ -48,7 +48,9 @@ export DRBRAIN_LOG_DIR="$LOG_DIR"
 
 PIDS=()
 trap runtime_cleanup_workers_on_failure EXIT
-trap 'exit 143' HUP INT TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for i in 0 1 2 3 4 5 6 7; do
   if [ $((i % 2)) -eq 0 ]; then
@@ -60,7 +62,7 @@ for i in 0 1 2 3 4 5 6 7; do
   SHARD_DB="$(runtime_path "data/shards/oa_shard$i.db" "OpenAlex shard database")"
   MANIFEST="$(runtime_path "data/shards/oa_shard$i.ingest.jsonl" "OpenAlex ingest manifest")"
   LOG_FILE="$(runtime_path "$LOG_DIR/launch_oa$i.log" "OpenAlex launcher log")"
-  nohup env \
+  setsid env \
     DRBRAIN_ROOT="$ROOT" DRBRAIN_CONFIG="$BASE_CFG" \
     INGEST_CONCURRENCY=8 \
     uv run --project "$SOURCE_ROOT" --directory "$SOURCE_ROOT" python -u "$SCRIPT_DIR/ingest_openalex.py" \

@@ -47,12 +47,14 @@ done
 
 PIDS=()
 trap runtime_cleanup_workers_on_failure EXIT
-trap 'exit 143' HUP INT TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 for i in $(seq 0 15); do
   ids_file="$(runtime_existing_path "$IDS_DIR/raptor_shard_${i}.txt" "RAPTOR ids file")"
   RAPTOR_OUT="$(runtime_path "$OUTPUT_DIR/raptor_out_${i}.jsonl" "RAPTOR output file")"
   LOG_FILE="$(runtime_path "$LOG_DIR/raptor_${i}.log" "RAPTOR log file")"
-  OMP_NUM_THREADS=2 EMBED_WORKERS=4 EMBED_PAPER_TIMEOUT=900     nohup uv run --project "$SOURCE_ROOT" --directory "$SOURCE_ROOT" python "$SCRIPT_DIR/embed_batch.py" \
+  OMP_NUM_THREADS=2 EMBED_WORKERS=4 EMBED_PAPER_TIMEOUT=900     setsid uv run --project "$SOURCE_ROOT" --directory "$SOURCE_ROOT" python "$SCRIPT_DIR/embed_batch.py" \
       --ids-file "$ids_file" \
       --db "$DB_PATH" \
       --config "$RAPTOR_CFG" \
