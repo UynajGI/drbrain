@@ -375,6 +375,17 @@ def _split_evidence_id(identifier: str) -> tuple[str, str]:
 class Database:
     """Thin SQLite wrapper with schema auto-init."""
 
+    @staticmethod
+    def _validate_paper_id(local_id: str) -> str:
+        if (
+            not isinstance(local_id, str)
+            or not local_id
+            or local_id != local_id.strip()
+            or "\x00" in local_id
+        ):
+            raise ValueError("invalid paper_id")
+        return local_id
+
     def __init__(self, db_path: str | Path = "data/drbrain.db"):
         """Open SQLite database at *db_path*, enabling WAL mode and auto-migrating schema.
 
@@ -939,6 +950,7 @@ class Database:
 
     def set_paper_abstract(self, local_id: str, abstract: str) -> None:
         """Update the abstract text for a paper."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET abstract = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (abstract, local_id),
@@ -946,6 +958,7 @@ class Database:
 
     def set_paper_categories(self, local_id: str, categories: str) -> None:
         """Store the space-separated arXiv category list for a paper."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET categories = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (categories, local_id),
@@ -966,6 +979,7 @@ class Database:
         Resolution of ``cited_key`` (arXiv id / DOI / bib key) to an in-corpus
         ``cited_local_id`` happens later, once the full corpus is ingested.
         """
+        self._validate_paper_id(citing_local_id)
         if not cited_keys:
             return
         self.conn.executemany(
@@ -996,6 +1010,7 @@ class Database:
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded', updated_at = CURRENT_TIMESTAMP "
             "WHERE local_id = ? AND status = 'placeholder'",
@@ -1004,6 +1019,7 @@ class Database:
 
     def set_paper_status(self, local_id: str, status: str) -> None:
         """Update paper status and bump updated_at."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (status, local_id),
@@ -1011,6 +1027,7 @@ class Database:
 
     def touch_paper(self, local_id: str) -> None:
         """Bump updated_at timestamp on a paper to signal downstream stages."""
+        self._validate_paper_id(local_id)
         self.conn.execute(
             "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (local_id,),
@@ -1018,6 +1035,9 @@ class Database:
 
     def touch_edge(self, src_id: str, dst_id: str, relation: str, source_paper: str) -> None:
         """Bump updated_at on an edge to signal downstream stages."""
+        self._validate_paper_id(src_id)
+        self._validate_paper_id(dst_id)
+        self._validate_paper_id(source_paper)
         self.conn.execute(
             "UPDATE edges SET updated_at = CURRENT_TIMESTAMP "
             "WHERE src_id = ? AND dst_id = ? AND relation = ? AND source_paper = ?",
@@ -1857,6 +1877,7 @@ class Database:
         node_id: str = "",
     ) -> int:
         """Insert an argument unit. Returns arg_id."""
+        self._validate_paper_id(source_paper)
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
             "evidence_type, evidence_detail, mechanism, section, node_id, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
