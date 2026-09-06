@@ -77,7 +77,7 @@ def test_schema_v9_tables_created() -> None:
 
 
 def test_make_local_id_prefers_doi() -> None:
-    assert make_local_id(_rec("u1", doi="10.1/ABC")) == canonical_paper_id(PaperIDs(doi="10.1/abc"))
+    assert make_local_id(_rec("u1", doi="10.1234/ABC")) == canonical_paper_id(PaperIDs(doi="10.1234/abc"))
 
 
 def test_make_local_id_falls_back_to_slug() -> None:
@@ -88,8 +88,8 @@ def test_make_local_id_falls_back_to_slug() -> None:
 
 
 def test_make_local_id_normalizes_doi_url() -> None:
-    assert make_local_id(_rec("u1", doi="https://doi.org/10.1/ABC")) == canonical_paper_id(
-        PaperIDs(doi="10.1/abc")
+    assert make_local_id(_rec("u1", doi="https://doi.org/10.1234/ABC")) == canonical_paper_id(
+        PaperIDs(doi="10.1234/abc")
     )
 
 
