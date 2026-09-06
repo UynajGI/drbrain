@@ -660,7 +660,9 @@ def metrics_cmd(
         get_weekly_trend,
     )
 
-    db_path = _Path("data/metrics.db")
+    runtime = (ctx.obj or {}).get("runtime")
+    db_path = runtime.root / "data" / "metrics.db" if runtime else _Path("data/metrics.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_metrics_db(db_path)
     trend = get_weekly_trend(db_path)
     keywords = get_top_keywords(db_path, limit=5)

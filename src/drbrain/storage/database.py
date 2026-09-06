@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -383,7 +384,18 @@ class Database:
         runs in serialized threading mode, so cross-thread use of the shared
         connection is safe; ``busy_timeout`` below absorbs write contention.
         """
+        raw_path = str(db_path)
+        if raw_path != ":memory:" and raw_path.startswith("file:"):
+            raise ValueError("database path must be a local filesystem path, not a SQLite URI")
         self.path = Path(db_path)
+        if raw_path != ":memory:" and (
+            "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+        ):
+            from drbrain.runtime import RuntimeContext
+
+            runtime = RuntimeContext.create()
+            candidate = self.path if self.path.is_absolute() else runtime.root / self.path
+            self.path = runtime.assert_within_root(candidate, label="database path")
         self._write_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -878,6 +890,21 @@ class Database:
         strict: bool = False,
     ) -> None:
         """Insert external identifier mappings, optionally rejecting conflicts."""
+        from drbrain.dedup.resolver import PaperIDs
+
+        normalized = PaperIDs(
+            doi=doi, arxiv=arxiv, s2_id=s2_id, openalex_id=openalex_id
+        ).normalized()
+        doi, arxiv, s2_id, openalex_id = (
+            normalized.doi,
+            normalized.arxiv,
+            normalized.s2_id,
+            normalized.openalex_id,
+        )
+        current = self.conn.execute(
+            "SELECT doi, arxiv, s2_id, openalex_id FROM paper_ids WHERE local_id = ?",
+            (local_id,),
+        ).fetchone()
         if strict:
             existing = self.get_paper_by_external_id
             for kind, value in (
@@ -888,10 +915,27 @@ class Database:
             ):
                 if value and existing(kind, value) not in (None, local_id):
                     raise ValueError(f"external identifier {kind} already belongs to another paper")
-        self.conn.execute(
-            "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
-            (local_id, doi, arxiv, s2_id, openalex_id),
-        )
+            if current:
+                for kind, old, value in zip(
+                    ("doi", "arxiv", "s2_id", "openalex_id"),
+                    current,
+                    (doi, arxiv, s2_id, openalex_id),
+                    strict=True,
+                ):
+                    if old and value and old != value:
+                        raise ValueError(f"external identifier {kind} already mapped")
+        if current:
+            self.conn.execute(
+                "UPDATE paper_ids SET doi = COALESCE(doi, ?), arxiv = COALESCE(arxiv, ?), "
+                "s2_id = COALESCE(s2_id, ?), openalex_id = COALESCE(openalex_id, ?) "
+                "WHERE local_id = ?",
+                (doi, arxiv, s2_id, openalex_id, local_id),
+            )
+        else:
+            self.conn.execute(
+                "INSERT INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
+                (local_id, doi, arxiv, s2_id, openalex_id),
+            )
 
     def set_paper_abstract(self, local_id: str, abstract: str) -> None:
         """Update the abstract text for a paper."""
@@ -1624,6 +1668,7 @@ class Database:
             "INSERT OR REPLACE INTO embeddings (entity, vec, dim) VALUES (?, ?, ?)",
             (entity, np.array(vec, dtype=np.float32).tobytes(), dim),
         )
+        self._advance_embedding_revision()
 
     def load_embeddings(self) -> dict:
         """Load all entity/relation vectors into a dict keyed by entity label."""
@@ -1632,9 +1677,24 @@ class Database:
         rows = self.conn.execute("SELECT entity, vec, dim FROM embeddings").fetchall()
         return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
 
-    def clear_embeddings(self) -> None:
+    def get_embedding_revision(self) -> int:
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = 'embedding_revision'"
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def _advance_embedding_revision(self) -> None:
+        revision = self.get_embedding_revision() + 1
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES ('embedding_revision', ?)",
+            (str(revision),),
+        )
+
+    def clear_embeddings(self) -> int:
         """Delete all embeddings from the table (used before re-training)."""
-        self.conn.execute("DELETE FROM embeddings")
+        cursor = self.conn.execute("DELETE FROM embeddings")
+        self._advance_embedding_revision()
+        return cursor.rowcount
 
     # -- Query helpers --
 
