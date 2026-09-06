@@ -27,6 +27,10 @@ class TreeConfig:
     if_add_node_text: bool = False
     if_add_node_id: bool = True
     max_node_tokens: int = 10000
+    backend: str = "legacy"
+    sdk_mode: str = "local"
+    sdk_model: str | None = None
+    sdk_storage_path: str | None = None
 
 
 @dataclass
@@ -538,6 +542,16 @@ async def md_to_tree(
     )
 
     config = config or TreeConfig()
+    if config.backend == "sdk":
+        from drbrain.parser.pageindex.sdk_backend import build_tree_with_sdk
+
+        result = build_tree_with_sdk(md_path, config)
+        return DocumentTree(
+            doc_name=result["doc_name"],
+            line_count=result["line_count"],
+            structure=result["structure"],
+            doc_description=None,
+        )
     models = models or []
 
     md_path = Path(md_path)
