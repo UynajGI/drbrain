@@ -11,9 +11,18 @@ def test_adapt_sdk_tree_to_drbrain_nodes():
 def test_sdk_backend_accepts_markdown_without_source_pdf(tmp_path, monkeypatch):
     md = tmp_path / "raw.md"
     md.write_text("# Title\n", encoding="utf-8")
+
     class FakeClient:
-        def __init__(self, **kwargs): pass
-        def submit_document(self, path, wait=True): return {"doc_id": "x"}
-        def get_tree(self, doc_id, **kwargs): return {"result": []}
-    monkeypatch.setitem(__import__('sys').modules, "pageindex", SimpleNamespace(PageIndexClient=FakeClient))
+        def __init__(self, **kwargs):
+            pass
+
+        def submit_document(self, path, wait=True):
+            return {"doc_id": "x"}
+
+        def get_tree(self, doc_id, **kwargs):
+            return {"result": []}
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "pageindex", SimpleNamespace(PageIndexClient=FakeClient)
+    )
     assert build_tree_with_sdk(md, SimpleNamespace(sdk_mode="local"))["structure"] == []
