@@ -101,7 +101,7 @@ runtime_stop_workers() {
   for pid in "${PIDS[@]-}"; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     [[ "$pid" == "$$" ]] && continue
-    kill "$pid" 2>/dev/null || true
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
   done
   for pid in "${PIDS[@]-}"; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue

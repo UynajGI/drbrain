@@ -50,7 +50,9 @@ LOG_DIR="$(runtime_prepare_dir "$LOG_DIR" "log directory")"
 export DRBRAIN_LOG_DIR="$LOG_DIR"
 PIDS=()
 trap runtime_cleanup_workers_on_failure EXIT
-trap 'exit 143' HUP INT TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # 8 scibase 分片（ingest 已完成 → 直接 build，hy3 主抽）
 for i in 0 1 2 3 4 5 6 7; do
@@ -63,7 +65,7 @@ for i in 0 1 2 3 4 5 6 7; do
   SHARD_DIR="$(runtime_path "data/spool/scibase_shards8/shard$i" "scibase source" input)"
   SHARD_DB="$(runtime_path "data/shards/shard$i.db" "scibase shard database")"
   LOG_FILE="$(runtime_path "$LOG_DIR/launch_scibase$i.log" "scibase launcher log")"
-  nohup bash "$SCRIPT_DIR/shard_pipeline.sh" \
+  setsid bash "$SCRIPT_DIR/shard_pipeline.sh" \
     "$SHARD_DIR" "$SHARD_DB" "$EMBED" \
     "$BASE_CFG" \
     >> "$LOG_FILE" 2>&1 &
@@ -82,7 +84,7 @@ for i in 0 1 2 3 4 5 6 7; do
   EMBED="$(runtime_path "$EMBED" "embedding config")"
   SHARD_DB="$(runtime_path "data/shards/oa_shard$i.db" "OpenAlex shard database")"
   LOG_FILE="$(runtime_path "$LOG_DIR/launch_oa$i.log" "OpenAlex launcher log")"
-  nohup bash "$SCRIPT_DIR/oa_shard_pipeline.sh" \
+  setsid bash "$SCRIPT_DIR/oa_shard_pipeline.sh" \
     "$i" "$SHARD_DB" "$EMBED" "$BASE_CFG" \
     >> "$LOG_FILE" 2>&1 &
   pid=$!
