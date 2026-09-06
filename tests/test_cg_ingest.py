@@ -204,13 +204,13 @@ def test_ingest_corpus_links_existing_external_owner_and_keeps_following_record(
     db, td = _tmp_db()
     try:
         db.insert_paper("existing", "Existing", 2020, "uploaded")
-        db.insert_paper_ids("existing", openalex_id="W-conflict")
+        db.insert_paper_ids("existing", openalex_id="W123456")
         db.conn.commit()
 
         src = FakeSource(
             [
                 PaperRecord(
-                    unique_id="W-conflict",
+                    unique_id="W123456",
                     title="Bad",
                     source="openalex",
                 ),
@@ -224,7 +224,7 @@ def test_ingest_corpus_links_existing_external_owner_and_keeps_following_record(
         assert stats.skipped == 1
         assert stats.errors == []
         assert db.get_paper(make_local_id(src._records[0])) is None
-        assert db.find_corpus_source("fake", "W-conflict") == "existing"
+        assert db.find_corpus_source("fake", "W123456") == "existing"
         good_id = canonical_paper_id(PaperIDs(doi="10.1234/ok"))
         assert db.get_paper(good_id) is not None
         assert db.find_corpus_source("fake", "good") == good_id

@@ -59,11 +59,11 @@ def _record_ids(record: PaperRecord) -> PaperIDs:
         raise ValueError("paper source identifier must not contain NUL bytes")
     ids = PaperIDs(doi=record.doi)
     if source == "openalex":
-        ids.openalex_id = unique_id
+        ids = PaperIDs(doi=record.doi, openalex_id=unique_id)
     elif source in {"arxiv", "arxiv-latex", "arxiv_latex"}:
-        ids.arxiv = unique_id
+        ids = PaperIDs(doi=record.doi, arxiv=unique_id)
     elif source in {"s2", "semantic-scholar", "semanticscholar"}:
-        ids.s2_id = unique_id
+        ids = PaperIDs(doi=record.doi, s2_id=unique_id)
     return ids.normalized()
 
 
