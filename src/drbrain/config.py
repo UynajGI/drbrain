@@ -94,7 +94,8 @@ class PageIndexConfig(_ConfigBase):
 
     backend: str = "sdk"
     mode: str = "local"
-    model: str = "gpt-5.6-luna"
+    model: str = "deepseek-v4-flash"
+    chat_model: str = "pro"
     storage_path: str = "data/pageindex"
     api_key: str = ""
 

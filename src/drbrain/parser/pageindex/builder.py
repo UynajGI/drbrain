@@ -30,6 +30,7 @@ class TreeConfig:
     backend: str = "legacy"
     sdk_mode: str = "local"
     sdk_model: str | None = None
+    sdk_chat_model: str | None = None
     sdk_storage_path: str | None = None
     sdk_api_key: str = ""
 
