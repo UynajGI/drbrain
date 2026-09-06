@@ -174,7 +174,7 @@ def reason_cmd(
                 graph=graph,
                 models=models,
                 question=question,
-                cache=ApiCache(_cache_dir),
+                cache=ApiCache(_cache_dir, secrets=configured_secret_values(cfg)),
             )
         results = wf.execute(wf_ctx)
 

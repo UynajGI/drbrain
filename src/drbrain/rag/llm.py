@@ -218,8 +218,11 @@ if _LLAMA_INDEX_AVAILABLE:
                     dirs = getattr(self._cfg, "dirs", None)
                     cache_dir = getattr(dirs, "cache", None) or "data/cache"
                     from drbrain.extractor.cache import ApiCache
+                    from drbrain.security import configured_secret_values
 
-                    self._cache = ApiCache(cache_dir, ttl=ttl)
+                    self._cache = ApiCache(
+                        cache_dir, ttl=ttl, secrets=configured_secret_values(self._cfg)
+                    )
             return self._cache
 
         # ── LlamaIndex protocol ─────────────────────────────────────────

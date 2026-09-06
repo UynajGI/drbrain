@@ -169,7 +169,9 @@ def build_cmd(
     db = Database(cfg["db"]["path"])
 
     # LLM response cache (deduplicate retries across stages)
-    cache = ApiCache("data/spool/llm_cache")
+    from drbrain.security import configured_secret_values
+
+    cache = ApiCache("data/spool/llm_cache", secrets=configured_secret_values(cfg))
 
     # Select papers to process
     if all_papers:
