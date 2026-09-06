@@ -267,7 +267,11 @@ def build_cmd(
         # Run 5-stage pipeline
         typer.echo("  Stage 1: Ontology...")
         try:
-            result = asyncio.run(build_graph_from_tree(md_path, structure, llm_models, skip_refine=skip_refine, cache=cache))
+            result = asyncio.run(
+                build_graph_from_tree(
+                    md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+                )
+            )
         except Exception as exc:
             failures += 1
             typer.echo(f"  Extraction failed: {exc}", err=True)
