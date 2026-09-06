@@ -102,7 +102,7 @@ def test_ingest_corpus_inserts_papers() -> None:
     db, td = _tmp_db()
     try:
         src = FakeSource(
-            [_rec("u1", doi="10.1/a", year=2020, abstract="abs"), _rec("u2", year=2021)]
+            [_rec("u1", doi="10.1234/a", year=2020, abstract="abs"), _rec("u2", year=2021)]
         )
         stats = ingest_corpus(db, src, limit=10)
         assert stats.fetched == 2
@@ -111,7 +111,7 @@ def test_ingest_corpus_inserts_papers() -> None:
         assert count == 2
         prov = db.conn.execute("SELECT COUNT(*) FROM corpus_sources").fetchone()[0]
         assert prov == 2
-        canonical = canonical_paper_id(PaperIDs(doi="10.1/a"))
+        canonical = canonical_paper_id(PaperIDs(doi="10.1234/a"))
         abstract = db.conn.execute(
             "SELECT abstract FROM papers WHERE local_id=?", (canonical,)
         ).fetchone()[0]
@@ -124,7 +124,7 @@ def test_ingest_corpus_inserts_papers() -> None:
 def test_ingest_corpus_dedup_by_unique_id() -> None:
     db, td = _tmp_db()
     try:
-        src = FakeSource([_rec("u1", doi="10.1/a")])
+        src = FakeSource([_rec("u1", doi="10.1234/a")])
         ingest_corpus(db, src, limit=10)
         stats2 = ingest_corpus(db, src, limit=10)
         assert stats2.inserted == 0
@@ -141,10 +141,10 @@ def test_ingest_corpus_doi_secondary_dedup() -> None:
     try:
         # Pre-existing paper keyed by DOI under a different local_id.
         db.insert_paper("existing_id", "Old", 2019, "uploaded")
-        db.insert_paper_ids("existing_id", doi="10.1/a")
+        db.insert_paper_ids("existing_id", doi="10.1234/a")
         db.conn.commit()
 
-        src = FakeSource([_rec("u-new", doi="10.1/a")])
+        src = FakeSource([_rec("u-new", doi="10.1234/a")])
         stats = ingest_corpus(db, src, limit=10)
         assert stats.inserted == 0
         assert stats.skipped == 1
@@ -184,7 +184,7 @@ def test_ingest_corpus_persists_source_external_id_alongside_doi() -> None:
         record = PaperRecord(
             unique_id="https://openalex.org/W456",
             title="Dual identity",
-            doi="10.1/dual",
+            doi="10.1234/dual",
             source="openalex",
         )
         stats = ingest_corpus(db, FakeSource([record]), limit=10)
@@ -193,7 +193,7 @@ def test_ingest_corpus_persists_source_external_id_alongside_doi() -> None:
         row = db.conn.execute(
             "SELECT doi, openalex_id FROM paper_ids WHERE local_id = ?", (local_id,)
         ).fetchone()
-        assert row == ("10.1/dual", "W456")
+        assert row == ("10.1234/dual", "W456")
     finally:
         db.close()
         td.cleanup()
@@ -214,7 +214,7 @@ def test_ingest_corpus_links_existing_external_owner_and_keeps_following_record(
                     title="Bad",
                     source="openalex",
                 ),
-                _rec("good", doi="10.1/ok"),
+                _rec("good", doi="10.1234/ok"),
             ]
         )
         stats = ingest_corpus(db, src, limit=10)
@@ -225,7 +225,7 @@ def test_ingest_corpus_links_existing_external_owner_and_keeps_following_record(
         assert stats.errors == []
         assert db.get_paper(make_local_id(src._records[0])) is None
         assert db.find_corpus_source("fake", "W-conflict") == "existing"
-        good_id = canonical_paper_id(PaperIDs(doi="10.1/ok"))
+        good_id = canonical_paper_id(PaperIDs(doi="10.1234/ok"))
         assert db.get_paper(good_id) is not None
         assert db.find_corpus_source("fake", "good") == good_id
     finally:
@@ -247,14 +247,14 @@ def test_ingest_corpus_rolls_back_late_write_failure(monkeypatch) -> None:
             original(local_id, source, source_unique_id)
 
         monkeypatch.setattr(db, "insert_corpus_source", fail_once)
-        src = FakeSource([_rec("bad", doi="10.1/late"), _rec("good", doi="10.1/ok")])
+        src = FakeSource([_rec("bad", doi="10.1234/late"), _rec("good", doi="10.1234/ok")])
 
         stats = ingest_corpus(db, src, limit=10)
 
         assert stats.inserted == 1
         assert len(stats.errors) == 1
-        assert db.get_paper(canonical_paper_id(PaperIDs(doi="10.1/late"))) is None
-        good_id = canonical_paper_id(PaperIDs(doi="10.1/ok"))
+        assert db.get_paper(canonical_paper_id(PaperIDs(doi="10.1234/late"))) is None
+        good_id = canonical_paper_id(PaperIDs(doi="10.1234/ok"))
         assert db.get_paper(good_id) is not None
         assert db.find_corpus_source("fake", "good") == good_id
     finally:
@@ -269,7 +269,7 @@ def test_ingest_citations_writes_edges() -> None:
     db, td = _tmp_db()
     try:
         src = FakeSource(
-            [_rec("u1", doi="10.1/a")],
+            [_rec("u1", doi="10.1234/a")],
             relations={
                 "u1": PaperRelations(
                     unique_id="u1", references=[{"id": "10.9/z"}, {"id": "10.9/y"}]
