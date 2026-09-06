@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
 from pathlib import Path
 
 import typer
@@ -11,6 +12,14 @@ import yaml
 from loguru import logger
 
 from drbrain.cli._setup_i18n import t as _t
+
+
+def _write_private_yaml(path: Path, data: dict) -> Path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    os.chmod(path, 0o600)
+    return path
 
 
 def _config_local_path() -> Path:
@@ -94,10 +103,12 @@ def generate_local_config(
     config["embed"] = embed_cfg
 
     out = Path(output_path)
+    if "DRBRAIN_ROOT" in os.environ:
+        from drbrain.runtime import RuntimeContext
+
+        out = RuntimeContext.create().assert_within_root(out, label="config.local.yaml")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-    return out
+    return _write_private_yaml(out, config)
 
 
 def _ensure_directories(cfg: dict) -> int:
@@ -119,6 +130,10 @@ def _ensure_directories(cfg: dict) -> int:
     created = 0
     for d in dir_paths:
         p = Path(d)
+        if "DRBRAIN_ROOT" in os.environ:
+            from drbrain.runtime import RuntimeContext
+
+            p = RuntimeContext.create().assert_within_root(p, label=f"setup directory {d!r}")
         if not p.exists():
             p.mkdir(parents=True, exist_ok=True)
             created += 1
