@@ -92,15 +92,11 @@ class ApiConfig(_ConfigBase):
 class PageIndexConfig(_ConfigBase):
     """PageIndex index backend settings (local SDK or cloud API)."""
 
-    backend: str = "sdk"
+    backend: str = "legacy"
     mode: str = "local"
-    model: str = "deepseek-v4-flash"
-    chat_model: str = "deepseek-v4-pro"
+    model: str = "gpt-5.6-luna"
     storage_path: str = "data/pageindex"
     api_key: str = ""
-    base_url: str = ""
-    index_backend: dict[str, Any] = field(default_factory=dict)
-    chat_backend: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
