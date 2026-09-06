@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -98,6 +99,30 @@ def test_verifier_cannot_write_experiment_artifacts(tmp_path):
             uri="inline://invalid",
             payload={"value": 1},
         )
+
+
+def test_artifact_uri_is_redacted_on_write_and_legacy_read(tmp_path):
+    execution = _execution(tmp_path)
+    experiment = execution.record_experiment(_hypothesis(), environment={}, config={})
+    artifact = execution.record_artifact(
+        experiment["experiment_id"],
+        actor="compute",
+        kind="output",
+        uri="https://example.test/result?token=write-secret",
+        payload={"value": 1},
+    )
+    assert "write-secret" not in artifact["uri"]
+
+    ledger = execution.transitions._ledger
+    with sqlite3.connect(ledger.path) as conn:
+        conn.execute(
+            "UPDATE research_artifacts SET uri = ? WHERE artifact_id = ?",
+            ("https://example.test/result?api_key=legacy-secret", artifact["artifact_id"]),
+        )
+
+    restored = execution.snapshot()["artifacts"][-1]
+    assert "legacy-secret" not in restored["uri"]
+    assert "[REDACTED]" in restored["uri"]
 
 
 def test_settlement_blocks_promotion_without_numeric_artifact_or_evidence(tmp_path):

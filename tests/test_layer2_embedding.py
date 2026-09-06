@@ -324,3 +324,33 @@ def test_build_tree_vectors_with_mock_embed():
             recovered = struct.unpack("4f", row[0])
             assert recovered == pytest.approx((0.1, 0.2, 0.3, 0.4))
             assert row[1]  # content_hash is non-empty
+
+
+def test_build_tree_vectors_keeps_doi_local_id_with_encoded_paper_dir():
+    """Embedding rows must retain the complete DOI, including its slash."""
+    from drbrain.config import EmbedConfig
+    from drbrain.services.embedding import build_tree_vectors
+    from drbrain.storage.database import Database
+    from drbrain.storage.paths import paper_dir
+
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        doi = "10.1234/a"
+        paper_path = paper_dir(base / "papers", doi)
+        paper_path.mkdir(parents=True)
+        (paper_path / "tree.json").write_text(
+            json.dumps({"structure": [{"node_id": "n1", "title": "Intro"}]}),
+            encoding="utf-8",
+        )
+        (paper_path / "raw.md").write_text("# Intro\nbody", encoding="utf-8")
+        db_path = base / "db.sqlite"
+        db = Database(db_path)
+        db.insert_paper(doi, "DOI Paper", 2024, "uploaded")
+        db.commit()
+
+        with mock.patch("drbrain.services.embedding._embed_batch", return_value=[[0.1, 0.2]]):
+            assert build_tree_vectors(db_path, paper_path, EmbedConfig(provider="local")) == 1
+
+        row = db.conn.execute("SELECT node_id, paper_id FROM tree_vectors").fetchone()
+        assert row == (f"{doi}:n1", doi)
+        db.close()
