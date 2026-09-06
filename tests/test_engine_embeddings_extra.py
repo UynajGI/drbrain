@@ -113,6 +113,31 @@ def test_ensure_embeddings_empty_db_result():
     assert g._transE is None
 
 
+def test_db_revision_invalidates_cached_model_after_clear(tmp_db):
+    """A cleared persisted model cannot be answered by an old in-memory cache."""
+    g = _tiny_graph()
+    g.learn_embeddings(dim=4, epochs=10, db=tmp_db)
+    assert g.entity_embedding("A", db=tmp_db) is not None
+
+    tmp_db.clear_embeddings()
+
+    assert g.predict_link("A", "cites", db=tmp_db) == []
+    assert g.entity_embedding("A", db=tmp_db) is None
+
+
+def test_db_cache_does_not_cross_database_boundaries(tmp_db, tmp_path):
+    """An engine re-used with a different DB must reload that DB's vectors."""
+    g = _tiny_graph()
+    g.learn_embeddings(dim=4, epochs=10, db=tmp_db)
+    other = __import__("drbrain.storage.database", fromlist=["Database"]).Database(
+        tmp_path / "other.db"
+    )
+    try:
+        assert g.entity_embedding("A", db=other) is None
+    finally:
+        other.close()
+
+
 # -- learn_embeddings tiny graph --
 
 
