@@ -78,12 +78,11 @@ def make_local_id(record: PaperRecord) -> str:
     unique_id = str(record.unique_id or "").strip()
     if not unique_id:
         raise ValueError("paper source identifier must not be empty")
-    return canonical_paper_id(
-        _record_ids(record),
-        title=record.title,
-        year=record.year,
-        source_key=f"{source}:{unique_id}",
-    )
+    ids = _record_ids(record)
+    # External identifiers are the canonical identity.  The source-qualified
+    # key is only a fallback for records with no usable DOI/provider ID.
+    source_key = f"{source}:{unique_id}" if not any(vars(ids).values()) else None
+    return canonical_paper_id(ids, title=record.title, year=record.year, source_key=source_key)
 
 
 @_serialized_ingest
