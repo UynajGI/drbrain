@@ -66,6 +66,8 @@ def _safe_paper_dir(arxiv_id: str) -> str:
 
     Same rule as ``ingest_arxiv_latex.py`` so raw.md lookup matches on disk.
     """
+    if not arxiv_id or arxiv_id in {".", ".."} or ".." in arxiv_id.split("/"):
+        raise ValueError("invalid paper id")
     return arxiv_id.replace("/", "_")
 
 
@@ -563,7 +565,7 @@ def run_l1(
             concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
         except Exception as exc:  # noqa: BLE001 - keep one paper failure isolated
             stats["failed"] += 1
-            print(safe_error(exc, secrets=configured_secret_values()), flush=True)
+            print(safe_error(exc, secrets=configured_secret_values(os.environ)), flush=True)
             continue
         n = 0
         for c in concepts:
@@ -772,7 +774,7 @@ def main(argv: list[str] | None = None) -> int:
     db = Database(str(args.db))
     try:
         if args.command == "l1":
-            run_l1(
+            result = run_l1(
                 db,
                 args.papers_root,
                 extractor=args.extractor,
@@ -780,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             cfg = _load_cfg(config_path=args.config, papers_root=args.papers_root)
-            run_l2(
+            result = run_l2(
                 db,
                 args.papers_root,
                 paper_ids=args.papers,
@@ -791,7 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     finally:
         db.close()
-    return 0
+    return 1 if result.get("failed", 0) else 0
 
 
 if __name__ == "__main__":
