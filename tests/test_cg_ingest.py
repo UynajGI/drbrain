@@ -12,6 +12,7 @@ from drbrain.concept_graph.ingest import (
     make_local_id,
 )
 from drbrain.concept_graph.sources.base import PaperRecord, PaperRelations
+from drbrain.dedup.resolver import PaperIDs, canonical_paper_id
 from drbrain.storage.database import Database
 
 
@@ -76,12 +77,14 @@ def test_schema_v9_tables_created() -> None:
 
 
 def test_make_local_id_prefers_doi() -> None:
-    assert make_local_id(_rec("u1", doi="10.1/ABC")) == "10.1/abc"
+    expected = canonical_paper_id(PaperIDs(doi="10.1234/abc"))
+    assert make_local_id(_rec("u1", doi="10.1234/ABC")) == expected
+    assert make_local_id(_rec("u2", doi="10.1234/abc")) == expected
 
 
-def test_make_local_id_falls_back_to_slug() -> None:
+def test_make_local_id_falls_back_to_source_key() -> None:
     lid = make_local_id(_rec("paper:10.1038/s41586"))
-    assert lid.startswith("fake-")
+    assert lid == canonical_paper_id(PaperIDs(), source_key="fake:paper:10.1038/s41586")
     assert " " not in lid
 
 
@@ -92,7 +95,7 @@ def test_ingest_corpus_inserts_papers() -> None:
     db, td = _tmp_db()
     try:
         src = FakeSource(
-            [_rec("u1", doi="10.1/a", year=2020, abstract="abs"), _rec("u2", year=2021)]
+            [_rec("u1", doi="10.1234/a", year=2020, abstract="abs"), _rec("u2", year=2021)]
         )
         stats = ingest_corpus(db, src, limit=10)
         assert stats.fetched == 2
@@ -102,7 +105,8 @@ def test_ingest_corpus_inserts_papers() -> None:
         prov = db.conn.execute("SELECT COUNT(*) FROM corpus_sources").fetchone()[0]
         assert prov == 2
         abstract = db.conn.execute(
-            "SELECT abstract FROM papers WHERE local_id='10.1/a'"
+            "SELECT abstract FROM papers WHERE local_id=?",
+            (canonical_paper_id(PaperIDs(doi="10.1234/a")),),
         ).fetchone()[0]
         assert abstract == "abs"
     finally:
@@ -130,10 +134,10 @@ def test_ingest_corpus_doi_secondary_dedup() -> None:
     try:
         # Pre-existing paper keyed by DOI under a different local_id.
         db.insert_paper("existing_id", "Old", 2019, "uploaded")
-        db.insert_paper_ids("existing_id", doi="10.1/a")
+        db.insert_paper_ids("existing_id", doi="10.1234/a")
         db.conn.commit()
 
-        src = FakeSource([_rec("u-new", doi="10.1/a")])
+        src = FakeSource([_rec("u-new", doi="10.1234/a")])
         stats = ingest_corpus(db, src, limit=10)
         assert stats.inserted == 0
         assert stats.skipped == 1

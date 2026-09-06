@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -383,6 +384,7 @@ class Database:
         connection is safe; ``busy_timeout`` below absorbs write contention.
         """
         self.path = Path(db_path)
+        self._write_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
@@ -838,11 +840,17 @@ class Database:
         On conflict (existing local_id), bump updated_at to signal downstream
         incremental stages that this paper changed.
         """
+        if strict and self.get_paper(local_id) is not None:
+            raise ValueError("paper identity already exists")
         self.conn.execute(
             "INSERT INTO papers (local_id, title, year, status, paper_type, "
             "journal, publisher, citation_count, volume, pages, authors, categories, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
-            "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
+            + (
+                ""
+                if strict
+                else "ON CONFLICT(local_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP"
+            ),
             (
                 local_id,
                 title,
@@ -2192,7 +2200,9 @@ class Database:
         ).fetchone()[0]
 
         return stats
+
     @contextmanager
     def write_lock(self):
-        """Compatibility lock for serialized ingest; SQLite serializes writes."""
-        yield
+        """Serialize callers sharing this database's batch-write lock."""
+        with self._write_lock:
+            yield
