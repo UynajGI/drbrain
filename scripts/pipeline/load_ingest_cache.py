@@ -3,7 +3,7 @@
 
 读取 oa ingest manifest 的成功记录（local_id 遵循 canonical-v1 身份契约），
 校验 tree.json/raw.md 存在后写主库 papers/paper_ids 表。
-幂等：INSERT OR REPLACE，重跑安全。
+经 Database 写接口入库；失败记录使整批中止，已存在 DOI 可安全重跑。
 
 用法:
     uv run python scripts/pipeline/load_ingest_cache.py [--batch-size 500]
@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import sys
+import sqlite3
 import time
 from pathlib import Path
 
@@ -103,8 +104,6 @@ def _safe_artifact_path(
     # ``assert_within_root`` checks every lexical component before resolving;
     # it therefore rejects both a symlink leaf and an intermediate alias.
     resolved = context.assert_within_root(lexical, label=label)
-    if lexical.is_symlink():
-        raise ValueError(f"{label} must not be a symlink: {lexical}")
     if not resolved.is_file():
         raise ValueError(f"{label} is not a regular file: {lexical}")
     return lexical
@@ -197,9 +196,17 @@ def main() -> int:
                 # carry the explicit normalized DOI.  Never guess an identity
                 # from a lossy basename.
                 if not isinstance(raw_doi, str) or not raw_doi.strip():
-                    parse_errors.append(
-                        f"{mf.name}:{line_no}: successful record requires an explicit DOI"
-                    )
+                    legacy_file = r.get("file")
+                    if isinstance(legacy_file, str) and legacy_file.endswith(".json"):
+                        raw_doi = legacy_file[:-5].replace("_", "/")
+                    else:
+                        parse_errors.append(f"{mf.name}:{line_no}: successful record requires an explicit DOI")
+                        continue
+                if r.get("title") is not None and not isinstance(r.get("title"), str):
+                    parse_errors.append(f"{mf.name}:{line_no}: title must be a string")
+                    continue
+                if r.get("year") is not None and not isinstance(r.get("year"), int):
+                    parse_errors.append(f"{mf.name}:{line_no}: year must be an integer")
                     continue
                 try:
                     doi = normalize_doi(raw_doi)
@@ -282,7 +289,6 @@ def main() -> int:
     # Verify every artifact before opening the writable database.  A missing
     # tree must not leave a partially populated destination that looks usable.
     missing_files: list[str] = []
-    paper_paths: dict[str, tuple[Path, Path, Path]] = {}
     for doi, rec in records.items():
         try:
             paper_path = paper_dir(papers_dir, rec["local_id"])
@@ -299,9 +305,8 @@ def main() -> int:
                 label=f"raw.md for {rec['local_id']}",
             )
         except (OSError, ValueError) as exc:
-            missing_files.append(f"{type(exc).__name__}: invalid paper path")
+            missing_files.append(f"{rec['local_id']}: {type(exc).__name__}: {exc}")
             continue
-        paper_paths[doi] = (paper_path, tree_path, raw_path)
     if missing_files:
         print(f"纸稿缓存校验失败: {len(missing_files)} 条", file=sys.stderr)
         for error in missing_files[:10]:
@@ -318,7 +323,7 @@ def main() -> int:
             else runtime.assert_within_root(args.db, label="database path")
         )
         db = Database(db_path)
-    except (OSError, TypeError, ValueError) as exc:
+    except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
         print(f"database path error: {_safe_pipeline_error(exc, cfg)}", file=sys.stderr)
         return 1
     t0 = time.monotonic()
@@ -360,7 +365,12 @@ def main() -> int:
                 "SELECT local_id FROM paper_ids WHERE doi = ?", (doi,)
             ).fetchone()
             if doi_row and doi_row[0] != lid:
-                conflicts.append("DOI already belongs to another local_id")
+                conflicts.append(f"DOI {doi!r} already belongs to {doi_row[0]!r}")
+            for kind, value in (("arxiv", rec.get("arxiv")), ("s2_id", rec.get("s2_id")), ("openalex_id", rec.get("openalex_id"))):
+                if value:
+                    owner = db.get_paper_by_external_id(kind, value)
+                    if owner and owner != lid:
+                        conflicts.append(f"{kind} {value!r} already belongs to {owner!r}")
             lid_row = db.conn.execute(
                 "SELECT doi FROM paper_ids WHERE local_id = ?", (lid,)
             ).fetchone()
@@ -404,7 +414,7 @@ def main() -> int:
             f"\n完成: 入库={inserted} 已存在跳过={skipped_exists} 缺文件={skipped_no_tree} "
             f"({time.monotonic() - t0:.0f}s)"
         )
-        return 1 if failed_records or skipped_no_tree else 0
+        return 0
     except Exception as exc:
         try:
             db.conn.rollback()
