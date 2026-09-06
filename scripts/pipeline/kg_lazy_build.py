@@ -43,6 +43,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from drbrain.security import configured_secret_values, safe_error
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
@@ -538,7 +539,7 @@ def run_l1(
     cursor = db.execute(sql, (limit,) if limit > 0 else ())
     cursor.arraysize = 5_000
 
-    stats = {"selected": 0, "processed": 0, "skipped": 0, "inserted": 0}
+    stats = {"selected": 0, "processed": 0, "skipped": 0, "inserted": 0, "failed": 0}
     t0 = time.time()
     for local_id, title, abstract, year in cursor:
         stats["selected"] += 1
@@ -558,7 +559,12 @@ def run_l1(
             )
             if conclusion:
                 chunks.append((conclusion, "conclusion"))
-        concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
+        try:
+            concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
+        except Exception as exc:  # noqa: BLE001 - keep one paper failure isolated
+            stats["failed"] += 1
+            print(safe_error(exc, secrets=configured_secret_values()), flush=True)
+            continue
         n = 0
         for c in concepts:
             label = str(c.get("label") or "").strip()
