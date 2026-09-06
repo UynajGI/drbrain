@@ -230,6 +230,7 @@ def build_cmd(
         if not tree_path.exists() and md_path.exists():
             typer.echo("  Tree missing, retrying...")
             try:
+                from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
                 from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
 
                 pageindex_cfg = TreeConfig(
@@ -240,6 +241,7 @@ def build_cmd(
                     max_node_tokens=10000,
                     min_token_threshold=5000,
                 )
+                configure_tree_backend(pageindex_cfg, getattr(cfg, "pageindex", None))
                 doc_tree = asyncio.run(
                     md_to_tree(str(md_path), config=pageindex_cfg, models=llm_models)
                 )

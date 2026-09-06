@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import math
 import os
 import sys
 import tempfile
@@ -24,6 +23,7 @@ for _import_root in (SOURCE_ROOT, SOURCE_SRC):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
+from drbrain.parser.pageindex.sdk_backend import configure_tree_backend  # noqa: E402
 from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree  # noqa: E402
 from drbrain.runtime import RuntimeContext, runtime_root  # noqa: E402
 from drbrain.security import configured_secret_values, safe_error  # noqa: E402
@@ -35,19 +35,21 @@ from drbrain.storage.paths import (  # noqa: E402
 )
 from scripts.pipeline.common import (  # noqa: E402
     load_cfg,
-    run_process_pool_fail_fast,
+    run_process_pool_fail_fast,  # noqa: E402
     runtime_path,
 )
 
 DEFAULT_WORKER_TIMEOUT = 900.0
 
 
-def _process_worker_timeout(*names: str) -> float:
-    raw = next((os.environ.get(name) for name in names if os.environ.get(name)), None)
+def _process_worker_timeout(*names: str, fallback_env: str | None = None) -> float:
+    raw = next((os.environ.get(n) for n in names if os.environ.get(n)), None)
+    if raw is None and fallback_env:
+        raw = os.environ.get(fallback_env)
     if raw is None:
         return DEFAULT_WORKER_TIMEOUT
     value = float(raw)
-    if not (value > 0 and math.isfinite(value)):
+    if value <= 0 or not __import__("math").isfinite(value):
         raise ValueError("worker timeout must be a finite positive number")
     return value
 
@@ -164,6 +166,7 @@ def rebuild_one(args: tuple) -> dict:
             max_node_tokens=10000,
             summary_token_threshold=2000,
         )
+        configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         # 无 markdown 标题的纯文本片段（书摘/表格等）切不出章节——
         # 合成单节点全文树，保证可进向量检索
@@ -301,10 +304,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         # Executor startup/shutdown failures must produce a non-zero status,
         # while keeping the diagnostic bounded and free of configured secrets.
-        consume_result(
-            {"lid": "__pipeline__", "ok": False, "error": _safe_pipeline_error(exc, cfg)}
-        )
-    print(f"\n重建完成: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)")
+        diagnostic = _safe_pipeline_error(exc, cfg)
+        print(f"rebuild aborted: {diagnostic}", file=sys.stderr)
+        consume_result({"lid": "__pipeline__", "ok": False, "error": diagnostic})
+    if fail:
+        print(f"\n重建中止: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)", file=sys.stderr)
+    else:
+        print(f"\n重建完成: ok={ok} fail={fail} ({time.monotonic() - t0:.0f}s)")
     return 1 if fail else 0
 
 

@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import os
 import re
 import shutil
-import tempfile
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,47 +18,16 @@ from drbrain.cli._helpers.enrich import (
     _enrich_doi_from_crossref_doi,
     _enrich_doi_from_openalex,
 )
-from drbrain.dedup.resolver import DedupEngine, PaperIDs, canonical_paper_id
+from drbrain.dedup.resolver import DedupEngine, PaperIDs
 from drbrain.parser.mineru_parser import extract_pdf
-from drbrain.security import configured_secret_values, safe_error
 from drbrain.services.fetch import fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
-    paper_dir as resolve_paper_dir,
-)
-from drbrain.storage.paths import (
+    images_dir,
     raw_md_path,
+    source_pdf_path,
     tree_json_path,
-    writable_artifact_dir,
-    writable_artifact_path,
 )
-
-
-def _write_text_artifact_atomically(paper_path: Path, filename: str, content: str) -> Path:
-    """Write a paper text artifact without following a stale symlink."""
-    destination = writable_artifact_path(paper_path, filename)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{filename}.", dir=str(paper_path), text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, destination)
-    finally:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-    return destination
-
-
-def _file_digest(path: Path) -> str:
-    """Return a stable content key for metadata-free paper input."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 @contextmanager
@@ -107,32 +73,16 @@ def _ingest_single_paper(
 
     _t0 = _time.monotonic()
 
-    # ``RuntimeContext.resolve_path`` intentionally canonicalizes paths for
-    # callers, but an ingest source is subsequently copied and removed.  Keep
-    # this lexical check at the destructive boundary so a symlink (including
-    # one in an intermediate directory) can never turn those operations into
-    # writes/deletes against an external file.
-    from drbrain.storage.inbox import first_symlink_component
-
-    source_link = first_symlink_component(pdf_path)
-    if source_link is not None:
-        message = f"Refusing symlink PDF input: {source_link}"
-        _ingest_log.warning(message)
-        echo(message)
-        return {"ok": False, "local_id": None, "error": message}
-
     # Stage 1: Parse
     echo(f"Parsing: {pdf_path}")
     _ingest_log.info(f"[ingest] Stage 1/4 parse: {pdf_path.name}")
     try:
         parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
-        config_secrets = configured_secret_values(cfg)
-        safe_reason = safe_error(e, secrets=config_secrets)
-        _ingest_log.error(f"Parse failed for {pdf_path}: {safe_reason}")
-        echo(f"Error parsing PDF: {safe_reason}")
-        _move_to_pending(pdf_path, cfg, f"PDF parse error: {safe_reason}")
-        return {"ok": False, "local_id": None, "error": safe_reason}
+        _ingest_log.error(f"Parse failed for {pdf_path}: {e}")
+        echo(f"Error parsing PDF: {e}")
+        _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
+        return {"ok": False, "local_id": None, "error": str(e)}
 
     # Override parsed metadata with values from fetch_paper (e.g. arXiv API)
     if override_metadata:
@@ -150,36 +100,15 @@ def _ingest_single_paper(
     echo(f"  arXiv: {parsed.arxiv}")
     echo(f"  Sections: {len(parsed.text_blocks)} high-signal blocks")
     _t1 = _time.monotonic()
-    parsed_title = parsed.title or ""
     _ingest_log.info(
-        f"[ingest] parse done in {_t1 - _t0:.1f}s — {len(parsed.text_blocks)} blocks, title={parsed_title[:80]}"
+        f"[ingest] parse done in {_t1 - _t0:.1f}s — {len(parsed.text_blocks)} blocks, title={parsed.title[:80]}"
     )
 
     # Stage 2: Identify
     _ingest_log.info(f"[ingest] Stage 2/4 identify: doi={parsed.doi} arxiv={parsed.arxiv}")
-    ids = PaperIDs(
-        doi=getattr(parsed, "doi", None),
-        arxiv=getattr(parsed, "arxiv", None),
-        s2_id=getattr(parsed, "s2_id", None),
-        openalex_id=getattr(parsed, "openalex_id", None),
-    ).normalized()
+    ids = PaperIDs(doi=parsed.doi, arxiv=parsed.arxiv)
     local_id = dedup.resolve(ids, title=parsed.title, year=parsed.year)
     is_new = local_id is None
-    created_local_id: str | None = None
-    new_paper_savepoint: str | None = None
-    new_paper_had_transaction = False
-
-    def rollback_new_paper() -> None:
-        """Roll back only this ingest record, preserving any outer transaction."""
-        nonlocal new_paper_savepoint
-        if new_paper_savepoint is None:
-            return
-        savepoint = new_paper_savepoint
-        try:
-            db.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-        finally:
-            db.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-            new_paper_savepoint = None
 
     if is_new:
         # Check for duplicate placeholders sharing the same external ID
@@ -196,48 +125,28 @@ def _ingest_single_paper(
                 publisher=parsed.publisher,
                 citation_count=parsed.citation_count,
             )
-            db.commit()
         else:
-            # Metadata-free records must remain distinct even when extraction
-            # gives multiple files the same title/year.  The content digest is
-            # stable across retries and takes precedence over title/year in
-            # ``canonical_paper_id``.
-            source_key = (
-                _file_digest(pdf_path)
-                if not any((ids.doi, ids.arxiv, ids.s2_id, ids.openalex_id))
-                else None
+            local_id = f"p{uuid.uuid4().hex[:6]}"
+            db.insert_paper(
+                local_id,
+                parsed.title,
+                parsed.year,
+                "uploaded",
+                journal=parsed.journal,
+                publisher=parsed.publisher,
+                citation_count=parsed.citation_count,
             )
-            local_id = canonical_paper_id(
-                ids,
-                title=parsed.title,
-                year=parsed.year,
-                source_key=source_key,
-            )
-            if db.get_paper(local_id) is not None:
-                raise ValueError(
-                    f"canonical paper ID collision for {local_id!r}; refusing to merge records"
-                )
-            new_paper_had_transaction = db.conn.in_transaction
-            new_paper_savepoint = f"ingest_paper_{uuid.uuid4().hex}"
-            db.conn.execute(f"SAVEPOINT {new_paper_savepoint}")
             try:
-                db.insert_paper(
+                db.insert_paper_ids(
                     local_id,
-                    parsed.title,
-                    parsed.year,
-                    "uploaded",
-                    strict=True,
-                    journal=parsed.journal,
-                    publisher=parsed.publisher,
-                    citation_count=parsed.citation_count,
+                    doi=ids.doi,
+                    arxiv=ids.arxiv,
+                    s2_id=parsed.s2_id,
+                    openalex_id=parsed.openalex_id,
                 )
             except Exception:
-                rollback_new_paper()
+                db.conn.rollback()
                 raise
-            # Keep a newly-created paper in the current transaction until its
-            # filesystem artifacts are published below.  Committing here would
-            # leave a durable DB row when artifact creation fails.
-            created_local_id = local_id
             echo(f"  [new] {local_id}")
     else:
         db.upgrade_placeholder(local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
@@ -249,28 +158,7 @@ def _ingest_single_paper(
             publisher=parsed.publisher,
             citation_count=parsed.citation_count,
         )
-        db.commit()
         echo(f"  [upgrade] {local_id}")
-
-    # Backfill every identifier even when dedup resolved to an existing paper.
-    # This keeps later source passes from losing a newly discovered arXiv/S2/
-    # OpenAlex mapping and makes divergent ownership a hard ingest error.
-    if not local_id:
-        return {}
-    try:
-        db.insert_paper_ids(
-            local_id,
-            doi=ids.doi,
-            arxiv=ids.arxiv,
-            s2_id=ids.s2_id,
-            openalex_id=ids.openalex_id,
-            strict=True,
-        )
-    except Exception:
-        rollback_new_paper()
-        raise
-    if created_local_id is None:
-        db.commit()
 
     # Insert OpenAlex-derived Actor concepts (deduplicated author IDs)
     from drbrain.extractor.openalex import search_authors_by_work
@@ -278,21 +166,16 @@ def _ingest_single_paper(
     try:
         oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title)
     except Exception:
-        rollback_new_paper()
+        db.conn.rollback()
         raise
     if oa_authors:
         echo(f"  Authors: {len(oa_authors)} via OpenAlex")
-        try:
-            for author in oa_authors:
-                actor_label = author["author_id"]
-                db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)  # type: ignore[arg-type]  # pre-existing: see mypy debt
-                db.insert_alias(author["display_name"], actor_label)
-                db.insert_edge(local_id, actor_label, "affiliated_with", local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
-        except Exception:
-            rollback_new_paper()
-            raise
-        if created_local_id is None:
-            db.commit()
+        for author in oa_authors:
+            actor_label = author["author_id"]
+            db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+            db.insert_alias(author["display_name"], actor_label)
+            db.insert_edge(local_id, actor_label, "affiliated_with", local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+        db.commit()
 
     _t2 = _time.monotonic()
     _ingest_log.info(
@@ -300,21 +183,14 @@ def _ingest_single_paper(
     )
 
     # Save parsed markdown and source PDF into per-paper directory
+    papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
+    paper_dir = papers_base / local_id  # type: ignore[operator]  # pre-existing: see mypy debt
+    paper_dir.mkdir(parents=True, exist_ok=True)
     try:
-        papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-        paper_path = resolve_paper_dir(papers_base, local_id)  # type: ignore[arg-type]
-        paper_path.mkdir(parents=True, exist_ok=True)
-        _save_paper_artifacts(parsed, local_id, paper_path, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+        _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
     except Exception:
-        rollback_new_paper()
+        db.conn.rollback()
         raise
-    if new_paper_savepoint is not None:
-        savepoint = new_paper_savepoint
-        db.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-        new_paper_savepoint = None
-        if not new_paper_had_transaction:
-            db.commit()
-        created_local_id = None
 
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
@@ -343,10 +219,11 @@ def _ingest_single_paper(
     # Stage 3: Structure markdown into tree (PageIndex)
     _t_pp = _time.monotonic()
     _ingest_log.info(f"[ingest] Stage 3/4 tree: type={paper_type}")
-    md_path = raw_md_path(paper_path)
-    tree_path = tree_json_path(paper_path)
+    md_path = raw_md_path(paper_dir)
+    tree_path = tree_json_path(paper_dir)
     echo("  Structuring document tree...")
     try:
+        from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
         from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
 
         pageindex_cfg = TreeConfig(
@@ -361,8 +238,9 @@ def _ingest_single_paper(
             if_add_node_id=True,
             max_node_tokens=10000,
         )
+        configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
-        _write_text_artifact_atomically(paper_path, "tree.json", doc_tree.to_json())
+        tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
         _t3 = _time.monotonic()
         _ingest_log.info(
             f"[ingest] tree done in {_t3 - _t_pp:.1f}s — {len(doc_tree.structure)} sections"
@@ -381,9 +259,8 @@ def _ingest_single_paper(
                     db.set_paper_abstract(local_id, abstract[:2000])  # type: ignore[arg-type]  # pre-existing: see mypy debt
                 break
     except Exception as e:
-        safe_reason = safe_error(e, secrets=configured_secret_values(cfg))
-        echo(f"  [yellow]Warning: tree structuring failed: {safe_reason}[/yellow]")
-        _log_error(cfg, f"Tree structuring failed for {local_id}: {safe_reason}")
+        echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
+        _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
@@ -432,9 +309,7 @@ def _ingest_single_paper(
                             break
                     except Exception as e:
                         _doi_enrich_log.debug(
-                            "DOI enrichment source {} failed: {}",
-                            futures[future],
-                            safe_error(e, secrets=configured_secret_values(cfg)),
+                            f"DOI enrichment source {futures[future]} failed: {e}"
                         )
 
         if doi_info and doi_info.get("doi"):
@@ -452,7 +327,7 @@ def _ingest_single_paper(
     # ── Quality Gates (non-blocking) ──────────────────────────────────
 
     # Gate 1: raw.md size > 200 bytes
-    md_path_check = raw_md_path(paper_path)
+    md_path_check = raw_md_path(paper_dir)
     if md_path_check.exists():
         md_size = md_path_check.stat().st_size
         if md_size <= 200:
@@ -493,7 +368,7 @@ def _ingest_single_paper(
     _t_total = _time.monotonic() - _t0
     _ingest_log.info(
         f"[ingest] Stage 4/4 done — total {_t_total:.1f}s local_id={local_id} "
-        f"title={parsed_title[:60]} year={parsed.year}"
+        f"title={parsed.title[:60]} year={parsed.year}"
     )
     echo(f"  Ingested: {local_id} ({_t_total:.1f}s)")
     return {"ok": True, "local_id": local_id, "report": {"local_id": local_id}}
@@ -535,7 +410,7 @@ def _log_error(cfg: dict, message: str) -> None:
     """Log error via loguru."""
     from loguru import logger
 
-    logger.error(safe_error(message, secrets=configured_secret_values(cfg)))
+    logger.error(message)
 
 
 def _resolve_workspace_papers(workspace: str | None) -> set[str] | None:
@@ -587,58 +462,20 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             raw.md       — MinerU markdown output
             images/      — extracted images
     """
-    from drbrain.storage.inbox import first_symlink_component
-
-    source_link = first_symlink_component(source_pdf)
-    if source_link is not None:
-        raise ValueError(f"source PDF must not contain a symlink: {source_link}")
-
     # Move source PDF from inbox to paper directory
-    dst_pdf = writable_artifact_path(paper_dir, "source.pdf")
+    dst_pdf = source_pdf_path(paper_dir)
     if not dst_pdf.exists():
-        # Publish by replacement so a stale/dangling destination symlink can
-        # never redirect the copy outside the paper directory.
-        fd, tmp_name = tempfile.mkstemp(prefix=".source.pdf.", dir=str(paper_dir))
-        os.close(fd)
+        shutil.copy2(source_pdf, dst_pdf)
         try:
-            shutil.copy2(source_pdf, tmp_name)
-            os.replace(tmp_name, dst_pdf)
-        finally:
-            try:
-                os.unlink(tmp_name)
-            except FileNotFoundError:
-                pass
-        # Re-check immediately before the destructive operation.  If an
-        # attacker swaps the source or one of its parents for a symlink while
-        # parsing/copying, leave the source in place rather than unlinking a
-        # potentially external target.
-        if first_symlink_component(source_pdf) is None:
-            try:
-                source_pdf.unlink()
-            except OSError:
-                pass
+            source_pdf.unlink()
+        except OSError:
+            pass
 
     # Copy images and rewrite refs
     raw_md = parsed.raw_md
     if parsed.images_dir and parsed.images_dir.exists():
-        image_source = Path(parsed.images_dir)
-        source_link = first_symlink_component(image_source)
-        if source_link is not None:
-            raise ValueError(f"image source must not contain a symlink: {source_link}")
-        # ``copytree`` follows nested symlinks by default.  Validate the
-        # complete source tree and any existing destination entries before the
-        # copy so a parser artifact cannot redirect reads or writes outside the
-        # selected paper directory.
-        for source_entry in image_source.rglob("*"):
-            if source_entry.is_symlink():
-                raise ValueError(f"image source must not contain a symlink: {source_entry}")
-        img_dst = writable_artifact_dir(paper_dir, "images")
-        for destination_entry in img_dst.rglob("*"):
-            if destination_entry.is_symlink():
-                raise ValueError(
-                    f"image destination must not contain a symlink: {destination_entry}"
-                )
-        shutil.copytree(image_source, img_dst, dirs_exist_ok=True)
+        img_dst = images_dir(paper_dir)
+        shutil.copytree(parsed.images_dir, img_dst, dirs_exist_ok=True)
         # MinerU outputs "images/<hash>/file.jpg", rewrite to "images/<hash>/file.jpg"
         # (no local_id prefix needed — images/ is already inside paper_dir)
         raw_md = re.sub(
@@ -647,19 +484,8 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             raw_md,
         )
 
-    md_path = writable_artifact_path(paper_dir, "raw.md")
-    fd, tmp_name = tempfile.mkstemp(prefix=".raw.md.", dir=str(paper_dir), text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(raw_md)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, md_path)
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
+    md_path = raw_md_path(paper_dir)
+    md_path.write_text(raw_md, encoding="utf-8")
 
 
 def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:
@@ -728,7 +554,6 @@ def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:
     # Fetch selected papers concurrently (respect max_concurrent from config)
     cfg = ctx.obj["config"]
     fetch_cfg = cfg.get("fetch", {})
-    config_secrets = configured_secret_values(cfg)
     max_concurrent = fetch_cfg.get("max_concurrent", 3)
 
     def _fetch_one(entry: dict) -> tuple[bool, str]:
@@ -737,14 +562,7 @@ def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:
         title = entry.get("title")
         typer.echo(f"\nFetching: {doi} — {title}")
 
-        dirs = cfg.get("dirs", {})
-        papers_root = dirs.get("papers", "data/papers") if hasattr(dirs, "get") else "data/papers"
-        result_fetch = fetch_paper(
-            doi=doi,
-            title=title,
-            fetch_config=fetch_cfg,
-            papers_root=papers_root,
-        )
+        result_fetch = fetch_paper(doi=doi, title=title, fetch_config=fetch_cfg)
         if not result_fetch:
             return (False, "failed to fetch PDF URL")
         typer.echo(f"  Downloaded: {result_fetch['pdf_path']}")
@@ -779,16 +597,10 @@ def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:
                     typer.echo(f"  Ingested: {msg}")
                     success += 1
                 else:
-                    typer.echo(
-                        f"  Failed: {safe_error(msg, secrets=config_secrets)}",
-                        err=True,
-                    )
+                    typer.echo(f"  Failed: {msg}", err=True)
                     fail += 1
             except Exception as exc:
-                logger.error(
-                    "Unexpected fetch error: {}",
-                    safe_error(exc, secrets=configured_secret_values(cfg)),
-                )
+                logger.exception(f"Unexpected fetch error: {exc}")
                 fail += 1
 
     typer.echo(f"\nFetch complete: {success} succeeded, {fail} failed")

@@ -61,6 +61,7 @@ jobs:
       #                  sentence-transformers 5.6.1
       #                  CVE-2026-9856 (fix 5.10.0) — same 5.x-only situation
       #   nltk 3.10.3    PYSEC-2026-3740 (model-path handling; no fixed release yet)
+      #   pypdf2 3.0.1   PYSEC-2026-1835 (legacy package has no fixed release)
       - run: >-
           uv run pip-audit --desc
           --ignore-vuln PYSEC-2026-139
@@ -71,6 +72,7 @@ jobs:
           --ignore-vuln PYSEC-2026-2290
           --ignore-vuln CVE-2026-9856
           --ignore-vuln PYSEC-2026-3740
+          --ignore-vuln PYSEC-2026-1835
 
   test:
     runs-on: ubuntu-latest
