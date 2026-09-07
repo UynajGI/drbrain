@@ -1343,8 +1343,15 @@ class Database:
             "arguments": 0,
             "edges_redirected": 0,
         }
+        self._validate_paper_id(keep_id)
+        self._validate_paper_id(merge_id)
+        if keep_id == merge_id:
+            raise ValueError("merge requires two different papers")
+        if self.get_paper(keep_id) is None or self.get_paper(merge_id) is None:
+            raise ValueError("paper to merge not found")
+        savepoint = f"merge_papers_{uuid.uuid4().hex}"
         try:
-            self.conn.execute("BEGIN")
+            self.conn.execute(f"SAVEPOINT {savepoint}")
             cur = self.conn.execute(
                 "UPDATE concepts SET local_id = ? WHERE local_id = ?", (keep_id, merge_id)
             )
@@ -1379,9 +1386,10 @@ class Database:
                 (keep_id,),
             )
             self.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
-            self.conn.execute("COMMIT")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         except Exception:
-            self.conn.execute("ROLLBACK")
+            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         return counts
 
@@ -1978,6 +1986,7 @@ class Database:
         and the closure/embed/index watermarks are cleared, so the next pipeline
         run re-evaluates them instead of skipping.
         """
+        self._validate_paper_id(local_id)
         # Collect this paper's concept labels BEFORE deletion so we can find
         # neighbor papers that shared edges with them.
         labels = [
@@ -2012,6 +2021,8 @@ class Database:
         self.conn.execute("DELETE FROM confidence_queue WHERE source_paper = ?", (local_id,))
         self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
         self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (local_id,))
+        self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
+        self.conn.execute("DELETE FROM vector_metadata WHERE key LIKE ?", (f"paper:{local_id}%",))
         self.conn.execute("DELETE FROM papers WHERE local_id = ?", (local_id,))
 
         # Touch neighbor papers that shared edges with the deleted concepts so
@@ -2045,6 +2056,9 @@ class Database:
             "edges": edge_count,
             "queue_items": queue_count,
             "touched_neighbors": touched_neighbors,
+            "paper_concepts_cache": 0,
+            "kg_l1_attempted": 0,
+            "evidence": 0,
         }
 
     # ── Temporal evolution signals ──────────────────────────────
