@@ -14,6 +14,7 @@ exports, and it never mutates process-wide configuration for a request.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -147,6 +148,11 @@ def _db(cfg: Any) -> Iterator[Database]:
         yield db
     finally:
         db.close()
+
+
+def open_db(cfg: Any) -> Any:
+    """Public alias used by the auth layer (same short-lived connection policy)."""
+    return _db(cfg)
 
 
 @contextmanager
@@ -293,7 +299,7 @@ def dashboard(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
             paper_ids = project_paper_ids(cfg, pid, db=db)
             stats = db.get_stats(paper_ids)
             recent_sessions = [
-                s for s in db.list_agent_sessions(pid, limit=5) if s["messages"] > 1
+                s for s in db.list_agent_sessions(pid, limit=5)[0] if s["messages"] > 1
             ][:3]
     ledger: dict[str, Any] = {"runs": 0, "settlements": 0, "verified": 0, "events": 0}
     with _ledger(cfg) as conn:
@@ -425,37 +431,60 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
 # ── papers (literature page) ─────────────────────────────────────────────────
 
 
+class CursorError(ValueError):
+    """Raised for a malformed list cursor (maps to 422)."""
+
+
+def encode_cursor(values: tuple[Any, ...]) -> str:
+    """Serialize a sort key into an opaque, URL-safe cursor."""
+    raw = json.dumps(list(values), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str | None, *, arity: int = 2) -> tuple[Any, ...] | None:
+    """Parse a cursor produced by :func:`encode_cursor` (422 on garbage)."""
+    if not cursor:
+        return None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, TypeError) as exc:
+        raise CursorError("invalid cursor") from exc
+    if not isinstance(data, list) or len(data) != arity:
+        raise CursorError("invalid cursor")
+    return tuple(str(item) for item in data)
+
+
 def papers(
     cfg: Any,
     project_id: str | None = None,
     *,
     query: str = "",
     status: str | None = None,
-    page: int = 1,
-    per_page: int = DEFAULT_PAGE_SIZE,
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
-    """Paged, project-scoped library listing."""
+    """Cursor-paged, project-scoped library listing."""
     pid = normalize_project_id(project_id)
-    page = max(1, int(page))
-    per_page = max(1, min(int(per_page), MAX_PAGE_SIZE))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    cursor_key = decode_cursor(cursor)
     with _db(cfg) as db:
         sync_workspace_projects(cfg, db)
         if db.get_project(pid) is None:
             raise ProjectNotFoundError(f"unknown project: {pid}")
         paper_ids = project_paper_ids(cfg, pid, db=db)
-        items, total = db.list_papers(
+        items, next_key, total = db.list_papers(
             paper_ids=paper_ids,
             query=query.strip(),
             status=status,
-            limit=per_page,
-            offset=(page - 1) * per_page,
+            limit=limit,
+            cursor=cursor_key,
         )
     return {
         "items": items,
         "total": total,
-        "page": page,
-        "per_page": per_page,
-        "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
+        "limit": limit,
+        "next_cursor": encode_cursor(next_key) if next_key else None,
         "query": query.strip(),
     }
 
@@ -585,7 +614,12 @@ def _run_row(cfg: Any, run_id: str) -> dict[str, Any] | None:
             ).fetchone()
         except sqlite3.OperationalError:
             return None
-    return redact_sensitive(dict(row)) if row is not None else None
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["config"] = _loads(payload.pop("config_json", ""), {})
+    payload["budget"] = _loads(payload.pop("budget_json", ""), {})
+    return redact_sensitive(payload)
 
 
 def _assert_run_scope(row: dict[str, Any] | None, project_id: str | None) -> dict[str, Any]:
@@ -595,22 +629,53 @@ def _assert_run_scope(row: dict[str, Any] | None, project_id: str | None) -> dic
     return row
 
 
+def run_project(cfg: Any, run_id: str) -> str:
+    """Return the project that owns a run (for scope discovery on direct URLs)."""
+    row = _run_row(cfg, run_id)
+    if row is None:
+        raise RunNotFoundError("unknown research run")
+    return str(row.get("project_id") or DEFAULT_PROJECT_ID)
+
+
+def session_project(cfg: Any, session_id: str) -> str:
+    """Return the project that owns a conversation session."""
+    with _db(cfg) as db:
+        row = db.get_agent_session(session_id)
+        if row is None or row["status"] == "deleted":
+            raise SessionNotFoundError("unknown session")
+        return str(row.get("project_id") or DEFAULT_PROJECT_ID)
+
+
 def run_detail(cfg: Any, run_id: str, project_id: str | None = None) -> dict[str, Any]:
     """Run identity, scope, counts and the derived display status."""
     row = _assert_run_scope(_run_row(cfg, run_id), project_id)
     claims = run_claims(cfg, run_id, project_id=project_id)
     experiments_list = experiments(cfg, run_id=run_id, project_id=project_id)
     event_count = 0
+    pending_steps: list[dict[str, Any]] = []
     with _ledger(cfg) as conn:
         if conn is not None:
             event_count = _count(
                 conn, "SELECT COUNT(*) FROM research_events WHERE run_id = ?", (run_id,)
             )
+            try:
+                pending_steps = [
+                    {"step_id": str(r["step_id"]), "step_name": str(r["step_name"] or "")}
+                    for r in conn.execute(
+                        "SELECT step_id, step_name FROM research_steps "
+                        "WHERE run_id = ? AND status = 'waiting_approval' LIMIT 20",
+                        (run_id,),
+                    ).fetchall()
+                ]
+            except sqlite3.OperationalError:
+                pending_steps = []
     detail = dict(row)
     detail["events"] = event_count
     detail["claims"] = len(claims)
     detail["verified"] = sum(1 for c in claims if c.get("verdict") == "keep")
     detail["experiments"] = len(experiments_list)
+    detail["pending_approvals"] = len(pending_steps)
+    detail["pending_steps"] = pending_steps
     detail["display_status"] = display_run_status(cfg, row)
     detail["session_label"] = row.get("session_id") or UNBOUND_SESSION_LABEL
     return detail
@@ -848,6 +913,113 @@ def run_report(
     return body, "text/markdown; charset=utf-8", f"run-{run_id}.md"
 
 
+class EvidenceNotFoundError(ValueError):
+    """Raised when an evidence reference cannot be resolved on this machine."""
+
+
+class ArtifactNotFoundError(ValueError):
+    """Raised when a compute artifact is unknown to the run."""
+
+
+def evidence_detail(
+    cfg: Any, run_id: str, evidence_id: str, project_id: str | None = None
+) -> dict[str, Any]:
+    """Resolve one evidence reference to a traceable source.
+
+    Two locator forms are supported: a core ``evidence.evidence_id`` row and a
+    ``paper_id:node_id`` tree locator.  ``referenced_by_run`` reports whether
+    the run's settlements actually cite this id — the page must not present
+    unrelated evidence as if the run used it.
+    """
+    pid = normalize_project_id(project_id)
+    _assert_run_scope(_run_row(cfg, run_id), pid)
+    referenced = {
+        str(e)
+        for claim in run_claims(cfg, run_id, project_id=pid)
+        for e in (claim.get("evidence_ids") or [])
+    }
+    with _db(cfg) as db:
+        row = db.get_evidence(evidence_id)
+        if row is not None:
+            paper = db.get_paper(row["paper_id"]) if row.get("paper_id") else None
+            return {
+                "evidence_id": evidence_id,
+                "source": "core",
+                "referenced_by_run": evidence_id in referenced,
+                "evidence": row,
+                "paper": redact_sensitive(dict(paper)) if paper else None,
+            }
+        paper_id, _, node_id = evidence_id.partition(":")
+        if paper_id:
+            paper_ids = project_paper_ids(cfg, pid, db=db)
+            if paper_ids is not None and paper_id not in set(paper_ids):
+                raise EvidenceNotFoundError(
+                    f"evidence {evidence_id!r} is not in the current project"
+                )
+            paper = db.get_paper(paper_id)
+            if paper is not None:
+                return {
+                    "evidence_id": evidence_id,
+                    "source": "paper_locator",
+                    "referenced_by_run": evidence_id in referenced,
+                    "paper": redact_sensitive(dict(paper)),
+                    "node_id": node_id,
+                }
+    raise EvidenceNotFoundError(f"evidence not found on this machine: {evidence_id}")
+
+
+def artifact_detail(
+    cfg: Any, run_id: str, artifact_id: str, project_id: str | None = None
+) -> dict[str, Any]:
+    """Return one compute artifact's metadata (never its bytes).
+
+    The artifact file itself lives with the compute job; this endpoint reports
+    where it is, its digest and whether the local file is still present — a
+    missing file is a state, not an error.
+    """
+    pid = normalize_project_id(project_id)
+    _assert_run_scope(_run_row(cfg, run_id), pid)
+    with _ledger(cfg) as conn:
+        if conn is None:
+            raise ArtifactNotFoundError("artifact not found: no ledger")
+        try:
+            row = conn.execute(
+                """
+                SELECT artifact_id, run_id, experiment_id, producer_attempt_id,
+                       kind, media_type, uri, sha256, byte_size, metadata_json, created_at
+                FROM research_artifacts WHERE artifact_id = ? AND run_id = ?
+                """,
+                (artifact_id, run_id),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+    if row is None:
+        raise ArtifactNotFoundError(f"artifact not found: {artifact_id}")
+    uri = str(row["uri"] or "")
+    exists = False
+    if uri and "://" not in uri:
+        try:
+            candidate = _runtime_path(uri, label="artifact path")
+            exists = candidate.is_file()
+        except (OSError, ValueError):
+            exists = False
+    return {
+        "artifact_id": str(row["artifact_id"]),
+        "run_id": str(row["run_id"]),
+        "experiment_id": str(row["experiment_id"]),
+        "kind": str(row["kind"]),
+        "media_type": str(row["media_type"]),
+        "uri": uri,
+        "sha256": str(row["sha256"]),
+        "byte_size": int(row["byte_size"]),
+        "metadata": _loads(row["metadata_json"], {}),
+        "exists": exists,
+        "created_at": float(row["created_at"]),
+        "downloadable": False,
+        "note": "产物保留在计算作业目录；此处仅提供定位与校验信息。",
+    }
+
+
 # ── sessions (M2a) ───────────────────────────────────────────────────────────
 
 
@@ -855,24 +1027,24 @@ def sessions(
     cfg: Any,
     project_id: str | None = None,
     *,
-    page: int = 1,
-    per_page: int = DEFAULT_PAGE_SIZE,
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
+    """Cursor-paged conversation list for one project."""
     pid = normalize_project_id(project_id)
-    page = max(1, int(page))
-    per_page = max(1, min(int(per_page), MAX_PAGE_SIZE))
+    limit = max(1, min(int(limit), MAX_PAGE_SIZE))
+    cursor_key = decode_cursor(cursor)
     with _db(cfg) as db:
         sync_workspace_projects(cfg, db)
         if db.get_project(pid) is None:
             raise ProjectNotFoundError(f"unknown project: {pid}")
-        items = db.list_agent_sessions(pid, limit=per_page, offset=(page - 1) * per_page)
+        items, next_key = db.list_agent_sessions(pid, limit=limit, cursor=cursor_key)
         total = db.count_agent_sessions(pid)
     return {
         "items": items,
         "total": total,
-        "page": page,
-        "per_page": per_page,
-        "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
+        "limit": limit,
+        "next_cursor": encode_cursor(next_key) if next_key else None,
     }
 
 
@@ -992,15 +1164,17 @@ def session_memory(
 
 
 def record_run_memory(cfg: Any, run_id: str, project_id: str | None = None) -> int:
-    """Write settled claims of one run into session memory (idempotent).
+    """Write settled claims of one session-bound run into session memory.
 
     Replaying the same settlement writes nothing new: the dedup key is
-    ``run:<run_id>:<claim_id>``.  Called by the run page after a run reaches a
-    settled state, and safe to call repeatedly.
+    ``run:<run_id>:<claim_id>``.  A run without a conversation session has no
+    memory layer to write to (its claims stay on the run page) and returns 0.
     """
     pid = normalize_project_id(project_id)
     row = _assert_run_scope(_run_row(cfg, run_id), pid)
     session_id = str(row.get("session_id") or "")
+    if not session_id:
+        return 0
     claims = run_claims(cfg, run_id, project_id=pid)
     written = 0
     with _db(cfg) as db:
@@ -1025,8 +1199,8 @@ def record_run_memory(cfg: Any, run_id: str, project_id: str | None = None) -> i
             )
             if created:
                 written += 1
-            if evidence and created and session_id:
-                db.insert_session_memory(
+            if evidence and created:
+                if db.insert_session_memory(
                     memory_id=f"mem-{uuid.uuid4().hex[:12]}",
                     project_id=pid,
                     session_id=session_id,
@@ -1036,8 +1210,35 @@ def record_run_memory(cfg: Any, run_id: str, project_id: str | None = None) -> i
                     run_id=run_id,
                     source_ref=f"claim:{claim.get('claim_id')}:evidence",
                     dedup_key=f"run:{run_id}:{claim.get('claim_id')}:evidence",
-                )
+                ):
+                    written += 1
     return written
+
+
+def memory_watermark(cfg: Any, project_id: str, session_id: str = "") -> dict[str, Any]:
+    """Capture the memory version a run starts against (M2a).
+
+    The run stores the capture time and entry counts of the memory visible to
+    it — project-layer entries plus (for a bound conversation) the session's
+    own entries.  This is a watermark, not a copy: memory rows stay in the
+    core database and are never duplicated into the ledger.
+    """
+    pid = normalize_project_id(project_id)
+    captured_at = time.time()
+    try:
+        with _db(cfg) as db:
+            project_rows = db.list_session_memory(pid, layers=("project",))
+            session_rows = db.list_session_memory(pid, session_id=session_id) if session_id else []
+    except Exception:  # noqa: BLE001 - memory metadata must never block a run
+        return {"captured_at": captured_at, "count": 0, "session_bound": bool(session_id)}
+    seen = {str(r["memory_id"]) for r in project_rows} | {str(r["memory_id"]) for r in session_rows}
+    return {
+        "captured_at": captured_at,
+        "count": len(seen),
+        "project_entries": len(project_rows),
+        "session_entries": len(session_rows),
+        "session_bound": bool(session_id),
+    }
 
 
 def promote_memory(
@@ -1155,6 +1356,7 @@ class RunManager:
             project_id=project,
             session_id=session,
             client_request_id=client_request_id,
+            config={"memory_watermark": memory_watermark(cfg, project, session)},
         )
         key = self._thread_key(project, session, topic)
         with self._lock:
@@ -1363,26 +1565,29 @@ def start_conformance(cfg: Any, plugin_name: str) -> dict[str, Any]:
     if item is None:
         raise ValueError(f"unknown plugin: {plugin_name}")
     check_id = f"conf-{uuid.uuid4().hex[:12]}"
-    fingerprint = f"{item.get('version', '')}:{item.get('backend', '')}"
+    version = str(item.get("version") or "")
+    fingerprint = f"{version}:{item.get('backend', '')}"
     with _db(cfg) as db:
         db.insert_plugin_conformance(
             check_id,
             plugin_name,
-            str(item.get("version") or ""),
+            version,
             fingerprint,
             "pending",
             "[]",
         )
     thread = threading.Thread(
         target=_run_conformance,
-        args=(cfg, plugin_name, check_id, fingerprint),
+        args=(cfg, plugin_name, check_id, version, fingerprint),
         daemon=True,
     )
     thread.start()
     return {"check_id": check_id, "plugin": plugin_name, "status": "checking"}
 
 
-def _run_conformance(cfg: Any, plugin_name: str, check_id: str, fingerprint: str) -> None:
+def _run_conformance(
+    cfg: Any, plugin_name: str, check_id: str, version: str, fingerprint: str
+) -> None:
     """Run the existing static conformance suite and store its per-plugin slice.
 
     The suite itself is ``drbrain.plugins.conformance`` (the same one plugin
@@ -1422,7 +1627,7 @@ def _run_conformance(cfg: Any, plugin_name: str, check_id: str, fingerprint: str
         db.insert_plugin_conformance(
             check_id,
             plugin_name,
-            "",
+            version,
             fingerprint,
             status,
             json.dumps(checks, ensure_ascii=False),

@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ detail.topic }} · 研究运行{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑">
+  <a class="link" href="/runs?project_id={{ project.project_id }}">研究运行</a>
+  <span aria-hidden="true">/</span>
+  <span class="muted">{{ detail.run_id | short(24) }}</span>
+</nav>
+
+{% if synced is defined and synced != '' %}
+<div class="alert alert-ok" role="status">已写回 {{ synced }} 条会话记忆。</div>
+{% endif %}
+
+<header class="page-head">
+  <div>
+    <h1>{{ detail.topic }}</h1>
+    <p class="muted small">
+      run <code>{{ detail.run_id }}</code>
+      · 项目 {{ project.name }}
+      · 会话 {% if detail.session_id %}<a class="link" href="/sessions/{{ detail.session_id }}?project_id={{ project.project_id }}">{{ detail.session_id | short(16) }}</a>{% else %}<span>{{ unbound_session_label }}</span>{% endif %}
+      · 创建 {{ detail.created_at | ts }}{% if detail.completed_at %} · 完成 {{ detail.completed_at | ts }}{% endif %}
+    </p>
+  </div>
+  <div class="page-actions">
+    <a class="btn" href="/api/runs/{{ detail.run_id }}/report?format=markdown&project_id={{ project.project_id }}">下载报告 (Markdown)</a>
+    <a class="btn btn-ghost" href="/api/runs/{{ detail.run_id }}/report?format=json&project_id={{ project.project_id }}">JSON</a>
+  </div>
+</header>
+
+{% if detail.display_status == 'interrupted' %}
+<div class="alert alert-warn" role="alert">运行在服务中断前处于运行态，当前没有活跃工作进程；重新提交同一目标可恢复该运行。</div>
+{% endif %}
+{% if detail.pending_approvals %}
+<div class="alert alert-warn" role="alert">运行正在等待人工审核：{{ detail.pending_steps | length }} 个步骤（{{ detail.pending_steps | map(attribute='step_name') | join('、') }}）。v1 只展示状态，不在浏览器内批准。</div>
+{% endif %}
+
+<section class="kpis" aria-label="运行统计">
+  <div class="kpi"><span class="kpi-value" id="run-status">{{ status_label(detail.display_status).label }}</span><span class="kpi-label">状态</span></div>
+  <div class="kpi"><span class="kpi-value" id="kpi-events">{{ detail.events }}</span><span class="kpi-label">事件</span></div>
+  <div class="kpi"><span class="kpi-value" id="kpi-claims">{{ detail.claims }}</span><span class="kpi-label">裁决项</span></div>
+  <div class="kpi"><span class="kpi-value" id="kpi-verified">{{ detail.verified }}</span><span class="kpi-label">通过</span></div>
+  <div class="kpi"><span class="kpi-value" id="kpi-experiments">{{ detail.experiments }}</span><span class="kpi-label">计算实验</span></div>
+</section>
+
+<div class="run-layout">
+  <div class="run-side">
+    <section class="card" aria-labelledby="claims-title">
+      <div class="card-head">
+        <h2 id="claims-title">裁决</h2>
+        <span class="muted small">{{ claims | length }} 项</span>
+      </div>
+      {% if claims %}
+      <ul class="claim-list">
+        {% for claim in claims %}
+        <li class="claim">
+          <div class="claim-head">
+            {{ m.status_badge(claim.verdict or claim.status) }}
+            <span class="muted small">评分 {{ '%.2f' % (claim.review_score or 0) }}</span>
+          </div>
+          <p class="claim-statement">{{ claim.statement or claim.claim_id }}</p>
+          {% if claim.reason %}<p class="muted small">理由：{{ claim.reason }}</p>{% endif %}
+          {% if claim.evidence_ids %}
+          <p class="evidence-refs">
+            {% for eid in claim.evidence_ids %}
+            <a class="chip" href="/api/runs/{{ detail.run_id }}/evidence/{{ eid }}?project_id={{ project.project_id }}" target="_blank" rel="noopener">{{ eid | short(28) }}</a>
+            {% endfor %}
+          </p>
+          {% endif %}
+          {% if claim.reviews %}
+          <details class="muted small">
+            <summary>{{ claim.reviews | length }} 条评审</summary>
+            <ul>{% for rv in claim.reviews %}<li>{{ rv.reviewer }}：{{ rv.verdict }}（{{ rv.score }}）</li>{% endfor %}</ul>
+          </details>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="/runs/{{ detail.run_id }}/memory/sync" class="run-memory-form">
+        {{ m.csrf_field(csrf_token) }}
+        <input type="hidden" name="project_id" value="{{ project.project_id }}">
+        <button type="submit" class="btn btn-small">把裁决写回会话记忆</button>
+      </form>
+      {% else %}
+      <p class="muted">还没有裁决结论。运行推进后这里显示提出、评审与结算结果。</p>
+      {% endif %}
+    </section>
+
+    <section class="card" aria-labelledby="experiments-title">
+      <div class="card-head">
+        <h2 id="experiments-title">计算实验</h2>
+        <span class="muted small">{{ experiments | length }} 个</span>
+      </div>
+      {% if experiments %}
+      <ul class="list">
+        {% for exp in experiments %}
+        <li class="list-row">
+          <div class="list-main">
+            <span class="strong">{{ exp.experiment_id | short(20) }}</span>
+            <span class="muted small">{{ exp.status }} · 产物 {{ exp.artifacts }}{% if exp.verdict %} · 裁决 {{ exp.verdict }}{% endif %}</span>
+          </div>
+          {% if exp.verdict %}{{ m.status_badge(exp.verdict) }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">没有计算实验记录。</p>
+      {% endif %}
+    </section>
+
+    <section class="card" aria-labelledby="raw-title">
+      <h2 id="raw-title">运行参数</h2>
+      {% if detail.config and detail.config.get('memory_watermark') %}
+      {% set wm = detail.config.get('memory_watermark') %}
+      <p class="muted small">记忆快照：{{ wm.count }} 条（项目 {{ wm.project_entries }} / 会话 {{ wm.session_entries }}），采集于 {{ wm.captured_at | ts }}。</p>
+      {% endif %}
+      <details>
+        <summary>配置与预算快照</summary>
+        <pre class="raw">{{ detail.config | tojson(indent=2) }}</pre>
+        <pre class="raw">{{ detail.budget | tojson(indent=2) }}</pre>
+      </details>
+    </section>
+  </div>
+
+  <section class="card run-events-card" aria-labelledby="events-title"
+           data-run-stream data-run-id="{{ detail.run_id }}" data-project-id="{{ project.project_id }}"
+           data-after="{{ events[-1].seq if events else 0 }}"
+           data-stream-state="{{ 'closed' if detail.status in ('succeeded', 'failed', 'cancelled') else 'open' }}">
+    <div class="card-head">
+      <h2 id="events-title">事件流</h2>
+      <div class="stream-tools">
+        <span id="stream-state" class="badge badge-muted" role="status" aria-live="polite">{{ '已结束' if detail.status in ('succeeded', 'failed', 'cancelled') else '连接中…' }}</span>
+        <button type="button" id="follow-latest" class="btn btn-ghost btn-small is-hidden">回到最新</button>
+      </div>
+    </div>
+    <div class="event-tools">
+      <button type="button" class="btn btn-ghost btn-small"
+              hx-get="/ui/fragments/run-events?run_id={{ detail.run_id }}&project_id={{ project.project_id }}&limit=100&after={{ events[-1].seq if events else 0 }}"
+              hx-target="#event-list" hx-swap="beforeend">加载更早历史</button>
+      <span class="muted small">实时事件自动追加；向上阅读时不会强制滚动。</span>
+    </div>
+    <ol id="event-list" class="events">
+      {% for event in events %}{{ m.event_row(event) }}{% endfor %}
+    </ol>
+  </section>
+</div>
+{% endblock %}

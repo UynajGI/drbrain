@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}概览 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>概览</h1>
+    <p class="muted">{{ project.name }} · 继续最近的工作，或从文献库开始检索。</p>
+  </div>
+  <div class="page-actions">
+    <a class="btn btn-primary" href="/papers?project_id={{ project.project_id }}">打开文献库</a>
+  </div>
+</header>
+
+{% if data.papers == 0 %}
+<section class="card guide" aria-labelledby="first-run-title">
+  <h2 id="first-run-title">首次使用</h2>
+  <p>当前项目的语料还是空的。先在终端完成导入与抽取，回到这里继续浏览器内的研究路径：</p>
+  <ol class="guide-steps">
+    <li><code>drbrain ingest</code> — 处理 <code>data/spool/inbox/</code> 中的 PDF</li>
+    <li><code>drbrain build</code> — LLM 抽取概念与论证</li>
+    <li><code>drbrain embed &amp;&amp; drbrain closure</code> — 向量与规则闭环（可选但推荐）</li>
+  </ol>
+  <p class="muted small">导入完成后刷新此页即可看到文献与统计。</p>
+</section>
+{% endif %}
+
+{% set av = data.availability %}
+{% if not av.llm or not av.rag or not av.autoresearch %}
+<section class="card" aria-labelledby="avail-title">
+  <h2 id="avail-title">能力状态</h2>
+  <ul class="checklist">
+    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置（设置 llm.models 后会话与运行可用）' }}</li>
+    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用（配置 llamaindex.enabled 并运行 drbrain rag index）' }}</li>
+    <li class="{{ 'is-ok' if av.autoresearch else 'is-off' }}">Autoresearch：{{ '已启用' if av.autoresearch else '未启用（autoresearch.enabled: true）' }}</li>
+  </ul>
+</section>
+{% endif %}
+
+<section class="kpis" aria-label="项目统计">
+  <div class="kpi"><span class="kpi-value">{{ data.papers }}</span><span class="kpi-label">文献</span></div>
+  <div class="kpi"><span class="kpi-value">{{ data.concepts }}</span><span class="kpi-label">概念</span></div>
+  <div class="kpi"><span class="kpi-value">{{ data.edges }}</span><span class="kpi-label">关系</span></div>
+  <div class="kpi"><span class="kpi-value">{{ data.arguments }}</span><span class="kpi-label">论证</span></div>
+  <div class="kpi"><span class="kpi-value">{{ data.ledger.runs }}</span><span class="kpi-label">研究运行</span></div>
+  <div class="kpi"><span class="kpi-value">{{ data.ledger.verified }}</span><span class="kpi-label">通过裁决</span></div>
+</section>
+
+<div class="two-col">
+  <section class="card" aria-labelledby="recent-runs-title">
+    <div class="card-head">
+      <h2 id="recent-runs-title">最近运行</h2>
+      <a class="link" href="/runs?project_id={{ project.project_id }}">全部 →</a>
+    </div>
+    {% if data.recent_runs %}
+    <ul class="list">
+      {% for run in data.recent_runs %}
+      <li class="list-row">
+        <div class="list-main">
+          <a class="link strong" href="/runs/{{ run.run_id }}?project_id={{ project.project_id }}">{{ run.topic }}</a>
+          <span class="muted small">{{ run.updated_at | ts }} · {{ run.events }} 事件 · {{ run.verified }}/{{ run.settlements }} 通过</span>
+        </div>
+        {{ m.status_badge(run.display_status or run.status) }}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    {{ m.empty_state('还没有研究运行', '从会话页发起一次运行，或先导入文献。') }}
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="recent-sessions-title">
+    <div class="card-head">
+      <h2 id="recent-sessions-title">最近会话</h2>
+      <a class="link" href="/sessions?project_id={{ project.project_id }}">全部 →</a>
+    </div>
+    {% if data.recent_sessions %}
+    <ul class="list">
+      {% for session in data.recent_sessions %}
+      <li class="list-row">
+        <div class="list-main">
+          <a class="link strong" href="/sessions/{{ session.session_id }}?project_id={{ project.project_id }}">{{ session.title or session.session_id | short }}</a>
+          <span class="muted small">{{ session.updated_at | ts }} · {{ session.messages }} 条消息</span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    {{ m.empty_state('还没有会话', '在会话页新建一个持久会话，向文献库提问。') }}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

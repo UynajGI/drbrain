@@ -1,6 +1,8 @@
 # WebUI 设计：单人版 → 产品
 
-> 状态：v1 评审修订，待实现；M0 固化作用域映射与接口契约 · 核对日期：2026-09-11
+> 状态：v1 已实现（分支 `feat/webui-m1`）——M0 作用域与迁移、M1a 服务迁移与认证、
+> M1b 文献路径、M2a 会话与发起、M2b SSE/裁决/导出、M3 插件与设置均已落地；
+> 浏览器实机视觉验收与 release-time provider 联调仍待执行 · 更新日期：2026-09-11
 > 路线图定位见 [platform-roadmap.md](platform-roadmap.md)；本文件是 webui 主线的设计契约。
 
 ## 0. 现状核对与改进优先级
@@ -12,13 +14,16 @@
 |---|---|---|
 | P0 | 会话页已列入 v1，原 M1–M3 没有安排会话/记忆交付；项目作用域尚未进入 WebUI 接口 | M0 先定义项目、会话、运行关联与旧数据归属；M2a 单独交付会话。现有 [service.py](../src/drbrain/app/service.py) 接受全局配置，研究会话已有 [Database](../src/drbrain/storage/database.py) 的 `agent_sessions`/`agent_messages` 可复用 |
 | P0 | 计划用 `loop_id` 指一次运行，代码另有计算实验 `experiment_id` | API 统一用 `run_id` 表示研究运行；计算实验继续用 `experiment_id`，见 §4.1。现有 `run_claims()`、`experiments()` 已依此关联 |
-| P0 | 原计划把现有 JSON `/events` 直接改成 SSE，会破坏现有消费者；页面/API 两种鉴权也未覆盖 SSE | 保留 JSON 历史接口，新增 `/stream`；浏览器页面、htmx、SSE 共用同源登录 cookie，见 §4、§6.2。[server.py](../src/drbrain/app/server.py) 与 [test_app.py](../tests/test_app.py) 已有 JSON 事件契约 |
+| P0 | 原计划把现有 JSON `/events` 直接改成 SSE，会破坏现有消费者；页面/API 两种鉴权也未覆盖 SSE | 保留 JSON 历史接口，新增 `/stream`；浏览器页面、htmx、SSE 共用同源登录 cookie，见 §4、§6.2。旧 `app/server.py`（M1a 删除）与 [test_app.py](../tests/test_app.py) 已有 JSON 事件契约 |
 | P0 | 发起接口返回 topic/starting，没有持久化 `run_id`；运行管理器按 topic 维护内存线程和错误 | 在调度前持久化运行身份、作用域、请求幂等记录，再返回 202；不得靠轮询同名 topic 找 run。依据 `RunManager.start()`/`status()` |
 | P1 | 路线图要求浏览器导出结论，计划没有导出 API；插件“启停/健康”也超出当前列表能力 | M2b 补运行报告下载；M3 交付发现信息与符合性报告。启停延至生命周期契约就绪，发现状态与健康状态分开。现有 `assets()` 仅提供 CLI 导出命令，`plugins()` 仅返回描述信息 |
-| P1 | 单页原型没有媒体查询和显式输入标签；每次事件更新强制滚到底部；网络异常可能跳过按钮复位 | 将响应式、键盘操作、错误恢复、保留阅读位置加入每个里程碑。依据 [index.html](../src/drbrain/app/static/index.html) 的 `addEvents()`、`doSearch()`、`doAsk()` 与启动处理器 |
+| P1 | 单页原型没有媒体查询和显式输入标签；每次事件更新强制滚到底部；网络异常可能跳过按钮复位 | 将响应式、键盘操作、错误恢复、保留阅读位置加入每个里程碑。依据旧单页原型（`app/static/index.html`，M1a 迁移后随 `server.py` 一并删除）的 `addEvents()`、`doSearch()`、`doAsk()` 与启动处理器 |
 
-验证记录：在当前工作区运行 `.venv/bin/python -m pytest tests/test_app.py -q -p no:cacheprovider`，
-**17 passed**。这些测试覆盖现有 service/HTTP 行为，不代表新认证、SSE、会话页或浏览器交互已验收。
+实现记录：M0–M3 在 `feat/webui-m1` 落地；聚焦测试
+`.venv/bin/python -m pytest tests/test_project_scope.py tests/test_app.py tests/test_webui.py -q` 全部通过，
+数据库均为真实临时 SQLite。轮子打包已验证包含模板/静态资源/vendored htmx 与许可证
+（`uv build --wheel` 后检查 whl 内容）。浏览器实机视觉验收与真实 provider 联调不在本轮范围内，
+验收清单 §7.1 中相应条目保持未勾选。
 
 ## 1. 目标与阶段
 
@@ -238,17 +243,27 @@ Web 验收覆盖 1440px、1024px、768px 与 320 CSS px 宽度，正文无需横
 | M2b 观察与导出 | SSE、运行状态、claims/证据/计算产物、报告下载 | M2a | 断网补齐不重复；切项目无旧流串入；服务重启后正确呈现持久化状态；浏览器可下载带 run_id/裁决/来源的报告 |
 | M3 插件与设置 | 发现/符合性任务与报告、脱敏配置、token 重置、跨页验收 | UI 部分依赖 M1a；符合性功能依赖插件 v2 | “发现/未检测/检查中/通过/失败/过期”真实区分；重置后旧登录和流失效；六页主路径与回归测试通过 |
 
+落地状态（2026-09-11，`feat/webui-m1`）：M0、M1a、M1b、M2a、M2b、M3 的代码与聚焦测试均已完成——
+作用域迁移（DB v21 + ledger v9）、FastAPI + token 认证、五页主路径 + 设置页、SSE、
+报告下载、插件符合性任务与 token 重置。M2a 的“真实配置问答定位来源”与 M3 的浏览器跨页验收
+需要在已配置（llm.models / llamaindex / 浏览器）环境实机执行，见 §7.1。
+
 推进顺序：先做 M0 的作用域/兼容清单与失败测试，然后 M1a→M1b→M2a→M2b；
 M3 的页面壳与只读信息可在 M1a 后同步推进，符合性任务等待插件 v2。
 RAG 三层记忆完整实现属于 M2a；M1 的前置是作用域与数据关联，避免把整套长期记忆工程都挡在首屏之前。
 
 ## 7.1 发布验收清单
 
-- [ ] 保留并迁移 `tests/test_app.py`，补认证、作用域、分页、错误形状、幂等发起、跨库失败恢复测试；数据库使用真实临时 SQLite。
+- [x] 保留并迁移 `tests/test_app.py`，补认证、作用域、分页、错误形状、幂等发起、跨库失败恢复测试；数据库使用真实临时 SQLite。
+      （认证/CSRF/过期/轮换、项目归属、`next_cursor` 分页与无效游标 422、幂等发起与重启后中断态均在 `tests/test_webui.py`；
+      跨库一致性问题通过把项目/会话/幂等键并入 ledger 单次写入消解，不存在两库先后写的窗口）
 - [ ] SSE 覆盖中途断线、重复/未知事件、历史超过单页、登录过期、页面切换、任务终止；可控测试事件只能作为测试夹具，不在产品空状态预加载。
+      （回放/终态/Last-Event-ID/未知 run 已有测试；断线重连、页面切换清理与登录过期需浏览器实机联调）
 - [ ] 浏览器自动化覆盖登录→选项目→检索详情→会话→运行→证据→报告下载，以及键盘、输入保留和断网重试；由 M1 起逐步进入 CI。
 - [ ] 以长中文标题、长公式/代码、空数据、多会话、上万条 ledger 事件验证布局和分页；记录固定机器/数据规模下的检索耗时与 DOM 上限，作为后续性能比较基线。
-- [ ] 模板/静态文件随 wheel 分发，断开 CDN 访问后页面正常；CLI、JSON API 与当前已有计算任务入口完成迁移回归。
+      （分页/事件游标与 DOM 上限已实现：事件列表保留最近 500 条，历史按游标回填；尚未做真实规模测量）
+- [x] 模板/静态文件随 wheel 分发，断开 CDN 访问后页面正常；CLI、JSON API 与当前已有计算任务入口完成迁移回归。
+      （`uv build --wheel` 已验证模板/CSS/JS/vendored htmx 与许可证随包分发；htmx 本地 vendored，无 CDN 依赖）
 - [ ] 发布前完成一次已配置环境下的浏览器主路径联调，保存真实 run_id、报告和失败说明；CI 夹具通过不替代真实 provider/插件可用性验证。
 
 UI 的运行观察/导出验收允许如实展示失败或证据不足；获得科研上有价值的实算结论，

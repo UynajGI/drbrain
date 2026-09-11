@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · DrBrain 工作台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:,">
+</head>
+<body class="login-body" hx-history="false">
+  <main class="login-card">
+    <div class="brand login-brand">
+      <span class="brand-mark" aria-hidden="true">DB</span>
+      <div>
+        <p class="brand-name">DrBrain</p>
+        <p class="brand-sub">科研工作台</p>
+      </div>
+    </div>
+    <h1 class="login-title">本地登录</h1>
+    {% if error %}
+    <div class="alert alert-bad" role="alert">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="form-row">
+        <label class="field-label" for="token">访问令牌</label>
+        <input class="input" type="password" id="token" name="token" autocomplete="current-password"
+               required autofocus placeholder="终端启动时打印的 token">
+        <p class="field-hint">令牌保存在本机 <code>config/webui_token</code>（0600），终端执行 <code>drbrain webui</code> 时会打印。</p>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">进入工作台</button>
+    </form>
+    <p class="muted small login-note">仅本机访问；服务默认只监听 127.0.0.1。</p>
+  </main>
+</body>
+</html>

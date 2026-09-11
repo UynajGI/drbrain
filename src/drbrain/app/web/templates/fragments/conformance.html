@@ -1,0 +1,31 @@
+{% import "_macros.html" as m %}
+{% if report and report.status == 'pending' %}
+<div id="conf-{{ plugin_name }}"
+     hx-get="/ui/fragments/conformance?plugin_name={{ plugin_name }}&check_id={{ check_id }}"
+     hx-trigger="load delay:1500ms" hx-swap="outerHTML">
+  <p class="muted small">检查中…（{{ check_id }}）</p>
+</div>
+{% else %}
+<div id="conf-{{ plugin_name }}">
+  {% if report %}
+  {{ m.status_badge(report.status) }}
+  <p class="muted small">报告 {{ report.completed_at | ts }} · {{ report.check_id }}</p>
+  <details>
+    <summary>{{ report.checks | length }} 项检查</summary>
+    <ul class="checklist">
+      {% for check in report.checks %}
+      <li class="{{ 'is-ok' if check.passed else 'is-off' }}">
+        <code>{{ check.name }}</code> — {{ '通过' if check.passed else '失败' }}{% if check.detail %}：{{ check.detail }}{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+  <form method="post" action="/plugins/{{ plugin_name }}/conformance" class="inline-form">
+    {{ m.csrf_field(csrf_token) }}
+    <button type="submit" class="btn btn-small" data-submit-once>重新检查</button>
+  </form>
+  {% else %}
+  <p class="muted small">报告不可用（可能已被删除）。</p>
+  {% endif %}
+</div>
+{% endif %}

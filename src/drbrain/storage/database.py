@@ -2235,6 +2235,31 @@ class Database:
             )
         return evidence_id
 
+    def get_evidence(self, evidence_id: str) -> dict | None:
+        """Return one first-class evidence row (v14), or ``None``."""
+        row = self.conn.execute(
+            "SELECT evidence_id, paper_id, node_id, page, snippet, value, unit, "
+            "conditions, provenance, authority, created_at "
+            "FROM evidence WHERE evidence_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cols = [
+            "evidence_id",
+            "paper_id",
+            "node_id",
+            "page",
+            "snippet",
+            "value",
+            "unit",
+            "conditions",
+            "provenance",
+            "authority",
+            "created_at",
+        ]
+        return dict(zip(cols, row))
+
     def record_claim_evidence(self, claim_id: str, evidence_ids: list[str]) -> list[str]:
         """Bind a persisted claim to existing first-class evidence rows.
 
@@ -2504,14 +2529,17 @@ class Database:
         query: str = "",
         status: str | None = None,
         limit: int = 20,
-        offset: int = 0,
-    ) -> tuple[list[dict], int]:
+        cursor: tuple[str, str] | None = None,
+    ) -> tuple[list[dict], tuple[str, str] | None, int]:
         """Paged paper listing, optionally restricted to a membership set.
 
         ``paper_ids=None`` lists the whole library (the default project);
         ``query`` matches title/authors/abstract with LIKE escaping so a user
-        supplied ``%`` cannot turn into a wildcard.  Returns ``(rows, total)``
-        where ``total`` is the unpaged count for the same filters.
+        supplied ``%`` cannot turn into a wildcard.  Paging is cursor-based on
+        the sort key ``(COALESCE(updated_at,created_at), local_id)``: the
+        return value is ``(rows, next_cursor_payload, total)`` where the
+        payload is the raw sort key of the next page's first row (the caller
+        serializes it).  ``total`` is the unpaged count for the same filters.
         """
         clauses: list[str] = []
         params: list = []
@@ -2536,15 +2564,26 @@ class Database:
         total_row = self.conn.execute(
             f"SELECT COUNT(*) FROM papers p {where}", tuple(params)
         ).fetchone()
+        page_clauses = list(clauses)
+        page_params = list(params)
+        if cursor is not None:
+            sort_value, last_id = cursor
+            page_clauses.append(
+                "(COALESCE(p.updated_at, p.created_at) < ? OR "
+                "(COALESCE(p.updated_at, p.created_at) = ? AND p.local_id < ?))"
+            )
+            page_params.extend([sort_value, sort_value, last_id])
+        page_where = ("WHERE " + " AND ".join(page_clauses)) if page_clauses else ""
         rows = self.conn.execute(
             f"""
             SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status,
-                   p.journal, p.authors, p.citation_count, p.categories, p.updated_at
-            FROM papers p {where}
-            ORDER BY COALESCE(p.updated_at, p.created_at) DESC, p.local_id
-            LIMIT ? OFFSET ?
+                   p.journal, p.authors, p.citation_count, p.categories, p.updated_at,
+                   COALESCE(p.updated_at, p.created_at) AS sort_key
+            FROM papers p {page_where}
+            ORDER BY sort_key DESC, p.local_id DESC
+            LIMIT ? OFFSET 0
             """,
-            tuple(params) + (max(1, int(limit)), max(0, int(offset))),
+            tuple(page_params) + (max(1, int(limit)) + 1,),
         ).fetchall()
         cols = [
             "local_id",
@@ -2558,8 +2597,17 @@ class Database:
             "citation_count",
             "categories",
             "updated_at",
+            "sort_key",
         ]
-        return [dict(zip(cols, row)) for row in rows], int(total_row[0] if total_row else 0)
+        items = [dict(zip(cols, row)) for row in rows]
+        next_cursor: tuple[str, str] | None = None
+        if len(items) > int(limit):
+            last = items[int(limit) - 1]
+            next_cursor = (str(last["sort_key"]), str(last["local_id"]))
+            items = items[: int(limit)]
+        for item in items:
+            item.pop("sort_key", None)
+        return items, next_cursor, int(total_row[0] if total_row else 0)
 
     def get_concepts_by_paper(self, local_id: str) -> list[dict]:
         """Get all concepts for a paper."""
@@ -3269,22 +3317,32 @@ class Database:
         *,
         status: str = "active",
         limit: int = 50,
-        offset: int = 0,
-    ) -> list[dict]:
-        """List conversation sessions scoped to one project."""
+        cursor: tuple[str, str] | None = None,
+    ) -> tuple[list[dict], tuple[str, str] | None]:
+        """List conversation sessions scoped to one project (cursor-paged).
+
+        Ordering is ``(updated_at DESC, session_id DESC)``; the returned tuple
+        carries the raw sort key of the next page, or ``None`` at the end.
+        """
+        clauses = ["s.project_id = ?", "s.status = ?"]
+        params: list = [project_id, status]
+        if cursor is not None:
+            updated_at, last_id = cursor
+            clauses.append("(s.updated_at < ? OR (s.updated_at = ? AND s.session_id < ?))")
+            params.extend([updated_at, updated_at, last_id])
         rows = self.conn.execute(
-            """
+            f"""
             SELECT s.session_id, s.title, s.status, s.created_at, s.updated_at,
                    (SELECT COUNT(*) FROM agent_messages m WHERE m.session_id = s.session_id)
                        AS messages
             FROM agent_sessions s
-            WHERE s.project_id = ? AND s.status = ?
-            ORDER BY s.updated_at DESC, s.session_id
-            LIMIT ? OFFSET ?
+            WHERE {" AND ".join(clauses)}
+            ORDER BY s.updated_at DESC, s.session_id DESC
+            LIMIT ?
             """,
-            (project_id, status, max(1, int(limit)), max(0, int(offset))),
+            tuple(params) + (max(1, int(limit)) + 1,),
         ).fetchall()
-        return [
+        items = [
             {
                 "session_id": str(r[0]),
                 "title": str(r[1] or ""),
@@ -3295,6 +3353,12 @@ class Database:
             }
             for r in rows
         ]
+        next_cursor: tuple[str, str] | None = None
+        if len(items) > int(limit):
+            last = items[int(limit) - 1]
+            next_cursor = (str(last["updated_at"]), str(last["session_id"]))
+            items = items[: int(limit)]
+        return items, next_cursor
 
     def count_agent_sessions(self, project_id: str, *, status: str = "active") -> int:
         row = self.conn.execute(

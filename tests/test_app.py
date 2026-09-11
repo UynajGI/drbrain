@@ -1,18 +1,25 @@
-"""Tests for the WebUI service layer and HTTP router (`drbrain webui`)."""
+"""Tests for the WebUI service layer and the FastAPI HTTP router.
+
+Migrated from the legacy stdlib-server suite (17 tests) to the FastAPI app:
+the same behaviors are asserted under the new authentication boundary, plus
+the error contract (401/404/422) and CSRF requirements.
+"""
 
 from __future__ import annotations
 
 import json
 import threading
 import time
-import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
-from drbrain.app import service
-from drbrain.app.server import WebUIServer
+from drbrain.app import auth, service
+from drbrain.app.web import create_app
 from drbrain.loop.store import RunLedger
+from drbrain.security import REDACTED
 from drbrain.storage.database import Database
 
 
@@ -24,6 +31,7 @@ def cfg(tmp_path: Path) -> dict:
         "db": {"path": str(db_file)},
         "llm": {"models": []},
         "bm25": {"k1": 1.5, "b": 0.75},
+        "dirs": {"papers": str(tmp_path / "papers")},
         "autoresearch": {"enabled": False, "run_dir": str(tmp_path / "ws"), "plugins_dir": ""},
     }
 
@@ -106,6 +114,7 @@ def test_dashboard_empty_state(cfg):
     assert d["papers"] == 0 and d["concepts"] == 0
     assert d["ledger"] == {"runs": 0, "settlements": 0, "verified": 0, "events": 0}
     assert d["plugins"] == 0 and d["recent_runs"] == []
+    assert d["project"]["project_id"] == "prj-default"
 
 
 def test_search_empty_db_and_blank_query(cfg):
@@ -119,15 +128,18 @@ def test_ask_reports_unavailable_engine(cfg):
     assert service.ask(cfg, "")["error"] == "empty question"
 
 
-def test_ledger_readers_without_ledger(cfg):
+def test_unknown_run_readers_fail_closed(cfg):
     assert service.runs(cfg) == []
-    assert service.run_events(cfg, "nope") == []
-    assert service.run_claims(cfg, "nope") == []
+    with pytest.raises(service.RunNotFoundError):
+        service.run_events(cfg, "nope")
+    with pytest.raises(service.RunNotFoundError):
+        service.run_claims(cfg, "nope")
     assert service.experiments(cfg) == []
 
 
 def test_plugins_and_assets_without_plugin_dir(cfg):
     assert service.plugins(cfg) == []
+    assert service.plugin_catalog(cfg) == []
     a = service.assets(cfg)
     assert a["plugins_dir"] is None and a["ledger"]["bytes"] is None
     assert a["database"]["bytes"] is not None
@@ -152,6 +164,20 @@ def test_ledger_readers_with_seeded_run(cfg):
     assert service.experiments(cfg, run_id="other") == []
     d = service.dashboard(cfg)
     assert d["ledger"]["verified"] == 1 and d["recent_runs"][0]["run_id"] == run_id
+    detail = service.run_detail(cfg, run_id)
+    assert detail["events"] == 3 and detail["claims"] == 1 and detail["verified"] == 1
+    assert detail["experiments"] == 1 and detail["session_label"] == "未绑定会话"
+
+
+def test_run_report_carries_verdicts_and_evidence(cfg):
+    run_id, _ = _seed_ledger(cfg)
+    body, media, filename = service.run_report(cfg, run_id)
+    assert media.startswith("text/markdown") and filename.endswith(".md")
+    assert run_id in body and "CrF3 flat band" in body and "ev-1" in body
+    payload, media, _ = service.run_report(cfg, run_id, fmt="json")
+    assert media.startswith("application/json")
+    decoded = json.loads(payload)
+    assert decoded["run"]["run_id"] == run_id and decoded["claims"][0]["verdict"] == "keep"
 
 
 def test_run_manager_refuses_when_disabled(cfg):
@@ -169,14 +195,14 @@ def test_run_manager_runs_in_background_and_reports_errors(cfg, monkeypatch):
     seen: list[str] = []
     started = threading.Event()
 
-    def fake_run(self, cfg_, settings, topic, max_cycles):
+    def fake_run(self, cfg_, settings, topic, max_cycles, *scope):
         seen.append(topic)
         started.set()
         raise RuntimeError("boom")
 
     monkeypatch.setattr(service.RunManager, "_execute", fake_run)
     out = rm.start(cfg, "goal A", max_cycles=3)
-    assert out["started"] is True
+    assert out["started"] is True and out["run_id"]
     assert started.wait(2)
     rm._threads["goal A"].join(2)
     assert seen == ["goal A"]
@@ -188,7 +214,7 @@ def test_run_manager_redacts_error_details(cfg, monkeypatch):
     rm = service.RunManager()
     finished = threading.Event()
 
-    def fake_run(self, cfg_, settings, topic, max_cycles):
+    def fake_run(self, cfg_, settings, topic, max_cycles, *scope):
         finished.set()
         raise RuntimeError("Authorization: Bearer manager-secret")
 
@@ -198,7 +224,7 @@ def test_run_manager_redacts_error_details(cfg, monkeypatch):
     rm._threads["secret-free topic"].join(2)
     error = rm.status("secret-free topic")["error"]
     assert "manager-secret" not in error
-    assert "[REDACTED]" in error
+    assert REDACTED in error
 
 
 def test_run_manager_redacts_unlabelled_configured_secret(cfg, monkeypatch):
@@ -207,7 +233,7 @@ def test_run_manager_redacts_unlabelled_configured_secret(cfg, monkeypatch):
     cfg["llm"]["models"] = [{"api_key": secret}]
     rm = service.RunManager()
 
-    def fake_run(self, cfg_, settings, topic, max_cycles):
+    def fake_run(self, cfg_, settings, topic, max_cycles, *scope):
         raise RuntimeError(f"provider rejected {secret}")
 
     monkeypatch.setattr(service.RunManager, "_execute", fake_run)
@@ -216,7 +242,7 @@ def test_run_manager_redacts_unlabelled_configured_secret(cfg, monkeypatch):
 
     error = rm.status("opaque-secret topic")["error"]
     assert secret not in error
-    assert "[REDACTED]" in error
+    assert REDACTED in error
 
 
 def test_run_manager_rejects_run_directory_outside_runtime_root(cfg, tmp_path, monkeypatch):
@@ -246,7 +272,7 @@ def test_run_manager_snapshots_normalized_config_for_background_thread(tmp_path,
     captured: dict = {}
     finished = threading.Event()
 
-    def fake_run(self, cfg_, settings, topic, max_cycles):
+    def fake_run(self, cfg_, settings, topic, max_cycles, *scope):
         captured["cfg"] = cfg_
         captured["settings"] = settings
         finished.set()
@@ -270,98 +296,126 @@ def test_service_readers_redact_legacy_ledger_payload(cfg):
             (run_id, 99, "legacy", "legacy", json.dumps({"api_key": "legacy-secret"}), time.time()),
         )
     payload = service.run_events(cfg, run_id)[-1]["payload"]
-    assert payload["api_key"] == "[REDACTED]"
+    assert payload["api_key"] == REDACTED
 
 
-def test_http_error_response_redacts_exception_details(server, monkeypatch):
-    _srv, base = server
-
-    def explode(_cfg):
-        # Deliberately omit a recognizable key/authorization label.  Internal
-        # errors must be opaque even when pattern-based redaction cannot help.
-        raise RuntimeError("opaque-http-secret")
-
-    monkeypatch.setattr(service, "dashboard", explode)
-    try:
-        _get(base + "/api/dashboard")
-    except urllib.error.HTTPError as exc:
-        status = exc.code
-        body = json.loads(exc.read().decode())
-    else:  # pragma: no cover - defensive assertion
-        raise AssertionError("the failing route should return HTTP 500")
-    assert status == 500
-    assert body["error"] == "internal server error"
-
-
-# ── HTTP router ──
+# ── HTTP: authenticated FastAPI surface ──
 
 
 @pytest.fixture
-def server(cfg):
-    srv = WebUIServer(("127.0.0.1", 0), cfg)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield srv, f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-    srv.server_close()
+def api(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "data").mkdir(parents=True)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+    cfg = {
+        "db": {"path": "data/test.db"},
+        "llm": {"models": []},
+        "bm25": {"k1": 1.5, "b": 0.75},
+        "dirs": {"papers": "data/papers"},
+        "autoresearch": {"enabled": False, "run_dir": "workspace/runs", "plugins_dir": ""},
+    }
+    Database(root / "data" / "test.db").close()
+    token = auth.ensure_token(cfg)
+    app = create_app(cfg)
+    # The error boundary returns the JSON contract instead of raising, so the
+    # redaction test can assert the response body.
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield SimpleNamespace(client=client, cfg=cfg, root=root, token=token, app=app)
 
 
-def _get(url: str):
-    with urllib.request.urlopen(url, timeout=5) as r:
-        return r.status, json.loads(r.read().decode())
+def _login(api) -> str:
+    response = api.client.post("/api/auth/verify", json={"token": api.token})
+    assert response.status_code == 200
+    return response.json()["csrf_token"]
 
 
-def _post(url: str, body: dict):
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def test_http_requires_authentication(api):
+    fresh = TestClient(api.app)
+    r = fresh.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/login")
+    r = fresh.get("/api/dashboard")
+    assert r.status_code == 401 and r.json()["code"] == "unauthorized"
+    r = fresh.post("/api/runs", json={"topic": "x"})
+    assert r.status_code == 401
+
+
+def test_http_login_and_core_routes(api):
+    csrf = _login(api)
+    r = api.client.get("/")
+    assert r.status_code == 200 and "概览" in r.text
+    status, d = (
+        api.client.get("/api/dashboard").status_code,
+        api.client.get("/api/dashboard").json(),
     )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read().decode())
-
-
-def test_http_index_and_api_routes(server, cfg):
-    srv, base = server
-    with urllib.request.urlopen(base + "/", timeout=5) as r:
-        html = r.read().decode()
-    assert "DrBrain" in html and "研究闭环" in html
-    status, d = _get(base + "/api/dashboard")
     assert status == 200 and d["papers"] == 0
-    status, s = _get(base + "/api/search?q=flat&limit=5")
-    assert status == 200 and s == {"query": "flat", "results": []}
-    status, a = _post(base + "/api/ask", {"question": "hi"})
-    assert status == 503 and a["unavailable"] is True
-    status, r = _post(base + "/api/runs", {"topic": "goal"})
-    assert status == 400 and "disabled" in r["error"]
-    status, r = _post(base + "/api/runs", {"topic": ""})
-    assert status == 400
-    assert _get(base + "/api/runs")[1] == []
-    assert _get(base + "/api/experiments")[1] == []
-    assert _get(base + "/api/plugins")[1] == []
-    assert _get(base + "/api/assets")[1]["plugins"] == []
-    assert _get(base + "/api/run-status?topic=x")[1]["alive"] is False
+    s = api.client.get("/api/search?q=flat&limit=5").json()
+    assert s == {"query": "flat", "results": []}
+    a = api.client.post("/api/ask", json={"question": "hi"}, headers={"X-CSRF-Token": csrf})
+    assert a.status_code == 503 and a.json()["unavailable"] is True
+    r = api.client.post("/api/runs", json={"topic": "goal"}, headers={"X-CSRF-Token": csrf})
+    assert r.status_code == 400 and "disabled" in r.json()["error"]
+    r = api.client.post("/api/runs", json={"topic": ""}, headers={"X-CSRF-Token": csrf})
+    assert r.status_code == 422 and r.json()["code"] == "validation_error"
+    assert api.client.get("/api/runs").json() == []
+    assert api.client.get("/api/experiments").json() == []
+    assert api.client.get("/api/plugins").json() == []
+    assert api.client.get("/api/assets").json()["plugins"] == []
+    assert api.client.get("/api/run-status?topic=x").json()["alive"] is False
 
 
-def test_http_run_routes_with_ledger(server, cfg):
-    srv, base = server
-    run_id, _ = _seed_ledger(cfg)
-    status, evs = _get(base + f"/api/runs/{run_id}/events?after=0")
-    assert status == 200 and evs[-1]["type"] == "claim_settled"
-    status, claims = _get(base + f"/api/runs/{run_id}/claims")
-    assert status == 200 and claims[0]["verdict"] == "keep"
+def test_http_csrf_contract(api):
+    _login(api)
+    # Cookie-authenticated writes need the double-submit token.
+    r = api.client.post("/api/ask", json={"question": "hi"})
+    assert r.status_code == 403 and r.json()["code"] == "csrf"
+    r = api.client.post("/api/ask", json={"question": "hi"}, headers={"X-CSRF-Token": "wrong"})
+    assert r.status_code == 403
+    # Bearer clients carry no ambient cookie and are exempt.
+    r = api.client.post(
+        "/api/ask",
+        json={"question": "hi"},
+        headers={"Authorization": f"Bearer {api.token}"},
+    )
+    assert r.status_code == 503
 
 
-def test_http_not_found_and_static_escape(server):
-    srv, base = server
-    for path in ("/api/nope", "/static/../server.py", "/static/missing.js"):
-        try:
-            urllib.request.urlopen(base + path, timeout=5)
-        except urllib.error.HTTPError as e:
-            assert e.code == 404
-        else:  # pragma: no cover
-            pytest.fail(f"{path} should 404")
+def test_http_run_routes_with_ledger(api):
+    _login(api)
+    run_id, _ = _seed_ledger(api.cfg)
+    evs = api.client.get(f"/api/runs/{run_id}/events?after=0").json()
+    assert evs[-1]["type"] == "claim_settled"
+    claims = api.client.get(f"/api/runs/{run_id}/claims").json()
+    assert claims[0]["verdict"] == "keep"
+    detail = api.client.get(f"/api/runs/{run_id}").json()
+    assert detail["run_id"] == run_id and detail["verified"] == 1
+    report = api.client.get(f"/api/runs/{run_id}/report?format=markdown")
+    assert report.status_code == 200
+    assert "attachment" in report.headers["content-disposition"]
+    assert run_id in report.text
+    unknown = api.client.get("/api/runs/nope/events")
+    assert unknown.status_code == 404 and unknown.json()["code"] == "run_not_found"
+    # Unknown routes keep the JSON contract.
+    missing = api.client.get("/api/nope")
+    assert missing.status_code == 404
+
+
+def test_http_error_response_redacts_exception_details(api, monkeypatch):
+    _login(api)
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("opaque-http-secret")
+
+    monkeypatch.setattr(service, "dashboard", explode)
+    r = api.client.get("/api/dashboard")
+    assert r.status_code == 500
+    assert r.json()["error"] == "internal server error"
+
+
+def test_http_static_serving_and_not_found(api):
+    _login(api)
+    css = api.client.get("/static/app.css")
+    assert css.status_code == 200 and "text/css" in css.headers["content-type"]
+    htmx = api.client.get("/static/vendor/htmx.min.js")
+    assert htmx.status_code == 200 and len(htmx.content) > 10_000
+    assert api.client.get("/static/missing.js").status_code == 404
+    assert api.client.get("/static/../pyproject.toml").status_code == 404

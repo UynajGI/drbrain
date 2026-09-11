@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}插件 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>插件</h1>
+    <p class="muted">Model-as-Tool 插件发现与符合性报告。列表只展示发现状态，不把“已发现”当作“可用”。</p>
+  </div>
+</header>
+
+{% if catalog %}
+<div class="plugin-grid">
+  {% for plugin in catalog %}
+  <section class="card plugin-card" aria-labelledby="plugin-{{ loop.index }}-title">
+    <div class="card-head">
+      <h2 id="plugin-{{ loop.index }}-title">{{ plugin.name }}</h2>
+      {{ m.status_badge(plugin.conformance_state) }}
+    </div>
+    <p class="muted">{{ plugin.description or '（没有描述）' }}</p>
+    <dl class="meta-grid compact">
+      <dt>类型</dt><dd>{{ plugin.type }}</dd>
+      <dt>后端</dt><dd>{{ plugin.backend }}</dd>
+      <dt>版本</dt><dd>{{ plugin.version or '未声明' }}</dd>
+      <dt>发现目录</dt><dd><code>{{ plugin.discovered_from }}</code></dd>
+    </dl>
+    <div class="card-foot">
+      {% if plugin.conformance and plugin.conformance.status == 'pending' %}
+      <div id="conf-{{ plugin.name }}"
+           hx-get="/ui/fragments/conformance?plugin_name={{ plugin.name }}&check_id={{ plugin.conformance.check_id }}"
+           hx-trigger="load delay:1500ms" hx-swap="outerHTML">
+        <p class="muted small">检查中…（{{ plugin.conformance.check_id }}）</p>
+      </div>
+      {% else %}
+      <div id="conf-{{ plugin.name }}">
+        <form method="post" action="/plugins/{{ plugin.name }}/conformance" class="inline-form">
+          {{ m.csrf_field(csrf_token) }}
+          <button type="submit" class="btn btn-small" data-submit-once>运行符合性检查</button>
+        </form>
+        {% if plugin.conformance %}
+        <p class="muted small">
+          最近报告 {{ plugin.conformance.created_at | ts }} · {{ plugin.conformance.check_id }}
+          {% if plugin.conformance.stale %}· <span class="badge badge-warn">版本已变化，报告过期</span>{% endif %}
+        </p>
+        {% else %}
+        <p class="muted small">尚未运行静态符合性检查。</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% else %}
+{{ m.empty_state('没有发现插件', '在 config.yaml 中设置 autoresearch.plugins_dir 指向插件目录；drbrain 核心不内置具体领域插件。') }}
+{% endif %}
+{% endblock %}

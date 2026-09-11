@@ -1,0 +1,12 @@
+{% import "_macros.html" as m %}
+{% if error %}
+<div class="alert alert-bad" role="alert">{{ error }}</div>
+{% endif %}
+{% if unavailable %}
+<div class="alert alert-warn" role="alert">会话问答当前不可用：请先在配置中设置 llm.models。</div>
+{% endif %}
+{% for message in messages %}
+  {% if message.role != 'system' %}
+  {{ m.message_block(message) }}
+  {% endif %}
+{% endfor %}

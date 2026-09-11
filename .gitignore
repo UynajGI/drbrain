@@ -32,6 +32,9 @@ data/
 # Local config (contains secrets)
 config.local.yaml
 
+# WebUI bootstrap token generated on first `drbrain webui` start
+config/webui_token
+
 # Environment files commonly contain API keys; keep an example template
 # trackable while ignoring all local variants.
 .env
