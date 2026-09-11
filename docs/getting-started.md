@@ -77,9 +77,10 @@ Inside: `inbox/` (drop PDFs here), `papers/` (processed papers), `drbrain.db` (k
 2. **Configures MinerU PDF parser** -- optional; PyMuPDF fallback works without it
 3. **Sets up API keys** -- Semantic Scholar, CrossRef, OpenAlex (optional; higher rate limits)
 4. **Creates data directories** -- `data/spool/inbox/`, `data/papers/`, `data/cache/`, etc.
-5. **Offers to install agent skills** -- runs `npx skills add https://github.com/UynajGI/DrBrain/skills`
+5. **Bootstraps base config** -- writes a minimal `config.yaml` if the root has none, and saves credentials to `config.local.yaml` (permissions 0600)
+6. **Offers to install agent skills** -- runs `npx skills add https://github.com/UynajGI/DrBrain/skills`
 
-Use `--quick` to skip interactive prompts and accept defaults:
+Use `--quick` to skip interactive prompts and accept defaults. Quick setup is the one command allowed to start without a `config.yaml` — it bootstraps one in the selected root automatically:
 
 ```bash
 drbrain setup --quick
