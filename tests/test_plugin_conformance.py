@@ -98,8 +98,6 @@ def test_non_string_manifest_key_fails_without_crash(tmp_path):
 
 def test_inline_code_digest_kwarg_workflow(tmp_path):
     """Inline plugins verify via the same blank-anchored digest workflow."""
-    import hashlib
-
     source = (
         "from drbrain.plugins import Plugin\n"
         "def register(registry):\n"
@@ -114,6 +112,8 @@ def test_inline_code_digest_kwarg_workflow(tmp_path):
     )
     path = tmp_path / "dig_plugin.py"
     path.write_text(source.replace("__DIGEST__", ""), encoding="utf-8")
+    # Hash the on-disk bytes, exactly what _module_digest reads — on platforms
+    # where text-mode writes translate newlines, source.encode() would diverge.
     digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     path.write_text(source.replace("__DIGEST__", digest), encoding="utf-8")
 

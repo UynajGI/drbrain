@@ -297,22 +297,28 @@ def _digest_check(name: str, declared: str, path: Path) -> CheckResult:
     return CheckResult(name, True, "matches module sha256")
 
 
+# Single-pass blanking for the ``code_digest`` value: the alternation covers
+# the dict-literal and keyword forms (any quote style) so the earliest
+# declaration in the file is blanked regardless of which style it uses.
+_DIGEST_BLANK_RE = re.compile(rb'("code_digest"\s*:\s*|code_digest\s*=\s*)(["\'])[^"\']*\2')
+
+
 def _module_digest(path: Path) -> str:
     """sha256 of the module file with the ``code_digest`` value blanked.
 
     The declaration lives in the very file it attests, so hashing the raw
     bytes would be self-referential (a hash cannot contain its own value).
-    Blanking is anchored to the ``"code_digest"`` declaration and replaces only
-    that field's value, covering BOTH declaration styles (dict-literal
-    ``"code_digest": "..."`` and inline keyword ``code_digest="..."``): this
-    exactly reverses the author's fill-in step (write the digest empty, hash,
-    fill in), works whatever form was filled (``sha256:`` prefix, case,
-    whitespace), and never touches digest-like strings elsewhere in the file.
+    Blanking is anchored to the ``"code_digest"`` declaration with a single
+    combined pattern covering BOTH declaration styles (dict-literal
+    ``"code_digest": "..."`` and inline keyword ``code_digest="..."``, any
+    quote style): the earliest declaration in the file is blanked in one pass,
+    so no per-form first-occurrence skew is possible.  This exactly reverses
+    the author's fill-in step (write the digest empty, hash, fill in), works
+    whatever form was filled (``sha256:`` prefix, case, whitespace), and never
+    touches digest-like strings elsewhere in the file.
     """
     raw = path.read_bytes()
-    blanked = re.sub(rb'("code_digest"\s*:\s*")[^"]*(")', rb"\1\2", raw, count=1)
-    blanked = re.sub(rb'(code_digest\s*=\s*")[^"]*(")', rb"\1\2", blanked, count=1)
-    blanked = re.sub(rb"(code_digest\s*=\s*')[^']*(')", rb"\1\2", blanked, count=1)
+    blanked = _DIGEST_BLANK_RE.sub(rb"\1\1", raw, count=1)
     return hashlib.sha256(blanked).hexdigest()
 
 

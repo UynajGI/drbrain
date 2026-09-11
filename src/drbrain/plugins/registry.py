@@ -581,6 +581,12 @@ class PluginRegistry:
                     self.register(plugin, handler, jobs=jobs)
                 except Exception as exc:  # noqa: BLE001 — bad manifest skips only itself
                     logger.warning("plugin module %s manifest failed: %s", path, exc)
+                else:
+                    if callable(getattr(module, "register", None)):
+                        logger.warning(
+                            "plugin module %s: manifest takes precedence; register() ignored",
+                            path,
+                        )
                 continue
             register = getattr(module, "register", None)
             if not callable(register):
