@@ -258,9 +258,10 @@ def project_paper_ids(
     paper references, so the library itself is never duplicated.
     """
     pid = normalize_project_id(project_id)
-    owns_db = db is None
-    if owns_db:
-        db = Database(db_path(cfg))
+    owned: Database | None = None
+    if db is None:
+        owned = Database(db_path(cfg))
+        db = owned
     try:
         row = db.get_project(pid)
         if row is None:
@@ -276,8 +277,8 @@ def project_paper_ids(
             return []
         return list(workspace_store.load_workspace_papers(str(workspace_name), root))
     finally:
-        if owns_db:
-            db.close()
+        if owned is not None:
+            owned.close()
 
 
 # ── dashboard ────────────────────────────────────────────────────────────────
@@ -1604,7 +1605,7 @@ def _run_conformance(
         settings = autoresearch_settings(cfg)
         directory = _runtime_path(settings.plugins_dir, label="autoresearch plugins directory")
         report = run_conformance(directory)
-        all_checks = [
+        all_checks: list[dict[str, Any]] = [
             {"name": c.name, "passed": bool(c.passed), "detail": c.detail} for c in report.checks
         ]
         selected = [c for c in all_checks if plugin_name in c["name"].split(".")]

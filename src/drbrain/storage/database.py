@@ -3173,7 +3173,12 @@ class Database:
             FROM projects ORDER BY is_default DESC, name COLLATE NOCASE
             """
         ).fetchall()
-        return [self._project_row(row) for row in rows]
+        projects: list[dict] = []
+        for row in rows:
+            parsed = self._project_row(row)
+            if parsed is not None:
+                projects.append(parsed)
+        return projects
 
     @staticmethod
     def _project_row(row: sqlite3.Row | None) -> dict | None:
@@ -3583,7 +3588,12 @@ class Database:
             """,
             (plugin_name, max(1, int(limit))),
         ).fetchall()
-        return [self._conformance_row(r) for r in rows]
+        reports: list[dict] = []
+        for row in rows:
+            parsed = self._conformance_row(row)
+            if parsed is not None:
+                reports.append(parsed)
+        return reports
 
     @staticmethod
     def _conformance_row(row: sqlite3.Row | None) -> dict | None:
