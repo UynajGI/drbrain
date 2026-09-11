@@ -210,6 +210,18 @@ def main() -> int:
                 if r.get("year") is not None and not isinstance(r.get("year"), int):
                     parse_errors.append(f"{mf.name}:{line_no}: year must be an integer")
                     continue
+                if r.get("title") is not None and not isinstance(r.get("title"), str):
+                    parse_errors.append(f"{mf.name}:{line_no}: title must be a string")
+                    continue
+                year_value = r.get("year")
+                if year_value is not None:
+                    # The producer passes source years through verbatim, which
+                    # commonly yields digit strings such as "2024".
+                    if isinstance(year_value, str) and year_value.strip().isdigit():
+                        r["year"] = int(year_value.strip())
+                    elif not isinstance(year_value, int):
+                        parse_errors.append(f"{mf.name}:{line_no}: year must be an integer")
+                        continue
                 try:
                     doi = normalize_doi(raw_doi)
                 except (TypeError, ValueError) as exc:

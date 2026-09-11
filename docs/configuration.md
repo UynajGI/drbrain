@@ -189,7 +189,7 @@ Metrics tracked separately in `data/metrics.db`.
 
 The database schema is versioned in the `schema_versions` table and migrated automatically on every `Database.__init__` via `_migrate()`. Each migration is idempotent: it detects whether the target column/index exists via `PRAGMA table_info` and only then runs `ALTER TABLE` / `CREATE INDEX`. You never need to run a manual migration step — opening the DB upgrades it in place.
 
-Current schema version: **v15** (`claims`).
+Current schema version: **v20** (`embedding_revision`).
 
 | Version | Name | What it adds |
 |---------|------|--------------|
@@ -208,8 +208,13 @@ Current schema version: **v15** (`claims`).
 | v13 | `answer_records` | persisted answer records |
 | v14 | `evidence` | evidence tracking table |
 | v15 | `claims` | claims table |
+| v16 | `agent_session_principal` | `agent_sessions.owner_principal` column |
+| v17 | `claim_evidence` | claim↔evidence join table |
+| v18 | `paper_categories` | `papers.categories` column |
+| v19 | `claim_provenance` | claims provenance columns |
+| v20 | `embedding_revision` | `vector_metadata` embedding-revision watermark |
 
-The `updated_at` columns (v8) and `last_run:<stage>` watermarks (stored in `vector_metadata`) together drive the incremental pipeline: stages compare `max(papers.updated_at)` against their watermark to decide whether to skip. There is nothing to configure here — it is automatic — but if you ever need a full rebuild, pass `--all` (build), `--full` (closure/pipeline), or `--retrain` (embed) to bypass the watermarks.
+The `updated_at` columns (v8) and `last_run:<stage>` watermarks (stored in `vector_metadata`) together drive the incremental pipeline: stages compare `max(papers.updated_at)` against their watermark to decide whether to skip. The `embedding_revision` watermark (v20) is bumped whenever embeddings are saved or cleared, so cached TransE models cannot survive an identity merge or a cache wipe. There is nothing to configure here — it is automatic — but if you ever need a full rebuild, pass `--all` (build), `--full` (closure/pipeline), or `--retrain` (embed) to bypass the watermarks.
 
 ---
 

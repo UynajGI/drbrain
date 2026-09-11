@@ -471,8 +471,11 @@ def _publish_generation_marker(paper_path: Path, generation: str) -> None:
     raw = (paper_path / "raw.md").read_bytes()
     tree = (paper_path / "tree.json").read_bytes()
     marker = json.dumps(
-        {"generation": generation, "raw_sha256": hashlib.sha256(raw).hexdigest(),
-         "tree_sha256": hashlib.sha256(tree).hexdigest()},
+        {
+            "generation": generation,
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "tree_sha256": hashlib.sha256(tree).hexdigest(),
+        },
         sort_keys=True,
     )
     _atomic_write_text(paper_path, ".generation.json", marker)
@@ -562,7 +565,9 @@ def _ingest_from_md_impl(cleaned: dict, cfg: dict, db: Database, dedup: DedupEng
         )
         db.set_paper_type(local_id, paper_type or "paper")
     except TimeoutError as e:
-        logger.warning("[scibase] paper-type timeout {}: {}", local_id, _safe_pipeline_error(e, cfg))
+        logger.warning(
+            "[scibase] paper-type timeout {}: {}", local_id, _safe_pipeline_error(e, cfg)
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("[scibase] paper-type failed {}: {}", local_id, _safe_pipeline_error(e, cfg))
 

@@ -354,6 +354,45 @@ CREATE INDEX IF NOT EXISTS idx_claim_evidence_evidence ON claim_evidence(evidenc
 """
 
 
+# Derived sqlite-vec shadow copies of ``tree_vectors`` plus the quantization
+# scale table. Identity changes invalidate the whole derived index set — the
+# next vector sync rebuilds them from the base rows.
+_VEC_SHADOW_TABLES = (
+    "tree_vectors_vec",
+    "tree_vectors_vec_f32_bak",
+    "tree_vectors_vec_i8",
+    "vec_i8_scale",
+)
+
+# Ingest writes this literal when metadata carries no usable title; a merge
+# must treat it as "no title" so a richer source row can fill it.
+_PLACEHOLDER_TITLE = "Untitled"
+
+# paper_ids external identifier kinds, in column order.
+_EXTERNAL_ID_COLUMNS = ("doi", "arxiv", "s2_id", "openalex_id")
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Load the optional sqlite-vec extension into *conn*.
+
+    Module-level so tests and tooling can stub the availability decision.
+    """
+    from drbrain.storage.vector_index import load_vec
+
+    return load_vec(conn)
+
+
+def _redact_payload(value: str | None) -> str:
+    """Project a free-form payload through the credential scrubber.
+
+    Writer boundary for durable rows: JSON payloads stay parseable with their
+    sensitive keys redacted, plain text has credential assignments scrubbed.
+    """
+    from drbrain.security import redact_sensitive_text
+
+    return redact_sensitive_text(value) or ""
+
+
 def _split_evidence_id(identifier: str) -> tuple[str, str]:
     """Split a ``paper_id:node_id`` evidence identifier into its parts.
 
@@ -383,7 +422,20 @@ class Database:
         runs in serialized threading mode, so cross-thread use of the shared
         connection is safe; ``busy_timeout`` below absorbs write contention.
         """
-        self.path = Path(db_path)
+        import os
+
+        from drbrain.runtime import RuntimeContext, _is_special_path, _is_uri
+
+        if _is_uri(db_path):
+            raise ValueError(f"database path must be a local filesystem path, not a URI: {db_path}")
+        selector = os.environ.get("DRBRAIN_ROOT") or os.environ.get("DRBRAIN_RUNTIME_ROOT")
+        if selector and _is_special_path(db_path):
+            # The in-memory sentinel must not require a valid disk root.
+            self.path = Path(str(db_path))
+        elif selector:
+            self.path = RuntimeContext.create().assert_within_root(db_path, label="database path")
+        else:
+            self.path = Path(db_path)
         self._write_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -397,6 +449,45 @@ class Database:
         self.conn.executescript(SCHEMA_SQL)
         self._migrate()
         self.conn.commit()
+
+    @staticmethod
+    def _validate_local_id(local_id: str) -> str:
+        """Enforce the filesystem paper-ID contract at the SQL write boundary.
+
+        Local ids double as filesystem path components, so the rules the
+        ingest pipeline applies also bind here: non-empty, no surrounding
+        whitespace, no NUL bytes.
+        """
+        value = str(local_id) if not isinstance(local_id, str) else local_id
+        if not value or value != value.strip() or "\x00" in value:
+            raise ValueError(f"invalid paper local_id: {value!r}")
+        return value
+
+    @contextmanager
+    def _write_scope(self):
+        """Composable write scope for writer methods.
+
+        Inside a caller-open transaction the scope runs in a savepoint so a
+        failure rolls back only its own writes; a writer never commits an
+        outer transaction. Called standalone, the scope commits on success
+        and rolls back on failure, preserving the historic writer behavior.
+        """
+        if self.conn.in_transaction:
+            self.conn.execute("SAVEPOINT drbrain_write_scope")
+            try:
+                yield
+            except BaseException:
+                self.conn.execute("ROLLBACK TO drbrain_write_scope")
+                self.conn.execute("RELEASE drbrain_write_scope")
+                raise
+            self.conn.execute("RELEASE drbrain_write_scope")
+        else:
+            try:
+                yield
+            except BaseException:
+                self.conn.rollback()
+                raise
+            self.conn.commit()
 
     def _migrate(self) -> None:
         """Apply pending schema migrations in order."""
@@ -424,6 +515,7 @@ class Database:
             (17, "claim_evidence", self._migrate_add_claim_evidence),
             (18, "paper_categories", self._migrate_add_paper_categories),
             (19, "claim_provenance", self._migrate_add_claim_provenance),
+            (20, "embedding_revision", self._migrate_add_embedding_revision),
         ]
 
         for version, name, fn in migrations:
@@ -765,6 +857,17 @@ class Database:
             if column not in cols:
                 self.conn.execute(f"ALTER TABLE claims ADD COLUMN {column} {decl}")
 
+    def _migrate_add_embedding_revision(self) -> None:
+        """v20: seed the embedding model generation watermark (idempotent).
+
+        The revision lives in vector_metadata so readers (graph engine cache)
+        can detect a cleared or re-trained TransE model without rescanning
+        the embeddings table. Missing row means generation 0.
+        """
+        self.conn.execute(
+            "INSERT OR IGNORE INTO vector_metadata (key, value) VALUES ('embedding_revision', '0')"
+        )
+
     def _migrate_add_paper_categories(self) -> None:
         """Add arXiv category metadata + corpus citation edges (physics ingest)."""
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(papers)").fetchall()]
@@ -840,6 +943,7 @@ class Database:
         On conflict (existing local_id), bump updated_at to signal downstream
         incremental stages that this paper changed.
         """
+        self._validate_local_id(local_id)
         if strict and self.get_paper(local_id) is not None:
             raise ValueError("paper identity already exists")
         self.conn.execute(
@@ -877,24 +981,77 @@ class Database:
         *,
         strict: bool = False,
     ) -> None:
-        """Insert external identifier mappings, optionally rejecting conflicts."""
+        """Insert or idempotently merge external identifier mappings.
+
+        Values are normalized through the shared resolver so equivalent
+        spellings compare equal. In ``strict`` mode a normalized value owned
+        by a different paper, or a conflicting value for the paper's own
+        existing mapping, is rejected; a later caller that skips strict mode
+        keeps the lenient historical behavior (unique conflicts are ignored).
+        Existing raw column values are never rewritten — only NULL fields
+        are filled.
+        """
+        self._validate_local_id(local_id)
+        from drbrain.dedup.resolver import _normalize_optional
+
+        incoming: dict[str, str] = {}
+        for kind, value in (
+            ("doi", doi),
+            ("arxiv", arxiv),
+            ("s2_id", s2_id),
+            ("openalex_id", openalex_id),
+        ):
+            normalized = _normalize_optional(kind, value)
+            if normalized is None:
+                continue
+            incoming[kind] = normalized
+
+        row = self.conn.execute(
+            f"SELECT {', '.join(_EXTERNAL_ID_COLUMNS)} FROM paper_ids WHERE local_id = ?",
+            (local_id,),
+        ).fetchone()
         if strict:
-            existing = self.get_paper_by_external_id
-            for kind, value in (
-                ("doi", doi),
-                ("arxiv", arxiv),
-                ("s2_id", s2_id),
-                ("openalex_id", openalex_id),
-            ):
-                if value and existing(kind, value) not in (None, local_id):
-                    raise ValueError(f"external identifier {kind} already belongs to another paper")
-        self.conn.execute(
-            "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) VALUES (?, ?, ?, ?, ?)",
-            (local_id, doi, arxiv, s2_id, openalex_id),
-        )
+            current = dict(zip(_EXTERNAL_ID_COLUMNS, row)) if row is not None else {}
+            for kind, normalized in incoming.items():
+                owner = self.get_paper_by_external_id(kind, normalized)
+                if owner is not None and owner != local_id:
+                    raise ValueError(
+                        f"external identifier {kind} already belongs to another paper "
+                        f"{owner}: {normalized}"
+                    )
+                stored = current.get(kind)
+                if stored and _normalize_optional(kind, stored) != normalized:
+                    raise ValueError(
+                        f"external identifier {kind} already mapped for {local_id}: {stored}"
+                    )
+        if row is None:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO paper_ids (local_id, doi, arxiv, s2_id, openalex_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    local_id,
+                    incoming.get("doi"),
+                    incoming.get("arxiv"),
+                    incoming.get("s2_id"),
+                    incoming.get("openalex_id"),
+                ),
+            )
+        else:
+            fills = {
+                kind: value
+                for kind, value in incoming.items()
+                if not row[_EXTERNAL_ID_COLUMNS.index(kind)]
+            }
+            if fills:
+                assignments = ", ".join(f"{kind} = ?" for kind in fills)
+                self.conn.execute(
+                    f"UPDATE OR IGNORE paper_ids SET {assignments} WHERE local_id = ?",
+                    (*fills.values(), local_id),
+                )
 
     def set_paper_abstract(self, local_id: str, abstract: str) -> None:
         """Update the abstract text for a paper."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET abstract = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (abstract, local_id),
@@ -902,6 +1059,7 @@ class Database:
 
     def set_paper_categories(self, local_id: str, categories: str) -> None:
         """Store the space-separated arXiv category list for a paper."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET categories = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (categories, local_id),
@@ -922,6 +1080,7 @@ class Database:
         Resolution of ``cited_key`` (arXiv id / DOI / bib key) to an in-corpus
         ``cited_local_id`` happens later, once the full corpus is ingested.
         """
+        self._validate_local_id(citing_local_id)
         if not cited_keys:
             return
         self.conn.executemany(
@@ -938,11 +1097,14 @@ class Database:
             rows = self.conn.execute(
                 "SELECT rowid, cited_key FROM paper_cite_keys WHERE cited_local_id IS NULL"
             ).fetchall()
-            updates = [
-                (key_to_local_id[str(key)], rowid)
-                for rowid, key in rows
-                if key_to_local_id.get(str(key))
-            ]
+            updates = []
+            for rowid, key in rows:
+                target = key_to_local_id.get(str(key))
+                if not target:
+                    continue
+                # A deferred resolution must respect the same identity
+                # contract as a direct write.
+                updates.append((self._validate_local_id(target), rowid))
             if updates:
                 self.conn.executemany(
                     "UPDATE paper_cite_keys SET cited_local_id = ? WHERE rowid = ?",
@@ -952,6 +1114,7 @@ class Database:
 
     def upgrade_placeholder(self, local_id: str) -> None:
         """Promote a placeholder paper to uploaded status."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET status = 'uploaded', updated_at = CURRENT_TIMESTAMP "
             "WHERE local_id = ? AND status = 'placeholder'",
@@ -960,6 +1123,7 @@ class Database:
 
     def set_paper_status(self, local_id: str, status: str) -> None:
         """Update paper status and bump updated_at."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (status, local_id),
@@ -967,6 +1131,7 @@ class Database:
 
     def touch_paper(self, local_id: str) -> None:
         """Bump updated_at timestamp on a paper to signal downstream stages."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
             (local_id,),
@@ -974,6 +1139,7 @@ class Database:
 
     def touch_edge(self, src_id: str, dst_id: str, relation: str, source_paper: str) -> None:
         """Bump updated_at on an edge to signal downstream stages."""
+        self._validate_local_id(source_paper)
         self.conn.execute(
             "UPDATE edges SET updated_at = CURRENT_TIMESTAMP "
             "WHERE src_id = ? AND dst_id = ? AND relation = ? AND source_paper = ?",
@@ -990,6 +1156,7 @@ class Database:
         citation_count: int = 0,
     ) -> None:
         """Update paper metadata after ingest (for upgraded placeholders)."""
+        self._validate_local_id(local_id)
         self.conn.execute(
             "UPDATE papers SET title = ?, year = ?, journal = ?, publisher = ?, "
             "citation_count = ?, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
@@ -1082,6 +1249,7 @@ class Database:
         weight: float = 1.0,
     ) -> None:
         """Insert a co-occurrence edge; accumulate weight on re-assertion."""
+        self._validate_local_id(paper_id)
         self.conn.execute(
             "INSERT INTO concept_cooccurrence (src_label, dst_label, year, paper_id, weight) "
             "VALUES (?, ?, ?, ?, ?) "
@@ -1199,6 +1367,7 @@ class Database:
         whole row. Bumps updated_at. ``field`` is validated against an
         allowlist to prevent SQL injection via column names.
         """
+        self._validate_local_id(local_id)
         if field not in self._VALID_PAPER_FIELDS:
             raise ValueError(f"unknown paper field: {field}")
         self.conn.execute(
@@ -1259,60 +1428,409 @@ class Database:
     def merge_papers(self, keep_id: str, merge_id: str) -> dict:
         """Merge two paper records atomically, keeping ``keep_id``.
 
-        Migrates concepts, arguments, and edges from merge_id onto keep_id,
-        then deletes merge_id. Runs as a single transaction so a failure at any
-        point rolls back — no torn state. Returns a dict of migrated counts.
+        Migrates concepts, arguments, edges, external identifiers, provenance
+        rows, citation edges, and epistemic evidence from merge_id onto
+        keep_id, fills keep's placeholder metadata from the source row, then
+        deletes merge_id. Derived indexes (embeddings, tree vectors, sqlite-vec
+        shadow tables) are invalidated rather than copied so no stale identity
+        survives; the embedding revision is bumped so cached readers reload.
 
-        Note: unlike delete_paper(), this does NOT touch neighbors or clear
-        closure/embed watermarks — the merge target (keep_id) already
-        represents the surviving identity, and edges now point at it.
+        All rejections (identity errors, external-ID conflicts, citation-cache
+        collisions) happen in a preflight before any row is written, and the
+        migration itself runs in a savepoint: on failure only the merge's own
+        writes roll back and the caller's transaction stays intact. Returns a
+        dict of migrated/deleted counts.
         """
+        self._validate_local_id(keep_id)
+        self._validate_local_id(merge_id)
+        if keep_id == merge_id:
+            raise ValueError("merge requires two different papers")
+        if self.get_paper(keep_id) is None:
+            raise ValueError(f"merge source paper not found: {keep_id}")
+        if self.get_paper(merge_id) is None:
+            raise ValueError(f"merge target paper not found: {merge_id}")
+
+        self._preflight_merge_paper_ids(keep_id, merge_id)
+        self._preflight_merge_citation_cache(keep_id, merge_id)
+        self._preflight_merge_vec_tables()
+
+        caller_transactional = self.conn.in_transaction
+        self.conn.execute("SAVEPOINT drbrain_merge_papers")
+        try:
+            counts = self._apply_paper_merge(keep_id, merge_id)
+        except BaseException:
+            self.conn.execute("ROLLBACK TO drbrain_merge_papers")
+            self.conn.execute("RELEASE drbrain_merge_papers")
+            raise
+        self.conn.execute("RELEASE drbrain_merge_papers")
+        if not caller_transactional:
+            self.conn.commit()
+        return counts
+
+    def _preflight_merge_paper_ids(self, keep_id: str, merge_id: str) -> None:
+        """Reject a merge whose external identifiers conflict per kind."""
+        from drbrain.dedup.resolver import _normalize_optional
+
+        keep_ids = self._external_id_row(keep_id)
+        merge_ids = self._external_id_row(merge_id)
+        for kind in _EXTERNAL_ID_COLUMNS:
+            keep_value, merge_value = keep_ids[kind], merge_ids[kind]
+            if not (keep_value and merge_value):
+                continue
+            if _normalize_optional(kind, keep_value) != _normalize_optional(kind, merge_value):
+                raise ValueError(
+                    f"external identifier {kind} conflict between {keep_id} and {merge_id}: "
+                    f"{keep_value!r} vs {merge_value!r}"
+                )
+
+    def _preflight_merge_citation_cache(self, keep_id: str, merge_id: str) -> None:
+        """Reject a merge whose citation-cache rows share a title but disagree.
+
+        Two rows with the same target title but different DOIs or years are
+        ambiguous references; migrating them silently would fabricate a merged
+        citation record, so the merge aborts instead.
+        """
+        keep_rows = self.conn.execute(
+            "SELECT target_title, target_year, target_doi, target_s2_id "
+            "FROM citation_cache WHERE source_paper = ?",
+            (keep_id,),
+        ).fetchall()
+        keep_by_title = {row[0]: row for row in keep_rows}
+        for title, year, doi, s2_id in self.conn.execute(
+            "SELECT target_title, target_year, target_doi, target_s2_id "
+            "FROM citation_cache WHERE source_paper = ?",
+            (merge_id,),
+        ).fetchall():
+            existing = keep_by_title.get(title)
+            if existing is None:
+                continue
+            if (
+                (existing[1] or None) != (year or None)
+                or (existing[2] or None) != (doi or None)
+                or (existing[3] or None) != (s2_id or None)
+            ):
+                raise ValueError(
+                    f"citation cache conflict for target title {title!r} between "
+                    f"{keep_id} and {merge_id}"
+                )
+
+    def _preflight_merge_vec_tables(self) -> None:
+        """Fail closed when ANN shadow tables exist without sqlite-vec loaded.
+
+        Identity migration deletes the derived vec0 tables' rows; that write
+        requires the extension. A backfill process may have created the
+        virtual tables on a connection that had it loaded while this
+        connection does not, so the merge aborts before mutating anything.
+        """
+        virtual = {
+            row[0]
+            for row in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+            ).fetchall()
+        }
+        if not (virtual & set(_VEC_SHADOW_TABLES)):
+            return
+        if not _load_sqlite_vec(self.conn):
+            raise ValueError(
+                "sqlite-vec extension unavailable: cannot migrate virtual ANN shadow tables"
+            )
+
+    def _external_id_row(self, local_id: str) -> dict[str, str | None]:
+        """Return the paper_ids row for *local_id* as a kind→value dict."""
+        row = self.conn.execute(
+            f"SELECT {', '.join(_EXTERNAL_ID_COLUMNS)} FROM paper_ids WHERE local_id = ?",
+            (local_id,),
+        ).fetchone()
+        if row is None:
+            return dict.fromkeys(_EXTERNAL_ID_COLUMNS)
+        return dict(zip(_EXTERNAL_ID_COLUMNS, row))
+
+    @staticmethod
+    def _merge_person_names(*values: str | None) -> str:
+        """Union ';'-separated author lists, keeping first-seen order."""
+        names: list[str] = []
+        for value in values:
+            for chunk in (value or "").split(";"):
+                name = chunk.strip()
+                if name and name not in names:
+                    names.append(name)
+        return "; ".join(names)
+
+    @staticmethod
+    def _merge_category_tokens(*values: str | None) -> str:
+        """Union whitespace/comma-separated category tokens, keeping order."""
+        tokens: list[str] = []
+        for value in values:
+            for chunk in (value or "").replace(",", " ").split():
+                if chunk and chunk not in tokens:
+                    tokens.append(chunk)
+        return " ".join(tokens)
+
+    def _merge_paper_metadata(self, keep_id: str, merge_id: str) -> None:
+        """Fill keep's placeholder/empty fields from the source row.
+
+        Canonical values win: a real keep title/year/status/venue is never
+        overwritten by the duplicate. Authors and categories are unions
+        rather than pick-one fields.
+        """
+        cols = (
+            "title",
+            "abstract",
+            "year",
+            "status",
+            "paper_type",
+            "journal",
+            "publisher",
+            "citation_count",
+            "volume",
+            "pages",
+            "authors",
+            "categories",
+        )
+
+        def paper_row(paper_id: str) -> dict:
+            row = self.conn.execute(
+                f"SELECT {', '.join(cols)} FROM papers WHERE local_id = ?",
+                (paper_id,),
+            ).fetchone()
+            return dict(zip(cols, row))
+
+        keep, gone = paper_row(keep_id), paper_row(merge_id)
+        merged = {
+            "title": (
+                keep["title"]
+                if keep["title"] and keep["title"].strip() and keep["title"] != _PLACEHOLDER_TITLE
+                else (gone["title"] or keep["title"])
+            ),
+            "abstract": keep["abstract"] or gone["abstract"],
+            "year": keep["year"] if keep["year"] is not None else gone["year"],
+            "status": keep["status"] if keep["status"] != "placeholder" else gone["status"],
+            "paper_type": (
+                keep["paper_type"]
+                if keep["paper_type"] != "paper"
+                else (gone["paper_type"] or keep["paper_type"])
+            ),
+            "journal": keep["journal"] or gone["journal"],
+            "publisher": keep["publisher"] or gone["publisher"],
+            "citation_count": keep["citation_count"] or gone["citation_count"],
+            "volume": keep["volume"] or gone["volume"],
+            "pages": keep["pages"] or gone["pages"],
+            "authors": self._merge_person_names(keep["authors"], gone["authors"]),
+            "categories": self._merge_category_tokens(keep["categories"], gone["categories"]),
+        }
+        assignments = ", ".join(f"{col} = ?" for col in cols)
+        self.conn.execute(
+            f"UPDATE papers SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (*merged.values(), keep_id),
+        )
+
+    def _apply_paper_merge(self, keep_id: str, merge_id: str) -> dict:
+        """Run the row-level migration of one merge inside the savepoint."""
         counts = {
             "concepts": 0,
             "arguments": 0,
             "edges_redirected": 0,
+            "paper_ids": 0,
+            "corpus_sources": 0,
+            "paper_terms": 0,
+            "concept_cooccurrence": 0,
+            "paper_cite_keys": 0,
+            "paper_citations": 0,
+            "citation_cache": 0,
+            "build_stages": 0,
+            "queue_items": 0,
+            "evidence": 0,
+            "tree_vectors": 0,
+            "tree_summaries": 0,
+            "embeddings": 0,
         }
-        try:
-            self.conn.execute("BEGIN")
-            cur = self.conn.execute(
-                "UPDATE concepts SET local_id = ? WHERE local_id = ?", (keep_id, merge_id)
-            )
-            counts["concepts"] = cur.rowcount
-            cur = self.conn.execute(
-                "UPDATE arguments SET source_paper = ? WHERE source_paper = ?",
-                (keep_id, merge_id),
-            )
-            counts["arguments"] = cur.rowcount
-            # Redirect edges that reference merge_id as an endpoint (src or dst).
-            # In DrBrain edges can use either concept labels or paper local_ids
-            # as endpoints (papers are graph nodes too), so this retargeting is
-            # NOT dead code — it handles the paper-as-node case.
-            cur = self.conn.execute(
-                "UPDATE edges SET src_id = ?, updated_at = CURRENT_TIMESTAMP WHERE src_id = ?",
-                (keep_id, merge_id),
-            )
-            counts["edges_redirected"] += cur.rowcount
-            cur = self.conn.execute(
-                "UPDATE edges SET dst_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dst_id = ?",
-                (keep_id, merge_id),
-            )
-            counts["edges_redirected"] += cur.rowcount
-            cur = self.conn.execute(
-                "UPDATE edges SET source_paper = ?, updated_at = CURRENT_TIMESTAMP "
-                "WHERE source_paper = ?",
-                (keep_id, merge_id),
-            )
-            counts["edges_redirected"] += cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE concepts SET local_id = ? WHERE local_id = ?", (keep_id, merge_id)
+        )
+        counts["concepts"] = cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE arguments SET source_paper = ? WHERE source_paper = ?",
+            (keep_id, merge_id),
+        )
+        counts["arguments"] = cur.rowcount
+        # Redirect edges that reference merge_id as an endpoint (src or dst).
+        # In DrBrain edges can use either concept labels or paper local_ids
+        # as endpoints (papers are graph nodes too), so this retargeting is
+        # NOT dead code — it handles the paper-as-node case.
+        cur = self.conn.execute(
+            "UPDATE edges SET src_id = ?, updated_at = CURRENT_TIMESTAMP WHERE src_id = ?",
+            (keep_id, merge_id),
+        )
+        counts["edges_redirected"] += cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE edges SET dst_id = ?, updated_at = CURRENT_TIMESTAMP WHERE dst_id = ?",
+            (keep_id, merge_id),
+        )
+        counts["edges_redirected"] += cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE edges SET source_paper = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE source_paper = ?",
+            (keep_id, merge_id),
+        )
+        counts["edges_redirected"] += cur.rowcount
+
+        # External identifiers: keep's non-null fields win, gone's fill the
+        # rest, then the source row disappears. The source row is deleted
+        # BEFORE the update so its own UNIQUE-indexed values don't collide
+        # with the merged row being written.
+        keep_ids = self._external_id_row(keep_id)
+        merge_ids = self._external_id_row(merge_id)
+        if any(value is not None for value in merge_ids.values()):
+            merged_ids = {
+                kind: keep_ids[kind] if keep_ids[kind] is not None else merge_ids[kind]
+                for kind in _EXTERNAL_ID_COLUMNS
+            }
+            self.conn.execute("DELETE FROM paper_ids WHERE local_id = ?", (merge_id,))
             self.conn.execute(
-                "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
-                (keep_id,),
+                f"UPDATE paper_ids SET {', '.join(f'{kind} = ?' for kind in _EXTERNAL_ID_COLUMNS)} "
+                f"WHERE local_id = ?",
+                (*merged_ids.values(), keep_id),
             )
-            self.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
-            self.conn.execute("COMMIT")
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
+            counts["paper_ids"] = 1
+
+        # Provenance + derived rows owned by the source paper.
+        for table, column in (
+            ("corpus_sources", "local_id"),
+            ("paper_terms", "local_id"),
+            ("concept_cooccurrence", "paper_id"),
+            ("citation_cache", "source_paper"),
+            ("evidence", "paper_id"),
+        ):
+            cur = self.conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                (keep_id, merge_id),
+            )
+            counts[table] = cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE confidence_queue SET source_paper = ? WHERE source_paper = ?",
+            (keep_id, merge_id),
+        )
+        counts["queue_items"] = cur.rowcount
+
+        # Citation keys: canonicalize resolved targets BEFORE retargeting the
+        # citing side so keep-row and gone-row entries for the same key fold
+        # into one equivalent row instead of falsely conflicting.
+        self.conn.execute(
+            "UPDATE paper_cite_keys SET cited_local_id = ? WHERE cited_local_id = ?",
+            (keep_id, merge_id),
+        )
+        moved = self.conn.execute(
+            "SELECT cited_key, cited_local_id FROM paper_cite_keys WHERE citing_local_id = ?",
+            (merge_id,),
+        ).fetchall()
+        for cited_key, cited_local_id in moved:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO paper_cite_keys (citing_local_id, cited_key, cited_local_id) "
+                "VALUES (?, ?, ?)",
+                (keep_id, cited_key, cited_local_id),
+            )
+        cur = self.conn.execute(
+            "DELETE FROM paper_cite_keys WHERE citing_local_id = ?", (merge_id,)
+        )
+        counts["paper_cite_keys"] = len(moved) or cur.rowcount
+
+        # Paper-level citation edges, both directions; a self-citation of the
+        # source identity becomes a self-citation of the survivor.
+        cur = self.conn.execute(
+            "UPDATE OR IGNORE paper_citations SET citing_id = ? WHERE citing_id = ?",
+            (keep_id, merge_id),
+        )
+        counts["paper_citations"] += cur.rowcount
+        cur = self.conn.execute(
+            "UPDATE OR IGNORE paper_citations SET cited_id = ? WHERE cited_id = ?",
+            (keep_id, merge_id),
+        )
+        counts["paper_citations"] += cur.rowcount
+
+        # Build stages are invalidated: the stage result describes the source
+        # extraction, which no longer exists, so the target rebuilds.
+        cur = self.conn.execute(
+            "UPDATE build_stages SET paper_id = ?, result_json = '', "
+            "updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?",
+            (keep_id, merge_id),
+        )
+        counts["build_stages"] = cur.rowcount
+
+        # Derived tree indexes are invalidated rather than copied with stale
+        # ``gone:`` node IDs; the target can rebuild them from its canonical tree.
+        cur = self.conn.execute(
+            "DELETE FROM tree_vectors WHERE paper_id IN (?, ?)", (keep_id, merge_id)
+        )
+        counts["tree_vectors"] = cur.rowcount
+        cur = self.conn.execute(
+            "DELETE FROM tree_summaries WHERE paper_id IN (?, ?)", (keep_id, merge_id)
+        )
+        counts["tree_summaries"] = cur.rowcount
+
+        self._merge_paper_metadata(keep_id, merge_id)
+        self.conn.execute(
+            "UPDATE papers SET updated_at = CURRENT_TIMESTAMP WHERE local_id = ?",
+            (keep_id,),
+        )
+        self.conn.execute("DELETE FROM papers WHERE local_id = ?", (merge_id,))
+
+        # Identity change invalidates every derived vector artifact: the TransE
+        # cache is a global artifact and the ANN shadows mirror tree_vectors.
+        cur = self.conn.execute("DELETE FROM embeddings")
+        counts["embeddings"] = cur.rowcount
+        self._purge_vec_shadow_tables()
+        self._mark_vec_dirty()
+        self._bump_embedding_revision()
         return counts
+
+    def _purge_vec_shadow_tables(self) -> int:
+        """Delete every derived ANN row; the next vector sync rebuilds them.
+
+        The shadow tables are full copies of ``tree_vectors``, so any base-row
+        identity change invalidates the whole set — partial pruning would leave
+        quantized copies inconsistent with their base rows. Tables are created
+        lazily by the backfill/quantize tooling and simply may not exist.
+        """
+        deleted = 0
+        for table in _VEC_SHADOW_TABLES:
+            try:
+                cur = self.conn.execute(f"DELETE FROM {table}")
+                deleted += max(cur.rowcount, 0)
+            except sqlite3.OperationalError:
+                continue
+        return deleted
+
+    def _mark_vec_dirty(self) -> None:
+        """Clear the sqlite-vec synced watermark so retrieval falls back to
+        the brute-force path until the next full sync."""
+        from drbrain.storage.vector_index import mark_vec_dirty
+
+        mark_vec_dirty(self.conn)
+
+    def _bump_embedding_revision(self) -> None:
+        """Advance the embedding model generation so cached readers reload."""
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = 'embedding_revision'"
+        ).fetchone()
+        try:
+            current = int(row[0]) if row else 0
+        except (TypeError, ValueError):
+            current = 0
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES ('embedding_revision', ?)",
+            (str(current + 1),),
+        )
+
+    def get_embedding_revision(self) -> int:
+        """Return the current persisted embedding model generation (0 default)."""
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = 'embedding_revision'"
+        ).fetchone()
+        try:
+            return int(row[0]) if row else 0
+        except (TypeError, ValueError):
+            return 0
 
     # ── agent_sessions / agent_messages ─────────────────────────────────
 
@@ -1324,12 +1842,23 @@ class Database:
         model_config: str = "{}",
         owner_principal: str = "",
     ) -> None:
-        """Create a new agent session row."""
+        """Create a new agent session row.
+
+        Free-form payloads are redacted before storage: session rows are
+        durable artifacts, so credentials passed through by direct low-level
+        callers must not survive verbatim.
+        """
         self.conn.execute(
             "INSERT INTO agent_sessions "
             "(session_id, title, system_prompt, model_config, owner_principal) "
             "VALUES (?, ?, ?, ?, ?)",
-            (session_id, title, system_prompt, model_config, owner_principal),
+            (
+                session_id,
+                _redact_payload(title),
+                _redact_payload(system_prompt),
+                _redact_payload(model_config),
+                owner_principal,
+            ),
         )
 
     def session_principal_matches(self, session_id: str, principal: str | None) -> bool:
@@ -1375,12 +1904,25 @@ class Database:
         tool_call_id: str = "",
         tool_name: str = "",
     ) -> None:
-        """Append a message to an agent session."""
+        """Append a message to an agent session.
+
+        Message content, serialized tool payloads, and tool names are redacted
+        before storage; structural identifiers (session, seq, role, tool_call_id)
+        are kept verbatim so the transcript stays navigable.
+        """
         self.conn.execute(
             "INSERT INTO agent_messages "
             "(session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, seq, role, content, tool_calls_json, tool_call_id, tool_name),
+            (
+                session_id,
+                seq,
+                role,
+                _redact_payload(content),
+                _redact_payload(tool_calls_json),
+                tool_call_id,
+                _redact_payload(tool_name),
+            ),
         )
 
     def record_knowledge_snapshot(
@@ -1394,12 +1936,12 @@ class Database:
         ``snapshot_id`` — a deterministic id (e.g. hash of the settled claim
         set) makes re-settling the same outcome a no-op.
         """
-        self.conn.execute(
-            "INSERT INTO knowledge_snapshots (snapshot_id, revision_id, description) "
-            "VALUES (?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING",
-            (snapshot_id, revision_id, description),
-        )
-        self.conn.commit()
+        with self._write_scope():
+            self.conn.execute(
+                "INSERT INTO knowledge_snapshots (snapshot_id, revision_id, description) "
+                "VALUES (?, ?, ?) ON CONFLICT(snapshot_id) DO NOTHING",
+                (snapshot_id, revision_id, description),
+            )
         return snapshot_id
 
     def record_answer(
@@ -1419,43 +1961,54 @@ class Database:
         ``evidence_ids`` is serialized to a JSON string (the
         ``answer_records.evidence_ids`` column is TEXT) so it can be restored
         with ``json.loads`` later. Returns the new ``answer_id``.
+
+        The answer row, its materialized evidence, and the claim are written
+        as one unit: a failure while materializing the claim rolls back the
+        whole record instead of leaving a dangling answer behind.
         """
         import json
 
-        evidence_json = json.dumps(list(evidence_ids or []), ensure_ascii=False)
-        cur = self.conn.execute(
-            "INSERT INTO answer_records "
-            "(session_id, question, answer, evidence_ids, provenance, "
-            " model_version, snapshot_id, retriever_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                session_id,
-                question,
-                answer,
-                evidence_json,
-                provenance,
-                model_version,
-                snapshot_id,
-                retriever_version,
-            ),
-        )
-        self.conn.commit()
+        identifiers = list(evidence_ids or [])
+        # Validate every grounding BEFORE persisting so a malformed
+        # identifier cannot leave a partial answer row behind.
+        for identifier in identifiers:
+            paper_id, _node_id = _split_evidence_id(identifier)
+            self._validate_local_id(paper_id)
 
-        # Materialize first-class evidence rows: each ``paper:node`` identifier
-        # becomes an ``evidence`` row. At answer time we only have the grounding
-        # id and provenance — page/snippet/value are left blank rather than
-        # fabricated.
-        for identifier in list(evidence_ids or []):
-            paper_id, node_id = _split_evidence_id(identifier)
-            if paper_id or node_id:
-                self.record_evidence(paper_id, node_id, provenance=provenance)
+        evidence_json = json.dumps(identifiers, ensure_ascii=False)
+        with self._write_scope():
+            cur = self.conn.execute(
+                "INSERT INTO answer_records "
+                "(session_id, question, answer, evidence_ids, provenance, "
+                " model_version, snapshot_id, retriever_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    question,
+                    answer,
+                    evidence_json,
+                    provenance,
+                    model_version,
+                    snapshot_id,
+                    retriever_version,
+                ),
+            )
+            answer_id = cur.lastrowid or 0
 
-        # Materialize the answer itself as a first-class claim. The TBox type
-        # (Problem/Method/Conclusion/…) is not known at answer time, so it is
-        # left blank rather than guessed.
-        self.record_claim(question, answer, provenance=provenance)
+            # Materialize first-class evidence rows: each ``paper:node`` identifier
+            # becomes an ``evidence`` row. At answer time we only have the grounding
+            # id and provenance — page/snippet/value are left blank rather than
+            # fabricated.
+            for identifier in identifiers:
+                paper_id, node_id = _split_evidence_id(identifier)
+                if paper_id or node_id:
+                    self.record_evidence(paper_id, node_id, provenance=provenance)
 
-        return cur.lastrowid or 0
+            # Materialize the answer itself as a first-class claim. The TBox type
+            # (Problem/Method/Conclusion/…) is not known at answer time, so it is
+            # left blank rather than guessed.
+            self.record_claim(question, answer, provenance=provenance)
+        return answer_id
 
     def record_evidence(
         self,
@@ -1478,34 +2031,35 @@ class Database:
         record with the same id replaces the row, letting richer fields (page /
         snippet / value) overwrite the sparse answer-time grounding.
         """
+        self._validate_local_id(paper_id)
         if evidence_id is None:
             evidence_id = (
                 f"{paper_id}:{node_id}" if (paper_id and node_id) else (paper_id or node_id)
             )
-        self.conn.execute(
-            "INSERT INTO evidence "
-            "(evidence_id, paper_id, node_id, page, snippet, value, unit, "
-            " conditions, provenance, authority) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(evidence_id) DO UPDATE SET "
-            "paper_id = excluded.paper_id, node_id = excluded.node_id, "
-            "page = excluded.page, snippet = excluded.snippet, value = excluded.value, "
-            "unit = excluded.unit, conditions = excluded.conditions, "
-            "provenance = excluded.provenance, authority = excluded.authority",
-            (
-                evidence_id,
-                paper_id,
-                node_id,
-                page,
-                snippet,
-                value,
-                unit,
-                conditions,
-                provenance,
-                authority,
-            ),
-        )
-        self.conn.commit()
+        with self._write_scope():
+            self.conn.execute(
+                "INSERT INTO evidence "
+                "(evidence_id, paper_id, node_id, page, snippet, value, unit, "
+                " conditions, provenance, authority) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(evidence_id) DO UPDATE SET "
+                "paper_id = excluded.paper_id, node_id = excluded.node_id, "
+                "page = excluded.page, snippet = excluded.snippet, value = excluded.value, "
+                "unit = excluded.unit, conditions = excluded.conditions, "
+                "provenance = excluded.provenance, authority = excluded.authority",
+                (
+                    evidence_id,
+                    paper_id,
+                    node_id,
+                    page,
+                    snippet,
+                    value,
+                    unit,
+                    conditions,
+                    provenance,
+                    authority,
+                ),
+            )
         return evidence_id
 
     def record_claim_evidence(self, claim_id: str, evidence_ids: list[str]) -> list[str]:
@@ -1517,12 +2071,12 @@ class Database:
         unique_ids = list(dict.fromkeys(str(value) for value in evidence_ids if str(value)))
         if not unique_ids:
             return []
-        self.conn.executemany(
-            "INSERT INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?) "
-            "ON CONFLICT(claim_id, evidence_id) DO NOTHING",
-            [(claim_id, evidence_id) for evidence_id in unique_ids],
-        )
-        self.conn.commit()
+        with self._write_scope():
+            self.conn.executemany(
+                "INSERT INTO claim_evidence (claim_id, evidence_id) VALUES (?, ?) "
+                "ON CONFLICT(claim_id, evidence_id) DO NOTHING",
+                [(claim_id, evidence_id) for evidence_id in unique_ids],
+            )
         return unique_ids
 
     def record_claim(
@@ -1568,62 +2122,63 @@ class Database:
             # is required, but expect one duplicate per legacy claim.
             digest = hashlib.sha1(f"{label}\x00{claim_text}\x00{claim_type}".encode()).hexdigest()
             claim_id = f"claim_{digest[:16]}"
-        self.conn.execute(
-            "INSERT INTO claims "
-            "(claim_id, label, claim_text, claim_type, authority, provenance, "
-            " confidence, valid_from, valid_to, run_id, cycle, job_id, "
-            " claim_ledger_id, model, prompt_hash, evidence_node_ids) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(claim_id) DO UPDATE SET "
-            "label = excluded.label, claim_text = excluded.claim_text, "
-            "claim_type = excluded.claim_type, authority = excluded.authority, "
-            "provenance = excluded.provenance, confidence = excluded.confidence, "
-            "valid_from = excluded.valid_from, valid_to = excluded.valid_to, "
-            # v19 溯源列只在传入非空时覆盖：record_answer 走同一条 INSERT 且不
-            # 带溯源参数，无条件 UPDATE 会把 loop 写入的 run_id/job_id/model
-            # 等审计事实抹成空串（OCR r5 bug·high）。
-            "run_id = CASE WHEN excluded.run_id != '' THEN excluded.run_id ELSE claims.run_id END, "
-            "cycle = CASE WHEN excluded.cycle IS NOT NULL THEN excluded.cycle ELSE claims.cycle END, "
-            "job_id = CASE WHEN excluded.job_id != '' THEN excluded.job_id ELSE claims.job_id END, "
-            "claim_ledger_id = CASE WHEN excluded.claim_ledger_id != '' THEN excluded.claim_ledger_id "
-            "ELSE claims.claim_ledger_id END, "
-            "model = CASE WHEN excluded.model != '' THEN excluded.model ELSE claims.model END, "
-            "prompt_hash = CASE WHEN excluded.prompt_hash != '' THEN excluded.prompt_hash "
-            "ELSE claims.prompt_hash END, "
-            "evidence_node_ids = CASE WHEN excluded.evidence_node_ids != '' "
-            "THEN excluded.evidence_node_ids ELSE claims.evidence_node_ids END",
-            (
-                claim_id,
-                label,
-                claim_text,
-                claim_type,
-                authority,
-                provenance,
-                confidence,
-                valid_from,
-                valid_to,
-                run_id,
-                cycle,
-                job_id,
-                claim_ledger_id,
-                model,
-                prompt_hash,
-                evidence_node_ids,
-            ),
-        )
-        self.conn.commit()
+        with self._write_scope():
+            self.conn.execute(
+                "INSERT INTO claims "
+                "(claim_id, label, claim_text, claim_type, authority, provenance, "
+                " confidence, valid_from, valid_to, run_id, cycle, job_id, "
+                " claim_ledger_id, model, prompt_hash, evidence_node_ids) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(claim_id) DO UPDATE SET "
+                "label = excluded.label, claim_text = excluded.claim_text, "
+                "claim_type = excluded.claim_type, authority = excluded.authority, "
+                "provenance = excluded.provenance, confidence = excluded.confidence, "
+                "valid_from = excluded.valid_from, valid_to = excluded.valid_to, "
+                # v19 溯源列只在传入非空时覆盖：record_answer 走同一条 INSERT 且不
+                # 带溯源参数，无条件 UPDATE 会把 loop 写入的 run_id/job_id/model
+                # 等审计事实抹成空串（OCR r5 bug·high）。
+                "run_id = CASE WHEN excluded.run_id != '' THEN excluded.run_id ELSE claims.run_id END, "
+                "cycle = CASE WHEN excluded.cycle IS NOT NULL THEN excluded.cycle ELSE claims.cycle END, "
+                "job_id = CASE WHEN excluded.job_id != '' THEN excluded.job_id ELSE claims.job_id END, "
+                "claim_ledger_id = CASE WHEN excluded.claim_ledger_id != '' "
+                "THEN excluded.claim_ledger_id ELSE claims.claim_ledger_id END, "
+                "model = CASE WHEN excluded.model != '' THEN excluded.model ELSE claims.model END, "
+                "prompt_hash = CASE WHEN excluded.prompt_hash != '' THEN excluded.prompt_hash "
+                "ELSE claims.prompt_hash END, "
+                "evidence_node_ids = CASE WHEN excluded.evidence_node_ids != '' "
+                "THEN excluded.evidence_node_ids ELSE claims.evidence_node_ids END",
+                (
+                    claim_id,
+                    label,
+                    claim_text,
+                    claim_type,
+                    authority,
+                    provenance,
+                    confidence,
+                    valid_from,
+                    valid_to,
+                    run_id,
+                    cycle,
+                    job_id,
+                    claim_ledger_id,
+                    model,
+                    prompt_hash,
+                    evidence_node_ids,
+                ),
+            )
         return claim_id
 
     # -- Embeddings --
 
     def save_embedding(self, entity: str, vec, dim: int) -> None:
-        """Persist a TransE entity/relation vector to the embeddings table."""
+        """Persist a TransE entity/relation vector and advance the model generation."""
         import numpy as np
 
         self.conn.execute(
             "INSERT OR REPLACE INTO embeddings (entity, vec, dim) VALUES (?, ?, ?)",
             (entity, np.array(vec, dtype=np.float32).tobytes(), dim),
         )
+        self._bump_embedding_revision()
 
     def load_embeddings(self) -> dict:
         """Load all entity/relation vectors into a dict keyed by entity label."""
@@ -1632,9 +2187,16 @@ class Database:
         rows = self.conn.execute("SELECT entity, vec, dim FROM embeddings").fetchall()
         return {r[0]: np.frombuffer(r[1], dtype=np.float32) for r in rows}
 
-    def clear_embeddings(self) -> None:
-        """Delete all embeddings from the table (used before re-training)."""
-        self.conn.execute("DELETE FROM embeddings")
+    def clear_embeddings(self) -> int:
+        """Delete all embeddings (before re-training).
+
+        Returns the number of deleted rows and advances the model generation
+        so readers with a cached model detect the invalidation.
+        """
+        cur = self.conn.execute("DELETE FROM embeddings")
+        deleted = max(cur.rowcount, 0)
+        self._bump_embedding_revision()
+        return deleted
 
     # -- Query helpers --
 
@@ -1797,6 +2359,7 @@ class Database:
         node_id: str = "",
     ) -> int:
         """Insert an argument unit. Returns arg_id."""
+        self._validate_local_id(source_paper)
         cur = self.conn.execute(
             "INSERT INTO arguments (source_paper, claim, claim_type, target_label, target_type, "
             "evidence_type, evidence_detail, mechanism, section, node_id, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1820,6 +2383,7 @@ class Database:
         self, source_paper: str, item_type: str, item_data: str, confidence: float
     ) -> int:
         """Insert a confidence queue item. Returns queue_id."""
+        self._validate_local_id(source_paper)
         cur = self.conn.execute(
             "INSERT INTO confidence_queue (source_paper, item_type, item_data, confidence, status) "
             "VALUES (?, ?, ?, ?, 'pending')",
@@ -1876,7 +2440,15 @@ class Database:
         sharing edges with this paper's concepts are touched (updated_at bumped)
         and the closure/embed/index watermarks are cleared, so the next pipeline
         run re-evaluates them instead of skipping.
+
+        Deletion also purges the same derived-vector shadows a merge would
+        (tree vectors, sqlite-vec ANN copies, synced watermark, embedding
+        revision), clears lazy pipeline caches, and converts evidence rows
+        into audit tombstones so historical answers/claims stay resolvable
+        without retaining the deleted paper's content.
         """
+        self._validate_local_id(local_id)
+
         # Collect this paper's concept labels BEFORE deletion so we can find
         # neighbor papers that shared edges with them.
         labels = [
@@ -1892,26 +2464,57 @@ class Database:
         arg_count = self.conn.execute(
             "SELECT COUNT(*) FROM arguments WHERE source_paper = ?", (local_id,)
         ).fetchone()[0]
-        # edges.src_id/dst_id hold concept labels, not paper ids. A paper's
-        # edges are those it asserted (source_paper) plus closure-inferred edges
-        # whose endpoints reference its concepts.
+        # Edges die when this paper asserted them OR when its local_id is used
+        # as a graph endpoint (papers are nodes too), even if another paper
+        # asserted the edge.
         edge_count = self.conn.execute(
-            "SELECT COUNT(*) FROM edges WHERE source_paper = ?", (local_id,)
+            "SELECT COUNT(*) FROM edges WHERE source_paper = ? OR src_id = ? OR dst_id = ?",
+            (local_id, local_id, local_id),
         ).fetchone()[0]
         queue_count = self.conn.execute(
             "SELECT COUNT(*) FROM confidence_queue WHERE source_paper = ?", (local_id,)
         ).fetchone()[0]
+        evidence_count = self.conn.execute(
+            "SELECT COUNT(*) FROM evidence WHERE paper_id = ?", (local_id,)
+        ).fetchone()[0]
 
         self.conn.execute("DELETE FROM concepts WHERE local_id = ?", (local_id,))
         self.conn.execute("DELETE FROM arguments WHERE source_paper = ?", (local_id,))
-        # Delete edges this paper asserted. (Closure-inferred edges with
-        # source_paper='closure' are left for the next closure run to re-evaluate.)
-        self.conn.execute("DELETE FROM edges WHERE source_paper = ?", (local_id,))
+        self.conn.execute(
+            "DELETE FROM edges WHERE source_paper = ? OR src_id = ? OR dst_id = ?",
+            (local_id, local_id, local_id),
+        )
         self.conn.execute("DELETE FROM paper_ids WHERE local_id = ?", (local_id,))
         self.conn.execute("DELETE FROM confidence_queue WHERE source_paper = ?", (local_id,))
-        self.conn.execute("DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,))
+        vectors_deleted = self.conn.execute(
+            "DELETE FROM tree_vectors WHERE paper_id = ?", (local_id,)
+        ).rowcount
         self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (local_id,))
+
+        # Lazy pipeline caches are keyed by local_id; re-ingesting the paper
+        # must not reuse derived rows computed under the old identity.
+        cache_deleted = self._delete_lazy_cache("paper_concepts_cache", local_id)
+        l1_deleted = self._delete_lazy_cache("kg_l1_attempted", local_id)
+
+        # Historical answers/claims keep resolvable evidence IDs; the row
+        # becomes a tombstone so its content is redacted but FK-backed audit
+        # references (claim_evidence, answer_records.evidence_ids) survive.
+        if evidence_count:
+            self.conn.execute(
+                "UPDATE evidence SET paper_id = '', node_id = '', page = '', "
+                "snippet = '', value = '', unit = '', conditions = '', "
+                "provenance = ? WHERE paper_id = ?",
+                (f"PAPER_DELETED:{local_id}", local_id),
+            )
+
         self.conn.execute("DELETE FROM papers WHERE local_id = ?", (local_id,))
+
+        # Identity removal invalidates the derived vector artifacts exactly
+        # like a merge does.
+        shadow_deleted = self._purge_vec_shadow_tables()
+        if max(vectors_deleted, 0) + shadow_deleted > 0:
+            self._mark_vec_dirty()
+            self._bump_embedding_revision()
 
         # Touch neighbor papers that shared edges with the deleted concepts so
         # the next closure/embed pass re-evaluates them.
@@ -1943,8 +2546,21 @@ class Database:
             "arguments": arg_count,
             "edges": edge_count,
             "queue_items": queue_count,
+            "evidence": evidence_count,
+            "paper_concepts_cache": cache_deleted,
+            "kg_l1_attempted": l1_deleted,
             "touched_neighbors": touched_neighbors,
         }
+
+    def _delete_lazy_cache(self, table: str, local_id: str) -> int:
+        """Delete one paper's rows from a lazily-created cache table."""
+        exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        if not exists:
+            return 0
+        cur = self.conn.execute(f"DELETE FROM {table} WHERE local_id = ?", (local_id,))
+        return max(cur.rowcount, 0)
 
     # ── Temporal evolution signals ──────────────────────────────
 

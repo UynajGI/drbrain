@@ -1,6 +1,7 @@
 """Tests for CLI entry point (cli/main.py) via typer CliRunner."""
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -45,6 +46,91 @@ def test_app_help():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "DrBrain" in result.stdout
+
+
+def test_root_option_scopes_relative_runtime_paths(tmp_path):
+    """Relative DB paths from a CLI run must resolve beneath --root."""
+    (tmp_path / "config.yaml").write_text(
+        "db:\n  path: data/isolated.db\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["--root", str(tmp_path), "stats"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "data" / "isolated.db").exists()
+    assert not (tmp_path / "isolated.db").exists()
+
+
+def test_setup_quick_initializes_fresh_runtime_root(tmp_path, monkeypatch):
+    """Setup is the one command allowed to begin without config.yaml."""
+    from drbrain.cli import setup as setup_module
+
+    monkeypatch.setattr(setup_module, "_offer_skills_install", lambda **_kwargs: None)
+
+    result = runner.invoke(app, ["--root", str(tmp_path), "setup", "--quick"])
+
+    assert result.exit_code == 0, result.stderr
+    assert (tmp_path / "config.yaml").is_file()
+    local = tmp_path / "config.local.yaml"
+    assert local.is_file()
+    assert local.stat().st_mode & 0o777 == 0o600
+
+
+def test_runtime_environment_is_restored_after_cli_invocation(tmp_path, monkeypatch):
+    """An embedded/repeated CLI invocation must not leak its root globally."""
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    (tmp_path / "config.yaml").write_text("db:\n  path: data/isolated.db\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["--root", str(tmp_path), "stats"])
+
+    assert result.exit_code == 0
+    assert "DRBRAIN_ROOT" not in os.environ
+
+
+def test_config_environment_overlay_is_loaded_inside_selected_root(tmp_path, monkeypatch):
+    """DRBRAIN_CONFIG must select an overlay in the same runtime namespace."""
+    (tmp_path / "config.yaml").write_text("db:\n  path: data/base.db\n", encoding="utf-8")
+    (tmp_path / "config.alt.yaml").write_text("db:\n  path: data/overlay.db\n", encoding="utf-8")
+    monkeypatch.setenv("DRBRAIN_CONFIG", "config.alt.yaml")
+
+    result = runner.invoke(app, ["--root", str(tmp_path), "stats"])
+
+    assert result.exit_code == 0
+    assert (tmp_path / "data" / "overlay.db").exists()
+    assert not (tmp_path / "data" / "base.db").exists()
+    assert os.environ["DRBRAIN_CONFIG"] == "config.alt.yaml"
+
+
+def test_root_rejects_inherited_config_from_another_worktree(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("db:\n  path: data/base.db\n", encoding="utf-8")
+    external = tmp_path.parent / "foreign-config.yaml"
+    external.write_text("db:\n  path: data/foreign.db\n", encoding="utf-8")
+    monkeypatch.setenv("DRBRAIN_CONFIG", str(external))
+
+    result = runner.invoke(app, ["--root", str(tmp_path), "stats"])
+
+    assert result.exit_code == 2
+    assert "Config overlay escapes runtime root" in result.stderr
+    assert not (tmp_path / "data" / "base.db").exists()
+    assert not (tmp_path / "data" / "foreign.db").exists()
+
+
+def test_explicit_root_overrides_inherited_runtime_selector(tmp_path, monkeypatch):
+    """A command root must win over a stale selector from another worktree."""
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+    (new_root / "config.yaml").write_text("db:\n  path: data/new.db\n", encoding="utf-8")
+    monkeypatch.setenv("DRBRAIN_ROOT", str(old_root))
+
+    result = runner.invoke(app, ["--root", str(new_root), "stats"])
+
+    assert result.exit_code == 0, result.stderr
+    assert (new_root / "data" / "new.db").exists()
+    assert not (old_root / "data" / "new.db").exists()
+    assert os.environ["DRBRAIN_ROOT"] == str(old_root)
 
 
 def test_autoresearch_run_uses_typed_operator_settings(tmp_path):

@@ -14,14 +14,20 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **Research loop** (`src/drbrain/loop/`, PR #14): multi-agent orchestration closed loop (workflow nodes + analyst/critic/compute/verifier roles + discussion layer). _Note: this subsystem is under heavy active development upstream; internals will change._
 - **sqlite-vec ANN index layer**: `tree_vectors_vec` virtual tables with optional int8 quantization for corpus-scale vector search over tree nodes.
 - **CLI**: `drbrain hybrid`, `drbrain survey` (one-shot markdown literature survey), `drbrain check-citations`, `drbrain ingest-link`; `cg` and `rag` sub-apps.
-- **Schema migrations v9–v15**: `concept_graph`, `concept_node_columns`, `concept_epistemic`, `knowledge_snapshots`, `answer_records`, `evidence`, `claims`.
+- **Schema migrations v9–v20**: `concept_graph`, `concept_node_columns`, `concept_epistemic`, `knowledge_snapshots`, `answer_records`, `evidence`, `claims`, `claim_evidence`, session principals, `paper_categories`, claims provenance, and the `embedding_revision` watermark.
+- **Runtime-root selection** (`drbrain --root` / `DRBRAIN_ROOT`): database paths, citation API cache, PageIndex SDK storage, and metrics DB all scope to the selected root; SQLite URI paths are rejected.
 
 ### Changed
 - **RAG engine consolidation**: LlamaIndex is the sole hybrid-retrieval engine (legacy `hybrid_search` path removed); `drbrain ask` / `hybrid` route through it.
 - **Extraction robustness**: per-key rate-limit state machine and fallback chains in `extractor/llm_client.py`.
+- **Database fail-closed semantics**: `insert_paper` validates the local-ID contract; `insert_paper_ids` normalizes external IDs, merges idempotently, and fails closed on ownership conflicts; `merge_papers` preflights identity/citation-cache conflicts and runs full row migration (identity, provenance, cite keys, citations, derived-index invalidation) atomically inside a savepoint; `delete_paper` tombstones evidence and purges vector shadows; new `get_embedding_revision` watermark invalidates stale TransE caches.
+- **kg lazy pipeline**: per-paper extractor failures are counted, redacted via `safe_error`, and exit non-zero; worklist paper-ids and symlinked raw artifacts are rejected.
 
 ### Fixed
 - Eval qagen migrated to LlamaIndex `DatasetGenerator`; assorted ruff/mypy/CI fixes.
+- PageIndex SDK backend: PDF page indices are no longer stored as Markdown `line_num` (inline node text is used instead), and generated text-PDFs paginate instead of truncating to one page.
+- `setup --quick` bootstraps a minimal base `config.yaml` in fresh runtime roots and writes `config.local.yaml` with 0600 permissions.
+- Ingest cache loader requires an explicit DOI (never reconstructs identity from filenames) and accepts digit-string years.
 
 _Entries above summarize commits between `0.1.0a3` and the current `main`; per-commit details live in `git log`._
 

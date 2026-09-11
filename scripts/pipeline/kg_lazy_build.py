@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import functools
 import json
-import os
 import re
 import sys
 import time
@@ -45,11 +44,11 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from drbrain.config import _resolve_env_vars
+from drbrain.security import configured_secret_values, safe_error
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
-
-from drbrain.security import configured_secret_values, safe_error  # noqa: E402
-from drbrain.storage.paths import paper_fs_key, raw_md_path  # noqa: E402
 
 MAIN_DB = REPO / "data" / "drbrain.db"
 PAPERS_ROOT = REPO / "data" / "papers"
@@ -69,14 +68,6 @@ def _safe_paper_dir(arxiv_id: str) -> str:
 
     Same rule as ``ingest_arxiv_latex.py`` so raw.md lookup matches on disk.
     """
-    try:
-        if not isinstance(arxiv_id, str) or any(
-            part in {"", ".", ".."} for part in arxiv_id.replace("\\", "/").split("/")
-        ):
-            raise ValueError("invalid paper_id")
-        paper_fs_key(arxiv_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("invalid paper_id") from exc
     return arxiv_id.replace("/", "_")
 
 
@@ -412,6 +403,14 @@ EXTRACTORS = {
 # ── worklist (L2 queue) ──────────────────────────────────────────────────────
 
 
+def _validate_paper_id(paper_id: str) -> str:
+    """Worklist ids are canonical local ids; reject anything path-like."""
+    pid = str(paper_id or "").strip()
+    if not pid or pid in {".", ".."} or "/" in pid or "\\" in pid or "\x00" in pid:
+        raise ValueError(f"invalid paper_id: {paper_id!r}")
+    return pid
+
+
 def load_worklist(path: Path) -> dict:
     if not Path(path).exists():
         return {"pending": [], "done": []}
@@ -419,7 +418,7 @@ def load_worklist(path: Path) -> dict:
     wl.setdefault("pending", [])
     wl.setdefault("done", [])
     for entry in wl["pending"] + wl["done"]:
-        _safe_paper_dir(entry["paper_id"])
+        _validate_paper_id(entry.get("paper_id", ""))
     return wl
 
 
@@ -470,7 +469,7 @@ def mark_retrieved(paper_id: str, worklist_path: Path, db=None) -> bool:
     exclusive ``flock`` so concurrent retrieval processes cannot silently drop
     each other's entries (OCR r5).
     """
-    _safe_paper_dir(paper_id)
+    _validate_paper_id(paper_id)
     if db is not None and db.get_paper(paper_id) is None:
         print(f"[kg-lazy] warning: {paper_id} not in the library (marking anyway)", flush=True)
     added = False
@@ -546,6 +545,9 @@ def run_l1(
     if extractor == "spark4b":
         _load_spark()
     _ensure_attempted_table(db)
+    redaction_secrets = configured_secret_values(
+        _resolve_env_vars(_load_cfg(papers_root=papers_root))
+    )
 
     sql = _L1_SELECT + (" LIMIT ?" if limit > 0 else "")
     # 流式游标（OCR r6）：新库上 L1 积压可到 ~0.8M 行，fetchall 会把
@@ -566,24 +568,25 @@ def run_l1(
             stats["skipped"] += 1
             continue
         chunks: list[tuple[str, str]] = [(abstract, "abstract")]
+        raw_md_path = papers_root / _safe_paper_dir(local_id) / "raw.md"
+        if raw_md_path.is_symlink() or (raw_md_path.exists() and not raw_md_path.is_file()):
+            stats["failed"] += 1
+            print(
+                f"[kg-lazy] {local_id}: unsafe raw artifact (symlink or non-regular file)",
+                flush=True,
+            )
+            continue
+        if raw_md_path.exists():
+            conclusion = _extract_conclusion_section(
+                raw_md_path.read_text(encoding="utf-8", errors="ignore")
+            )
+            if conclusion:
+                chunks.append((conclusion, "conclusion"))
         try:
-            md_path = raw_md_path(papers_root / _safe_paper_dir(local_id))
-            if md_path.exists():
-                conclusion = _extract_conclusion_section(
-                    md_path.read_text(encoding="utf-8", errors="ignore")
-                )
-                if conclusion:
-                    chunks.append((conclusion, "conclusion"))
             concepts = extract_fn(chunks, min_concepts=min_concepts, max_concepts=max_concepts)
         except Exception as exc:  # noqa: BLE001 - keep one paper failure isolated
             stats["failed"] += 1
-            print(
-                safe_error(
-                    f"[kg-lazy] L1 failed for {local_id}: {exc}",
-                    secrets=configured_secret_values(os.environ),
-                ),
-                flush=True,
-            )
+            print(safe_error(exc, secrets=redaction_secrets), flush=True)
             continue
         n = 0
         for c in concepts:
@@ -690,8 +693,7 @@ def run_l2(
     """Full 5-stage extraction for selected papers (or the worklist backlog)."""
     wl = load_worklist(worklist_path) if worklist_path else {"pending": [], "done": []}
     ids = list(paper_ids) if paper_ids else _worklist_pending_ids(wl)
-    for pid in ids:
-        _safe_paper_dir(pid)
+    ids = [_validate_paper_id(i) for i in ids]
     if limit > 0:
         ids = ids[:limit]
     if not ids:
@@ -794,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
     db = Database(str(args.db))
     try:
         if args.command == "l1":
-            result = run_l1(
+            stats = run_l1(
                 db,
                 args.papers_root,
                 extractor=args.extractor,
@@ -802,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             cfg = _load_cfg(config_path=args.config, papers_root=args.papers_root)
-            result = run_l2(
+            stats = run_l2(
                 db,
                 args.papers_root,
                 paper_ids=args.papers,
@@ -813,7 +815,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     finally:
         db.close()
-    return 1 if result.get("failed", 0) else 0
+    return 1 if stats.get("failed") else 0
 
 
 if __name__ == "__main__":

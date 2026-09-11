@@ -46,7 +46,7 @@ def test_citation_cache_is_namespaced_by_runtime_root(tmp_path, monkeypatch):
     root_b = tmp_path.resolve() / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    monkeypatch.setattr(citation, "_cache", None)
+    monkeypatch.setattr(citation, "_cache", None, raising=False)
     monkeypatch.setattr(citation, "_cache_by_namespace", {})
 
     monkeypatch.setenv("DRBRAIN_ROOT", str(root_a))

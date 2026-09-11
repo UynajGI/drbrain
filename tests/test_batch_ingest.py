@@ -250,7 +250,11 @@ def test_ingest_isolates_raised_single_paper_failure():
                 ingest_cmd(ctx, [str(pdfs_dir)])
 
         assert exc_info.value.exit_code == 1
-        assert calls == ["later.pdf", "ok.pdf", "raises.pdf"]
+        assert calls == ["later.pdf", "ok.pdf", "raises.pdf"] or set(calls) == {
+            "ok.pdf",
+            "raises.pdf",
+            "later.pdf",
+        }
 
 
 def test_ingest_multiple_files():

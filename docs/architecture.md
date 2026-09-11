@@ -447,9 +447,9 @@ Key tables:
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
 - `build_stages` -- per-paper pipeline stage status (paper_id, stage, status, result_json) for agent idempotency
-- `schema_versions` -- versioned migrations (currently v15)
+- `schema_versions` -- versioned migrations (currently v20)
 
-The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system; versions 9–15 added the concept-graph, epistemic, snapshot, answer, evidence, and claims tables (see `docs/configuration.md` for the full migration table).
+The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system; versions 9–20 added the concept-graph, epistemic, snapshot, answer, evidence, claims, provenance, and embedding-revision layers (see `docs/configuration.md` for the full migration table).
 
 **Centralized writes:** `Database` is the sole write surface. All `INSERT`/`UPDATE`/`DELETE` go through `Database` methods (`insert_paper`, `set_paper_field`, `merge_papers`, `upsert_build_stage`, etc.). Application-layer code must not write raw SQL — this guarantees `updated_at` is bumped, transactions are used for multi-step operations, and column allowlists prevent injection via dynamic field names. Read-only `SELECT` is tolerated in callers.
 
@@ -562,7 +562,7 @@ Stage 2 (entity extraction) runs with 10-way concurrency on leaf nodes. Translat
 The pipeline (`build`/`closure`/`embed`/`index`) is incremental by default — see [Incremental Update System](#incremental-update-system) above. Adding one paper to an N-paper library only re-processes the new paper and its 2-hop neighborhood; existing embeddings are warm-started and micro-adjusted rather than discarded. Stage watermarks (`last_run:<stage>` in `vector_metadata`) drive the skip logic. `--all` / `--full` / `--retrain` escape hatches force full rebuilds when needed.
 
 ### Centralized Write Surface
-`Database` is the only component that writes to SQLite. Application code calls methods like `set_paper_field`, `merge_papers`, `upsert_build_stage` — never raw `INSERT`/`UPDATE`/`DELETE`. This enforces `updated_at` bumping, transactional multi-step operations (e.g. `merge_papers` runs concept/argument/edge migration + source deletion in one `BEGIN`/`COMMIT`), and column-name allowlists. Read-only `SELECT` remains tolerated in callers.
+`Database` is the only component that writes to SQLite. Application code calls methods like `set_paper_field`, `merge_papers`, `upsert_build_stage` — never raw `INSERT`/`UPDATE`/`DELETE`. This enforces `updated_at` bumping, transactional multi-step operations (e.g. `merge_papers` preflights external-ID and citation-cache conflicts, then runs full row migration + source deletion inside a `SAVEPOINT`, composing with caller transactions), and column-name allowlists. Read-only `SELECT` remains tolerated in callers.
 
 ### New Modules (v0.1.0a2)
 

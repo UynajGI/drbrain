@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,45 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
     return tree_config
 
 
+def _wrap_line(line: str, width: int = 100) -> list[str]:
+    pieces = textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False)
+    wrapped = []
+    for piece in pieces or [""]:
+        while len(piece) > width:
+            wrapped.append(piece[:width])
+            piece = piece[width:]
+        wrapped.append(piece)
+    return wrapped
+
+
+def _markdown_to_temp_pdf(text: str) -> Path:
+    """Render markdown into a paginated disposable PDF for SDK submission.
+
+    Long documents must flow across pages: a single fixed-size textbox would
+    truncate or silently drop content and PageIndex would index an incomplete
+    document even though the full ``raw.md`` is available.
+    """
+    import fitz
+
+    fd, name = tempfile.mkstemp(prefix="drbrain-pageindex-", suffix=".pdf")
+    os.close(fd)
+    document = fitz.open()
+    try:
+        page = document.new_page()
+        y = 48.0
+        for raw_line in text.splitlines() or [""]:
+            for piece in _wrap_line(raw_line):
+                if y > 800.0:
+                    page = document.new_page()
+                    y = 48.0
+                page.insert_text(fitz.Point(36.0, y), piece, fontsize=10)
+                y += 12.0
+        document.save(name)
+    finally:
+        document.close()
+    return Path(name)
+
+
 def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
     """Build a tree with PageIndex local or cloud indexing.
 
@@ -48,16 +88,9 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
     pdf = md.with_name("source.pdf")
     temporary_pdf: Path | None = None
     if not pdf.is_file():
-        # The SDK accepts PDF input; preserve markdown-only callers by creating
-        # a local text PDF from the already extracted material.
-        import fitz
-
-        temporary_pdf = Path(tempfile.mkstemp(prefix="drbrain-pageindex-", suffix=".pdf")[1])
-        document = fitz.open()
-        page = document.new_page()
-        page.insert_textbox(fitz.Rect(36, 36, 560, 800), md.read_text(encoding="utf-8"))
-        document.save(str(temporary_pdf))
-        document.close()
+        # The SDK accepts PDF input; preserve markdown-only callers by
+        # rendering a paginated disposable PDF from the extracted material.
+        temporary_pdf = _markdown_to_temp_pdf(md.read_text(encoding="utf-8"))
         pdf = temporary_pdf
 
     mode = getattr(config, "sdk_mode", None) or getattr(config, "mode", "local")
@@ -123,7 +156,6 @@ def _adapt_nodes(nodes: Any) -> list[dict]:
         item = {
             "title": node.get("title", ""),
             "node_id": node.get("node_id", ""),
-            "line_num": int(node.get("page_index", 0)) + 1,
         }
         for key in ("summary", "prefix_summary", "text"):
             if node.get(key):
