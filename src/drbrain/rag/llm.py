@@ -7,9 +7,9 @@ metrics recording), exposed to LlamaIndex as a custom :class:`DrbrainLLM`.
 Everything in this module degrades gracefully when llama-index is not
 installed, so the CLI and existing tests never break.
 
-T2 conclusion: ``llama-index-llms-litellm``'s ``LiteLLM`` class takes a single
-``model: str`` plus one ``api_key``/``api_base`` — it has no notion of a model
-list, no ApiCache, and no drbrain metrics. So the bridge is a custom ``LLM``
+T2 conclusion: off-the-shelf LlamaIndex LLM adapters take a single
+``model: str`` plus one ``api_key``/``api_base``: no model list, no ApiCache, and
+no drbrain metrics. So the bridge is a custom ``LLM``
 subclass that delegates to ``llm_client`` and keeps all three assets intact
 (design §4.1 anticipated this: "若不支持多模型 fallback,则自定义 BaseLLM").
 """
@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 def _stream_delta(chunk: Any) -> str:
     """Extract the text delta from an OpenAI-compatible stream chunk.
 
-    Accepts litellm stream chunks (``chunk.choices[0].delta.content``) and
+    Accepts OpenAI-compatible stream chunks (``chunk.choices[0].delta.content``) and
     degenerate shapes (``None`` / no choices) — malformed chunks stream as an
     empty delta rather than crashing the consumer.
     """
@@ -143,7 +143,7 @@ if _LLAMA_INDEX_AVAILABLE:
         The prompt-based text helpers hardcode their own temperatures inside
         ``llm_client`` (0 / 0.1); changing that is out of scope here. The four
         streaming endpoints (``stream_chat``/``stream_complete``/``astream_*``)
-        stream real per-token deltas through litellm's native streaming,
+        stream real per-token deltas through the OpenAI SDK's native streaming,
         keeping the model fallback chain, ApiCache (chat: temperature == 0;
         text: unconditional) and metrics intact (T9: replaces the T2
         single-chunk stubs).
@@ -254,7 +254,7 @@ if _LLAMA_INDEX_AVAILABLE:
             from drbrain.extractor.llm_client import call_with_messages
 
             result = call_with_messages(
-                self._to_litellm_messages(messages),
+                self._to_openai_messages(messages),
                 self._models,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
@@ -266,7 +266,7 @@ if _LLAMA_INDEX_AVAILABLE:
             from drbrain.extractor.llm_client import acall_with_messages
 
             result = await acall_with_messages(
-                self._to_litellm_messages(messages),
+                self._to_openai_messages(messages),
                 self._models,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
@@ -274,10 +274,10 @@ if _LLAMA_INDEX_AVAILABLE:
             )
             return self._chat(result)
 
-        # ── streaming: real per-token via litellm native streaming (T9) ────
+        # ── streaming: real per-token via the OpenAI SDK (T9) ────
 
         def stream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any):
-            """Stream a chat completion token-by-token through litellm.
+            """Stream a chat completion token-by-token through the OpenAI SDK.
 
             Tries each model in the fallback chain (a mid-stream failure falls
             through to the next model; the first model that produces output
@@ -287,8 +287,8 @@ if _LLAMA_INDEX_AVAILABLE:
             chat rule (``temperature == 0``): a cached full reply is replayed
             as a single chunk, and a streamed reply is cached on completion.
             """
-            litellm_msgs = self._to_litellm_messages(messages)
-            cache, key = self._chat_stream_cache_state(litellm_msgs)
+            openai_msgs = self._to_openai_messages(messages)
+            cache, key = self._chat_stream_cache_state(openai_msgs)
             if key is not None:
                 cached = cache.get(key)
                 if isinstance(cached, dict):
@@ -296,15 +296,19 @@ if _LLAMA_INDEX_AVAILABLE:
                     yield self._chat(cached)
                     return
 
-            import litellm
+            from drbrain.extractor.llm_client import _openai_client, resolve_base_url
 
             last_exc: Exception | None = None
             for model_cfg in self._models:
                 name = f"{model_cfg['provider']}/{model_cfg['model']}"
                 try:
                     start = time.monotonic()
-                    response = litellm.completion(
-                        **self._stream_kwargs(model_cfg, litellm_msgs, temperature=self.temperature)
+                    client = _openai_client(
+                        str(model_cfg.get("api_key") or ""), resolve_base_url(model_cfg)
+                    )
+
+                    response = client.chat.completions.create(
+                        **self._stream_kwargs(model_cfg, openai_msgs, temperature=self.temperature)
                     )
                     parts: list[str] = []
                     for chunk in response:
@@ -339,7 +343,7 @@ if _LLAMA_INDEX_AVAILABLE:
             )
 
         def stream_complete(self, prompt: str, formatted: bool = False, **kwargs: Any):
-            """Stream a text completion token-by-token through litellm.
+            """Stream a text completion token-by-token through the OpenAI SDK.
 
             Cache follows the drbrain text rule (unconditional when a cache is
             configured): a cached reply is replayed as a single chunk, and a
@@ -354,14 +358,18 @@ if _LLAMA_INDEX_AVAILABLE:
                     yield self._completion(cached["__text__"])
                     return
 
-            import litellm
+            from drbrain.extractor.llm_client import _openai_client, resolve_base_url
 
             last_exc: Exception | None = None
             for model_cfg in self._models:
                 name = f"{model_cfg['provider']}/{model_cfg['model']}"
                 try:
                     start = time.monotonic()
-                    response = litellm.completion(
+                    client = _openai_client(
+                        str(model_cfg.get("api_key") or ""), resolve_base_url(model_cfg)
+                    )
+
+                    response = client.chat.completions.create(
                         **self._stream_kwargs(model_cfg, messages, temperature=0.1)
                     )
                     parts: list[str] = []
@@ -391,8 +399,8 @@ if _LLAMA_INDEX_AVAILABLE:
 
         async def astream_chat(self, messages: Sequence[ChatMessage], **kwargs: Any):
             """Async per-token streaming chat (same semantics as stream_chat)."""
-            litellm_msgs = self._to_litellm_messages(messages)
-            cache, key = self._chat_stream_cache_state(litellm_msgs)
+            openai_msgs = self._to_openai_messages(messages)
+            cache, key = self._chat_stream_cache_state(openai_msgs)
             if key is not None:
                 cached = cache.get(key)
                 if isinstance(cached, dict):
@@ -400,15 +408,19 @@ if _LLAMA_INDEX_AVAILABLE:
                     yield self._chat(cached)
                     return
 
-            import litellm
+            from drbrain.extractor.llm_client import _aopenai_client, resolve_base_url
 
             last_exc: Exception | None = None
             for model_cfg in self._models:
                 name = f"{model_cfg['provider']}/{model_cfg['model']}"
                 try:
                     start = time.monotonic()
-                    response = await litellm.acompletion(
-                        **self._stream_kwargs(model_cfg, litellm_msgs, temperature=self.temperature)
+                    client = _aopenai_client(
+                        str(model_cfg.get("api_key") or ""), resolve_base_url(model_cfg)
+                    )
+
+                    response = await client.chat.completions.create(
+                        **self._stream_kwargs(model_cfg, openai_msgs, temperature=self.temperature)
                     )
                     parts: list[str] = []
                     async for chunk in response:
@@ -453,14 +465,18 @@ if _LLAMA_INDEX_AVAILABLE:
                     yield self._completion(cached["__text__"])
                     return
 
-            import litellm
+            from drbrain.extractor.llm_client import _aopenai_client, resolve_base_url
 
             last_exc: Exception | None = None
             for model_cfg in self._models:
                 name = f"{model_cfg['provider']}/{model_cfg['model']}"
                 try:
                     start = time.monotonic()
-                    response = await litellm.acompletion(
+                    client = _aopenai_client(
+                        str(model_cfg.get("api_key") or ""), resolve_base_url(model_cfg)
+                    )
+
+                    response = await client.chat.completions.create(
                         **self._stream_kwargs(model_cfg, messages, temperature=0.1)
                     )
                     parts: list[str] = []
@@ -491,29 +507,25 @@ if _LLAMA_INDEX_AVAILABLE:
         # ── streaming helpers ────────────────────────────────────────────
 
         def _stream_kwargs(self, model_cfg: dict, messages: list[dict], temperature: float) -> dict:
-            """litellm streaming kwargs for one model (fallback chain entry)."""
+            """OpenAI chat-completions streaming kwargs for one model (fallback chain entry)."""
             kwargs: dict[str, Any] = {
-                "model": f"{model_cfg['provider']}/{model_cfg['model']}",
+                "model": model_cfg["model"],
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": self.max_tokens,
                 "timeout": 60,
                 "stream": True,
             }
-            if model_cfg.get("api_key"):
-                kwargs["api_key"] = model_cfg["api_key"]
-            if model_cfg.get("base_url"):
-                kwargs["api_base"] = model_cfg["base_url"]
             return kwargs
 
-        def _chat_stream_cache_state(self, litellm_msgs: list[dict]):
+        def _chat_stream_cache_state(self, openai_msgs: list[dict]):
             """(cache, key) for stream_chat; cache applies only at temperature 0."""
             cache = self._get_cache()
             if cache is None or not self._models or self.temperature != 0:
                 return None, None
             from drbrain.extractor.llm_client import _messages_cache_key
 
-            key = _messages_cache_key(self._models, litellm_msgs, self.max_tokens, self.temperature)
+            key = _messages_cache_key(self._models, openai_msgs, self.max_tokens, self.temperature)
             return cache, key
 
         def _text_stream_cache_state(self, prompt: str):
@@ -564,8 +576,8 @@ if _LLAMA_INDEX_AVAILABLE:
         # ── helpers ─────────────────────────────────────────────────────
 
         @staticmethod
-        def _to_litellm_messages(messages: Sequence[ChatMessage]) -> list[dict[str, str]]:
-            """Convert LlamaIndex ``ChatMessage``s to litellm dicts."""
+        def _to_openai_messages(messages: Sequence[ChatMessage]) -> list[dict[str, str]]:
+            """Convert LlamaIndex ``ChatMessage``s to OpenAI chat dicts."""
             out = []
             for msg in messages:
                 role = getattr(msg.role, "value", str(msg.role))

@@ -59,7 +59,7 @@ def _scripted_llm(monkeypatch, script, capture=None):
 
     ``script`` is a list of ``{"text": str, "tool_calls": list|None}`` steps;
     the last step repeats if the loop needs more calls. When ``capture`` is a
-    list, each call's litellm messages are appended to it.
+    list, each call's OpenAI messages are appended to it.
     """
 
     async def fake(messages, models, tools=None, max_tokens=1024, temperature=0.3, **kw):

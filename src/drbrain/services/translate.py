@@ -621,7 +621,7 @@ def translate_paper(
 
     Args:
         paper_dir: Directory containing ``raw.md`` (e.g. ``data/papers/<id>/``).
-        models: List of litellm-compatible provider configs.
+        models: List of OpenAI-compatible provider configs.
         target_lang: Language code (``"zh"``, ``"ja"``, etc.).  Default ``"zh"``.
         force: If True, delete any existing output and workdir before translating.
         chunk_workers: Number of concurrent translation threads.  Default 3.

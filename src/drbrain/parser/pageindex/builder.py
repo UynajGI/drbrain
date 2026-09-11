@@ -6,13 +6,12 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import litellm
-
 from drbrain.parser.pageindex.retrieval import (
     _create_clean_structure_for_description,
     _format_structure,
     _write_node_id,
 )
+from drbrain.services.tokens import count_tokens
 
 
 @dataclass
@@ -192,7 +191,7 @@ def _update_node_list_with_text_token_count(
             child_text = result[ci].get("text", "")
             if child_text:
                 total_text += "\n" + child_text
-        result[i]["text_token_count"] = litellm.token_counter(model=model, text=total_text)
+        result[i]["text_token_count"] = count_tokens(total_text)
     return result
 
 
@@ -223,7 +222,7 @@ def _tree_thinning_for_index(
                         merged += "\n\n"
                     merged += ct
                 result[i]["text"] = merged
-                result[i]["text_token_count"] = litellm.token_counter(model=model, text=merged)
+                result[i]["text_token_count"] = count_tokens(merged)
 
     for idx in sorted(to_remove, reverse=True):
         result.pop(idx)
@@ -242,18 +241,18 @@ def _split_large_text(text: str, max_tokens: int, model: str | None = None) -> l
 
     for para in paragraphs:
         candidate = f"{current}\n\n{para}".strip() if current else para
-        if litellm.token_counter(model=model, text=candidate) <= max_tokens:
+        if count_tokens(candidate) <= max_tokens:
             current = candidate
         else:
             if current:
                 chunks.append(current)
             # If a single paragraph is too large, split by single newlines
-            if litellm.token_counter(model=model, text=para) > max_tokens:
+            if count_tokens(para) > max_tokens:
                 lines = para.split("\n")
                 line_chunk = ""
                 for line in lines:
                     line_candidate = f"{line_chunk}\n{line}".strip() if line_chunk else line
-                    if litellm.token_counter(model=model, text=line_candidate) <= max_tokens:
+                    if count_tokens(line_candidate) <= max_tokens:
                         line_chunk = line_candidate
                     else:
                         if line_chunk:
@@ -282,7 +281,7 @@ def _recursive_split_large_nodes(
     result: list[dict] = []
     for i, node in enumerate(nodes):
         text = node.get("text", "")
-        token_count = litellm.token_counter(model=model, text=text)
+        token_count = count_tokens(text)
 
         # Check if this node has children (next node has higher level)
         has_children = i + 1 < len(nodes) and nodes[i + 1]["level"] > node["level"]

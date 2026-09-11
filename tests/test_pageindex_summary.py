@@ -80,7 +80,7 @@ async def test_generate_doc_description_includes_structure():
 async def test_generate_summaries_short_text_passthrough():
     """Nodes under token threshold keep their text as summary."""
     structure = [{"title": "n1", "text": "short", "nodes": []}]
-    with mock.patch("litellm.token_counter", return_value=5):
+    with mock.patch("drbrain.parser.pageindex.summary.count_tokens", return_value=5):
         result = await summary_mod._generate_summaries_for_structure_md(
             structure, summary_token_threshold=100, model="gpt-4", models=[]
         )
@@ -93,7 +93,7 @@ async def test_generate_summaries_long_text_uses_llm():
     """Nodes over token threshold call _generate_node_summary."""
     structure = [{"title": "n1", "text": "long body", "nodes": []}]
     with (
-        mock.patch("litellm.token_counter", return_value=500),
+        mock.patch("drbrain.parser.pageindex.summary.count_tokens", return_value=500),
         mock.patch.object(
             summary_mod, "_generate_node_summary", return_value="LLM_SUMMARY"
         ) as m_node,
@@ -116,7 +116,7 @@ async def test_generate_summaries_nested_node_uses_prefix_summary():
             "nodes": [{"title": "child", "text": "kid", "nodes": []}],
         }
     ]
-    with mock.patch("litellm.token_counter", return_value=5):
+    with mock.patch("drbrain.parser.pageindex.summary.count_tokens", return_value=5):
         result = await summary_mod._generate_summaries_for_structure_md(
             structure, summary_token_threshold=100, model="gpt-4", models=[]
         )
@@ -130,7 +130,7 @@ async def test_generate_summaries_nested_node_uses_prefix_summary():
 @pytest.mark.asyncio
 async def test_generate_summaries_empty_structure():
     """Empty structure list returns empty list."""
-    with mock.patch("litellm.token_counter", return_value=1):
+    with mock.patch("drbrain.parser.pageindex.summary.count_tokens", return_value=1):
         result = await summary_mod._generate_summaries_for_structure_md(
             [], summary_token_threshold=100, model="gpt-4", models=[]
         )

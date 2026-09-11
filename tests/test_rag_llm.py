@@ -7,6 +7,7 @@ is marked ``integration`` and skipped by default (``-m "not integration"``).
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -16,6 +17,21 @@ from drbrain.rag.llm import DrbrainLLM, init_llamaindex_settings
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 
 pytestmark = pytest.mark.skipif(not _HAS_LLAMA_INDEX, reason="llama_index not installed")
+
+
+def _patch_sync_stream(monkeypatch, fn):
+    """Route sync streaming through a mocked OpenAI client factory."""
+    client = MagicMock()
+    client.chat.completions.create.side_effect = fn
+    monkeypatch.setattr("drbrain.extractor.llm_client._openai_client", lambda *a: client)
+
+
+def _patch_async_stream(monkeypatch, fn):
+    """Route async streaming through a mocked OpenAI client factory."""
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(side_effect=fn)
+    monkeypatch.setattr("drbrain.extractor.llm_client._aopenai_client", lambda *a: client)
+
 
 MODELS = [
     {"provider": "openai", "model": "gpt-4o", "api_key": "k1", "base_url": None},
@@ -138,7 +154,7 @@ async def test_acomplete_cache_disabled_when_ttl_zero(monkeypatch, tmp_path):
 
 
 async def test_fallback_chain_first_fails_second_succeeds(monkeypatch, tmp_path):
-    """DrbrainLLM routes through the REAL llm_client chain; litellm mocked."""
+    """DrbrainLLM routes through the REAL llm_client chain; SDK client factory mocked."""
     monkeypatch.setattr("drbrain.metrics.get_metrics", lambda: _StubMetrics())
     called: list[str] = []
 
@@ -148,11 +164,11 @@ async def test_fallback_chain_first_fails_second_succeeds(monkeypatch, tmp_path)
             raise RuntimeError("provider down")
         return _FakeResponse()
 
-    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    _patch_async_stream(monkeypatch, fake_acompletion)
     llm = DrbrainLLM(_cfg(tmp_path), max_tokens=64)
     resp = await llm.acomplete("retry me")
     assert resp.text == "fallback ok"
-    assert called == ["openai/gpt-4o", "openai/gpt-4o-mini"]  # order preserved
+    assert called == ["gpt-4o", "gpt-4o-mini"]  # order preserved
 
 
 async def test_cache_hit_skips_network(monkeypatch, tmp_path):
@@ -164,7 +180,7 @@ async def test_cache_hit_skips_network(monkeypatch, tmp_path):
         calls["n"] += 1
         return _FakeResponse()
 
-    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    _patch_async_stream(monkeypatch, fake_acompletion)
     llm = DrbrainLLM(_cfg(tmp_path, cache_ttl=86400), max_tokens=64)
     r1 = await llm.acomplete("same prompt")
     r2 = await llm.acomplete("same prompt")
@@ -240,11 +256,11 @@ def test_chat_tool_calls_surface_in_message_kwargs(monkeypatch):
     assert resp.message.additional_kwargs["tool_calls"] == [{"id": "c1", "type": "function"}]
 
 
-# ── streaming: real per-token through litellm (T9) ──────────────────────────
+# ── streaming: real per-token through the OpenAI SDK (T9) ──────────────────────────
 
 
 class _FakeStreamChunk:
-    """One litellm-style stream chunk with a text delta."""
+    """One OpenAI-compatible stream chunk with a text delta."""
 
     def __init__(self, content: str) -> None:
         self.choices = [type("_C", (), {"delta": type("_D", (), {"content": content})})()]
@@ -294,7 +310,7 @@ def test_stream_complete_yields_real_tokens(monkeypatch):
         captured["kwargs"] = kwargs
         return _FakeStream(["chunk ", "one ", "two"])
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = list(llm.stream_complete("q"))
     assert [c.delta for c in chunks] == ["chunk ", "one ", "two"]
@@ -304,7 +320,7 @@ def test_stream_complete_yields_real_tokens(monkeypatch):
     assert chunks[0].delta  # first chunk non-empty
     assert captured["kwargs"]["stream"] is True
     assert captured["kwargs"]["max_tokens"] == 64
-    assert captured["kwargs"]["model"] == "openai/gpt-4o"
+    assert captured["kwargs"]["model"] == "gpt-4o"  # bare wire name
     # full reply reconstructs from the deltas
     assert "".join(c.delta for c in chunks) == "chunk one two"
 
@@ -320,7 +336,7 @@ def test_stream_chat_yields_real_tokens(monkeypatch):
         captured["temperature"] = kwargs["temperature"]
         return _FakeStream(["to", "ken", "s"])
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = list(llm.stream_chat([ChatMessage(role=MessageRole.USER, content="hi")]))
     assert [c.delta for c in chunks] == ["to", "ken", "s"]
@@ -339,7 +355,7 @@ async def test_astream_chat_yields_real_tokens(monkeypatch):
         captured["stream"] = kwargs.get("stream")
         return _FakeAsyncStream(["a", "b", "c"])
 
-    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    _patch_async_stream(monkeypatch, fake_acompletion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = [r async for r in llm.astream_chat([ChatMessage(role=MessageRole.USER, content="q")])]
     assert [c.delta for c in chunks] == ["a", "b", "c"]
@@ -353,7 +369,7 @@ async def test_astream_complete_yields_real_tokens(monkeypatch):
     async def fake_acompletion(**kwargs):
         return _FakeAsyncStream(["x", "y"])
 
-    monkeypatch.setattr("litellm.acompletion", fake_acompletion)
+    _patch_async_stream(monkeypatch, fake_acompletion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = [r async for r in llm.astream_complete("q")]
     assert [c.delta for c in chunks] == ["x", "y"]
@@ -364,10 +380,7 @@ def test_stream_chat_skips_empty_deltas(monkeypatch):
     from llama_index.core.base.llms.types import ChatMessage, MessageRole
 
     _stub_metrics(monkeypatch)
-    monkeypatch.setattr(
-        "litellm.completion",
-        lambda **kw: _FakeStream(["real", "", None, "text"]),
-    )
+    _patch_sync_stream(monkeypatch, lambda **kw: _FakeStream(["real", "", None, "text"]))
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = list(llm.stream_chat([ChatMessage(role=MessageRole.USER, content="q")]))
     assert [c.delta for c in chunks] == ["real", "text"]
@@ -386,10 +399,10 @@ def test_stream_chat_falls_back_across_models(monkeypatch):
             raise RuntimeError("stream broke mid-flight")
         return _FakeStream(["fallback", " reply"])
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     chunks = list(llm.stream_chat([ChatMessage(role=MessageRole.USER, content="q")]))
-    assert called == ["openai/gpt-4o", "openai/gpt-4o-mini"]  # order preserved
+    assert called == ["gpt-4o", "gpt-4o-mini"]  # order preserved
     assert "".join(c.delta for c in chunks) == "fallback reply"
 
 
@@ -399,7 +412,7 @@ def test_stream_complete_all_models_fail_raises(monkeypatch):
     def fake_completion(**kwargs):
         raise RuntimeError("all down")
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(), max_tokens=64)
     with pytest.raises(RuntimeError, match="streaming completion failed"):
         list(llm.stream_complete("q"))
@@ -416,7 +429,7 @@ def test_stream_chat_cache_hit_replays_cached_reply(monkeypatch, tmp_path):
         calls["n"] += 1
         return _FakeStream(["cached", " reply"])
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(tmp_path, cache_ttl=86400), temperature=0, max_tokens=64)
     msgs = [ChatMessage(role=MessageRole.USER, content="same q")]
 
@@ -438,7 +451,7 @@ def test_stream_complete_cache_hit_skips_network(monkeypatch, tmp_path):
         calls["n"] += 1
         return _FakeStream(["same", "text"])
 
-    monkeypatch.setattr("litellm.completion", fake_completion)
+    _patch_sync_stream(monkeypatch, fake_completion)
     llm = DrbrainLLM(_cfg(tmp_path, cache_ttl=86400), max_tokens=64)
     first = list(llm.stream_complete("same prompt"))
     assert "".join(c.delta for c in first) == "sametext"
@@ -512,10 +525,10 @@ async def test_integration_real_call_hits_cache(tmp_path, monkeypatch):
     assert r1.text, "live call returned empty response"
 
     # The cache lookup lives inside the real fallback function (before any
-    # network), so patching litellm's completion proves call 2 never goes out.
+    # network), so patching the client factory proves call 2 never goes out.
     async def no_network(**kwargs):
         raise AssertionError("second call must not touch the network")
 
-    monkeypatch.setattr("litellm.acompletion", no_network)
+    _patch_async_stream(monkeypatch, no_network)
     r2 = await llm.acomplete("Reply with exactly one word: pong")
     assert r2.text == r1.text

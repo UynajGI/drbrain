@@ -278,7 +278,7 @@ def test_rag_data_contracts_remain_additive_only():
         config.max_node_tokens,
     ) == (
         False,
-        "litellm",
+        "openai",
         "memory",
         "data/llamaindex",
         ["bm25", "vector"],

@@ -20,7 +20,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-import litellm
 from loguru import logger
 from openai import AsyncOpenAI
 from openai import OpenAI as SyncOpenAI
@@ -30,23 +29,70 @@ from drbrain.security import configured_secret_values, redact_sensitive_text, sa
 
 if TYPE_CHECKING:
     from drbrain.extractor.cache import ApiCache
-
-# OpenAI SDK 客户端缓存(base_url+api_key 复用连接,序列化稳定使 provider 前缀缓存可命中)
+# OpenAI SDK clients cached per (base_url, api_key): reuse connection pools.
+# Clients cache connections, never responses - every call hits the wire.
 _openai_clients: dict[str, SyncOpenAI] = {}
 _aopenai_clients: dict[str, AsyncOpenAI] = {}
 
+# provider -> default OpenAI-compatible base_url. "openai" uses the SDK
+# default (api.openai.com/v1). An explicit "base_url" in the model config
+# always wins; a provider without a mapping and without base_url fails closed
+# (ValueError) instead of being silently routed somewhere wrong.
+_PROVIDER_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com/v1",
+    "ollama": "http://localhost:11434/v1",
+}
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def resolve_base_url(model_cfg: dict) -> str:
+    """OpenAI-compatible base_url for one model config entry.
+
+    Resolution order: explicit ``base_url`` > provider default (``deepseek``,
+    ``ollama``) > the OpenAI default for ``openai``. Unknown providers without
+    an explicit base_url raise ``ValueError`` naming the provider (fail-closed,
+    never silently misrouted).
+    """
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    if base_url:
+        # Setup ships bare Ollama hosts (http://localhost:11434); the OpenAI-
+        # compatible endpoint lives under /v1 — append it unless already present.
+        if provider == "ollama" and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+        return base_url
+    if provider == "openai":
+        return _OPENAI_DEFAULT_BASE_URL
+    if provider in _PROVIDER_BASE_URLS:
+        return _PROVIDER_BASE_URLS[provider]
+    raise ValueError(
+        f"provider {provider or '<missing>'!r} has no OpenAI-compatible default "
+        "base_url - set an explicit `base_url` in the model config "
+        f"(providers with defaults: openai, {', '.join(sorted(_PROVIDER_BASE_URLS))})"
+    )
+
 
 def _openai_client(api_key: str, base_url: str) -> SyncOpenAI:
+    """Cached sync OpenAI client per (base_url, api_key) - connection-pool reuse.
+
+    ``max_retries=0``: retry/cooldown policy is owned by drbrain's fallback
+    chain + rate-limit state machine; a hidden SDK retry layer would double-
+    retry and bypass drbrain's per-key cooldown bookkeeping. Clients cache
+    connections, never responses - every call hits the wire.
+    """
+    api_key = api_key or "EMPTY"  # local servers (ollama/vLLM) ignore the key
     ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _openai_clients:
-        _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url)
+        _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
     return _openai_clients[ck]
 
 
 def _aopenai_client(api_key: str, base_url: str) -> AsyncOpenAI:
+    """:func:`_openai_client` for async traffic (AsyncOpenAI pool reuse)."""
+    api_key = api_key or "EMPTY"  # local servers (ollama/vLLM) ignore the key
     ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _aopenai_clients:
-        _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
     return _aopenai_clients[ck]
 
 
@@ -488,16 +534,20 @@ def _thinking_extra_body(model_cfg: dict) -> dict:
     return {"thinking": {"type": "disabled"}}
 
 
-def _build_litellm_kwargs(
+def _build_chat_kwargs(
     model_cfg: dict,
     prompt: str,
     system_prompt: str,
     max_tokens: int,
     *,
     disable_thinking: bool = False,
-    api_key: str | None = None,
 ) -> dict:
-    name = f"{model_cfg['provider']}/{model_cfg['model']}"
+    """OpenAI chat-completions kwargs for one JSON call.
+
+    The wire ``model`` is the bare model name; provider routing happens via
+    ``base_url`` (explicit config > provider default > api.openai.com). The
+    api_key/base_url travel on the cached client, not in the request kwargs.
+    """
     messages = []
     # Anthropic prompt caching: mark long system prompts as ephemeral cache
     # points. Anthropic bills cached input tokens at ~10% of normal rate,
@@ -519,7 +569,7 @@ def _build_litellm_kwargs(
     messages.append({"role": "user", "content": prompt})
 
     kwargs = {
-        "model": name,
+        "model": model_cfg["model"],
         "messages": messages,
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
@@ -537,12 +587,6 @@ def _build_litellm_kwargs(
         kwargs["extra_body"] = {"enable_thinking": False}
     else:
         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
-    if api_key is None:
-        api_key = _resolve_api_key(model_cfg)
-    if api_key:
-        kwargs["api_key"] = api_key
-    if model_cfg.get("base_url"):
-        kwargs["api_base"] = model_cfg["base_url"]
     return kwargs
 
 
@@ -652,15 +696,15 @@ def _responses_output_to_chat(resp) -> tuple[str, list | None, SimpleNamespace]:
     return "".join(text_parts), (tool_calls or None), usage_ns
 
 
-def _responses_kwargs(model_cfg: dict, kwargs: dict, api_key: str | None) -> dict:
-    """由 chat completions kwargs 构造 ``litellm.responses`` kwargs。
+def _responses_kwargs(model_cfg: dict, kwargs: dict) -> dict:
+    """由 chat completions kwargs 构造 OpenAI Responses API kwargs。
 
     gpt-5 系不接受 temperature / response_format，确定性靠 prompt 纪律
     （drbrain 各 prompt 均明写"只返回 JSON"）。
     """
     instructions, input_items = _messages_to_responses_input(kwargs.get("messages") or [])
     rk: dict = dict(
-        model=f"openai/{model_cfg['model']}",
+        model=model_cfg["model"],
         input=input_items,
         max_output_tokens=_to_int(kwargs.get("max_tokens")) or 4096,
         timeout=kwargs.get("timeout", 60),
@@ -670,32 +714,19 @@ def _responses_kwargs(model_cfg: dict, kwargs: dict, api_key: str | None) -> dic
     tools = _responses_tools(kwargs.get("tools"))
     if tools:
         rk["tools"] = tools
-    if api_key:
-        rk["api_key"] = api_key
-    if kwargs.get("api_base"):
-        rk["api_base"] = kwargs["api_base"]
     return rk
 
 
 def _responses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
-    """OpenAI SDK 直连 Responses API——跳过 litellm 序列化层,前缀缓存可命中。"""
-    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
-    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
-    rk.pop("api_key", None)
-    # 剥 litellm 的 openai/ 前缀
-    if "model" in rk and rk["model"].startswith("openai/"):
-        rk["model"] = rk["model"][7:]
+    """OpenAI SDK 直连 Responses API（wire_api=responses；连接池按 base_url+key 复用）。"""
+    base_url = resolve_base_url(model_cfg)
     client = _openai_client(api_key or "", base_url)
     return client.responses.create(**rk)
 
 
 async def _aresponses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
     """:func:`_responses_call_openai` 的 async 版。"""
-    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
-    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
-    rk.pop("api_key", None)
-    if "model" in rk and rk["model"].startswith("openai/"):
-        rk["model"] = rk["model"][7:]
+    base_url = resolve_base_url(model_cfg)
     client = _aopenai_client(api_key or "", base_url)
     return await client.responses.create(**rk)
 
@@ -713,20 +744,22 @@ def _invoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
           wire_api: responses
     """
     if model_cfg.get("wire_api") != "responses":
-        resp = litellm.completion(**kwargs)
+        client = _openai_client(api_key or "", resolve_base_url(model_cfg))
+        resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content, resp
-    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    rk = _responses_kwargs(model_cfg, kwargs)
     resp = _responses_call_openai(rk, model_cfg, api_key)
     content, tool_calls, usage = _responses_output_to_chat(resp)
     return content, _ChatShim(content, tool_calls, usage)
 
 
 async def _ainvoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
-    """:func:`_invoke_llm` 的 async 版（``litellm.aresponses``）。"""
+    """:func:`_invoke_llm` 的 async 版。"""
     if model_cfg.get("wire_api") != "responses":
-        resp = await litellm.acompletion(**kwargs)
+        client = _aopenai_client(api_key or "", resolve_base_url(model_cfg))
+        resp = await client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content, resp
-    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    rk = _responses_kwargs(model_cfg, kwargs)
     resp = await _aresponses_call_openai(rk, model_cfg, api_key)
     content, tool_calls, usage = _responses_output_to_chat(resp)
     return content, _ChatShim(content, tool_calls, usage)
@@ -894,13 +927,12 @@ def call_with_fallback(
                     break
                 start = time.monotonic()
                 try:
-                    kwargs = _build_litellm_kwargs(
+                    kwargs = _build_chat_kwargs(
                         model_cfg,
                         prompt,
                         system_prompt,
                         max_tokens,
                         disable_thinking=disable_thinking,
-                        api_key=api_key,
                     )
                     content, response = _invoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
@@ -1009,13 +1041,12 @@ async def acall_with_fallback(
                     break
                 start = time.monotonic()
                 try:
-                    kwargs = _build_litellm_kwargs(
+                    kwargs = _build_chat_kwargs(
                         model_cfg,
                         prompt,
                         system_prompt,
                         max_tokens,
                         disable_thinking=disable_thinking,
-                        api_key=api_key,
                     )
                     content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
@@ -1115,17 +1146,13 @@ def call_text_with_fallback(
                         messages.append({"role": "system", "content": system_prompt})
                     messages.append({"role": "user", "content": prompt})
                     kwargs = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": 0.1,
                         "max_tokens": max_tokens,
                         "timeout": 60,
                         "extra_body": _thinking_extra_body(model_cfg),
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     content, _resp = _invoke_llm(model_cfg, kwargs, api_key)
                     if api_key:
                         _RATE_LIMIT_SM.on_success(model_cfg, api_key)
@@ -1188,7 +1215,7 @@ async def acall_text_with_fallback(
                         messages.append({"role": "system", "content": system_prompt})
                     messages.append({"role": "user", "content": prompt})
                     kwargs = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": 0,
                         "max_tokens": max_tokens,
@@ -1198,10 +1225,6 @@ async def acall_text_with_fallback(
                         # ox-alpha-free 等强制 thinking 的模型配置 disable_thinking: false 跳过。
                         "extra_body": _thinking_extra_body(model_cfg),
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
                     logger.debug(
@@ -1278,16 +1301,12 @@ def call_with_messages(
                 start = time.monotonic()
                 try:
                     kwargs: dict = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                         "timeout": timeout,
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     if tools:
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
@@ -1408,16 +1427,12 @@ async def acall_with_messages(
                 start = time.monotonic()
                 try:
                     kwargs: dict = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                         "timeout": timeout,
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     if tools:
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
@@ -1502,7 +1517,7 @@ async def acall_with_messages(
 
 
 def _extract_tool_calls(msg) -> list[dict] | None:
-    """Extract tool calls from a litellm message into a serializable list."""
+    """Extract tool calls from an OpenAI chat message into a serializable list."""
     raw = getattr(msg, "tool_calls", None)
     if not raw:
         return None
