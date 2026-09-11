@@ -8,7 +8,7 @@
 
 # ── LLM Models ──────────────────────────────────────────────────
 # First model in the list is primary; others serve as fallback chain.
-# Uncomment the provider(s) you need.  All providers supported by litellm work.
+# Uncomment the provider(s) you need.  Any OpenAI-compatible endpoint works (openai/deepseek/ollama defaults; set base_url for others).
 llm:
   models:
     # ── OpenAI ──
@@ -20,7 +20,9 @@ llm:
     # - provider: anthropic
     #   model: claude-sonnet-4-6     # claude-opus-4-7 / claude-sonnet-4-6 / claude-haiku-4-5
     #   api_key: "${ANTHROPIC_API_KEY}"  # https://console.anthropic.com/keys
-    #   base_url: null
+    #   # drbrain speaks the OpenAI wire protocol only - point base_url at an
+    #   # OpenAI-compatible Anthropic gateway (Anthropic-native API is not routed).
+    #   base_url: "https://your-openai-compatible-gateway.example/v1"
 
     # ── DeepSeek ──
     # - provider: openai             # DeepSeek uses OpenAI-compatible API

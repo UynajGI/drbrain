@@ -199,7 +199,7 @@ class LlamaIndexConfig(_ConfigBase):
 
     Attributes:
         enabled: Master switch. ``False`` falls back to legacy implementations.
-        llm: LLM bridge backend (``"litellm"``); wired up in T2.
+        llm: LLM bridge backend (``"openai"``); wired up in T2.
         vector_store: ``"memory"`` | ``"chroma"`` (chromadb is optional).
         storage_dir: Directory for LlamaIndex index persistence.
         retrievers: Fusion legs, e.g. ``["bm25", "vector"]``.
@@ -222,7 +222,7 @@ class LlamaIndexConfig(_ConfigBase):
     """
 
     enabled: bool = False
-    llm: str = "litellm"
+    llm: str = "openai"
     vector_store: str = "memory"
     storage_dir: str = "data/llamaindex"
     # "sql" = 主库副本（drbrain_rag.db，node_texts+FTS5+tree_vectors）直检，

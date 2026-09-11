@@ -66,7 +66,8 @@ def check_cmd(ctx: typer.Context):
     table = Table(show_header=False, box=None, padding=(0, 2))
     required_packages = [
         ("pymupdf", "fitz"),
-        ("litellm", "litellm"),
+        ("openai", "openai"),
+        ("tiktoken", "tiktoken"),
         ("typer", "typer"),
         ("rich", "rich"),
         ("pyyaml", "yaml"),
@@ -505,20 +506,21 @@ def check_cmd(ctx: typer.Context):
                 table_api.add_row(label, "[yellow]Env var not set[/yellow]")
                 continue
             try:
-                import litellm as _llm
+                from openai import OpenAI as _OpenAI
 
-                name = f"{m['provider']}/{m['model']}"
-                kwargs = {
-                    "model": name,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 5,
-                    "timeout": 10,
-                }
-                if m.get("api_key"):
-                    kwargs["api_key"] = m["api_key"]
-                if m.get("base_url"):
-                    kwargs["api_base"] = m["base_url"]
-                _llm.completion(**kwargs)
+                from drbrain.extractor.llm_client import resolve_base_url
+
+                client = _OpenAI(
+                    api_key=m.get("api_key") or "EMPTY",
+                    base_url=resolve_base_url(m),
+                    max_retries=0,
+                )
+                client.chat.completions.create(
+                    model=m["model"],
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=5,
+                    timeout=10,
+                )
                 table_api.add_row(label, "[green]Reachable[/green]")
             except Exception as e:
                 err_msg = safe_error(e, limit=60, secrets=config_secrets)

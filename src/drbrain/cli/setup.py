@@ -169,7 +169,7 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
     # Map Python module names to display names from install hints
     _module_to_hint_key: dict[str, str] = {
         "pymupdf": "pymupdf",
-        "litellm": "litellm",
+        "openai": "openai",
         "typer": "typer",
         "rich": "rich",
         "yaml": "pyyaml",
