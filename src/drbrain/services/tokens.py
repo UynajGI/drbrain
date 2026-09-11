@@ -5,35 +5,48 @@ Uses the ``o200k_base`` encoding (OpenAI's current default; close enough for
 chunk-budget arithmetic across providers — this is heuristic budgeting, not
 billing). The encoding object is loaded lazily once per process; if tiktoken
 is unavailable or the vocab cannot be loaded (e.g. offline first run), the
-count falls back to ``max(1, len(text) // 4)`` so ingestion never breaks.
+count falls back to ``max(1, len(text) // 4)`` so ingestion never breaks. A
+failed vocab load retries after a short cooldown instead of hammering the
+download on every call.
 """
 
 from __future__ import annotations
 
 import threading
+import time
+
+_ENCODING_RETRY_S = 60.0
 
 _encoding_lock = threading.Lock()
 _encoding: object | None = None
+_encoding_failed_at: float | None = None
 
 
 def _get_encoding() -> object | None:
     """Load the ``o200k_base`` encoding once; ``None`` while unavailable.
 
-    A failed load (offline first run, transient vocab-download error) is NOT
-    latched: the next call retries, so token counting recovers automatically
-    once tiktoken/the vocab becomes available.
+    A failed load is remembered for ``_ENCODING_RETRY_S`` (so the chunking hot
+    path cannot hammer a failing download per paragraph) and retried after the
+    cooldown, so token counting recovers automatically.
     """
-    global _encoding
+    global _encoding, _encoding_failed_at
     if _encoding is not None:
         return _encoding
     with _encoding_lock:
-        if _encoding is None:
-            try:
-                import tiktoken
+        if _encoding is not None:
+            return _encoding
+        if (
+            _encoding_failed_at is not None
+            and time.monotonic() - _encoding_failed_at < _ENCODING_RETRY_S
+        ):
+            return None
+        try:
+            import tiktoken
 
-                _encoding = tiktoken.get_encoding("o200k_base")
-            except Exception:  # noqa: BLE001 — offline/vocab-download failure must not break callers
-                _encoding = None
+            _encoding = tiktoken.get_encoding("o200k_base")
+        except Exception:  # noqa: BLE001 — offline/vocab-download failure must not break callers
+            _encoding_failed_at = time.monotonic()
+            _encoding = None
     return _encoding
 
 

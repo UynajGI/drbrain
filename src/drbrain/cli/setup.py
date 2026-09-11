@@ -420,7 +420,8 @@ def setup_cmd(
     base_url = typer.prompt(f"  {_t('llm_base_url', lang)}", default="", show_default=False)
     # Only openai/deepseek/ollama have built-in OpenAI-compatible endpoints;
     # anything else (e.g. anthropic) must come with an explicit base_url.
-    while provider not in ("openai", "deepseek", "ollama") and not base_url:
+    # Normalize like resolve_base_url does, so "OpenAI" routes without a URL.
+    while provider.strip().lower() not in ("openai", "deepseek", "ollama") and not base_url:
         typer.echo(
             f"  [!] {provider} has no built-in OpenAI-compatible endpoint — base_url is required"
         )
