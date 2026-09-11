@@ -471,8 +471,14 @@ class PluginRegistry:
         """Register a plugin, its handler and optional job methods (idempotent: re-register replaces)."""
         if not plugin.name:
             raise ValueError("plugin name must be non-empty")
-        # bool is an int subclass: ``abi_version: true`` would silently pass as v1.
-        if isinstance(plugin.abi_version, bool) or plugin.abi_version not in SUPPORTED_ABI_VERSIONS:
+        # Strict integer check (bool excluded, 1.0 rejected via strict type):
+        # mirrors conformance._descriptor_checks so validator and enforcer agree.
+        abi_ok = (
+            isinstance(plugin.abi_version, int)
+            and not isinstance(plugin.abi_version, bool)
+            and plugin.abi_version in SUPPORTED_ABI_VERSIONS
+        )
+        if not abi_ok:
             raise ValueError(
                 f"plugin {plugin.name!r} declares ABI v{plugin.abi_version}; "
                 f"this host supports {sorted(SUPPORTED_ABI_VERSIONS)}"

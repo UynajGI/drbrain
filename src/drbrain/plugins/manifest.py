@@ -9,8 +9,10 @@ declare module-level
     JOB_METHODS = <object>    # optional; callable submit/poll/cancel
 
 and :meth:`PluginRegistry.discover` builds the descriptor from the manifest.
-:func:`build_from_manifest` is the single translation point, shared by
-discovery and the conformance suite (:mod:`drbrain.plugins.conformance`).
+:func:`build_from_manifest` is the discovery-side translation point.  The
+conformance suite (:mod:`drbrain.plugins.conformance`) intentionally checks the
+manifest dict and descriptor with its own checks instead of calling this
+function — its job is to inspect the declaration, not to reuse the loader.
 
 A module that declares both a manifest and ``register()`` is registered via
 the manifest; the inline function is not consulted (declared precedence, one
@@ -32,8 +34,6 @@ JOB_METHODS_KEY = "JOB_METHODS"
 # Manifest keys with no sensible default — a manifest missing any of them is
 # skipped with a warning, mirroring the inline style's skip-on-failure rule.
 REQUIRED_FIELDS: tuple[str, ...] = ("name", "description", "input_schema")
-
-_JOB_ATTRS: tuple[str, ...] = ("submit", "poll", "cancel")
 
 
 def has_manifest(module: Any) -> bool:

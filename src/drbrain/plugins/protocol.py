@@ -139,10 +139,6 @@ class Plugin:
     output_schema: dict[str, Any] | None = None
     plugin_type: PluginType = "other"
     version: str = ""
-    # Protocol revision this plugin was written against.  ``1`` covers every
-    # plugin written before the field existed; a value outside
-    # ``SUPPORTED_ABI_VERSIONS`` fails registration (see registry.register).
-    abi_version: int = 1
     resource: str | None = None
     backend: Backend = "inprocess"
     entry: str = ""  # deprecated, unread (compat: older plugins pass it)
@@ -165,6 +161,11 @@ class Plugin:
     supports_cancel: bool = False
     sandbox_profile: str = ""
     approval_policy: str = "default"
+    # Protocol revision this plugin was written against.  Appended LAST so the
+    # pre-ABI positional argument layout is preserved for external plugins
+    # (``1`` covers every plugin written before the field existed; a value
+    # outside ``SUPPORTED_ABI_VERSIONS`` fails registration).
+    abi_version: int = 1
 
 
 def _job_method_not_implemented(*_args: Any) -> Any:
