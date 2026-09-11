@@ -279,6 +279,16 @@ def test_register_rejects_unsupported_abi_version():
     assert registry.list_plugins() == []
 
 
+def test_register_rejects_bool_abi_version():
+    """bool subclasses int: ``abi_version: true`` must not silently pass as v1."""
+    registry = PluginRegistry()
+    with pytest.raises(ValueError, match="ABI vTrue"):
+        registry.register(
+            replace(_flatband_plugin(), name="truthy", abi_version=True), lambda args: {}
+        )
+    assert registry.list_plugins() == []
+
+
 def test_register_abi_rejection_fails_before_mutation():
     registry = PluginRegistry()
     good = _flatband_plugin()

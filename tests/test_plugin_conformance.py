@@ -66,6 +66,21 @@ def test_clean_manifest_module_passes(tmp_path):
     assert report.passed, _failed_names(report)
 
 
+def test_non_string_side_effect_fails_without_crash(tmp_path):
+    """A list-vs-string typo must fail the check, not raise TypeError (unhashable)."""
+    source = MANIFEST_OK.replace('"side_effect": "read"', '"side_effect": ["read"]')
+    report = run_conformance(_write(tmp_path, {"bad_effect.py": source}))
+    assert not report.passed
+    assert "bad_effect.side_effect" in _failed_names(report)
+
+
+def test_non_string_code_digest_fails_without_crash(tmp_path):
+    source = MANIFEST_OK.replace('"abi_version": 1', '"abi_version": 1, "code_digest": 123')
+    report = run_conformance(_write(tmp_path, {"bad_digest.py": source}))
+    assert not report.passed
+    assert "bad_digest.code_digest" in _failed_names(report)
+
+
 def test_cli_exit_zero_on_clean_fixtures():
     proc = subprocess.run(
         [sys.executable, "-m", "drbrain.plugins.conformance", str(FIXTURE_DIR)],

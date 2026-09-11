@@ -239,10 +239,10 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
             <td><b>Interfacial passivation engineering on quasi-2D tin-based perovskite solar cells</b><br>
               <span style="color:var(--color-muted-fg)">…phDMADBr 分子形成保护层，显著提升 <mark>无铅钙钛矿</mark> 器件的 <mark>稳定性</mark>…</span></td>
             <td class="mono">2025</td><td>Joule</td><td class="mono">87</td><td>✓</td></tr>
-          <tr><td><b>Sn(II) oxidation kinetics and device performance in lead-free perovskites</b><br>
+          <tr onclick="toggleDetail()" style="cursor:pointer"><td><b>Sn(II) oxidation kinetics and device performance in lead-free perovskites</b><br>
               <span style="color:var(--color-muted-fg)">…<mark>界面钝化</mark>可抑制 Sn<sup>2+</sup>→Sn<sup>4+</sup> 氧化，改善 <mark>稳定性</mark>…</span></td>
             <td class="mono">2024</td><td>Nat. Energy</td><td class="mono">142</td><td>✓</td></tr>
-          <tr><td><b>Green-to-blue emission tuning in halide perovskite nanocrystals via terbium chloride</b><br>
+          <tr onclick="toggleDetail()" style="cursor:pointer"><td><b>Green-to-blue emission tuning in halide perovskite nanocrystals via terbium chloride</b><br>
               <span style="color:var(--color-muted-fg)">…掺杂调控发光波长，与 <mark>钝化</mark> 层协同…</span></td>
             <td class="mono">2024</td><td>ACS Nano</td><td class="mono">56</td><td>✓</td></tr>
         </table>
@@ -506,7 +506,11 @@ function nav(page){
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   document.getElementById('crumb').textContent = crumb[page] || page;
 }
-function toggleDetail(){ document.getElementById('paper-detail').classList.toggle('open'); }
+function toggleDetail(){
+  const d = document.getElementById('paper-detail');
+  if (d) d.classList.toggle('open');
+}
+function openSession(){ nav('sessions'); }
 // 论文详情 tabs（概览/树/概念/引用 —— 设计稿示意，仅树有内容）
 document.getElementById('ptabs').addEventListener('click', e => {
   if (e.target.tagName !== 'BUTTON') return;

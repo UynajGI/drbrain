@@ -41,7 +41,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, get_args
 
-from drbrain.plugins.manifest import JOB_METHODS_KEY, MANIFEST_KEY, REQUIRED_FIELDS
+from drbrain.plugins.manifest import (
+    HANDLER_KEY,
+    JOB_METHODS_KEY,
+    MANIFEST_KEY,
+    REQUIRED_FIELDS,
+)
 from drbrain.plugins.protocol import SUPPORTED_ABI_VERSIONS, Plugin, PluginSideEffect
 from drbrain.plugins.registry import PluginRegistry
 
@@ -150,14 +155,14 @@ def _manifest_checks(stem: str, path: Path, module: Any, manifest: Any) -> list[
     checks.append(_manifest_fields_check(stem, manifest))
     if not all(check.passed for check in checks[1:]):
         return checks  # descriptor checks are meaningless without a usable manifest
-    handler = getattr(module, "HANDLER", None)
+    handler = getattr(module, HANDLER_KEY, None)
     checks.append(
         CheckResult(
             f"{stem}.handler",
             callable(handler),
-            "callable module-level HANDLER"
+            f"callable module-level {HANDLER_KEY}"
             if callable(handler)
-            else "HANDLER must be a callable module-level function",
+            else f"{HANDLER_KEY} must be a callable module-level function",
         )
     )
     jobs_check = _jobs_check(f"{stem}.job_methods", module)
@@ -227,7 +232,7 @@ def _descriptor_checks(prefix: str, plugin: Plugin, path: Path) -> list[CheckRes
     timeout = plugin.timeout_s
     timeout_ok = isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0
     checks.append(CheckResult(f"{prefix}.timeout_s", timeout_ok, f"timeout_s={timeout!r}"))
-    effect_ok = plugin.side_effect in _SIDE_EFFECTS
+    effect_ok = isinstance(plugin.side_effect, str) and plugin.side_effect in _SIDE_EFFECTS
     checks.append(
         CheckResult(
             f"{prefix}.side_effect",
@@ -266,6 +271,10 @@ def _schema_check(name: str, schema: Any) -> CheckResult:
 
 
 def _digest_check(name: str, declared: str, path: Path) -> CheckResult:
+    if not isinstance(declared, str):
+        return CheckResult(
+            name, False, f"code_digest must be a string, got {type(declared).__name__}"
+        )
     actual = _module_digest(path, declared)
     expected = declared.strip().lower()
     if expected.startswith("sha256:"):
@@ -282,11 +291,14 @@ def _module_digest(path: Path, declared: str) -> str:
     bytes would be self-referential (a hash cannot contain its own value).
     Blanking the declared token makes the attestation workflow deterministic:
     write the manifest with ``"code_digest": ""``, hash that content, then
-    fill the value in — verification blanks it again and compares.
+    fill the value in — verification blanks it again and compares.  Only the
+    FIRST occurrence is blanked so the blanking exactly reverses the author's
+    fill-in step, even if the digest value coincidentally appears elsewhere in
+    the file.
     """
     raw = path.read_bytes()
     if declared:
-        raw = raw.replace(declared.encode("utf-8"), b"")
+        raw = raw.replace(declared.encode("utf-8"), b"", 1)
     return hashlib.sha256(raw).hexdigest()
 
 
