@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from drbrain.concept_graph.embeddings import (
     _paper_titles_for_concept,
@@ -90,6 +91,7 @@ def test_nearest_neighbors_unknown_label() -> None:
         td.cleanup()
 
 
+@pytest.mark.timeout(180)
 def test_umap_project_returns_2d_coords() -> None:
     db, td = _tmp_db()
     try:
