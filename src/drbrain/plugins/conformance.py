@@ -318,7 +318,7 @@ def _module_digest(path: Path) -> str:
     touches digest-like strings elsewhere in the file.
     """
     raw = path.read_bytes()
-    blanked = _DIGEST_BLANK_RE.sub(rb"\1\1", raw, count=1)
+    blanked = _DIGEST_BLANK_RE.sub(rb"\1\2\2", raw, count=1)
     return hashlib.sha256(blanked).hexdigest()
 
 
