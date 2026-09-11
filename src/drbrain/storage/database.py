@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -192,6 +194,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
         CHECK(status IN ('active','archived','deleted')),
     model_config TEXT DEFAULT '{}',
     owner_principal TEXT DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT 'prj-default',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -351,6 +354,81 @@ CREATE TABLE IF NOT EXISTS claim_evidence (
     PRIMARY KEY (claim_id, evidence_id)
 );
 CREATE INDEX IF NOT EXISTS idx_claim_evidence_evidence ON claim_evidence(evidence_id);
+
+-- ── Project scope + WebUI layer (v21) ──────────────────────────
+-- A project is the durable namespace behind the WebUI project switcher: it
+-- owns a corpus reference (an optional workspace directory) and a set of
+-- conversation sessions.  ``project_id`` never changes on rename; legacy
+-- rows belong to the seeded default project.
+CREATE TABLE IF NOT EXISTS projects (
+    project_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    workspace_name TEXT UNIQUE,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Login sessions for the local WebUI.  Separate from ``agent_sessions``:
+-- one is browser authentication, the other is a research conversation.
+CREATE TABLE IF NOT EXISTS webui_sessions (
+    session_id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    revoked_at REAL,
+    remote_addr TEXT DEFAULT '',
+    user_agent TEXT DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_sessions_token ON webui_sessions(token_hash);
+
+-- Minimal interface audit trail (login/logout/rotate).  Not a business log.
+CREATE TABLE IF NOT EXISTS webui_audit (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    remote_addr TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_webui_audit_event ON webui_audit(event, created_at);
+
+-- Session memory entries: explicit, provenance-carrying rows.  Run-derived
+-- entries are written idempotently (``dedup_key``); project-layer rows only
+-- exist after an explicit promotion action.
+CREATE TABLE IF NOT EXISTS session_memory (
+    memory_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    session_id TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    layer TEXT NOT NULL CHECK(layer IN ('project','session','run')),
+    kind TEXT NOT NULL DEFAULT 'note',
+    content TEXT NOT NULL,
+    source_ref TEXT DEFAULT '',
+    dedup_key TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (project_id, session_id, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_session_memory_scope ON session_memory(project_id, session_id);
+
+-- Plugin conformance reports (M3).  Bound to the plugin version/ABI so an
+-- upgraded plugin makes an old report visibly stale instead of silently
+-- "passed".
+CREATE TABLE IF NOT EXISTS plugin_conformance (
+    check_id TEXT PRIMARY KEY,
+    plugin_name TEXT NOT NULL,
+    plugin_version TEXT DEFAULT '',
+    plugin_fingerprint TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','passed','failed')),
+    checks_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_plugin_conformance_plugin
+    ON plugin_conformance(plugin_name, created_at DESC);
 """
 
 
@@ -516,6 +594,7 @@ class Database:
             (18, "paper_categories", self._migrate_add_paper_categories),
             (19, "claim_provenance", self._migrate_add_claim_provenance),
             (20, "embedding_revision", self._migrate_add_embedding_revision),
+            (21, "project_scope", self._migrate_add_project_scope),
         ]
 
         for version, name, fn in migrations:
@@ -884,6 +963,100 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_paper_cite_keys_cited
                 ON paper_cite_keys(cited_key);
             """
+        )
+
+    def _migrate_add_project_scope(self) -> None:
+        """v21: project namespace, WebUI auth sessions, memory, conformance.
+
+        New databases already carry the tables and the ``project_id`` column
+        via ``SCHEMA_SQL``; this migration records the version and upgrades
+        pre-v21 databases in place.  It is idempotent: every step re-checks
+        the object it is about to create or alter, so applying it twice (or on
+        a database where a subset already exists) is a no-op.
+        """
+        from drbrain.projects import DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME
+
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                workspace_name TEXT UNIQUE,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS webui_sessions (
+                session_id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                revoked_at REAL,
+                remote_addr TEXT DEFAULT '',
+                user_agent TEXT DEFAULT ''
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_webui_sessions_token
+                ON webui_sessions(token_hash);
+            CREATE TABLE IF NOT EXISTS webui_audit (
+                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT NOT NULL,
+                detail TEXT DEFAULT '',
+                remote_addr TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_webui_audit_event
+                ON webui_audit(event, created_at);
+            CREATE TABLE IF NOT EXISTS session_memory (
+                memory_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                session_id TEXT DEFAULT '',
+                run_id TEXT DEFAULT '',
+                layer TEXT NOT NULL CHECK(layer IN ('project','session','run')),
+                kind TEXT NOT NULL DEFAULT 'note',
+                content TEXT NOT NULL,
+                source_ref TEXT DEFAULT '',
+                dedup_key TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (project_id, session_id, dedup_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_memory_scope
+                ON session_memory(project_id, session_id);
+            CREATE TABLE IF NOT EXISTS plugin_conformance (
+                check_id TEXT PRIMARY KEY,
+                plugin_name TEXT NOT NULL,
+                plugin_version TEXT DEFAULT '',
+                plugin_fingerprint TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','passed','failed')),
+                checks_json TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_conformance_plugin
+                ON plugin_conformance(plugin_name, created_at DESC);
+            """
+        )
+        session_cols = [
+            r[1] for r in self.conn.execute("PRAGMA table_info(agent_sessions)").fetchall()
+        ]
+        if "project_id" not in session_cols:
+            # SQLite stores the default as schema text, so the identifier is
+            # interpolated (it is a fixed module constant, never user input).
+            self.conn.execute(
+                "ALTER TABLE agent_sessions ADD COLUMN project_id TEXT NOT NULL "
+                f"DEFAULT '{DEFAULT_PROJECT_ID}'"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_project "
+            "ON agent_sessions(project_id, status)"
+        )
+        self.conn.execute(
+            "INSERT OR IGNORE INTO projects(project_id, name, description, is_default) "
+            "VALUES (?, ?, '', 1)",
+            (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME),
         )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -2324,6 +2497,70 @@ class Database:
         ]
         return dict(zip(cols, row))
 
+    def list_papers(
+        self,
+        *,
+        paper_ids: list[str] | None = None,
+        query: str = "",
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Paged paper listing, optionally restricted to a membership set.
+
+        ``paper_ids=None`` lists the whole library (the default project);
+        ``query`` matches title/authors/abstract with LIKE escaping so a user
+        supplied ``%`` cannot turn into a wildcard.  Returns ``(rows, total)``
+        where ``total`` is the unpaged count for the same filters.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if paper_ids is not None:
+            # json_each keeps the statement valid for large workspaces without
+            # building one SQL placeholder per paper id.
+            clauses.append("p.local_id IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(list(paper_ids)))
+        if status:
+            clauses.append("p.status = ?")
+            params.append(status)
+        q = query.strip()
+        if q:
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            clauses.append(
+                "(p.title LIKE ? ESCAPE '\\' OR p.authors LIKE ? ESCAPE '\\' "
+                "OR p.abstract LIKE ? ESCAPE '\\')"
+            )
+            params.extend([like, like, like])
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        total_row = self.conn.execute(
+            f"SELECT COUNT(*) FROM papers p {where}", tuple(params)
+        ).fetchone()
+        rows = self.conn.execute(
+            f"""
+            SELECT p.local_id, p.title, p.abstract, p.year, p.paper_type, p.status,
+                   p.journal, p.authors, p.citation_count, p.categories, p.updated_at
+            FROM papers p {where}
+            ORDER BY COALESCE(p.updated_at, p.created_at) DESC, p.local_id
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params) + (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+        cols = [
+            "local_id",
+            "title",
+            "abstract",
+            "year",
+            "paper_type",
+            "status",
+            "journal",
+            "authors",
+            "citation_count",
+            "categories",
+            "updated_at",
+        ]
+        return [dict(zip(cols, row)) for row in rows], int(total_row[0] if total_row else 0)
+
     def get_concepts_by_paper(self, local_id: str) -> list[dict]:
         """Get all concepts for a paper."""
         rows = self.conn.execute(
@@ -2822,3 +3059,486 @@ class Database:
         """Serialize callers sharing this database's batch-write lock."""
         with self._write_lock:
             yield
+
+    # -- Project scope (v21) --
+
+    def upsert_project(
+        self,
+        project_id: str,
+        name: str,
+        description: str = "",
+        workspace_name: str | None = None,
+        *,
+        is_default: bool = False,
+    ) -> None:
+        """Create or rename a project.
+
+        The ``project_id`` is the durable identity: re-running this with the
+        same id but a new name renames the project without breaking the
+        sessions/runs that reference it.
+        """
+        if not str(project_id).strip() or not str(name).strip():
+            raise ValueError("project id and name must not be empty")
+        with self._write_scope():
+            self.conn.execute(
+                """
+                INSERT INTO projects(project_id, name, description, workspace_name, is_default)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(project_id) DO UPDATE SET
+                    name = excluded.name,
+                    description = excluded.description,
+                    workspace_name = excluded.workspace_name,
+                    is_default = excluded.is_default,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    str(project_id),
+                    _redact_payload(name),
+                    _redact_payload(description),
+                    workspace_name,
+                    1 if is_default else 0,
+                ),
+            )
+
+    def get_project(self, project_id: str) -> dict | None:
+        """Return one project row as a plain dict."""
+        row = self.conn.execute(
+            "SELECT project_id, name, description, workspace_name, is_default "
+            "FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        return self._project_row(row)
+
+    def find_project_by_workspace(self, workspace_name: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT project_id, name, description, workspace_name, is_default "
+            "FROM projects WHERE workspace_name = ?",
+            (workspace_name,),
+        ).fetchone()
+        return self._project_row(row)
+
+    def list_projects(self) -> list[dict]:
+        """List projects, default first, then most recently touched."""
+        rows = self.conn.execute(
+            """
+            SELECT project_id, name, description, workspace_name, is_default
+            FROM projects ORDER BY is_default DESC, name COLLATE NOCASE
+            """
+        ).fetchall()
+        return [self._project_row(row) for row in rows]
+
+    @staticmethod
+    def _project_row(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "project_id": str(row[0]),
+            "name": str(row[1] or ""),
+            "description": str(row[2] or ""),
+            "workspace_name": row[3] if row[3] is None else str(row[3]),
+            "is_default": bool(row[4]),
+        }
+
+    # -- WebUI login sessions --
+
+    def insert_webui_session(
+        self,
+        session_id: str,
+        token_hash: str,
+        *,
+        expires_at: float,
+        created_at: float,
+        remote_addr: str = "",
+        user_agent: str = "",
+    ) -> None:
+        """Persist one browser login session (hashes only, never the token)."""
+        with self._write_scope():
+            self.conn.execute(
+                """
+                INSERT INTO webui_sessions
+                    (session_id, token_hash, created_at, last_seen_at, expires_at,
+                     remote_addr, user_agent)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    token_hash,
+                    float(created_at),
+                    float(created_at),
+                    float(expires_at),
+                    _redact_payload(remote_addr),
+                    _redact_payload(user_agent),
+                ),
+            )
+
+    def find_webui_session_by_hash(self, token_hash: str) -> dict | None:
+        """Return a live login session for a cookie hash, or ``None``."""
+        row = self.conn.execute(
+            """
+            SELECT session_id, token_hash, created_at, last_seen_at, expires_at, revoked_at
+            FROM webui_sessions WHERE token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": str(row[0]),
+            "token_hash": str(row[1]),
+            "created_at": float(row[2]),
+            "last_seen_at": float(row[3]),
+            "expires_at": float(row[4]),
+            "revoked_at": None if row[5] is None else float(row[5]),
+        }
+
+    def touch_webui_session(self, session_id: str, *, last_seen_at: float) -> None:
+        with self._write_scope():
+            self.conn.execute(
+                "UPDATE webui_sessions SET last_seen_at = ? WHERE session_id = ?",
+                (float(last_seen_at), session_id),
+            )
+
+    def revoke_webui_session(self, session_id: str, *, revoked_at: float) -> None:
+        with self._write_scope():
+            self.conn.execute(
+                "UPDATE webui_sessions SET revoked_at = ? "
+                "WHERE session_id = ? AND revoked_at IS NULL",
+                (float(revoked_at), session_id),
+            )
+
+    def revoke_all_webui_sessions(self, *, revoked_at: float) -> int:
+        """Revoke every live login session; returns the number revoked."""
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "UPDATE webui_sessions SET revoked_at = ? WHERE revoked_at IS NULL",
+                (float(revoked_at),),
+            )
+            return int(cursor.rowcount or 0)
+
+    def list_webui_sessions(self, *, limit: int = 20, live_only: bool = True) -> list[dict]:
+        where = "WHERE revoked_at IS NULL" if live_only else ""
+        rows = self.conn.execute(
+            f"""
+            SELECT session_id, created_at, last_seen_at, expires_at, revoked_at,
+                   remote_addr
+            FROM webui_sessions {where}
+            ORDER BY last_seen_at DESC LIMIT ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [
+            {
+                "session_id": str(r[0]),
+                "created_at": float(r[1]),
+                "last_seen_at": float(r[2]),
+                "expires_at": float(r[3]),
+                "revoked_at": None if r[4] is None else float(r[4]),
+                "remote_addr": str(r[5] or ""),
+            }
+            for r in rows
+        ]
+
+    def record_webui_audit(self, event: str, detail: str = "", remote_addr: str = "") -> None:
+        with self._write_scope():
+            self.conn.execute(
+                "INSERT INTO webui_audit(event, detail, remote_addr) VALUES (?, ?, ?)",
+                (str(event), _redact_payload(detail), _redact_payload(remote_addr)),
+            )
+
+    def list_webui_audit(self, *, limit: int = 50) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT event, detail, remote_addr, created_at "
+            "FROM webui_audit ORDER BY audit_id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [
+            {
+                "event": str(r[0]),
+                "detail": str(r[1] or ""),
+                "remote_addr": str(r[2] or ""),
+                "created_at": r[3],
+            }
+            for r in rows
+        ]
+
+    # -- Research conversations --
+
+    def list_agent_sessions(
+        self,
+        project_id: str,
+        *,
+        status: str = "active",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """List conversation sessions scoped to one project."""
+        rows = self.conn.execute(
+            """
+            SELECT s.session_id, s.title, s.status, s.created_at, s.updated_at,
+                   (SELECT COUNT(*) FROM agent_messages m WHERE m.session_id = s.session_id)
+                       AS messages
+            FROM agent_sessions s
+            WHERE s.project_id = ? AND s.status = ?
+            ORDER BY s.updated_at DESC, s.session_id
+            LIMIT ? OFFSET ?
+            """,
+            (project_id, status, max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+        return [
+            {
+                "session_id": str(r[0]),
+                "title": str(r[1] or ""),
+                "status": str(r[2]),
+                "created_at": r[3],
+                "updated_at": r[4],
+                "messages": int(r[5] or 0),
+            }
+            for r in rows
+        ]
+
+    def count_agent_sessions(self, project_id: str, *, status: str = "active") -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM agent_sessions WHERE project_id = ? AND status = ?",
+            (project_id, status),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_agent_session(self, session_id: str) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT session_id, title, system_prompt, status, model_config,
+                   owner_principal, project_id, created_at, updated_at
+            FROM agent_sessions WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": str(row[0]),
+            "title": str(row[1] or ""),
+            "system_prompt": str(row[2] or ""),
+            "status": str(row[3]),
+            "model_config": str(row[4] or "{}"),
+            "owner_principal": str(row[5] or ""),
+            "project_id": str(row[6] or ""),
+            "created_at": row[7],
+            "updated_at": row[8],
+        }
+
+    def set_session_project(self, session_id: str, project_id: str) -> None:
+        with self._write_scope():
+            self.conn.execute(
+                "UPDATE agent_sessions SET project_id = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE session_id = ?",
+                (project_id, session_id),
+            )
+
+    def get_agent_messages(
+        self, session_id: str, *, after_seq: int = -1, limit: int = 200
+    ) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT msg_id, seq, role, content, tool_name, created_at
+            FROM agent_messages
+            WHERE session_id = ? AND seq > ?
+            ORDER BY seq LIMIT ?
+            """,
+            (session_id, int(after_seq), max(1, int(limit))),
+        ).fetchall()
+        return [
+            {
+                "msg_id": int(r[0]),
+                "seq": int(r[1]),
+                "role": str(r[2]),
+                "content": str(r[3] or ""),
+                "tool_name": str(r[4] or ""),
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    def next_agent_message_seq(self, session_id: str) -> int:
+        row = self.conn.execute(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM agent_messages WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    # -- Session memory --
+
+    def insert_session_memory(
+        self,
+        memory_id: str,
+        project_id: str,
+        session_id: str,
+        layer: str,
+        content: str,
+        *,
+        run_id: str = "",
+        kind: str = "note",
+        source_ref: str = "",
+        dedup_key: str = "",
+        now: float | None = None,
+    ) -> bool:
+        """Insert one memory entry; duplicate ``(project, session, dedup_key)`` is a no-op.
+
+        Returns ``True`` when a new row was written.  Replaying the same run
+        settlement therefore cannot duplicate memory, which is what makes the
+        settle→memory write-back idempotent.
+        """
+        if layer not in ("project", "session", "run"):
+            raise ValueError(f"invalid memory layer: {layer!r}")
+        timestamp = time.time() if now is None else float(now)
+        key = dedup_key or memory_id
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """
+                INSERT OR IGNORE INTO session_memory
+                    (memory_id, project_id, session_id, run_id, layer, kind,
+                     content, source_ref, dedup_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory_id,
+                    project_id,
+                    session_id,
+                    run_id,
+                    layer,
+                    kind,
+                    _redact_payload(content),
+                    source_ref,
+                    key,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            return bool(cursor.rowcount)
+
+    def list_session_memory(
+        self,
+        project_id: str,
+        *,
+        session_id: str | None = None,
+        layers: tuple[str, ...] | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        clauses = ["project_id = ?"]
+        params: list = [project_id]
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if layers:
+            clauses.append("layer IN (" + ",".join("?" for _ in layers) + ")")
+            params.extend(layers)
+        params.append(max(1, int(limit)))
+        rows = self.conn.execute(
+            f"""
+            SELECT memory_id, session_id, run_id, layer, kind, content, source_ref,
+                   dedup_key, created_at, updated_at
+            FROM session_memory WHERE {" AND ".join(clauses)}
+            ORDER BY created_at DESC, memory_id LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                "memory_id": str(r[0]),
+                "session_id": str(r[1] or ""),
+                "run_id": str(r[2] or ""),
+                "layer": str(r[3]),
+                "kind": str(r[4]),
+                "content": str(r[5] or ""),
+                "source_ref": str(r[6] or ""),
+                "dedup_key": str(r[7] or ""),
+                "created_at": r[8],
+                "updated_at": r[9],
+            }
+            for r in rows
+        ]
+
+    # -- Plugin conformance --
+
+    def insert_plugin_conformance(
+        self,
+        check_id: str,
+        plugin_name: str,
+        plugin_version: str,
+        plugin_fingerprint: str,
+        status: str,
+        checks_json: str,
+        *,
+        completed_at: float | None = None,
+    ) -> None:
+        if status not in ("pending", "passed", "failed"):
+            raise ValueError(f"invalid conformance status: {status!r}")
+        with self._write_scope():
+            self.conn.execute(
+                """
+                INSERT INTO plugin_conformance
+                    (check_id, plugin_name, plugin_version, plugin_fingerprint,
+                     status, checks_json, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(check_id) DO UPDATE SET
+                    plugin_name = excluded.plugin_name,
+                    plugin_version = excluded.plugin_version,
+                    plugin_fingerprint = excluded.plugin_fingerprint,
+                    status = excluded.status,
+                    checks_json = excluded.checks_json,
+                    completed_at = excluded.completed_at
+                """,
+                (
+                    check_id,
+                    plugin_name,
+                    plugin_version,
+                    plugin_fingerprint,
+                    status,
+                    checks_json,
+                    completed_at,
+                ),
+            )
+
+    def get_plugin_conformance(self, check_id: str) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT check_id, plugin_name, plugin_version, plugin_fingerprint,
+                   status, checks_json, created_at, completed_at
+            FROM plugin_conformance WHERE check_id = ?
+            """,
+            (check_id,),
+        ).fetchone()
+        return self._conformance_row(row)
+
+    def list_plugin_conformance(self, plugin_name: str, *, limit: int = 5) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT check_id, plugin_name, plugin_version, plugin_fingerprint,
+                   status, checks_json, created_at, completed_at
+            FROM plugin_conformance WHERE plugin_name = ?
+            ORDER BY created_at DESC LIMIT ?
+            """,
+            (plugin_name, max(1, int(limit))),
+        ).fetchall()
+        return [self._conformance_row(r) for r in rows]
+
+    @staticmethod
+    def _conformance_row(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        checks: list = []
+        try:
+            parsed = json.loads(row[5] or "[]")
+            if isinstance(parsed, list):
+                checks = parsed
+        except (TypeError, ValueError):
+            checks = []
+        return {
+            "check_id": str(row[0]),
+            "plugin_name": str(row[1]),
+            "plugin_version": str(row[2] or ""),
+            "plugin_fingerprint": str(row[3] or ""),
+            "status": str(row[4]),
+            "checks": checks,
+            "created_at": row[6],
+            "completed_at": row[7],
+        }

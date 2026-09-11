@@ -46,6 +46,7 @@ from drbrain.loop.workflow import (
     ResearchLoopWorkflow,
     _job_log_has_number,
 )
+from drbrain.projects import DEFAULT_PROJECT_ID
 from drbrain.security import REDACTED, is_sensitive_key
 
 
@@ -1439,6 +1440,8 @@ class ResearchDirector:
         stagnation_cycles: int = 3,
         max_adaptations: int = 2,
         budget: Mapping[str, int | float] | None = None,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Run research cycles until stagnation or ``max_cycles``; return the state.
 
@@ -1446,6 +1449,10 @@ class ResearchDirector:
         direction is recorded as a dead end and the no-gain counter resets so
         the loop *pivots* and keeps going — only after ``max_adaptations``
         pivots does it stop.
+
+        ``project_id``/``session_id`` scope the durable run identity (ledger
+        v9): the same topic text in another project or conversation is a
+        different run, and a session observes its own runs.
         """
         ledger = self._ledger()
         try:
@@ -1457,7 +1464,7 @@ class ResearchDirector:
                 "[director] cannot capture RAG generation; disabling RAG evidence: %s", exc
             )
             captured_generation = None
-        existing_run = ledger.get_run(topic)
+        existing_run = ledger.get_run(topic, project_id=project_id, session_id=session_id)
         if existing_run is not None:
             # A prior process may have committed a cycle before its Markdown / JSONL
             # projection finished. Replay that committed fact before deriving the
@@ -1537,6 +1544,8 @@ class ResearchDirector:
             config=config,
             budget=effective_budget,
             legacy_snapshot=state if legacy_projection else None,
+            project_id=project_id,
+            session_id=session_id,
         )
         stored_generation = run.config.get("rag_generation")
         stored_evidence_requirement = run.config.get("require_rag_evidence")

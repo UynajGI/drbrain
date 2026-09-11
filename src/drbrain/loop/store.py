@@ -19,11 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from drbrain.loop.state import RUN_CREATED, RUN_FAILED, RUN_RUNNING
+from drbrain.projects import DEFAULT_PROJECT_ID
 from drbrain.runtime import RuntimeContext
 from drbrain.security import redact_sensitive, redact_sensitive_text
 from drbrain.storage.connection import connect_wal
 
-LEDGER_SCHEMA_VERSION = 8
+LEDGER_SCHEMA_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,11 @@ class LedgerRun:
     # Default preserves direct construction by older callers.
     config: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
+    # Scope (v9): projects/sessions namespace run identity.  Legacy rows and
+    # CLI-created runs belong to the implicit default project.
+    project_id: str = DEFAULT_PROJECT_ID
+    session_id: str = ""
+    client_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +104,15 @@ class RunExecutionBlockedError(RuntimeError):
 
 class RunBudgetExceededError(RunExecutionBlockedError):
     """Raised once a configured durable run budget would be exceeded."""
+
+
+class AmbiguousRunError(ValueError):
+    """Raised when a topic resolves to more than one run inside its scope.
+
+    Run identity is ``(project, session, topic)`` since ledger v9.  A topic
+    lookup without a session can match several runs; callers must ask by
+    ``run_id`` instead of silently picking one.
+    """
 
 
 def _as_json(value: Any) -> str:
@@ -181,12 +196,15 @@ class RunLedger:
 
             CREATE TABLE IF NOT EXISTS research_runs (
                 run_id TEXT PRIMARY KEY,
-                topic TEXT NOT NULL UNIQUE,
+                topic TEXT NOT NULL,
                 status TEXT NOT NULL,
                 schema_version INTEGER NOT NULL,
                 config_json TEXT NOT NULL DEFAULT '{}',
                 budget_json TEXT NOT NULL DEFAULT '{}',
                 last_projected_event INTEGER NOT NULL DEFAULT 0,
+                project_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL DEFAULT '',
+                client_request_id TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 completed_at REAL,
@@ -491,29 +509,135 @@ class RunLedger:
                     "ALTER TABLE research_approval_decisions "
                     "ADD COLUMN consumed_by_tool_call_id TEXT"
                 )
+        if current < 9:
+            self._migrate_scoped_runs(conn)
         if current < LEDGER_SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO ledger_schema_versions(version, applied_at) VALUES (?, ?)",
                 (LEDGER_SCHEMA_VERSION, time.time()),
             )
 
-    def get_run(self, topic: str) -> LedgerRun | None:
+    def _migrate_scoped_runs(self, conn: sqlite3.Connection) -> None:
+        """v9: scope run identity by (project, session, topic) + idempotency key.
+
+        ``research_runs`` previously carried a global ``topic UNIQUE``
+        constraint, so two projects could not reuse a topic.  SQLite cannot
+        drop a constraint in place, so the table is rebuilt following the
+        documented procedure: foreign-key enforcement is suspended for the
+        copy and ``legacy_alter_table`` keeps the child tables' references
+        pointing at the (renamed) new table.  Existing rows are legacy data:
+        they belong to the default project and have no session.
+        """
+        columns = {
+            str(column["name"]) for column in conn.execute("PRAGMA table_info(research_runs)")
+        }
+        if "project_id" not in columns:
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute("PRAGMA legacy_alter_table=ON")
+            try:
+                conn.executescript(
+                    f"""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE research_runs_v9 (
+                        run_id TEXT PRIMARY KEY,
+                        topic TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL,
+                        config_json TEXT NOT NULL DEFAULT '{{}}',
+                        budget_json TEXT NOT NULL DEFAULT '{{}}',
+                        last_projected_event INTEGER NOT NULL DEFAULT 0,
+                        project_id TEXT NOT NULL DEFAULT '',
+                        session_id TEXT NOT NULL DEFAULT '',
+                        client_request_id TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        completed_at REAL,
+                        CHECK (status IN (
+                            'created', 'running', 'paused', 'succeeded', 'failed', 'cancelled'
+                        ))
+                    );
+                    INSERT INTO research_runs_v9(
+                        run_id, topic, status, schema_version, config_json, budget_json,
+                        last_projected_event, project_id, session_id, client_request_id,
+                        created_at, updated_at, completed_at
+                    )
+                    SELECT run_id, topic, status, schema_version, config_json, budget_json,
+                           last_projected_event, '{DEFAULT_PROJECT_ID}', '', NULL,
+                           created_at, updated_at, completed_at
+                    FROM research_runs;
+                    DROP TABLE research_runs;
+                    ALTER TABLE research_runs_v9 RENAME TO research_runs;
+                    COMMIT;
+                    """
+                )
+            finally:
+                conn.execute("PRAGMA legacy_alter_table=OFF")
+                conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_scope_topic "
+            "ON research_runs(project_id, session_id, topic)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_client_request "
+            "ON research_runs(client_request_id) WHERE client_request_id IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_research_runs_scope "
+            "ON research_runs(project_id, updated_at DESC)"
+        )
+        # Backfill rows created between v9 rollout and this run (columns exist
+        # but scope was never stamped): legacy/default attribution only.
+        conn.execute(
+            "UPDATE research_runs SET project_id = ? WHERE project_id = ''",
+            (DEFAULT_PROJECT_ID,),
+        )
+
+    def get_run(
+        self,
+        topic: str,
+        *,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str | None = None,
+    ) -> LedgerRun | None:
+        """Resolve a run by topic inside a project scope.
+
+        ``session_id=None`` matches any session of the project; if the same
+        topic text exists in more than one session the lookup is ambiguous and
+        raises :class:`AmbiguousRunError` — callers should resolve by
+        ``run_id`` instead of guessing.
+        """
+        project = str(project_id or DEFAULT_PROJECT_ID)
         with self.transaction() as conn:
-            row = conn.execute(
-                """
-                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
-                FROM research_runs WHERE topic = ?
+            scope_sql = "topic = ? AND project_id = ?"
+            params: list[Any] = [topic, project]
+            if session_id is not None:
+                scope_sql += " AND session_id = ?"
+                params.append(str(session_id or ""))
+            rows = conn.execute(
+                f"""
+                SELECT run_id, topic, status, last_projected_event, config_json, budget_json,
+                       project_id, session_id, client_request_id
+                FROM research_runs WHERE {scope_sql}
+                ORDER BY updated_at DESC
                 """,
-                (topic,),
-            ).fetchone()
-            return self._run_from_row(row)
+                tuple(params),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise AmbiguousRunError(
+                f"topic {topic!r} matches {len(rows)} runs in project {project!r}; query by run_id"
+            )
+        return self._run_from_row(rows[0])
 
     def get_run_by_id(self, run_id: str) -> LedgerRun | None:
         """Return one run by stable ID for read-only operational interfaces."""
         with self.transaction() as conn:
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
+                SELECT run_id, topic, status, last_projected_event, config_json, budget_json,
+                       project_id, session_id, client_request_id
                 FROM research_runs WHERE run_id = ?
                 """,
                 (run_id,),
@@ -995,15 +1119,42 @@ class RunLedger:
         config: Mapping[str, Any] | None = None,
         budget: Mapping[str, Any] | None = None,
         legacy_snapshot: Mapping[str, Any] | None = None,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str = "",
+        client_request_id: str | None = None,
     ) -> LedgerRun:
-        """Return the stable run for ``topic``, importing legacy state once."""
+        """Return the stable run for ``(project, session, topic)``, importing legacy state once.
+
+        ``client_request_id`` makes the create idempotent for retried HTTP
+        requests: the same key always resolves to the same run, even when the
+        caller resends the request after a timeout.  A run is identified by
+        its topic *inside its project and session*; the same topic text in a
+        different project or conversation is a different run.
+        """
+        project = str(project_id or DEFAULT_PROJECT_ID)
+        session = str(session_id or "")
+        request_key = str(client_request_id).strip() if client_request_id else None
         with self.transaction() as conn:
+            if request_key:
+                row = conn.execute(
+                    """
+                    SELECT run_id, topic, status, last_projected_event, config_json,
+                           budget_json, project_id, session_id, client_request_id
+                    FROM research_runs WHERE client_request_id = ?
+                    """,
+                    (request_key,),
+                ).fetchone()
+                if row is not None:
+                    existing = self._run_from_row(row)
+                    assert existing is not None
+                    return existing
             row = conn.execute(
                 """
-                SELECT run_id, topic, status, last_projected_event, config_json, budget_json
-                FROM research_runs WHERE topic = ?
+                SELECT run_id, topic, status, last_projected_event, config_json,
+                       budget_json, project_id, session_id, client_request_id
+                FROM research_runs WHERE topic = ? AND project_id = ? AND session_id = ?
                 """,
-                (topic,),
+                (topic, project, session),
             ).fetchone()
             if row is not None:
                 existing = self._run_from_row(row)
@@ -1021,8 +1172,9 @@ class RunLedger:
                 """
                 INSERT INTO research_runs(
                     run_id, topic, status, schema_version, config_json, budget_json,
-                    last_projected_event, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    last_projected_event, project_id, session_id, client_request_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1031,6 +1183,9 @@ class RunLedger:
                     LEDGER_SCHEMA_VERSION,
                     _as_json(safe_config),
                     _as_json(safe_budget),
+                    project,
+                    session,
+                    request_key,
                     now,
                     now,
                 ),
@@ -1040,7 +1195,12 @@ class RunLedger:
                 run_id,
                 actor="director",
                 event_type="run_created",
-                payload={"topic": topic, "schema_version": LEDGER_SCHEMA_VERSION},
+                payload={
+                    "topic": topic,
+                    "schema_version": LEDGER_SCHEMA_VERSION,
+                    "project_id": project,
+                    "session_id": session,
+                },
             )
             if legacy_snapshot is not None:
                 self.append_event(
@@ -1050,7 +1210,17 @@ class RunLedger:
                     event_type="legacy_snapshot_imported",
                     payload={"state": dict(legacy_snapshot)},
                 )
-            return LedgerRun(run_id, topic, RUN_CREATED, 0, safe_config, safe_budget)
+            return LedgerRun(
+                run_id,
+                topic,
+                RUN_CREATED,
+                0,
+                safe_config,
+                safe_budget,
+                project,
+                session,
+                request_key,
+            )
 
     def record_resume(
         self,
@@ -1875,6 +2045,12 @@ class RunLedger:
             return None
         config = redact_sensitive(_from_json(row["config_json"], {}))
         budget = redact_sensitive(_from_json(row["budget_json"], {}))
+        keys = set(row.keys())
+        project_id = (
+            str(row["project_id"]) if "project_id" in keys and row["project_id"] else ""
+        ) or DEFAULT_PROJECT_ID
+        session_id = str(row["session_id"]) if "session_id" in keys else ""
+        request_key = row["client_request_id"] if "client_request_id" in keys else None
         return LedgerRun(
             run_id=str(row["run_id"]),
             topic=str(row["topic"]),
@@ -1882,6 +2058,9 @@ class RunLedger:
             last_projected_event=int(row["last_projected_event"]),
             config=dict(config) if isinstance(config, Mapping) else {},
             budget=dict(budget) if isinstance(budget, Mapping) else {},
+            project_id=project_id,
+            session_id=session_id,
+            client_request_id=None if request_key is None else str(request_key),
         )
 
     @staticmethod
