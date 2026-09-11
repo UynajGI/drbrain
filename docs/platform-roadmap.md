@@ -35,9 +35,10 @@
 | v1 单人 | 本地 token 认证；项目作用域、会话/记忆；运行实时视图与结论下载；插件发现/符合性报告；脱敏设置查看 | 首次配置完成后，单人在浏览器完成“选项目 → 检索证据 → 会话 → 发起研究 → 观察裁决 → 导出结论” |
 | v2 产品 | 多用户 + 部署包（容器化）+ 真前端框架迁移 | 非本机用户可注册使用，核心功能与 v1 对齐 |
 
-状态（2026-09-11）：v1 单人版已在 `feat/webui-m1` 落地——作用域迁移（DB v21 + ledger v9）、
+状态（2026-09-11）：v1 单人版已合入 main（[PR #68](https://github.com/UynajGI/drbrain/pull/68)，squash `4604ee9`）——作用域迁移（DB v21 + ledger v9）、
 FastAPI + token 认证、概览/文献库/会话/研究运行/插件/设置六页、SSE 运行流与报告下载；
-聚焦测试（`tests/test_project_scope.py`、`tests/test_app.py`、`tests/test_webui.py`）全部通过。
+聚焦测试（`tests/test_project_scope.py`、`tests/test_app.py`、`tests/test_webui.py`）60 passed，
+完整非集成套件 3273 passed；评审两轮共 70 条意见已逐条处理并 resolve，CI 全绿。
 浏览器实机验收与真实 provider 联调待执行，见 [webui-design.md §7.1](webui-design.md#71-发布验收清单)。
 
 开发拆分与验收以 [WebUI 设计 §7](webui-design.md#7-里程碑与验收) 为准：

@@ -1,14 +1,14 @@
 # WebUI 设计：单人版 → 产品
 
-> 状态：v1 已实现（分支 `feat/webui-m1`）——M0 作用域与迁移、M1a 服务迁移与认证、
-> M1b 文献路径、M2a 会话与发起、M2b SSE/裁决/导出、M3 插件与设置均已落地；
+> 状态：v1 已合入 main（PR #68，squash `4604ee9`；`feat/webui-m1` 分支已删除）——M0 作用域与迁移、
+> M1a 服务迁移与认证、M1b 文献路径、M2a 会话与发起、M2b SSE/裁决/导出、M3 插件与设置均已落地；
 > 浏览器实机视觉验收与 release-time provider 联调仍待执行 · 更新日期：2026-09-11
 > 路线图定位见 [platform-roadmap.md](platform-roadmap.md)；本文件是 webui 主线的设计契约。
 
 ## 0. 现状核对与改进优先级
 
-当前已有 stdlib HTTP + 静态单页原型，下面的 FastAPI/htmx 方案是迁移目标。
-本轮做了代码、计划和接口测试核对，未做浏览器实机视觉验收，也未实现新界面。
+v1 已按本契约完成并合入 main（FastAPI + htmx + token 认证，见下方实现记录与 §7）。
+原 stdlib HTTP + 静态单页原型已在 M1a 迁移后删除；本轮未做浏览器实机视觉验收。
 
 | 优先级 | 已核实的缺口 | 开发指导与证据 |
 |---|---|---|
@@ -19,8 +19,10 @@
 | P1 | 路线图要求浏览器导出结论，计划没有导出 API；插件“启停/健康”也超出当前列表能力 | M2b 补运行报告下载；M3 交付发现信息与符合性报告。启停延至生命周期契约就绪，发现状态与健康状态分开。现有 `assets()` 仅提供 CLI 导出命令，`plugins()` 仅返回描述信息 |
 | P1 | 单页原型没有媒体查询和显式输入标签；每次事件更新强制滚到底部；网络异常可能跳过按钮复位 | 将响应式、键盘操作、错误恢复、保留阅读位置加入每个里程碑。依据旧单页原型（`app/static/index.html`，M1a 迁移后随 `server.py` 一并删除）的 `addEvents()`、`doSearch()`、`doAsk()` 与启动处理器 |
 
-实现记录：M0–M3 在 `feat/webui-m1` 落地；聚焦测试
-`.venv/bin/python -m pytest tests/test_project_scope.py tests/test_app.py tests/test_webui.py -q` 全部通过，
+实现记录：M0–M3 已完成并合入 main（PR #68，squash `4604ee9`，2026-09-11）。评审两轮共 70 条意见逐条处理
+并 resolve（CSRF 校验依赖化、SSE 归属预校验、幂等键冲突检测、BM25 项目候选集裁剪、事件历史 before 游标等），
+CI 全绿（lint / typecheck / test / security / code-review）。聚焦测试
+`.venv/bin/python -m pytest tests/test_project_scope.py tests/test_app.py tests/test_webui.py -q` **60 passed**，
 数据库均为真实临时 SQLite；完整非集成套件 `pytest -m "not integration"` **3273 passed / 15 skipped**
 （约 12 分钟，慢测为既有的 layer6/director 用例）。轮子打包已验证包含模板/静态资源/vendored htmx 与许可证
 （`uv build --wheel` 后检查 whl 内容），性能基线见 §7.1（`scripts/webui_baseline.py`）。
@@ -246,7 +248,7 @@ Web 验收覆盖 1440px、1024px、768px 与 320 CSS px 宽度，正文无需横
 | M2b 观察与导出 | SSE、运行状态、claims/证据/计算产物、报告下载 | M2a | 断网补齐不重复；切项目无旧流串入；服务重启后正确呈现持久化状态；浏览器可下载带 run_id/裁决/来源的报告 |
 | M3 插件与设置 | 发现/符合性任务与报告、脱敏配置、token 重置、跨页验收 | UI 部分依赖 M1a；符合性功能依赖插件 v2 | “发现/未检测/检查中/通过/失败/过期”真实区分；重置后旧登录和流失效；六页主路径与回归测试通过 |
 
-落地状态（2026-09-11，`feat/webui-m1`）：M0、M1a、M1b、M2a、M2b、M3 的代码与聚焦测试均已完成——
+落地状态（2026-09-11，已合入 main：PR #68 `4604ee9`）：M0、M1a、M1b、M2a、M2b、M3 的代码与聚焦测试均已完成——
 作用域迁移（DB v21 + ledger v9）、FastAPI + token 认证、五页主路径 + 设置页、SSE、
 报告下载、插件符合性任务与 token 重置。M2a 的“真实配置问答定位来源”与 M3 的浏览器跨页验收
 需要在已配置（llm.models / llamaindex / 浏览器）环境实机执行，见 §7.1。

@@ -266,6 +266,16 @@ data/
 workspace/<name>/       # Paper subsets: workspace.yaml + refs/papers.json
 ```
 
+## Local WebUI (optional)
+
+`drbrain webui` serves a browser workbench over the same database, ledger and
+research runs: literature search and paper detail, persistent sessions, live run
+events (SSE) with claims/evidence and report download, plugin conformance
+reports, and redacted settings. First start prints an access token and stores it
+at `<root>/config/webui_token` (0600); paste it into the login page once.
+See [CLI Reference → WebUI](cli-reference.md#webui-drbrain-webui) for flags and
+the API/SSE endpoints.
+
 ## Next Steps
 
 - [Configuration](configuration.md) -- every setting, default, and provider template

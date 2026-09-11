@@ -239,9 +239,11 @@ A named subset of papers. Stored under `workspace/<name>/` with `workspace.yaml`
 Python CLI framework used by DrBrain. Commands are typer functions registered in
 `cli/main.py`.
 
-**litellm**
-LLM abstraction library. DrBrain uses it for all LLM calls with provider-agnostic
-fallback chains.
+**OpenAI-compatible provider**
+DrBrain's LLM client (`extractor/llm_client.py`) speaks the OpenAI wire formats
+directly (OpenAI SDK) with a YAML-configured fallback chain: Chat Completions by
+default, and the Responses API for models configured with `wire_api: responses`.
+Any provider exposing those endpoints works (OpenAI, DeepSeek, Ollama, vLLM, …).
 
 **MinerU**
 PDF parsing service. Primary parser; PyMuPDF is the fallback.

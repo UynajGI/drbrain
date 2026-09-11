@@ -135,7 +135,7 @@ Copilot 等 AI 编程工具。
 
 `drbrain setup` 交互式引导你完成基础配置（中英双语）：
 
-- LLM API key（任意 litellm provider：OpenAI、Anthropic、Ollama、DeepSeek 等）
+- LLM API key（任意 OpenAI 兼容 provider：OpenAI、DeepSeek、Ollama、vLLM 等）
 - MinerU token（可选；无则用 PyMuPDF 回退解析 PDF）
 - Semantic Scholar / CrossRef / OpenAlex API keys（可选；提高速率限制）
 
