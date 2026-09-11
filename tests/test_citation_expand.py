@@ -38,6 +38,27 @@ def _make_db_with_paper(
     return db
 
 
+def test_citation_cache_is_namespaced_by_runtime_root(tmp_path, monkeypatch):
+    """Embedded root switches must not reuse the previous citation cache."""
+    import drbrain.extractor.citation as citation
+
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    citation._cache = None
+    citation._cache_by_namespace.clear()
+
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root_a))
+    first = citation._get_cache({"api": {"cache_ttl": 300}, "dirs": {"cache": "data/cache"}})
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root_b))
+    second = citation._get_cache({"api": {"cache_ttl": 300}, "dirs": {"cache": "data/cache"}})
+
+    assert first is not second
+    assert first is not None and first._dir == root_a / "data" / "cache"
+    assert second is not None and second._dir == root_b / "data" / "cache"
+
+
 # -- parse_s2_response --
 
 

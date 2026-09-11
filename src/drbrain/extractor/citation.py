@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 import requests
 from loguru import logger as _cit_log
@@ -20,30 +22,40 @@ S2_FIELDS = "title,year,externalIds,authors,citationCount,references,citations"
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_BACKOFF = 2.0  # exponential backoff multiplier in seconds
 
-_cache: ApiCache | None = None
+_cache_by_namespace: dict[str, ApiCache] = {}
+
+
+def _cache_namespace() -> str:
+    """Active runtime root; distinct roots must never share cache files."""
+    return os.environ.get("DRBRAIN_ROOT", "")
 
 
 def _get_cache(config: dict) -> ApiCache | None:
-    """Get or create the API cache from config."""
-    global _cache
+    """Get or create the API cache from config, scoped to the runtime root."""
     cache_ttl = config.get("api", {}).get("cache_ttl")
-    if cache_ttl and cache_ttl > 0:
-        if _cache is None:
-            cache_dir = config.get("dirs", {}).get("cache", "data/cache")
-            try:
-                _cache = ApiCache(
-                    cache_dir,
-                    ttl=cache_ttl,
-                    secrets=(
-                        config.get("api", {}).get("s2_api_key"),
-                        config.get("api", {}).get("openalex_api_key"),
-                    ),
-                )
-            except (OSError, ValueError) as exc:
-                _cit_log.warning("citation cache disabled: {}", type(exc).__name__)
-                _cache = None
-        return _cache
-    return None
+    if not (cache_ttl and cache_ttl > 0):
+        return None
+    namespace = _cache_namespace()
+    cached = _cache_by_namespace.get(namespace)
+    if cached is not None:
+        return cached
+    cache_dir: str | Path = config.get("dirs", {}).get("cache", "data/cache")
+    if namespace:
+        cache_dir = Path(namespace) / cache_dir
+    try:
+        cache = ApiCache(
+            cache_dir,
+            ttl=cache_ttl,
+            secrets=(
+                config.get("api", {}).get("s2_api_key"),
+                config.get("api", {}).get("openalex_api_key"),
+            ),
+        )
+    except (OSError, ValueError) as exc:
+        _cit_log.warning("citation cache disabled: {}", type(exc).__name__)
+        return None
+    _cache_by_namespace[namespace] = cache
+    return cache
 
 
 def fetch_s2_paper(
