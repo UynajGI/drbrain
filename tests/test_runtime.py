@@ -31,6 +31,16 @@ def test_runtime_context_resolves_relative_paths_without_mutating_config(tmp_pat
     assert cfg["db"]["path"] == "data/library.sqlite"
 
 
+def test_runtime_context_scopes_pageindex_storage_path(tmp_path):
+    cfg = {"pageindex": {"storage_path": "data/pageindex"}}
+    context = RuntimeContext.create(tmp_path, run_id="test-run")
+
+    normalized = context.apply_config(cfg)
+
+    assert normalized["pageindex"]["storage_path"] == str(tmp_path / "data/pageindex")
+    assert cfg["pageindex"]["storage_path"] == "data/pageindex"
+
+
 def test_runtime_context_preserves_special_and_explicit_paths(tmp_path):
     external = tmp_path.parent / "external.sqlite"
     cfg = {
