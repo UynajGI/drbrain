@@ -9,13 +9,13 @@ Verifies that:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from drbrain.extractor.cache import ApiCache
 from drbrain.extractor.llm_client import (
-    _build_litellm_kwargs,
+    _build_chat_kwargs,
     _cache_key,
     acall_text_with_fallback,
     acall_with_fallback,
@@ -28,7 +28,7 @@ MODELS = [{"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-test"}]
 
 
 def _mock_response(content: str):
-    """Build a fake litellm response object."""
+    """Build a fake OpenAI SDK response object."""
     resp = MagicMock()
     resp.choices = [MagicMock()]
     resp.choices[0].message.content = content
@@ -60,7 +60,7 @@ class TestCacheKey:
         int(key, 16)  # must be valid hex
 
 
-# ── _build_litellm_kwargs prompt caching ─────────────────────────────────
+# ── _build_chat_kwargs prompt caching ─────────────────────────────────
 
 
 class TestBuildKwargsPromptCaching:
@@ -70,7 +70,7 @@ class TestBuildKwargsPromptCaching:
         """System prompt >= 4000 chars on Anthropic gets cache_control block."""
         cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
         long_sys = "x" * 5000
-        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        kwargs = _build_chat_kwargs(cfg, "hi", long_sys, 100)
         sys_msg = kwargs["messages"][0]
         assert sys_msg["role"] == "system"
         assert isinstance(sys_msg["content"], list)
@@ -81,7 +81,7 @@ class TestBuildKwargsPromptCaching:
     def test_anthropic_short_system_prompt_no_cache_control(self):
         """Short system prompt (<4000) stays plain string even on Anthropic."""
         cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
-        kwargs = _build_litellm_kwargs(cfg, "hi", "short sys", 100)
+        kwargs = _build_chat_kwargs(cfg, "hi", "short sys", 100)
         sys_msg = kwargs["messages"][0]
         assert isinstance(sys_msg["content"], str)
 
@@ -89,7 +89,7 @@ class TestBuildKwargsPromptCaching:
         """OpenAI/others never get cache_control even with long prompts."""
         cfg = {"provider": "openai", "model": "gpt-4o"}
         long_sys = "x" * 5000
-        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        kwargs = _build_chat_kwargs(cfg, "hi", long_sys, 100)
         sys_msg = kwargs["messages"][0]
         assert isinstance(sys_msg["content"], str)
 
@@ -97,7 +97,7 @@ class TestBuildKwargsPromptCaching:
         """Provider 'openai' but model name contains 'claude' (proxy) triggers."""
         cfg = {"provider": "openai", "model": "claude-3-opus", "api_base": "https://proxy"}
         long_sys = "x" * 4500
-        kwargs = _build_litellm_kwargs(cfg, "hi", long_sys, 100)
+        kwargs = _build_chat_kwargs(cfg, "hi", long_sys, 100)
         sys_msg = kwargs["messages"][0]
         assert isinstance(sys_msg["content"], list)
         assert sys_msg["content"][0]["cache_control"] == {"type": "ephemeral"}
@@ -105,7 +105,7 @@ class TestBuildKwargsPromptCaching:
     def test_no_system_prompt_skips_block(self):
         """Empty system_prompt → no system message at all."""
         cfg = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
-        kwargs = _build_litellm_kwargs(cfg, "hi", "", 100)
+        kwargs = _build_chat_kwargs(cfg, "hi", "", 100)
         assert kwargs["messages"][0]["role"] == "user"
 
 
@@ -114,7 +114,7 @@ class TestBuildKwargsPromptCaching:
 
 class TestCallWithFallbackCache:
     def test_second_call_hits_cache(self, tmp_path):
-        """Second identical call must NOT invoke litellm.completion."""
+        """Second identical call must NOT invoke the chat completions API."""
         cache = ApiCache(str(tmp_path / "llm_cache"), ttl=3600)
         call_count = [0]
 
@@ -122,8 +122,9 @@ class TestCallWithFallbackCache:
             call_count[0] += 1
             return _mock_response('{"concepts": []}')
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             r1 = call_with_fallback("prompt-a", MODELS, "sys", _cache=cache)
             r2 = call_with_fallback("prompt-a", MODELS, "sys", _cache=cache)
 
@@ -139,23 +140,25 @@ class TestCallWithFallbackCache:
             call_count[0] += 1
             return _mock_response('{"ok": true}')
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             call_with_fallback("prompt-a", MODELS, "sys", _cache=cache)
             call_with_fallback("prompt-b", MODELS, "sys", _cache=cache)
 
         assert call_count[0] == 2
 
     def test_no_cache_backward_compat(self):
-        """Without _cache, every call hits litellm (original behavior)."""
+        """Without _cache, every call hits the wire (original behavior)."""
         call_count = [0]
 
         def _fake_completion(**kwargs):
             call_count[0] += 1
             return _mock_response('{"v": 1}')
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             r1 = call_with_fallback("p", MODELS)
             r2 = call_with_fallback("p", MODELS)
 
@@ -177,8 +180,9 @@ class TestAcallWithFallbackCache:
             call_count[0] += 1
             return _mock_response('{"async": true}')
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.acompletion.side_effect = _fake_acompletion
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_fake_acompletion)
+        with patch("drbrain.extractor.llm_client._aopenai_client", return_value=client):
             r1 = await acall_with_fallback("p", MODELS, "sys", _cache=cache)
             r2 = await acall_with_fallback("p", MODELS, "sys", _cache=cache)
 
@@ -200,8 +204,9 @@ class TestAcallTextWithFallbackCache:
             call_count[0] += 1
             return _mock_response("plain text response")
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.acompletion.side_effect = _fake_acompletion
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_fake_acompletion)
+        with patch("drbrain.extractor.llm_client._aopenai_client", return_value=client):
             r1 = await acall_text_with_fallback("p", MODELS, "sys", _cache=cache)
             r2 = await acall_text_with_fallback("p", MODELS, "sys", _cache=cache)
 
@@ -214,7 +219,7 @@ class TestAcallTextWithFallbackCache:
 
 
 def _mock_messages_response(text: str):
-    """Build a fake litellm response for call_with_messages."""
+    """Build a fake OpenAI SDK response for call_with_messages."""
     resp = MagicMock()
     resp.choices = [MagicMock()]
     resp.choices[0].message.content = text
@@ -225,7 +230,7 @@ def _mock_messages_response(text: str):
 
 class TestCallWithMessagesCache:
     def test_second_identical_call_hits_cache(self, tmp_path):
-        """Second identical call_with_messages must NOT invoke litellm.completion."""
+        """Second identical call_with_messages must NOT invoke the chat completions API."""
         cache = ApiCache(str(tmp_path / "msg_cache"), ttl=3600)
         call_count = [0]
         msgs = [{"role": "user", "content": "hello"}]
@@ -234,8 +239,9 @@ class TestCallWithMessagesCache:
             call_count[0] += 1
             return _mock_messages_response("hi there")
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             r1 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
             r2 = call_with_messages(msgs, MODELS, _cache=cache, temperature=0)
 
@@ -262,15 +268,16 @@ class TestCallWithMessagesCache:
             call_count[0] += 1
             return _mock_messages_response("response")
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             call_with_messages(msgs_a, MODELS, _cache=cache)
             call_with_messages(msgs_b, MODELS, _cache=cache)
 
         assert call_count[0] == 2
 
     def test_no_cache_backward_compat_messages(self):
-        """Without _cache, every call_with_messages hits litellm."""
+        """Without _cache, every call_with_messages hits the wire."""
         call_count = [0]
         msgs = [{"role": "user", "content": "hello"}]
 
@@ -278,8 +285,9 @@ class TestCallWithMessagesCache:
             call_count[0] += 1
             return _mock_messages_response("response")
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.completion.side_effect = _fake_completion
+        client = MagicMock()
+        client.chat.completions.create.side_effect = _fake_completion
+        with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
             r1 = call_with_messages(msgs, MODELS)
             r2 = call_with_messages(msgs, MODELS)
 
@@ -294,7 +302,7 @@ class TestCallWithMessagesCache:
 class TestAcallWithMessagesCache:
     @pytest.mark.asyncio
     async def test_second_identical_call_hits_cache(self, tmp_path):
-        """Second identical acall_with_messages must NOT invoke litellm.acompletion."""
+        """Second identical acall_with_messages must NOT invoke the async completions API."""
         cache = ApiCache(str(tmp_path / "async_msg_cache"), ttl=3600)
         call_count = [0]
         msgs = [{"role": "user", "content": "hello"}]
@@ -303,8 +311,9 @@ class TestAcallWithMessagesCache:
             call_count[0] += 1
             return _mock_messages_response("async hi")
 
-        with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-            mock_litellm.acompletion.side_effect = _fake_acompletion
+        client = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=_fake_acompletion)
+        with patch("drbrain.extractor.llm_client._aopenai_client", return_value=client):
             r1 = await acall_with_messages(msgs, MODELS, _cache=cache, temperature=0)
             r2 = await acall_with_messages(msgs, MODELS, _cache=cache, temperature=0)
 

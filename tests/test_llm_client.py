@@ -7,6 +7,19 @@ import pytest
 from drbrain.extractor.llm_client import KeyRotator, _log_llm_call, _safe_error
 
 
+def _sdk_client(response=None, side_effect=None, error=None):
+    """Sync OpenAI client mock whose ``chat.completions.create`` is wired."""
+    c = mock.Mock()
+    create = c.chat.completions.create
+    if error is not None:
+        create.side_effect = error
+    elif side_effect is not None:
+        create.side_effect = side_effect
+    else:
+        create.return_value = response
+    return c
+
+
 def test_llm_trace_follows_runtime_root(tmp_path, monkeypatch):
     """The privacy-safe LLM trace must not fall back to the caller cwd."""
     monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
@@ -59,7 +72,10 @@ def test_call_with_fallback_records_metrics():
     mock_response.usage.completion_tokens = 50
 
     with (
-        mock.patch("drbrain.extractor.llm_client.litellm.completion", return_value=mock_response),
+        mock.patch(
+            "drbrain.extractor.llm_client._openai_client",
+            return_value=_sdk_client(response=mock_response),
+        ),
         mock.patch("drbrain.extractor.llm_client._record_llm") as mock_record,
     ):
         from drbrain.extractor.llm_client import call_with_fallback
@@ -81,8 +97,8 @@ def test_call_with_fallback_tries_next_model_on_failure():
 
     with (
         mock.patch(
-            "drbrain.extractor.llm_client.litellm.completion",
-            side_effect=[mock_fail, mock_success],
+            "drbrain.extractor.llm_client._openai_client",
+            return_value=_sdk_client(side_effect=[mock_fail, mock_success]),
         ),
         mock.patch("drbrain.extractor.llm_client._record_llm"),
     ):
@@ -101,8 +117,8 @@ def test_call_with_fallback_tries_next_model_on_failure():
 def test_call_with_fallback_all_fail():
     """When all models fail, returns None."""
     with mock.patch(
-        "drbrain.extractor.llm_client.litellm.completion",
-        side_effect=Exception("All dead"),
+        "drbrain.extractor.llm_client._openai_client",
+        return_value=_sdk_client(error=Exception("All dead")),
     ):
         from drbrain.extractor.llm_client import call_with_fallback
 
@@ -123,8 +139,9 @@ def test_call_with_fallback_can_disable_thinking_for_one_request():
 
     with (
         mock.patch(
-            "drbrain.extractor.llm_client.litellm.completion", return_value=mock_response
-        ) as completion,
+            "drbrain.extractor.llm_client._openai_client",
+            return_value=_sdk_client(response=mock_response),
+        ) as factory,
         mock.patch("drbrain.extractor.llm_client._record_llm"),
         mock.patch("drbrain.extractor.llm_client._log_llm_call"),
     ):
@@ -144,7 +161,9 @@ def test_call_with_fallback_can_disable_thinking_for_one_request():
         )
 
     assert result == {"ok": True}
-    assert completion.call_args.kwargs["extra_body"] == {"enable_thinking": False}
+    assert factory.return_value.chat.completions.create.call_args.kwargs["extra_body"] == {
+        "enable_thinking": False
+    }
 
 
 class TestKeyRotator:
@@ -412,23 +431,28 @@ class TestRateLimitStateMachine:
         _RATE_LIMIT_SM.on_success(cfg, "sk-bad")
         _RATE_LIMIT_SM.on_success(cfg, "sk-good")
 
-        def _side_effect(**kwargs):
-            if kwargs.get("api_key") == "sk-bad":
-                raise Exception("Monthly usage limit reached. Resets in 19 days.")
-            return mock_response
+        def _client_for(api_key, base_url):
+            c = mock.Mock()
+            if api_key == "sk-bad":
+                c.chat.completions.create.side_effect = Exception(
+                    "Monthly usage limit reached. Resets in 19 days."
+                )
+            else:
+                c.chat.completions.create.return_value = mock_response
+            return c
 
         try:
             with (
                 mock.patch(
-                    "drbrain.extractor.llm_client.litellm.completion", side_effect=_side_effect
-                ) as m_comp,
+                    "drbrain.extractor.llm_client._openai_client", side_effect=_client_for
+                ) as m_factory,
                 mock.patch("drbrain.extractor.llm_client._record_llm"),
                 mock.patch("drbrain.extractor.llm_client._log_llm_call"),
             ):
                 result = call_with_fallback("p", [cfg])
             assert result == {"ok": True}
             # sk-bad 被跳过，sk-good 成功
-            used_keys = [c.kwargs.get("api_key") for c in m_comp.call_args_list]
+            used_keys = [c.args[0] for c in m_factory.call_args_list]
             assert "sk-good" in used_keys
             # sk-bad 已进入冷却
             assert not _RATE_LIMIT_SM.is_key_available(cfg, "sk-bad")
@@ -462,16 +486,18 @@ class TestRateLimitStateMachine:
         try:
             with (
                 mock.patch(
-                    "drbrain.extractor.llm_client.litellm.completion", return_value=mock_response
-                ) as m_comp,
+                    "drbrain.extractor.llm_client._openai_client",
+                    return_value=_sdk_client(response=mock_response),
+                ) as m_factory,
                 mock.patch("drbrain.extractor.llm_client._record_llm"),
                 mock.patch("drbrain.extractor.llm_client._log_llm_call"),
             ):
                 result = call_with_fallback("p", [rl_cfg, ok_cfg])
             assert result == {"ok": True}
             # 只调用了 ok_cfg（rl-all 全 key 冷却被跳过）
-            called_models = [c.kwargs["model"] for c in m_comp.call_args_list]
-            assert called_models == ["openai/rl-ok3"]
+            create = m_factory.return_value.chat.completions.create
+            called_models = [c.kwargs["model"] for c in create.call_args_list]
+            assert called_models == ["rl-ok3"]
         finally:
             _RATE_LIMIT_SM.on_success(rl_cfg, "sk-a")
             _RATE_LIMIT_SM.on_success(rl_cfg, "sk-b")

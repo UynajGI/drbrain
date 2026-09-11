@@ -6,18 +6,19 @@ from drbrain.extractor.llm_client import LLMClient, call_with_fallback
 
 
 def test_single_model_call():
-    """LLMClient calls litellm with correct kwargs."""
+    """LLMClient calls the OpenAI SDK chat completions with correct kwargs."""
     models = [
         {"provider": "openai", "model": "gpt-4o", "api_key": "sk-1", "base_url": None},
     ]
-    client = LLMClient(models)
-    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+    llm = LLMClient(models)
+    client = MagicMock()
+    with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
         mock_resp = MagicMock()
         mock_resp.choices[0].message.content = '{"ok": true}'
-        mock_litellm.completion.return_value = mock_resp
-        result = client.call("test prompt")
+        client.chat.completions.create.return_value = mock_resp
+        result = llm.call("test prompt")
         assert result == {"ok": True}
-        mock_litellm.completion.assert_called_once()
+        client.chat.completions.create.assert_called_once()
 
 
 def test_fallback_on_failure():
@@ -42,8 +43,9 @@ def test_fallback_on_failure():
         resp.choices[0].message.content = '{"ok": true}'
         return resp
 
-    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-        mock_litellm.completion.side_effect = side_effect
+    client = MagicMock()
+    with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
+        client.chat.completions.create.side_effect = side_effect
         result = call_with_fallback("test", models)
         assert result == {"ok": True}
         assert call_count == 2
@@ -55,27 +57,29 @@ def test_fallback_all_fail():
         {"provider": "openai", "model": "gpt-4o", "api_key": "sk-1", "base_url": None},
         {"provider": "ollama", "model": "qwen2.5:7b", "api_key": None, "base_url": None},
     ]
-    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
-        mock_litellm.completion.side_effect = Exception("fail")
+    client = MagicMock()
+    with patch("drbrain.extractor.llm_client._openai_client", return_value=client):
+        client.chat.completions.create.side_effect = Exception("fail")
         result = call_with_fallback("test", models)
         assert result is None
 
 
-def test_model_name_formatting():
-    """Provider/model are joined as 'provider/model' for litellm."""
+def test_provider_routes_via_base_url():
+    """Provider selects the OpenAI-compatible endpoint; wire model is bare."""
     models = [
         {
-            "provider": "anthropic",
-            "model": "claude-sonnet-4-20250514",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
             "api_key": "sk-1",
             "base_url": None,
         },
     ]
     client = LLMClient(models)
-    with patch("drbrain.extractor.llm_client.litellm") as mock_litellm:
+    with patch("drbrain.extractor.llm_client._openai_client") as factory:
         mock_resp = MagicMock()
         mock_resp.choices[0].message.content = '{"x": 1}'
-        mock_litellm.completion.return_value = mock_resp
+        factory.return_value.chat.completions.create.return_value = mock_resp
         client.call("test")
-        call_kwargs = mock_litellm.completion.call_args[1]
-        assert call_kwargs["model"] == "anthropic/claude-sonnet-4-20250514"
+        factory.assert_called_once_with("sk-1", "https://api.deepseek.com/v1")
+        call_kwargs = factory.return_value.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "deepseek-chat"

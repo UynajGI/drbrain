@@ -12,7 +12,7 @@ fallback). ``FunctionAgent.take_step`` hard-requires
 — ``DrbrainLLM`` (rag/llm.py, T2-owned, untouched) advertises ``False`` and
 never forwards ``tools``. So this module defines :class:`_AgentFunctionLLM`, a
 ``FunctionCallingLLM`` glue over ``DrbrainLLM`` that adds exactly those two
-capabilities (mirroring the installed ``llama-index-llms-litellm`` LiteLLM
+capabilities (mirroring the native LlamaIndex function-calling
 reference implementation) while delegating every completion to the same drbrain
 fallback chain / ApiCache / metrics.
 
@@ -101,7 +101,7 @@ SESSION_TOKEN_BUDGET = 8000
 SESSION_KEEP_RECENT = 6
 
 #: Canonical OpenAI-format tool specs, keyed by tool name — the exact dicts the
-#: legacy ReasonerAgent sent to litellm, so tool schemas are byte-identical.
+#: legacy ReasonerAgent sent over the wire, so tool schemas are byte-identical.
 CANONICAL_TOOL_SPECS: dict[str, dict[str, Any]] = {
     d["function"]["name"]: d for d in TOOL_DEFINITIONS
 }
@@ -828,10 +828,10 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
     ``DrbrainLLM`` (rag/llm.py) is T2-owned and deliberately not touched: it
     advertises ``is_function_calling_model=False`` and drops ``tools``. This
     subclass adds exactly the FunctionAgent contract — advertises function
-    calling, forwards OpenAI-format tool specs to litellm via the same drbrain
+    calling, forwards OpenAI-format tool specs through the same drbrain
     fallback chain (``llm_client.acall_with_messages``), and round-trips
     assistant ``tool_calls`` / tool ``tool_call_id`` messages — mirroring the
-    installed ``llama-index-llms-litellm`` ``LiteLLM`` implementation.
+    equivalent LlamaIndex function-calling implementation.
     """
 
     def __init__(
@@ -924,7 +924,7 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
         from drbrain.extractor.llm_client import acall_with_messages
 
         result = await acall_with_messages(
-            self._to_litellm_messages(messages),
+            self._to_openai_messages(messages),
             self._models,
             tools=tools,
             max_tokens=self.max_tokens,
@@ -934,8 +934,8 @@ class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
         return self._chat(result)
 
     @staticmethod
-    def _to_litellm_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
-        """litellm dicts preserving tool protocol fields + block content."""
+    def _to_openai_messages(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
+        """OpenAI chat dicts preserving tool protocol fields + block content."""
         out: list[dict[str, Any]] = []
         for msg in messages:
             role = getattr(msg.role, "value", str(msg.role))
