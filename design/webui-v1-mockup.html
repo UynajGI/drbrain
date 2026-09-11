@@ -148,7 +148,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
       <label>项目</label>
       <select><option>材料学 A 线</option><option>催化机制 B 线</option><option>＋ 新建项目</option></select>
     </div>
-    <nav class="nav" id="nav">
+    <nav class="nav" id="nav" aria-label="主导航">
       <button data-page="dashboard" class="active"><svg class="svg" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</button>
       <button data-page="papers"><svg class="svg" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h6"/></svg>文献库</button>
       <button data-page="sessions"><svg class="svg" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>会话</button>
@@ -284,7 +284,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <tr><th>会话</th><th>主题</th><th>长期记忆</th><th>实验</th><th>最近活跃</th><th></th></tr>
           <tr><td class="mono">sess_3</td><td><b>无铅钙钛矿钝化研究</b></td>
               <td>42 条结论 · 7 项偏好</td><td class="mono">exp_9f2c · exp_9e77</td><td>14:52</td>
-              <td><a href="#" onclick="openSession();return false">打开 →</a></td></tr>
+              <td><a href="#" onclick="nav('sessions');return false">打开 →</a></td></tr>
           <tr><td class="mono">sess_2</td><td>Tb 掺杂发光调控</td>
               <td>18 条结论</td><td class="mono">exp_9c31</td><td>昨日</td>
               <td><a href="#">打开 →</a></td></tr>
@@ -503,18 +503,23 @@ document.getElementById('nav').addEventListener('click', e => {
 });
 function nav(page){
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + page));
-  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+  document.querySelectorAll('#nav button').forEach(b => {
+    const on = b.dataset.page === page;
+    b.classList.toggle('active', on);
+    if (on) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
   document.getElementById('crumb').textContent = crumb[page] || page;
 }
 function toggleDetail(){
   const d = document.getElementById('paper-detail');
   if (d) d.classList.toggle('open');
 }
-function openSession(){ nav('sessions'); }
-// 论文详情 tabs（概览/树/概念/引用 —— 设计稿示意，仅树有内容）
-document.getElementById('ptabs').addEventListener('click', e => {
+// 论文详情 tabs（概览/树/概念/引用 —— 设计稿示意，仅树有内容）；空值保护与 toggleDetail 对齐
+const ptabs = document.getElementById('ptabs');
+if (ptabs) ptabs.addEventListener('click', e => {
   if (e.target.tagName !== 'BUTTON') return;
-  document.querySelectorAll('#ptabs button').forEach(b => b.classList.toggle('on', b === e.target));
+  ptabs.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === e.target));
 });
 </script>
 </body>

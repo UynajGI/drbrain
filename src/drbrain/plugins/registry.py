@@ -572,6 +572,9 @@ class PluginRegistry:
             except Exception as exc:  # noqa: BLE001 — a bad plugin must not stop discovery
                 logger.warning("failed to load plugin module %s: %s", path, exc)
                 continue
+            # Manifest precedence is fail-closed: a DECLARED-but-malformed
+            # manifest skips the module entirely — it never falls back to the
+            # inline register(), which would defeat the documented contract.
             if has_manifest(module):
                 try:
                     plugin, handler, jobs = build_from_manifest(module)

@@ -37,8 +37,12 @@ REQUIRED_FIELDS: tuple[str, ...] = ("name", "description", "input_schema")
 
 
 def has_manifest(module: Any) -> bool:
-    """Whether the module carries a usable (dict) ``PLUGIN_MANIFEST`` declaration."""
-    return isinstance(getattr(module, MANIFEST_KEY, None), dict)
+    """Whether the module DECLARES ``PLUGIN_MANIFEST`` (the style discriminator).
+
+    A declared-but-malformed manifest counts as declared: callers fail closed
+    on it rather than falling back to the inline ``register()`` style.
+    """
+    return getattr(module, MANIFEST_KEY, None) is not None
 
 
 def job_methods_from(module: Any) -> JobMethods | None:

@@ -46,6 +46,7 @@ from drbrain.plugins.manifest import (
     JOB_METHODS_KEY,
     MANIFEST_KEY,
     REQUIRED_FIELDS,
+    has_manifest,
 )
 from drbrain.plugins.protocol import SUPPORTED_ABI_VERSIONS, Plugin, PluginSideEffect
 from drbrain.plugins.registry import PluginRegistry
@@ -132,7 +133,16 @@ def _module_checks(path: Path) -> list[CheckResult]:
     checks = [CheckResult(f"{stem}.imports", True, "imported cleanly")]
     checks.append(_secrets_check(f"{stem}.secrets", path))
     manifest = getattr(module, MANIFEST_KEY, None)
-    if isinstance(manifest, dict):
+    if has_manifest(module):
+        if not isinstance(manifest, dict):
+            checks.append(
+                CheckResult(
+                    f"{stem}.manifest",
+                    False,
+                    f"{MANIFEST_KEY} must be a dict, got {type(manifest).__name__}",
+                )
+            )
+            return checks
         checks.extend(_manifest_checks(stem, path, module, manifest))
         return checks
     register = getattr(module, "register", None)
@@ -195,6 +205,9 @@ def _manifest_fields_check(stem: str, manifest: Any) -> CheckResult:
     name = f"{stem}.manifest_fields"
     if not isinstance(manifest, dict):
         return CheckResult(name, False, f"{MANIFEST_KEY} must be a dict")
+    non_str = [key for key in manifest if not isinstance(key, str)]
+    if non_str:
+        return CheckResult(name, False, f"manifest keys must be strings: {non_str!r}")
     unknown = sorted(set(manifest) - _KNOWN_FIELDS)
     if unknown:
         return CheckResult(
@@ -275,7 +288,7 @@ def _digest_check(name: str, declared: str, path: Path) -> CheckResult:
         return CheckResult(
             name, False, f"code_digest must be a string, got {type(declared).__name__}"
         )
-    actual = _module_digest(path, declared)
+    actual = _module_digest(path)
     expected = declared.strip().lower()
     if expected.startswith("sha256:"):
         expected = expected.split(":", 1)[1]
@@ -284,22 +297,23 @@ def _digest_check(name: str, declared: str, path: Path) -> CheckResult:
     return CheckResult(name, True, "matches module sha256")
 
 
-def _module_digest(path: Path, declared: str) -> str:
-    """sha256 of the module file with the declared ``code_digest`` value blanked.
+def _module_digest(path: Path) -> str:
+    """sha256 of the module file with the ``code_digest`` value blanked.
 
     The declaration lives in the very file it attests, so hashing the raw
     bytes would be self-referential (a hash cannot contain its own value).
-    Blanking the declared token makes the attestation workflow deterministic:
-    write the manifest with ``"code_digest": ""``, hash that content, then
-    fill the value in — verification blanks it again and compares.  Only the
-    FIRST occurrence is blanked so the blanking exactly reverses the author's
-    fill-in step, even if the digest value coincidentally appears elsewhere in
-    the file.
+    Blanking is anchored to the ``"code_digest"`` declaration and replaces only
+    that field's value, covering BOTH declaration styles (dict-literal
+    ``"code_digest": "..."`` and inline keyword ``code_digest="..."``): this
+    exactly reverses the author's fill-in step (write the digest empty, hash,
+    fill in), works whatever form was filled (``sha256:`` prefix, case,
+    whitespace), and never touches digest-like strings elsewhere in the file.
     """
     raw = path.read_bytes()
-    if declared:
-        raw = raw.replace(declared.encode("utf-8"), b"", 1)
-    return hashlib.sha256(raw).hexdigest()
+    blanked = re.sub(rb'("code_digest"\s*:\s*")[^"]*(")', rb"\1\2", raw, count=1)
+    blanked = re.sub(rb'(code_digest\s*=\s*")[^"]*(")', rb"\1\2", blanked, count=1)
+    blanked = re.sub(rb"(code_digest\s*=\s*')[^']*(')", rb"\1\2", blanked, count=1)
+    return hashlib.sha256(blanked).hexdigest()
 
 
 def _jobs_check(name: str, module: Any) -> CheckResult | None:

@@ -81,6 +81,46 @@ def test_non_string_code_digest_fails_without_crash(tmp_path):
     assert "bad_digest.code_digest" in _failed_names(report)
 
 
+def test_declared_non_dict_manifest_fails(tmp_path):
+    """Declared-but-malformed manifest fails closed — no inline fallback."""
+    source = "PLUGIN_MANIFEST = ['not', 'a', 'dict']\n"
+    report = run_conformance(_write(tmp_path, {"bad_manifest.py": source}))
+    assert not report.passed
+    assert "bad_manifest.manifest" in _failed_names(report)
+
+
+def test_non_string_manifest_key_fails_without_crash(tmp_path):
+    source = MANIFEST_OK.replace('"abi_version": 1', '123: "x", "abi_version": 1')
+    report = run_conformance(_write(tmp_path, {"bad_key.py": source}))
+    assert not report.passed
+    assert "bad_key.manifest_fields" in _failed_names(report)
+
+
+def test_inline_code_digest_kwarg_workflow(tmp_path):
+    """Inline plugins verify via the same blank-anchored digest workflow."""
+    import hashlib
+
+    source = (
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(\n"
+        "        Plugin(name='dig', description='d',\n"
+        "               input_schema={'type': 'object',\n"
+        "                             'properties': {'composition': {'type': 'object'}},\n"
+        "                             'required': ['composition']},\n"
+        "               code_digest='__DIGEST__'),\n"
+        "        lambda arguments: {'ok': True},\n"
+        "    )\n"
+    )
+    path = tmp_path / "dig_plugin.py"
+    path.write_text(source.replace("__DIGEST__", ""), encoding="utf-8")
+    digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    path.write_text(source.replace("__DIGEST__", digest), encoding="utf-8")
+
+    report = run_conformance(tmp_path)
+    assert report.passed, _failed_names(report)
+
+
 def test_cli_exit_zero_on_clean_fixtures():
     proc = subprocess.run(
         [sys.executable, "-m", "drbrain.plugins.conformance", str(FIXTURE_DIR)],
