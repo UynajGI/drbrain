@@ -170,7 +170,7 @@ async def test_reason_max_turns():
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Exception in the LLM call LLM call → returns error string
+# Test 5: exception in the LLM call returns an error string
 # ---------------------------------------------------------------------------
 
 
@@ -298,7 +298,7 @@ async def test_reason_multiple_tools_single_turn():
 
 
 # ---------------------------------------------------------------------------
-# Test 9: model config with api_key and base_url forwarded to the OpenAI client factory OpenAI client factory
+# Test 9: model config api_key and base_url forwarded to the OpenAI client factory
 # ---------------------------------------------------------------------------
 
 

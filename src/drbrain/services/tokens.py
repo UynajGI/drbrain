@@ -14,24 +14,26 @@ import threading
 
 _encoding_lock = threading.Lock()
 _encoding: object | None = None
-_encoding_failed = False
 
 
 def _get_encoding() -> object | None:
-    """Load the ``o200k_base`` encoding once; ``None`` when unavailable."""
-    global _encoding, _encoding_failed
-    if _encoding is not None or _encoding_failed:
+    """Load the ``o200k_base`` encoding once; ``None`` while unavailable.
+
+    A failed load (offline first run, transient vocab-download error) is NOT
+    latched: the next call retries, so token counting recovers automatically
+    once tiktoken/the vocab becomes available.
+    """
+    global _encoding
+    if _encoding is not None:
         return _encoding
     with _encoding_lock:
-        if _encoding is not None or _encoding_failed:
-            return _encoding
-        try:
-            import tiktoken
+        if _encoding is None:
+            try:
+                import tiktoken
 
-            _encoding = tiktoken.get_encoding("o200k_base")
-        except Exception:  # noqa: BLE001 — offline/vocab-download failure must not break callers
-            _encoding_failed = True
-            _encoding = None
+                _encoding = tiktoken.get_encoding("o200k_base")
+            except Exception:  # noqa: BLE001 — offline/vocab-download failure must not break callers
+                _encoding = None
     return _encoding
 
 

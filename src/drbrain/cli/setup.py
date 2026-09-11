@@ -174,6 +174,7 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
         "rich": "rich",
         "yaml": "pyyaml",
         "pydantic": "pydantic",
+        "tiktoken": "tiktoken",
         "pyalex": "pyalex",
         "arxiv": "arxiv",
         "pymupdf4llm": "pymupdf4llm",
@@ -417,6 +418,13 @@ def setup_cmd(
     model = typer.prompt(f"  {_t('llm_model', lang)}", default="gpt-4o")
     api_key = typer.prompt(f"  {_t('llm_api_key', lang)}", default="", hide_input=True)
     base_url = typer.prompt(f"  {_t('llm_base_url', lang)}", default="", show_default=False)
+    # Only openai/deepseek/ollama have built-in OpenAI-compatible endpoints;
+    # anything else (e.g. anthropic) must come with an explicit base_url.
+    while provider not in ("openai", "deepseek", "ollama") and not base_url:
+        typer.echo(
+            f"  [!] {provider} has no built-in OpenAI-compatible endpoint — base_url is required"
+        )
+        base_url = typer.prompt(f"  {_t('llm_base_url', lang)}", default="", show_default=False)
     base_url = base_url if base_url else None
     models: list[dict] = [
         {

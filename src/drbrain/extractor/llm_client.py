@@ -53,10 +53,14 @@ def resolve_base_url(model_cfg: dict) -> str:
     an explicit base_url raise ``ValueError`` naming the provider (fail-closed,
     never silently misrouted).
     """
-    base_url = model_cfg.get("base_url")
-    if base_url:
-        return str(base_url)
+    base_url = str(model_cfg.get("base_url") or "").strip()
     provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    if base_url:
+        # Setup ships bare Ollama hosts (http://localhost:11434); the OpenAI-
+        # compatible endpoint lives under /v1 — append it unless already present.
+        if provider == "ollama" and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+        return base_url
     if provider == "openai":
         return _OPENAI_DEFAULT_BASE_URL
     if provider in _PROVIDER_BASE_URLS:
