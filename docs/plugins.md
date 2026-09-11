@@ -1,6 +1,6 @@
 # 插件系统规范（Plugin ABI）
 
-> 状态：**v1（现行）** · 宿主 ABI：`HOST_ABI_VERSION = 1` · 支持集合：`{1}`
+> 状态：**v2（现行）** · 宿主 ABI：`HOST_ABI_VERSION = 1` · 支持集合：`{1}`
 >
 > 插件系统是本平台的**领域化入口**：四层核心（数据管线 / 检索 RAG / 能力面 / 研究回路）
 > 保持领域无关，一切领域知识——评测集、语料、实算工具、领域模型——都经由本协议进入。
@@ -33,6 +33,46 @@ def register(registry):
 
 宿主在 `discover(plugins_dir)` 时逐文件导入并调用 `register(registry)`；
 任一模块失败只跳过自身，不阻断其他插件。
+
+## 1.1 Manifest 声明（v2，元数据与代码分离）
+
+v2 起支持**数据优先**的声明风格：模块级 `PLUGIN_MANIFEST` 字典 + `HANDLER`
+可调用对象（可选 `JOB_METHODS`），元数据与代码分离，声明即注册：
+
+```python
+from types import SimpleNamespace
+
+PLUGIN_MANIFEST = {
+    "name": "predict_flatband_score",       # 必填，全局唯一
+    "description": "给定成分与空间群，预测平带度",  # 必填
+    "input_schema": {"type": "object", ...},  # 必填，JSON Schema
+    "plugin_type": "model",                 # 可选，缺省 "other"
+    "version": "flatness_prod_v2",
+    "abi_version": 1,                       # 缺省 1；协商规则与 §3 相同（fail-closed）
+    "side_effect": "read",
+    "timeout_s": 60.0,
+    "summary_fields": ["S_bandwidth"],
+    "resource": "models/flatness_prod_v2.joblib",
+    "metadata": {"family": "gbdt"},
+    # ... 其余 Plugin 数据类字段均可直接写进 manifest
+}
+
+
+def HANDLER(arguments):                     # 必须是模块级可调用对象
+    ...
+
+
+JOB_METHODS = SimpleNamespace(submit=..., poll=..., cancel=...)  # 可选
+```
+
+- `discover()` 发现 `PLUGIN_MANIFEST` 时直接由 manifest 构建 `Plugin` 并注册
+  `HANDLER` / `JOB_METHODS`；缺 `name` / `description` / `input_schema` 或
+  `HANDLER` 不可调用的模块 → 告警跳过（与 inline 风格的失败语义一致）。
+- ABI 协商同样适用：manifest 里声明了不支持的 `abi_version` → fail-closed 跳过。
+- manifest 同时声明了 `register()` 的模块按 manifest 注册，`register()` 不被调用。
+- 未知 manifest 键由 `Plugin` 构造器静默丢弃（与 inline 风格同一条前向兼容
+  契约）；符合性自检（§7）会把未知键报出来，避免拼写错误无声失效。
+- 两种风格可共存于同一目录；inline `register(registry)` 风格保持原样，完全兼容。
 
 ## 2. 描述符契约（`Plugin` 字段分组）
 
@@ -67,9 +107,37 @@ def register(registry):
 - [ ] 秘钥经 `secret_refs` 引用，不硬编码
 - [ ] `abi_version` 显式声明（省略 = 1，仅限兼容期）
 - [ ] 不 import 宿主内部模块（`drbrain.plugins` 除外）
+- [ ] manifest 声明的键名与 `Plugin` 字段一致（未知键会被加载器静默丢弃）
+- [ ] 交付前跑一遍符合性自检（§7）全绿
 
 ## 6. 参考实现
 
-- 协议与注册表：`src/drbrain/plugins/`（protocol / registry / backends）
+- 协议与注册表：`src/drbrain/plugins/`（protocol / registry / backends / manifest / conformance）
 - 最小示例：`tests/fixtures/plugins/`（model + software 各一，经 `test_plugin_discovery.py` 验证）
 - 真实领域插件：`research/plugins/`（材料学 A 线：GBDT 预测、GPAW 实算、physics/topology 重算）
+
+## 7. 符合性自检（插件作者可自跑）
+
+交付前对插件目录跑一遍静态符合性检查（**绝不执行 handler**）：
+
+```bash
+python -m drbrain.plugins.conformance <plugin_dir>
+```
+
+逐条打印 `[PASS]/[FAIL] 检查名 — 说明`，全部通过退出码 0，任一失败退出码 1。
+检查项（每个 `*.py` 模块，跳过 `_` 前缀文件）：
+
+| 检查 | 内容 |
+|---|---|
+| `imports` | 按 `discover()` 同样的规则可干净导入 |
+| `entrypoint` | 声明了 `PLUGIN_MANIFEST`（manifest 风格）或 `register()`（inline 风格） |
+| `manifest` / `manifest_fields` | 必填键齐全、类型正确；未知键直接报 FAIL（加载器会静默丢弃它们） |
+| `input_schema` | 是 `type: "object"` 的 JSON Schema，且 `properties` 为字典 |
+| `timeout_s` / `side_effect` / `abi_version` | `> 0` / 已知字面量 / 宿主支持集合内 |
+| `code_digest` | 声明了就必须等于模块文件的 sha256——把声明的 digest 值本身置空后再哈希（自指声明：manifest 里填 `"code_digest": ""` 哈希一次，再回填值，校验时同样置空重算比对；可带 `sha256:` 前缀） |
+| `secrets` | 源码不含硬编码密钥形态字符串（`sk-…` / `AKIA…` / `ghp_…` / `xox…`），秘钥只经 `secret_refs` 引用 |
+| `job_methods` | 声明了 `JOB_METHODS` 就必须暴露可调用的 `submit`/`poll`/`cancel` |
+
+inline 风格模块的 `register()` 会在一次性临时 registry 上执行一次（注册本身
+是文档化契约的一部分，handler 永不执行），使描述符级检查对两种风格统一生效。
+

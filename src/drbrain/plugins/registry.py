@@ -43,6 +43,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
+from drbrain.plugins.manifest import build_from_manifest, has_manifest
 from drbrain.plugins.protocol import (
     SUPPORTED_ABI_VERSIONS,
     JobMethods,
@@ -523,11 +524,20 @@ class PluginRegistry:
     def discover(self, plugin_dir: str | Path) -> int:
         """Load plugins from an external directory and return the number registered.
 
-        Every ``*.py`` module in ``plugin_dir`` that defines a
-        ``register(registry)`` function is imported and its ``register`` called
-        with this registry; each module decides how many plugins it registers.
-        Modules whose name starts with ``_`` are skipped. A module that fails to
-        import (or whose ``register`` raises) is logged and skipped, so one bad
+        Two declaration styles per ``*.py`` module in ``plugin_dir`` (name not
+        starting with ``_``):
+
+        * **manifest style (v2)** — module-level ``PLUGIN_MANIFEST`` dict plus a
+          callable ``HANDLER`` (and optional ``JOB_METHODS``); the descriptor is
+          built from the manifest and registered directly
+          (:mod:`drbrain.plugins.manifest`);
+        * **inline style (v1)** — a ``register(registry)`` function that calls
+          ``registry.register(...)`` itself.
+
+        A module declaring a manifest is registered via the manifest; its
+        ``register()`` (if any) is not consulted. Modules failing to import,
+        with an invalid manifest, or whose ``register`` raises (e.g. ABI
+        negotiation failure — fail-closed) are logged and skipped, so one bad
         plugin never aborts discovery of the rest.
         """
         import importlib.util
@@ -554,6 +564,13 @@ class PluginRegistry:
                 spec.loader.exec_module(module)
             except Exception as exc:  # noqa: BLE001 — a bad plugin must not stop discovery
                 logger.warning("failed to load plugin module %s: %s", path, exc)
+                continue
+            if has_manifest(module):
+                try:
+                    plugin, handler, jobs = build_from_manifest(module)
+                    self.register(plugin, handler, jobs=jobs)
+                except Exception as exc:  # noqa: BLE001 — bad manifest skips only itself
+                    logger.warning("plugin module %s manifest failed: %s", path, exc)
                 continue
             register = getattr(module, "register", None)
             if not callable(register):
