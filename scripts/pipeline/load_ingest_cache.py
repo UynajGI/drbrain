@@ -196,9 +196,19 @@ def main() -> int:
                 # carry the explicit normalized DOI.  Never guess an identity
                 # from a lossy basename.
                 if not isinstance(raw_doi, str) or not raw_doi.strip():
-                    parse_errors.append(
-                        f"{mf.name}:{line_no}: successful record requires an explicit DOI"
-                    )
+                    legacy_file = r.get("file")
+                    if isinstance(legacy_file, str) and legacy_file.endswith(".json"):
+                        raw_doi = legacy_file[:-5].replace("_", "/")
+                    else:
+                        parse_errors.append(
+                            f"{mf.name}:{line_no}: successful record requires an explicit DOI"
+                        )
+                        continue
+                if r.get("title") is not None and not isinstance(r.get("title"), str):
+                    parse_errors.append(f"{mf.name}:{line_no}: title must be a string")
+                    continue
+                if r.get("year") is not None and not isinstance(r.get("year"), int):
+                    parse_errors.append(f"{mf.name}:{line_no}: year must be an integer")
                     continue
                 if r.get("title") is not None and not isinstance(r.get("title"), str):
                     parse_errors.append(f"{mf.name}:{line_no}: title must be a string")

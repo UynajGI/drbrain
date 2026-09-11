@@ -52,7 +52,9 @@ export DRBRAIN_LOG_DIR="$LOG_DIR"
 
 PIDS=()
 trap runtime_cleanup_workers_on_failure EXIT
-trap 'exit 143' HUP INT TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [[ -d "$IDS_DIR" ]] || runtime_die "embedding ids directory does not exist: $IDS_DIR"
 
@@ -66,7 +68,7 @@ for i in 0 1 2 3 4 5 6 7 8 9 10 11; do
   [[ -f "$IDS_FILE" ]] || runtime_die "embedding ids file is not regular: $IDS_FILE"
   CFG_FILE="$(runtime_path "config.${CFG[$i]}.yaml" "embedding config")"
   LOG_FILE="$(runtime_path "$LOG_DIR/embed_s$i.log" "embedding log file")"
-  nohup "$PYTHON_BIN" -u "$SCRIPT_DIR/embed_batch.py" \
+  setsid "$PYTHON_BIN" -u "$SCRIPT_DIR/embed_batch.py" \
     --ids-file "$IDS_FILE" \
     --config "$CFG_FILE" \
     --db "$DB_PATH" --skip-raptor >> "$LOG_FILE" 2>&1 &

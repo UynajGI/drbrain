@@ -42,12 +42,12 @@ def test_citation_cache_is_namespaced_by_runtime_root(tmp_path, monkeypatch):
     """Embedded root switches must not reuse the previous citation cache."""
     import drbrain.extractor.citation as citation
 
-    root_a = tmp_path / "root-a"
-    root_b = tmp_path / "root-b"
+    root_a = tmp_path.resolve() / "root-a"
+    root_b = tmp_path.resolve() / "root-b"
     root_a.mkdir()
     root_b.mkdir()
-    citation._cache = None
-    citation._cache_by_namespace.clear()
+    monkeypatch.setattr(citation, "_cache", None)
+    monkeypatch.setattr(citation, "_cache_by_namespace", {})
 
     monkeypatch.setenv("DRBRAIN_ROOT", str(root_a))
     first = citation._get_cache({"api": {"cache_ttl": 300}, "dirs": {"cache": "data/cache"}})
