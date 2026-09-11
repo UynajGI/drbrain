@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DrBrain WebUI · 设计稿 v0.1</title>
+<style>
+/* ── Design tokens（源自 ui-ux-pro-max 设计系统：Minimalism & Swiss / 蓝+琥珀 / 高密度）── */
+:root{
+  --color-primary:#1E40AF; --color-on-primary:#FFFFFF;
+  --color-secondary:#3B82F6; --color-accent:#D97706; --color-on-accent:#1F2937;
+  --color-background:#F8FAFC; --color-foreground:#1E3A8A;
+  --color-card:#FFFFFF; --color-card-fg:#0F172A;
+  --color-muted:#E9EEF6; --color-muted-fg:#475569;
+  --color-border:#DBEAFE; --color-border-strong:#C3D6F5;
+  --color-destructive:#DC2626; --color-ok:#15803D; --color-warn:#B45309;
+  --color-ring:#1E40AF;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:24px; --space-6:32px;
+  --radius:6px; --radius-sm:4px;
+  --font-ui:"Fira Sans","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --font-mono:"Fira Code","JetBrains Mono",ui-monospace,monospace;
+  --shadow:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.08);
+}
+*{box-sizing:border-box} html,body{margin:0;height:100%}
+body{font-family:var(--font-ui);font-size:13px;line-height:1.45;color:var(--color-card-fg);
+     background:var(--color-background)}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+a{color:var(--color-primary);text-decoration:none}
+code,.mono{font-family:var(--font-mono);font-size:12px}
+
+/* ── 布局骨架 ── */
+.shell{display:flex;height:100vh}
+.sidebar{width:212px;flex:none;background:#0F1E3D;color:#C7D6F2;display:flex;flex-direction:column}
+.brand{display:flex;align-items:center;gap:10px;padding:var(--space-5) var(--space-4);
+       border-bottom:1px solid rgba(255,255,255,.08)}
+.brand .logo{width:28px;height:28px;border-radius:6px;background:var(--color-secondary);
+       display:grid;place-items:center;color:#fff;font-weight:700;font-family:var(--font-mono)}
+.brand b{font-size:15px;letter-spacing:.4px;color:#fff}
+.brand small{display:block;font-size:10px;color:#7E93BD}
+.nav{padding:var(--space-3) var(--space-2);display:flex;flex-direction:column;gap:2px;flex:1}
+.nav button{all:unset;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius);
+       cursor:pointer;color:#B9C9E8;font-size:13px}
+.nav button:hover{background:rgba(255,255,255,.06);color:#fff}
+.nav button.active{background:var(--color-primary);color:#fff;font-weight:600}
+.nav .icon{width:16px;height:16px;flex:none}
+.nav .tag{margin-left:auto;font-size:10px;background:var(--color-accent);color:#1F2937;
+       border-radius:8px;padding:0 6px;font-weight:700}
+.side-foot{padding:var(--space-3) var(--space-4);border-top:1px solid rgba(255,255,255,.08);
+       font-size:11px;color:#7E93BD}
+.side-foot .mono{color:#A9BCE0}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:48px;flex:none;background:var(--color-card);border-bottom:1px solid var(--color-border-strong);
+       display:flex;align-items:center;gap:var(--space-4);padding:0 var(--space-5)}
+.topbar .crumb{font-weight:600;color:var(--color-foreground)}
+.topbar .search{flex:1;max-width:420px;display:flex;align-items:center;gap:8px;background:var(--color-muted);
+       border:1px solid var(--color-border);border-radius:var(--radius);padding:6px 10px;color:var(--color-muted-fg)}
+.topbar .search input{all:unset;flex:1;color:var(--color-card-fg)}
+.token{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--color-muted-fg)}
+.token .dot{width:7px;height:7px;border-radius:50%;background:var(--color-ok)}
+.content{flex:1;overflow:auto;padding:var(--space-5)}
+
+/* ── 组件 ── */
+.page{display:none}.page.active{display:block}
+.page-head{display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4)}
+.page-head h1{font-size:17px;margin:0;color:var(--color-foreground)}
+.page-head .sub{color:var(--color-muted-fg);font-size:12px}
+.btn{all:unset;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--radius);
+       font-size:12.5px;cursor:pointer;border:1px solid var(--color-border-strong);background:var(--color-card);
+       color:var(--color-foreground);transition:background .2s}
+.btn:hover{background:var(--color-muted)}
+.btn.primary{background:var(--color-primary);border-color:var(--color-primary);color:#fff;font-weight:600}
+.btn.primary:hover{background:#1B3A9C}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.card{background:var(--color-card);border:1px solid var(--color-border);border-radius:var(--radius);
+       box-shadow:var(--shadow);padding:var(--space-4)}
+.grid{display:grid;gap:var(--space-4)}
+.g-stats{grid-template-columns:repeat(4,1fr)}
+.g-2{grid-template-columns:2fr 1fr}
+.g-plugins{grid-template-columns:repeat(3,1fr)}
+.stat .label{font-size:11px;color:var(--color-muted-fg);letter-spacing:.3px}
+.stat .value{font-family:var(--font-mono);font-size:22px;font-weight:600;color:var(--color-foreground);margin:2px 0}
+.stat .delta{font-size:11px;color:var(--color-ok)}
+.stat .delta.warn{color:var(--color-warn)}
+h2.sec{font-size:13px;margin:var(--space-5) 0 var(--space-2);color:var(--color-foreground);
+       letter-spacing:.2px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--color-muted-fg);font-weight:600;font-size:11px;letter-spacing:.4px;
+   padding:6px 10px;border-bottom:1px solid var(--color-border-strong)}
+td{padding:7px 10px;border-bottom:1px solid var(--color-border)}
+tr:hover td{background:#F4F8FE}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;border-radius:10px;padding:1px 9px}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.ok{background:#EAF6EE;color:var(--color-ok)}
+.pill.run{background:#E8F0FE;color:var(--color-primary)}
+.pill.err{background:#FDECEC;color:var(--color-destructive)}
+.pill.warn{background:#FCF1E2;color:var(--color-warn)}
+.pill.gray{background:var(--color-muted);color:var(--color-muted-fg)}
+.bar-row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--color-muted-fg)}
+.bar{height:10px;border-radius:3px;background:var(--color-secondary);opacity:.85}
+.spark{display:flex;align-items:flex-end;gap:4px;height:38px;margin-top:6px}
+.spark i{flex:1;background:var(--color-secondary);border-radius:2px 2px 0 0;opacity:.8}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:var(--space-3)}
+.field label{font-size:11px;font-weight:600;color:var(--color-muted-fg)}
+.field input,.field select{border:1px solid var(--color-border-strong);border-radius:var(--radius);
+       padding:7px 9px;font-size:12.5px;font-family:var(--font-ui);background:#fff;color:var(--color-card-fg)}
+.field .hint{font-size:10.5px;color:var(--color-muted-fg)}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:5px 12px;font-size:12px}
+.kv .k{color:var(--color-muted-fg)} .kv .v{font-family:var(--font-mono)}
+.kv .v.masked{color:var(--color-muted-fg)}
+.stepper{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px}
+.step{font-size:11px;padding:3px 10px;border-radius:11px;border:1px solid var(--color-border);
+      color:var(--color-muted-fg);background:#fff}
+.step.done{background:#EAF6EE;border-color:#BFE3CC;color:var(--color-ok)}
+.step.current{background:var(--color-primary);border-color:var(--color-primary);color:#fff;font-weight:700}
+.event{display:flex;gap:10px;padding:6px 0;border-bottom:1px dashed var(--color-border);font-size:12px}
+.event .t{font-family:var(--font-mono);color:var(--color-muted-fg);flex:none}
+.event .node{flex:none;width:64px;font-weight:600;color:var(--color-primary)}
+.claim{border-left:3px solid var(--color-border-strong);padding:6px 10px;margin-bottom:8px;background:#FBFDFF;
+       border-radius:0 var(--radius) var(--radius) 0;font-size:12px}
+.claim .head{display:flex;gap:8px;align-items:center;margin-bottom:2px}
+.claim .head b{font-size:12px}
+.mock-note{position:fixed;right:14px;bottom:14px;background:#111827;color:#E5E7EB;font-size:11px;
+       padding:6px 12px;border-radius:14px;opacity:.85;letter-spacing:.3px}
+.svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.detail{display:none;border-top:1px solid var(--color-border);margin-top:10px;padding-top:10px}
+.detail.open{display:grid;grid-template-columns:1fr 260px;gap:var(--space-4)}
+.tabs{display:flex;gap:2px;margin-bottom:8px}
+.tabs button{all:unset;font-size:11.5px;padding:4px 10px;border-radius:var(--radius-sm);cursor:pointer;color:var(--color-muted-fg)}
+.tabs button.on{background:var(--color-muted);color:var(--color-foreground);font-weight:600}
+mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
+</style>
+</head>
+<body>
+<div class="shell">
+  <!-- ══ 侧栏 ══ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">DB</div>
+      <div><b>DrBrain</b><small>research platform</small></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-page="dashboard" class="active"><svg class="svg" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</button>
+      <button data-page="papers"><svg class="svg" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h6"/></svg>文献库</button>
+      <button data-page="runs"><svg class="svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/></svg>研究运行<span class="tag" id="run-tag">2</span></button>
+      <button data-page="plugins"><svg class="svg" viewBox="0 0 24 24"><path d="M12 3v4M8 5h8v4h3a2 2 0 0 1 2 2v3h-4v4H7v-4H3v-3a2 2 0 0 1 2-2h3z"/></svg>插件</button>
+      <button data-page="settings"><svg class="svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>设置</button>
+    </nav>
+    <div class="side-foot">
+      <div>token <span class="mono">b7f3…9c2a</span> <span style="color:var(--color-ok)">●</span></div>
+      <div>schema <span class="mono">v20</span> · ui <span class="mono">0.1.0-mock</span></div>
+    </div>
+  </aside>
+
+  <!-- ══ 主区 ══ -->
+  <div class="main">
+    <header class="topbar">
+      <span class="crumb" id="crumb">Dashboard</span>
+      <div class="search"><svg class="svg" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input placeholder="全局检索：文献 / 概念 / 运行…  (Ctrl+K)"></div>
+      <span class="token"><span class="dot"></span>单用户会话 · 127.0.0.1:8420</span>
+    </header>
+
+    <main class="content">
+
+    <!-- ══ 1 · Dashboard ══ -->
+    <section class="page active" id="page-dashboard">
+      <div class="page-head"><h1>Dashboard</h1><span class="sub">知识库概况与最近活动</span>
+        <button class="btn" style="margin-left:auto">导出日报</button></div>
+
+      <div class="grid g-stats">
+        <div class="card stat"><div class="label">论文总量</div><div class="value">248,392</div>
+          <div class="delta">▲ 今日 ingest +1,204</div></div>
+        <div class="card stat"><div class="label">树向量（FAISS/sqlite-vec）</div><div class="value">1.92M</div>
+          <div class="delta">embedding Qwen3-0.6B</div></div>
+        <div class="card stat"><div class="label">研究运行</div><div class="value">2 <span style="font-size:12px;color:var(--color-muted-fg)">running</span></div>
+          <div class="delta warn">1 个等待实算门</div></div>
+        <div class="card stat"><div class="label">概念共现图节点</div><div class="value">612,540</div>
+          <div class="delta">closure 12 规则启用</div></div>
+      </div>
+
+      <h2 class="sec">最近 7 天 ingest</h2>
+      <div class="card">
+        <div class="spark">
+          <i style="height:34%"></i><i style="height:52%"></i><i style="height:41%"></i><i style="height:66%"></i>
+          <i style="height:58%"></i><i style="height:80%"></i><i style="height:100%"></i>
+        </div>
+        <div class="bar-row" style="margin-top:6px"><span>09-04</span><div class="bar" style="flex:1;height:2px;background:var(--color-border)"></div><span>09-10 · 峰值 1,872 篇/日</span></div>
+      </div>
+
+      <h2 class="sec">研究运行</h2>
+      <div class="card" style="padding:0">
+        <table>
+          <tr><th>运行</th><th>研究目标</th><th>状态</th><th>当前阶段</th><th>耗时</th><th></th></tr>
+          <tr><td class="mono">run_9f2c</td><td>无铅钙钛矿太阳能电池的界面钝化策略综述</td>
+              <td><span class="pill run">RUNNING</span></td><td>实算（等待 compute 角色）</td><td class="mono">41m</td>
+              <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
+          <tr><td class="mono">run_9e77</td><td>卤化物钙钛矿纳米晶 Tb 掺杂发光调控机制</td>
+              <td><span class="pill run">RUNNING</span></td><td>讨论层（2 条待回复）</td><td class="mono">17m</td>
+              <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
+          <tr><td class="mono">run_9d01</td><td>聚磷腈杂化阻燃复合材料的机理假设验证</td>
+              <td><span class="pill ok">DONE</span></td><td>报告已生成 · 5 claims</td><td class="mono">2h 03m</td>
+              <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
+          <tr><td class="mono">run_9cf4</td><td>Sn(II) 氧化抑制剂的对比实验设计</td>
+              <td><span class="pill err">FAILED</span></td><td>实算门：evidence 未通过</td><td class="mono">23m</td>
+              <td><a href="#" onclick="nav('runs');return false">复放 →</a></td></tr>
+        </table>
+      </div>
+    </section>
+
+    <!-- ══ 2 · 文献库 ══ -->
+    <section class="page" id="page-papers">
+      <div class="page-head"><h1>文献库</h1><span class="sub">248,392 篇 · BM25 + 向量 + 树 + 图</span></div>
+      <div class="card">
+        <div class="field" style="margin-bottom:10px">
+          <input value="无铅钙钛矿 界面钝化 稳定性" style="font-size:13px">
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="pill gray">年份 2023–2026</span><span class="pill gray">类型: paper</span>
+          <span class="pill gray">有全文树</span><span class="pill ok">248 篇命中 · 8ms</span>
+        </div>
+      </div>
+
+      <h2 class="sec">检索结果</h2>
+      <div class="card" style="padding:0">
+        <table>
+          <tr><th style="width:55%">标题与匹配片段</th><th>年份</th><th>期刊</th><th>引用</th><th>树</th></tr>
+          <tr onclick="toggleDetail()" style="cursor:pointer">
+            <td><b>Interfacial passivation engineering on quasi-2D tin-based perovskite solar cells</b><br>
+              <span style="color:var(--color-muted-fg)">…phDMADBr 分子形成保护层，显著提升 <mark>无铅钙钛矿</mark> 器件的 <mark>稳定性</mark>…</span></td>
+            <td class="mono">2025</td><td>Joule</td><td class="mono">87</td><td>✓</td></tr>
+          <tr><td><b>Sn(II) oxidation kinetics and device performance in lead-free perovskites</b><br>
+              <span style="color:var(--color-muted-fg)">…<mark>界面钝化</mark>可抑制 Sn<sup>2+</sup>→Sn<sup>4+</sup> 氧化，改善 <mark>稳定性</mark>…</span></td>
+            <td class="mono">2024</td><td>Nat. Energy</td><td class="mono">142</td><td>✓</td></tr>
+          <tr><td><b>Green-to-blue emission tuning in halide perovskite nanocrystals via terbium chloride</b><br>
+              <span style="color:var(--color-muted-fg)">…掺杂调控发光波长，与 <mark>钝化</mark> 层协同…</span></td>
+            <td class="mono">2024</td><td>ACS Nano</td><td class="mono">56</td><td>✓</td></tr>
+        </table>
+
+        <!-- 论文详情抽屉（点第一行展开） -->
+        <div class="detail" id="paper-detail">
+          <div>
+            <div class="tabs" id="ptabs">
+              <button class="on">概览</button><button>树结构</button><button>概念/边</button><button>引用</button>
+            </div>
+            <div class="kv">
+              <div class="k">local_id</div><div class="v">p9c41…8e2a（canonical: DOI 10.1016/j.joule.2025.04.018）</div>
+              <div class="k">作者</div><div class="v">L. Chen; M. Ortiz; +7</div>
+              <div class="k">状态</div><div class="v">extracted · 5 阶段完成 · 42 concepts / 71 edges</div>
+              <div class="k">摘要</div><div class="v" style="font-family:var(--font-ui)">phDMADBr 在准二维锡基钙钛矿表面形成多功能钝化层，抑制缺陷态密度并提升开路电压……</div>
+              <div class="k">操作</div><div class="v"><a href="#">导出 BibTeX</a> · <a href="#">重跑 build</a> · <a href="#">在研究运行中引用</a></div>
+            </div>
+          </div>
+          <div class="card" style="background:var(--color-muted);box-shadow:none">
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg)">树结构（PageIndex）</div>
+            <div class="mono" style="margin-top:6px;line-height:1.7">0001 Introduction<br>
+              ├─ 0002 passivation strategies<br>
+              │&nbsp;&nbsp;&nbsp;├─ <b>0002.1 phDMADBr layer</b> ◄ 命中<br>
+              │&nbsp;&nbsp;&nbsp;└─ 0002.2 defect density<br>
+              └─ 0003 conclusions</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 3 · 研究运行 ══ -->
+    <section class="page" id="page-runs">
+      <div class="page-head"><h1>研究运行</h1><span class="sub">文献 → 假设 → 实算 → 验证</span>
+        <button class="btn primary" style="margin-left:auto">＋ 发起新运行</button>
+        <button class="btn">复放上一次</button></div>
+
+      <div class="card">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <b style="font-size:13px">run_9f2c</b>
+          <span class="pill run">RUNNING</span>
+          <span class="mono" style="color:var(--color-muted-fg)">41m12s · budget 2h</span>
+          <button class="btn" style="margin-left:auto">暂停</button><button class="btn">终止</button>
+        </div>
+        <div style="color:var(--color-muted-fg);font-size:12px;margin-bottom:4px">
+          目标：无铅钙钛矿太阳能电池的界面钝化策略综述</div>
+        <div class="stepper">
+          <span class="step done">检索</span><span class="step done">抽取</span><span class="step done">gap</span>
+          <span class="step done">假设</span><span class="step done">讨论</span><span class="step current">实算</span>
+          <span class="step">核验</span><span class="step">沉淀</span><span class="step">报告</span>
+        </div>
+        <div class="grid g-2">
+          <div>
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">LEDGER 事件流（SSE）</div>
+            <div class="event"><span class="t">14:52:03</span><span class="node">实算</span>
+              <span>job <span class="mono">job_118</span> 提交 → run_dft_calculation（GPAW，预计 22m）</span></div>
+            <div class="event"><span class="t">14:51:58</span><span class="node">实算门</span>
+              <span>evidence 校验通过：material_job card / inputs / evaluation 三方一致</span></div>
+            <div class="event"><span class="t">14:50:11</span><span class="node">讨论</span>
+              <span>critic 提出反例：SnF₂ 添加剂的对照缺失 → analyst 已认领（queue claim）</span></div>
+            <div class="event"><span class="t">14:47:40</span><span class="node">假设</span>
+              <span>H-3「phDMADBr 钝化降低缺陷态密度 2 个数量级」待实算</span></div>
+            <div class="event"><span class="t">14:44:02</span><span class="node">检索</span>
+              <span>五路融合命中 218 篇，去重后 96 篇进入抽取</span></div>
+          </div>
+          <div>
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">CLAIMS（3）</div>
+            <div class="claim"><div class="head"><span class="pill ok">Supported</span><b>H-1</b></div>
+              phDMADBr 钝化层使 PCE 保持率 >92%（1000 h）</div>
+            <div class="claim"><div class="head"><span class="pill err">Refuted</span><b>H-2</b></div>
+              「二维组分会降低载流子迁移率」与文献 #218 矛盾</div>
+            <div class="claim"><div class="head"><span class="pill warn">待实算</span><b>H-3</b></div>
+              钝化降低缺陷态密度 ~2 个数量级（job_118 进行中）</div>
+          </div>
+        </div>
+      </div>
+
+      <h2 class="sec">发起新运行</h2>
+      <div class="card">
+        <div class="field"><label>研究目标</label>
+          <input placeholder="例：X 在 Y 体系中的 Z 机制与验证路径…"></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:var(--space-3)">
+          <div class="field"><label>检索深度</label><select><option>标准（96 篇级）</option><option>深度（218 篇级）</option></select></div>
+          <div class="field"><label>实算插件</label><select><option>run_dft_calculation (GPAW)</option><option>predict_flatband_score</option><option>不启用实算</option></select></div>
+          <div class="field"><label>时间预算</label><select><option>2h</option><option>30m</option><option>6h</option></select></div>
+        </div>
+        <button class="btn primary" disabled title="M2 实现发起">发起（M2 接入）</button>
+        <span class="sub" style="font-size:11px;color:var(--color-muted-fg);margin-left:8px">设计稿：按钮为示意</span>
+      </div>
+    </section>
+
+    <!-- ══ 4 · 插件 ══ -->
+    <section class="page" id="page-plugins">
+      <div class="page-head"><h1>插件</h1><span class="sub">3 可用 · 1 不兼容（fail-closed）</span>
+        <button class="btn" style="margin-left:auto">重新扫描</button><button class="btn primary">运行符合性检查</button></div>
+
+      <div class="grid g-plugins">
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b class="mono">predict_flatband_score</b><span class="pill ok">conformant</span></div>
+          <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
+            给定成分与空间群，预测平带度 S_bandwidth（0~1）</div>
+          <div class="kv">
+            <div class="k">类型 / 后端</div><div class="v">model · subprocess</div>
+            <div class="k">ABI</div><div class="v">v1 ✓</div>
+            <div class="k">side_effect</div><div class="v">read</div>
+            <div class="k">7 天调用</div><div class="v">128 次 · p95 2.1s</div>
+          </div>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b class="mono">run_dft_calculation</b><span class="pill ok">conformant</span></div>
+          <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
+            GPAW 结构弛豫与能带计算（长作业，jobs/ 目录契约）</div>
+          <div class="kv">
+            <div class="k">类型 / 后端</div><div class="v">software · subprocess</div>
+            <div class="k">ABI</div><div class="v">v1 ✓</div>
+            <div class="k">长作业</div><div class="v">submit/poll/cancel ✓</div>
+            <div class="k">7 天调用</div><div class="v">14 次 · 均值 26m</div>
+          </div>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b class="mono">search_crossref</b><span class="pill ok">conformant</span></div>
+          <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
+            CrossRef 元数据与 DOI 检索（secret_refs: 1）</div>
+          <div class="kv">
+            <div class="k">类型 / 后端</div><div class="v">data · inprocess</div>
+            <div class="k">ABI</div><div class="v">v1 ✓</div>
+            <div class="k">side_effect</div><div class="v">read</div>
+            <div class="k">7 天调用</div><div class="v">892 次 · p95 480ms</div>
+          </div>
+        </div>
+        <div class="card" style="opacity:.55">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <b class="mono">future_abi</b><span class="pill gray">ABI v2 · 未兼容</span></div>
+          <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
+            声明 ABI v2，宿主支持 {1}——按 fail-closed 策略跳过加载</div>
+          <div class="kv"><div class="k">操作</div><div class="v"><a href="#">查看差异</a> · 升级宿主后自动可用</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ 5 · 设置 ══ -->
+    <section class="page" id="page-settings">
+      <div class="page-head"><h1>设置</h1><span class="sub">配置只读视图 · 密钥仅显示引用</span></div>
+      <div class="grid g-2">
+        <div class="card">
+          <h2 class="sec" style="margin-top:0">LLM（litellm 桥接）</h2>
+          <div class="kv">
+            <div class="k">主模型</div><div class="v">gpt-4o</div>
+            <div class="k">api_key</div><div class="v masked">${OPENAI_API_KEY} · 已配置（引用）</div>
+            <div class="k">回退链</div><div class="v">deepseek-v4-flash → qwen2.5:7b (ollama)</div>
+          </div>
+          <h2 class="sec">嵌入</h2>
+          <div class="kv">
+            <div class="k">provider</div><div class="v">local（Qwen3-Embedding-0.6B）</div>
+            <div class="k">device / batch</div><div class="v">cuda:0 · auto-tuned 64</div>
+            <div class="k">cache_dir</div><div class="v">~/.cache/modelscope/hub/models</div>
+          </div>
+          <h2 class="sec">检索</h2>
+          <div class="kv">
+            <div class="k">rag_engine</div><div class="v">sql（四路）</div>
+            <div class="k">rerank</div><div class="v">Qwen3-Reranker-0.6B · top_k 20</div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h2 class="sec" style="margin-top:0">WebUI</h2>
+            <div class="kv">
+              <div class="k">绑定地址</div><div class="v">127.0.0.1:8420</div>
+              <div class="k">访问 token</div><div class="v">b7f3…9c2a <button class="btn" style="padding:2px 8px;margin-left:6px">重置</button></div>
+              <div class="k">主题</div><div class="v">浅色 <span class="pill gray">深色 v2</span></div>
+            </div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)">
+            <h2 class="sec" style="margin-top:0">运行时</h2>
+            <div class="kv">
+              <div class="k">root</div><div class="v">~/.drbrain（runtime root）</div>
+              <div class="k">schema</div><div class="v">v20 · 20/20 migrations</div>
+              <div class="k">插件目录</div><div class="v">research/plugins/</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    </main>
+  </div>
+</div>
+<div class="mock-note">设计稿 v0.1 · 数据为仿真 · 定稿后按 docs/webui-design.md 实现</div>
+
+<script>
+// 页面切换（设计稿用；实现版为 FastAPI 路由 + htmx）
+const crumb = {dashboard:'Dashboard', papers:'文献库', runs:'研究运行', plugins:'插件', settings:'设置'};
+document.getElementById('nav').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-page]'); if (!btn) return;
+  nav(btn.dataset.page);
+});
+function nav(page){
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + page));
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+  document.getElementById('crumb').textContent = crumb[page] || page;
+}
+function toggleDetail(){ document.getElementById('paper-detail').classList.toggle('open'); }
+// 论文详情 tabs（概览/树/概念/引用 —— 设计稿示意，仅树有内容）
+document.getElementById('ptabs').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#ptabs button').forEach(b => b.classList.toggle('on', b === e.target));
+});
+</script>
+</body>
+</html>
