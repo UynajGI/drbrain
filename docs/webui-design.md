@@ -21,9 +21,10 @@
 
 实现记录：M0–M3 在 `feat/webui-m1` 落地；聚焦测试
 `.venv/bin/python -m pytest tests/test_project_scope.py tests/test_app.py tests/test_webui.py -q` 全部通过，
-数据库均为真实临时 SQLite。轮子打包已验证包含模板/静态资源/vendored htmx 与许可证
-（`uv build --wheel` 后检查 whl 内容）。浏览器实机视觉验收与真实 provider 联调不在本轮范围内，
-验收清单 §7.1 中相应条目保持未勾选。
+数据库均为真实临时 SQLite；完整非集成套件 `pytest -m "not integration"` **3273 passed / 15 skipped**
+（约 12 分钟，慢测为既有的 layer6/director 用例）。轮子打包已验证包含模板/静态资源/vendored htmx 与许可证
+（`uv build --wheel` 后检查 whl 内容），性能基线见 §7.1（`scripts/webui_baseline.py`）。
+浏览器实机视觉验收与真实 provider 联调不在本轮范围内，验收清单 §7.1 中相应条目保持未勾选。
 
 ## 1. 目标与阶段
 
@@ -261,7 +262,9 @@ RAG 三层记忆完整实现属于 M2a；M1 的前置是作用域与数据关联
       （回放/终态/Last-Event-ID/未知 run 已有测试；断线重连、页面切换清理与登录过期需浏览器实机联调）
 - [ ] 浏览器自动化覆盖登录→选项目→检索详情→会话→运行→证据→报告下载，以及键盘、输入保留和断网重试；由 M1 起逐步进入 CI。
 - [ ] 以长中文标题、长公式/代码、空数据、多会话、上万条 ledger 事件验证布局和分页；记录固定机器/数据规模下的检索耗时与 DOM 上限，作为后续性能比较基线。
-      （分页/事件游标与 DOM 上限已实现：事件列表保留最近 500 条，历史按游标回填；尚未做真实规模测量）
+      （基线已跑：`scripts/webui_baseline.py`，2000 篇文献 + 10,000 条 ledger 事件——文献首页 5 ms、
+      游标走完全部 2000 篇 102 ms（20 页）、事件首页（200 条）19 ms、运行详情 10 ms、运行列表 2 ms；
+      JSON 单页约 7.8 KB；事件 DOM 上限最近 500 条、历史按游标回填。长中文/窄屏的实际排版仍需浏览器验收）
 - [x] 模板/静态文件随 wheel 分发，断开 CDN 访问后页面正常；CLI、JSON API 与当前已有计算任务入口完成迁移回归。
       （`uv build --wheel` 已验证模板/CSS/JS/vendored htmx 与许可证随包分发；htmx 本地 vendored，无 CDN 依赖）
 - [ ] 发布前完成一次已配置环境下的浏览器主路径联调，保存真实 run_id、报告和失败说明；CI 夹具通过不替代真实 provider/插件可用性验证。
