@@ -38,6 +38,10 @@ code,.mono{font-family:var(--font-mono);font-size:12px}
        display:grid;place-items:center;color:#fff;font-weight:700;font-family:var(--font-mono)}
 .brand b{font-size:15px;letter-spacing:.4px;color:#fff}
 .brand small{display:block;font-size:10px;color:#7E93BD}
+.proj{padding:var(--space-3) var(--space-3) 0}
+.proj label{display:block;font-size:10px;letter-spacing:.4px;color:#7E93BD;margin-bottom:4px}
+.proj select{width:100%;background:#16294F;color:#DCE6F7;border:1px solid rgba(255,255,255,.12);
+       border-radius:var(--radius);padding:6px 8px;font-size:12px;font-family:var(--font-ui)}
 .nav{padding:var(--space-3) var(--space-2);display:flex;flex-direction:column;gap:2px;flex:1}
 .nav button{all:unset;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius);
        cursor:pointer;color:#B9C9E8;font-size:13px}
@@ -140,9 +144,14 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
       <div class="logo">DB</div>
       <div><b>DrBrain</b><small>research platform</small></div>
     </div>
+    <div class="proj">
+      <label>项目</label>
+      <select><option>材料学 A 线</option><option>催化机制 B 线</option><option>＋ 新建项目</option></select>
+    </div>
     <nav class="nav" id="nav">
       <button data-page="dashboard" class="active"><svg class="svg" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</button>
       <button data-page="papers"><svg class="svg" viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 0 1 2-2h13v18H6a2 2 0 0 1-2-2z"/><path d="M8 7h8M8 11h6"/></svg>文献库</button>
+      <button data-page="sessions"><svg class="svg" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H5l-2 2V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>会话</button>
       <button data-page="runs"><svg class="svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/></svg>研究运行<span class="tag" id="run-tag">2</span></button>
       <button data-page="plugins"><svg class="svg" viewBox="0 0 24 24"><path d="M12 3v4M8 5h8v4h3a2 2 0 0 1 2 2v3h-4v4H7v-4H3v-3a2 2 0 0 1 2-2h3z"/></svg>插件</button>
       <button data-page="settings"><svg class="svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6c.1-.4.1-.8.1-1.2z"/></svg>设置</button>
@@ -172,7 +181,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
       <div class="grid g-stats">
         <div class="card stat"><div class="label">论文总量</div><div class="value">248,392</div>
           <div class="delta">▲ 今日 ingest +1,204</div></div>
-        <div class="card stat"><div class="label">树向量（FAISS/sqlite-vec）</div><div class="value">1.92M</div>
+        <div class="card stat"><div class="label">树向量 · FAISS/sqlite-vec</div><div class="value">1.92M</div>
           <div class="delta">embedding Qwen3-0.6B</div></div>
         <div class="card stat"><div class="label">研究运行</div><div class="value">2 <span style="font-size:12px;color:var(--color-muted-fg)">running</span></div>
           <div class="delta warn">1 个等待实算门</div></div>
@@ -192,18 +201,18 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
       <h2 class="sec">研究运行</h2>
       <div class="card" style="padding:0">
         <table>
-          <tr><th>运行</th><th>研究目标</th><th>状态</th><th>当前阶段</th><th>耗时</th><th></th></tr>
+          <tr><th>运行</th><th>研究目标</th><th>绑定</th><th>状态</th><th>当前阶段</th><th>耗时</th><th></th></tr>
           <tr><td class="mono">run_9f2c</td><td>无铅钙钛矿太阳能电池的界面钝化策略综述</td>
-              <td><span class="pill run">RUNNING</span></td><td>实算（等待 compute 角色）</td><td class="mono">41m</td>
+              <td class="mono">sess_3 · exp_9f2c</td><td><span class="pill run">RUNNING</span></td><td>实算 · 等待 compute 角色</td><td class="mono">41m</td>
               <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
           <tr><td class="mono">run_9e77</td><td>卤化物钙钛矿纳米晶 Tb 掺杂发光调控机制</td>
-              <td><span class="pill run">RUNNING</span></td><td>讨论层（2 条待回复）</td><td class="mono">17m</td>
+              <td class="mono">sess_3 · exp_9e77</td><td><span class="pill run">RUNNING</span></td><td>讨论层 · 2 条待回复</td><td class="mono">17m</td>
               <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
           <tr><td class="mono">run_9d01</td><td>聚磷腈杂化阻燃复合材料的机理假设验证</td>
-              <td><span class="pill ok">DONE</span></td><td>报告已生成 · 5 claims</td><td class="mono">2h 03m</td>
+              <td class="mono">sess_1 · exp_9d01</td><td><span class="pill ok">DONE</span></td><td>报告已生成 · 5 claims</td><td class="mono">2h 03m</td>
               <td><a href="#" onclick="nav('runs');return false">查看 →</a></td></tr>
           <tr><td class="mono">run_9cf4</td><td>Sn(II) 氧化抑制剂的对比实验设计</td>
-              <td><span class="pill err">FAILED</span></td><td>实算门：evidence 未通过</td><td class="mono">23m</td>
+              <td class="mono">sess_2 · exp_9c31</td><td><span class="pill err">FAILED</span></td><td>实算门 · evidence 未通过</td><td class="mono">23m</td>
               <td><a href="#" onclick="nav('runs');return false">复放 →</a></td></tr>
         </table>
       </div>
@@ -218,7 +227,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <span class="pill gray">年份 2023–2026</span><span class="pill gray">类型: paper</span>
-          <span class="pill gray">有全文树</span><span class="pill ok">248 篇命中 · 8ms</span>
+          <span class="pill gray">有全文树</span><span class="pill ok">248 篇命中 · 8ms</span><span class="pill gray">检索 RAG · 绑定项目</span>
         </div>
       </div>
 
@@ -245,7 +254,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
               <button class="on">概览</button><button>树结构</button><button>概念/边</button><button>引用</button>
             </div>
             <div class="kv">
-              <div class="k">local_id</div><div class="v">p9c41…8e2a（canonical: DOI 10.1016/j.joule.2025.04.018）</div>
+              <div class="k">local_id</div><div class="v">p9c41…8e2a · canonical DOI 10.1016/j.joule.2025.04.018</div>
               <div class="k">作者</div><div class="v">L. Chen; M. Ortiz; +7</div>
               <div class="k">状态</div><div class="v">extracted · 5 阶段完成 · 42 concepts / 71 edges</div>
               <div class="k">摘要</div><div class="v" style="font-family:var(--font-ui)">phDMADBr 在准二维锡基钙钛矿表面形成多功能钝化层，抑制缺陷态密度并提升开路电压……</div>
@@ -253,12 +262,72 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
             </div>
           </div>
           <div class="card" style="background:var(--color-muted);box-shadow:none">
-            <div class="label" style="font-size:11px;color:var(--color-muted-fg)">树结构（PageIndex）</div>
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg)">树结构 · PageIndex</div>
             <div class="mono" style="margin-top:6px;line-height:1.7">0001 Introduction<br>
               ├─ 0002 passivation strategies<br>
               │&nbsp;&nbsp;&nbsp;├─ <b>0002.1 phDMADBr layer</b> ◄ 命中<br>
               │&nbsp;&nbsp;&nbsp;└─ 0002.2 defect density<br>
               └─ 0003 conclusions</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ══ 2.5 · 会话 ══ -->
+    <section class="page" id="page-sessions">
+      <div class="page-head"><h1>会话</h1><span class="sub">项目「材料学 A 线」下的长期工作上下文</span>
+        <button class="btn primary" style="margin-left:auto">＋ 新建会话</button></div>
+
+      <div class="card" style="padding:0">
+        <table>
+          <tr><th>会话</th><th>主题</th><th>长期记忆</th><th>实验</th><th>最近活跃</th><th></th></tr>
+          <tr><td class="mono">sess_3</td><td><b>无铅钙钛矿钝化研究</b></td>
+              <td>42 条结论 · 7 项偏好</td><td class="mono">exp_9f2c · exp_9e77</td><td>14:52</td>
+              <td><a href="#" onclick="openSession();return false">打开 →</a></td></tr>
+          <tr><td class="mono">sess_2</td><td>Tb 掺杂发光调控</td>
+              <td>18 条结论</td><td class="mono">exp_9c31</td><td>昨日</td>
+              <td><a href="#">打开 →</a></td></tr>
+          <tr><td class="mono">sess_1</td><td>阻燃复合材料机理</td>
+              <td>31 条结论 · 2 项偏好</td><td class="mono">exp_9d01</td><td>2 天前</td>
+              <td><a href="#">打开 →</a></td></tr>
+        </table>
+      </div>
+
+      <!-- 会话详情（点第一行展开） -->
+      <h2 class="sec">sess_3 · 无铅钙钛矿钝化研究</h2>
+      <div class="grid g-2">
+        <div class="card">
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+            <b>长期记忆</b>
+            <span class="pill gray">RAG 绑定层级</span>
+            <select style="font-size:11px;border:1px solid var(--color-border-strong);border-radius:4px;padding:2px 6px">
+              <option>绑定到本会话</option><option>绑定到项目 · 继承</option><option>绑定到实验</option>
+            </select>
+          </div>
+          <div class="claim"><div class="head"><b>结论</b><span class="mono" style="color:var(--color-muted-fg)">来自 exp_9d01</span></div>
+            钝化层厚度与缺陷态密度呈负相关，2 nm 附近最优</div>
+          <div class="claim"><div class="head"><b>偏好</b></div>
+            文献优先级：Joule / Nat. Energy；引用格式 APA</div>
+          <div class="claim"><div class="head"><b>结论</b><span class="mono" style="color:var(--color-muted-fg)">来自检索 RAG</span></div>
+            无铅体系中 SnF₂ 是当前最有效的抗氧化添加剂</div>
+          <div style="margin-top:8px;font-size:11px;color:var(--color-muted-fg)">
+            记忆同时供两类 RAG 消费：面向检索：文献库问答 · 面向 autoresearch：对话与实验上下文。</div>
+        </div>
+        <div>
+          <div class="card">
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">实验 loop</div>
+            <div class="event"><span class="t">exp_9f2c</span><span class="node">RUNNING</span>
+              <span>无铅钙钛矿钝化综述 · 41m</span></div>
+            <div class="event"><span class="t">exp_9e77</span><span class="node">RUNNING</span>
+              <span>Tb 掺杂对比 · 17m</span></div>
+            <div style="margin-top:8px"><button class="btn primary">在此会话发起实验</button></div>
+          </div>
+          <div class="card" style="margin-top:var(--space-4)">
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">面向会话的 RAG 对话</div>
+            <div class="event"><span class="t">user</span><span>上次的钝化策略在二维体系还成立吗？</span></div>
+            <div class="event"><span class="t">agent</span><span>基于记忆中 exp_9d01 的结论与 3 篇新检索文献，二维体系中需补充 SnF₂ 对照……</span></div>
+            <div class="field" style="margin-top:8px"><input placeholder="追问 · 记忆自动绑定本会话…"></div>
           </div>
         </div>
       </div>
@@ -286,26 +355,26 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
         </div>
         <div class="grid g-2">
           <div>
-            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">LEDGER 事件流（SSE）</div>
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">事件流</div>
             <div class="event"><span class="t">14:52:03</span><span class="node">实算</span>
-              <span>job <span class="mono">job_118</span> 提交 → run_dft_calculation（GPAW，预计 22m）</span></div>
+              <span>job <span class="mono">job_118</span> 提交 → run_dft_calculation · GPAW · 预计 22m</span></div>
             <div class="event"><span class="t">14:51:58</span><span class="node">实算门</span>
               <span>evidence 校验通过：material_job card / inputs / evaluation 三方一致</span></div>
             <div class="event"><span class="t">14:50:11</span><span class="node">讨论</span>
-              <span>critic 提出反例：SnF₂ 添加剂的对照缺失 → analyst 已认领（queue claim）</span></div>
+              <span>critic 提出反例：SnF₂ 添加剂的对照缺失 → analyst 已认领 · queue claim</span></div>
             <div class="event"><span class="t">14:47:40</span><span class="node">假设</span>
               <span>H-3「phDMADBr 钝化降低缺陷态密度 2 个数量级」待实算</span></div>
             <div class="event"><span class="t">14:44:02</span><span class="node">检索</span>
               <span>五路融合命中 218 篇，去重后 96 篇进入抽取</span></div>
           </div>
           <div>
-            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">CLAIMS（3）</div>
+            <div class="label" style="font-size:11px;color:var(--color-muted-fg);margin-bottom:4px">CLAIMS · 3</div>
             <div class="claim"><div class="head"><span class="pill ok">Supported</span><b>H-1</b></div>
-              phDMADBr 钝化层使 PCE 保持率 >92%（1000 h）</div>
+              phDMADBr 钝化层使 PCE 保持率 >92% · 1000 h</div>
             <div class="claim"><div class="head"><span class="pill err">Refuted</span><b>H-2</b></div>
               「二维组分会降低载流子迁移率」与文献 #218 矛盾</div>
             <div class="claim"><div class="head"><span class="pill warn">待实算</span><b>H-3</b></div>
-              钝化降低缺陷态密度 ~2 个数量级（job_118 进行中）</div>
+              钝化降低缺陷态密度 ~2 个数量级 · job_118 进行中</div>
           </div>
         </div>
       </div>
@@ -315,18 +384,18 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
         <div class="field"><label>研究目标</label>
           <input placeholder="例：X 在 Y 体系中的 Z 机制与验证路径…"></div>
         <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:var(--space-3)">
-          <div class="field"><label>检索深度</label><select><option>标准（96 篇级）</option><option>深度（218 篇级）</option></select></div>
-          <div class="field"><label>实算插件</label><select><option>run_dft_calculation (GPAW)</option><option>predict_flatband_score</option><option>不启用实算</option></select></div>
+          <div class="field"><label>检索深度</label><select><option>标准 · 96 篇级</option><option>深度 · 218 篇级</option></select></div>
+          <div class="field"><label>实算插件</label><select><option>run_dft_calculation · GPAW</option><option>predict_flatband_score</option><option>不启用实算</option></select></div>
           <div class="field"><label>时间预算</label><select><option>2h</option><option>30m</option><option>6h</option></select></div>
         </div>
-        <button class="btn primary" disabled title="M2 实现发起">发起（M2 接入）</button>
+        <button class="btn primary" disabled>发起</button>
         <span class="sub" style="font-size:11px;color:var(--color-muted-fg);margin-left:8px">设计稿：按钮为示意</span>
       </div>
     </section>
 
     <!-- ══ 4 · 插件 ══ -->
     <section class="page" id="page-plugins">
-      <div class="page-head"><h1>插件</h1><span class="sub">3 可用 · 1 不兼容（fail-closed）</span>
+      <div class="page-head"><h1>插件</h1><span class="sub">3 可用 · 1 不兼容 · fail-closed</span>
         <button class="btn" style="margin-left:auto">重新扫描</button><button class="btn primary">运行符合性检查</button></div>
 
       <div class="grid g-plugins">
@@ -334,7 +403,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b class="mono">predict_flatband_score</b><span class="pill ok">conformant</span></div>
           <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
-            给定成分与空间群，预测平带度 S_bandwidth（0~1）</div>
+            给定成分与空间群，预测平带度 S_bandwidth 0~1</div>
           <div class="kv">
             <div class="k">类型 / 后端</div><div class="v">model · subprocess</div>
             <div class="k">ABI</div><div class="v">v1 ✓</div>
@@ -346,7 +415,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b class="mono">run_dft_calculation</b><span class="pill ok">conformant</span></div>
           <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
-            GPAW 结构弛豫与能带计算（长作业，jobs/ 目录契约）</div>
+            GPAW 结构弛豫与能带计算 · 长作业走 jobs/ 目录契约</div>
           <div class="kv">
             <div class="k">类型 / 后端</div><div class="v">software · subprocess</div>
             <div class="k">ABI</div><div class="v">v1 ✓</div>
@@ -358,7 +427,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b class="mono">search_crossref</b><span class="pill ok">conformant</span></div>
           <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
-            CrossRef 元数据与 DOI 检索（secret_refs: 1）</div>
+            CrossRef 元数据与 DOI 检索 · 引用密钥 1 项</div>
           <div class="kv">
             <div class="k">类型 / 后端</div><div class="v">data · inprocess</div>
             <div class="k">ABI</div><div class="v">v1 ✓</div>
@@ -370,7 +439,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <div style="display:flex;justify-content:space-between;align-items:center">
             <b class="mono">future_abi</b><span class="pill gray">ABI v2 · 未兼容</span></div>
           <div style="color:var(--color-muted-fg);font-size:11.5px;margin:4px 0 8px">
-            声明 ABI v2，宿主支持 {1}——按 fail-closed 策略跳过加载</div>
+            声明 ABI v2 · 宿主支持 1 · 按 fail-closed 策略跳过加载</div>
           <div class="kv"><div class="k">操作</div><div class="v"><a href="#">查看差异</a> · 升级宿主后自动可用</div></div>
         </div>
       </div>
@@ -381,21 +450,21 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
       <div class="page-head"><h1>设置</h1><span class="sub">配置只读视图 · 密钥仅显示引用</span></div>
       <div class="grid g-2">
         <div class="card">
-          <h2 class="sec" style="margin-top:0">LLM（litellm 桥接）</h2>
+          <h2 class="sec" style="margin-top:0">LLM · OpenAI SDK</h2>
           <div class="kv">
             <div class="k">主模型</div><div class="v">gpt-4o</div>
-            <div class="k">api_key</div><div class="v masked">${OPENAI_API_KEY} · 已配置（引用）</div>
+            <div class="k">api_key</div><div class="v masked">${OPENAI_API_KEY} · 已配置 · 引用</div>
             <div class="k">回退链</div><div class="v">deepseek-v4-flash → qwen2.5:7b (ollama)</div>
           </div>
           <h2 class="sec">嵌入</h2>
           <div class="kv">
-            <div class="k">provider</div><div class="v">local（Qwen3-Embedding-0.6B）</div>
+            <div class="k">provider</div><div class="v">local · Qwen3-Embedding-0.6B</div>
             <div class="k">device / batch</div><div class="v">cuda:0 · auto-tuned 64</div>
             <div class="k">cache_dir</div><div class="v">~/.cache/modelscope/hub/models</div>
           </div>
           <h2 class="sec">检索</h2>
           <div class="kv">
-            <div class="k">rag_engine</div><div class="v">sql（四路）</div>
+            <div class="k">rag_engine</div><div class="v">sql · 四路</div>
             <div class="k">rerank</div><div class="v">Qwen3-Reranker-0.6B · top_k 20</div>
           </div>
         </div>
@@ -411,7 +480,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
           <div class="card" style="margin-top:var(--space-4)">
             <h2 class="sec" style="margin-top:0">运行时</h2>
             <div class="kv">
-              <div class="k">root</div><div class="v">~/.drbrain（runtime root）</div>
+              <div class="k">root</div><div class="v">~/.drbrain · runtime root</div>
               <div class="k">schema</div><div class="v">v20 · 20/20 migrations</div>
               <div class="k">插件目录</div><div class="v">research/plugins/</div>
             </div>
@@ -427,7 +496,7 @@ mark{background:#FDE9C8;color:inherit;padding:0 1px;border-radius:2px}
 
 <script>
 // 页面切换（设计稿用；实现版为 FastAPI 路由 + htmx）
-const crumb = {dashboard:'Dashboard', papers:'文献库', runs:'研究运行', plugins:'插件', settings:'设置'};
+const crumb = {dashboard:'Dashboard', papers:'文献库', sessions:'会话', runs:'研究运行', plugins:'插件', settings:'设置'};
 document.getElementById('nav').addEventListener('click', e => {
   const btn = e.target.closest('button[data-page]'); if (!btn) return;
   nav(btn.dataset.page);

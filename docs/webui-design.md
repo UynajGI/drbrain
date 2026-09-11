@@ -49,22 +49,48 @@ app/
 登录态与会话审计存 `webui_sessions` 表（token 哈希、创建/最后活跃、来源地址）——
 v2 迁多用户时该表直接演化为审计日志。
 
-## 5. 信息架构（v1 五页）
+## 4.1 层级模型：项目 → 会话 → 实验
+
+UI 与数据按三层组织，上层为下层的命名空间：
+
+| 层 | 标识 | 内容 | 记忆绑定 |
+|---|---|---|---|
+| **项目** | `project_id` | 领域包 + 语料 + 一组会话 | 项目级长期记忆（跨会话继承） |
+| **会话** | `session_id` | 长期对话 + 记忆 + 若干实验 | 会话级记忆（可标注继承自项目） |
+| **实验** | `loop_id` | 一次 autoresearch 运行（ledger/claims） | 实验级记忆（结论回写会话） |
+
+- 侧栏顶部为**项目切换器**；切换项目后，文献库/会话/运行/插件视图全部随之切换。
+- **RAG 双形态**，记忆绑定层级可选（项目 / 会话 / 实验，默认会话、继承项目）：
+  - **面向检索的 RAG**：文献库问答，消费项目语料与会话记忆；
+  - **面向 autoresearch 的 RAG**：会话对话与实验上下文，长期记忆随会话存留、实验结论回写。
+- 研究运行页每个 run 显示其 `会话 · 实验` 绑定。
+
+## 4.2 LLM 客户端
+
+WebUI/核心统一走 **OpenAI SDK**（openai 包，OpenAI 兼容端点均可直连）。
+**不使用 litellm**——其缓存命中行为不可控。模型回退链由 `llm_client` 自身的
+fallback 逻辑承担（迁移项见 [platform-roadmap.md](platform-roadmap.md)）。
+
+## 5. 信息架构（v1 六页）
 
 | 页面 | 路径 | 功能 | 数据源 |
 |---|---|---|---|
 | Dashboard | `/` | 库概况（论文数/最近 ingest/运行状态）、快捷入口 | service.dashboard() |
-| 文献库 | `/papers` | BM25 检索、论文详情（树/概念/边）、删除 | query 层 |
-| 研究运行 | `/runs` | 发起 autoresearch、**ledger 事件流（SSE）**、claims 视图、历史与复放 | loop/ledger（只读 + 受控发起） |
+| 文献库 | `/papers` | 检索 RAG：BM25 融合检索、论文详情、删除 | query 层 |
+| 会话 | `/sessions` | 项目下会话列表；会话详情 = 长期记忆 + 实验 loop 列表 + 面向会话的 RAG 对话 | sessions + memory 层 |
+| 研究运行 | `/runs` | 发起 autoresearch、**ledger 事件流（SSE）**、claims 视图、历史与复放；每个 run 绑定会话/实验 | loop/ledger（只读 + 受控发起） |
 | 插件 | `/plugins` | 已发现插件列表（manifest/ABI/符合性报告）、健康与调用统计 | plugins.registry + conformance |
 | 设置 | `/settings` | 配置查看（密钥只显引用）、webui token 重置 | config + runtime |
 
 ## 6. API 面（v1，JSON + SSE；v2 产品直接复用）
 
 ```
+GET  /api/projects                  GET  /api/projects/{pid}/sessions
+GET  /api/sessions/{sid}            GET  /api/sessions/{sid}/memory
+POST /api/sessions/{sid}/chat       # 面向会话的 RAG 对话（记忆自动绑定）
 GET  /api/papers?q=&limit=          GET  /api/papers/{id}
-GET  /api/search?q=                 # BM25 融合结果
-POST /api/runs                      # 发起 autoresearch（受 settings 门控）
+GET  /api/search?q=                 # BM25 融合结果（检索 RAG）
+POST /api/runs                      # 发起 autoresearch（绑定 session_id）
 GET  /api/runs/{id}                 GET  /api/runs/{id}/events   # SSE
 GET  /api/plugins                   POST /api/plugins/{name}/conformance
 GET  /api/dashboard                 POST /api/auth/verify
