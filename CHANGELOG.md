@@ -15,6 +15,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - **sqlite-vec ANN index layer**: `tree_vectors_vec` virtual tables with optional int8 quantization for corpus-scale vector search over tree nodes.
 - **CLI**: `drbrain hybrid`, `drbrain survey` (one-shot markdown literature survey), `drbrain check-citations`, `drbrain ingest-link`; `cg` and `rag` sub-apps.
 - **Schema migrations v9–v20**: `concept_graph`, `concept_node_columns`, `concept_epistemic`, `knowledge_snapshots`, `answer_records`, `evidence`, `claims`, `claim_evidence`, session principals, `paper_categories`, claims provenance, and the `embedding_revision` watermark.
+- **Plugin ABI contract**: `abi_version` descriptor field with fail-closed negotiation in `PluginRegistry.register`; plugins written for unsupported protocol revisions are rejected at discovery instead of silently degraded. Standard: `docs/plugins.md`; platform roadmap: `docs/platform-roadmap.md`.
 - **Runtime-root selection** (`drbrain --root` / `DRBRAIN_ROOT`): database paths, citation API cache, PageIndex SDK storage, and metrics DB all scope to the selected root; SQLite URI paths are rejected.
 
 ### Changed

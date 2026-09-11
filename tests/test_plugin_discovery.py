@@ -34,6 +34,35 @@ def test_discover_loads_external_plugins():
     assert names == {"predict_flatband_score", "run_dft_calculation"}
 
 
+def test_discover_skips_plugin_with_unsupported_abi(tmp_path):
+    """A plugin written for a newer ABI is skipped, not loaded half-broken."""
+    good = tmp_path / "good_plugin.py"
+    good.write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(\n"
+        "        Plugin(name='good_abi', description='d', input_schema={'type': 'object'}),\n"
+        "        lambda arguments: {'ok': True},\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    future = tmp_path / "future_plugin.py"
+    future.write_text(
+        "from drbrain.plugins import Plugin\n"
+        "def register(registry):\n"
+        "    registry.register(\n"
+        "        Plugin(name='future_abi', description='d', input_schema={'type': 'object'},\n"
+        "               abi_version=2),\n"
+        "        lambda arguments: {},\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+
+    registry = PluginRegistry()
+    assert registry.discover(tmp_path) == 1
+    assert registry.get("good_abi").name == "good_abi"
+
+
 def test_plugin_types_are_correct():
     registry = _loaded_registry()
     plugins = {p.name: p for p in registry.list_plugins()}

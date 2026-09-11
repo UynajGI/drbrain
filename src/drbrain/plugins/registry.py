@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from drbrain.plugins.protocol import (
+    SUPPORTED_ABI_VERSIONS,
     JobMethods,
     Plugin,
     PluginResult,
@@ -469,6 +470,11 @@ class PluginRegistry:
         """Register a plugin, its handler and optional job methods (idempotent: re-register replaces)."""
         if not plugin.name:
             raise ValueError("plugin name must be non-empty")
+        if plugin.abi_version not in SUPPORTED_ABI_VERSIONS:
+            raise ValueError(
+                f"plugin {plugin.name!r} declares ABI v{plugin.abi_version}; "
+                f"this host supports {sorted(SUPPORTED_ABI_VERSIONS)}"
+            )
         self._plugins[plugin.name] = plugin
         self._handlers[plugin.name] = handler
         if jobs is not None:

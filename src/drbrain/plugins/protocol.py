@@ -46,6 +46,14 @@ Backend = Literal["subprocess", "inprocess", "static"]
 OnFailure = Literal["abstain", "stale", "none"]
 PluginSideEffect = Literal["pure", "read", "write", "irreversible", "unspecified"]
 
+# Plugin ABI contract.  ``HOST_ABI_VERSION`` is the newest descriptor revision
+# this build speaks; a plugin that declares a version outside
+# ``SUPPORTED_ABI_VERSIONS`` is rejected at registration time (fail closed)
+# instead of being loaded with unknown fields silently dropped.  Plugins that
+# do not declare ``abi_version`` at all default to 1 and stay loadable.
+HOST_ABI_VERSION = 1
+SUPPORTED_ABI_VERSIONS: tuple[int, ...] = (1,)
+
 
 class ResultStatus(StrEnum):
     """Machine-readable outcome of one plugin call (degradation-aware).
@@ -131,6 +139,10 @@ class Plugin:
     output_schema: dict[str, Any] | None = None
     plugin_type: PluginType = "other"
     version: str = ""
+    # Protocol revision this plugin was written against.  ``1`` covers every
+    # plugin written before the field existed; a value outside
+    # ``SUPPORTED_ABI_VERSIONS`` fails registration (see registry.register).
+    abi_version: int = 1
     resource: str | None = None
     backend: Backend = "inprocess"
     entry: str = ""  # deprecated, unread (compat: older plugins pass it)
