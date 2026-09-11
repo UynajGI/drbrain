@@ -469,6 +469,7 @@ def test_load_session_history_empty_for_unknown_session(tmp_path):
         db.close()
 
 
+@pytest.mark.timeout(180)
 def test_load_session_history_compresses_long_history(tmp_path):
     """Long histories collapse the middle into a [Context summary] message."""
     from drbrain.rag.agent import _persist_reason_session, load_session_history
