@@ -1037,23 +1037,38 @@ drbrain explore --delete transformers
 
 ### `drbrain webui`
 
-Serve a local single-page research workbench over the same database, ledger
-and plugin registry the CLI uses.
+Serve the local research workbench (FastAPI + server-rendered pages over the
+same database, ledger and plugin registry the CLI uses).
 
 ```bash
-drbrain webui                     # http://127.0.0.1:8765/
-drbrain webui --port 9000 --open  # custom port, open the browser
+drbrain webui                        # http://127.0.0.1:8765/
+drbrain webui --port 9000 --open     # custom port, open the browser
+drbrain webui --show-token           # print the current access token and exit
 ```
 
-Pages: 工作台 (KPI counters, recent runs), 文献检索 (`drbrain search`), 研究问答
-(`drbrain ask`), 研究闭环 (start `drbrain autoresearch run` from a research goal
-and watch ledger events / claims live), 计算任务 (ledger experiments and
-artifacts), 数据与模型 (database / ledger / plugins / export commands).
+On first start a random access token is generated, printed to the terminal and
+stored at `<root>/config/webui_token` (0600). Open the page, paste the token
+into the login form; the browser then carries an HttpOnly `SameSite=Strict`
+cookie for pages, htmx fragments and the SSE stream. Non-browser clients may
+send `Authorization: Bearer <token>` instead (no CSRF token needed). The
+bootstrap token can be rotated from 设置 → 重置访问令牌, which revokes every
+login session and open event stream.
 
-The UI starts empty and only reflects the current configuration; nothing is
-preloaded. `研究问答` requires `llamaindex.enabled: true` plus a built index,
-`研究闭环` requires `autoresearch.enabled: true`. Standard library only, no
-extra dependencies. JSON API under `/api/*` (see `src/drbrain/app/server.py`).
+Pages: 概览 / 文献库 (search, detail, section outline, evidence locators) /
+会话 (persistent conversations with layered memory and run launch) / 研究运行
+(status, live SSE events, claims + evidence, compute experiments, report
+download) / 插件 (discovery + conformance reports) / 设置 (redacted config,
+login sessions, audit, token rotation).
+
+The sidebar switches between projects: the default project is the whole
+imported library, while workspace-backed projects scope the literature /
+sessions / runs to that workspace reference. The UI starts empty and only
+reflects the current configuration; nothing is preloaded. `会话` needs
+`llm.models`, retrieval answers need `llamaindex.enabled: true` plus a built
+index, and starting runs needs `autoresearch.enabled: true`. JSON API under
+`/api/*` and htmx fragments under `/ui/fragments/*` (see
+`src/drbrain/app/web/`); the run event stream is
+`GET /api/runs/{run_id}/stream` (SSE, resumable via `Last-Event-ID`).
 
 ## Workspace Management (`drbrain ws`)
 

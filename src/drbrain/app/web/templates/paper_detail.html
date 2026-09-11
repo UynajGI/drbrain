@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set paper = detail.paper %}
+{% block title %}{{ paper.title or paper.local_id }} · 文献{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑">
+  <a class="link" href="/papers?project_id={{ project.project_id }}">文献库</a>
+  <span aria-hidden="true">/</span>
+  <span class="muted">{{ paper.local_id | short(40) }}</span>
+</nav>
+
+<header class="page-head">
+  <div>
+    <h1 class="title-lg">{{ paper.title or paper.local_id }}</h1>
+    <p class="muted">
+      {% if paper.authors %}{{ paper.authors | short(140) }} · {% endif %}
+      {{ paper.year or '年份未知' }}
+      {% if paper.journal %} · {{ paper.journal }}{% endif %}
+    </p>
+  </div>
+  <div class="page-actions">
+    <form method="post" action="/sessions">
+      {{ m.csrf_field(csrf_token) }}
+      <input type="hidden" name="project_id" value="{{ project.project_id }}">
+      <input type="hidden" name="paper_id" value="{{ paper.local_id }}">
+      <input type="hidden" name="title" value="关于《{{ paper.title or paper.local_id }}》">
+      <button type="submit" class="btn btn-primary">带入新会话</button>
+    </form>
+  </div>
+</header>
+
+<div class="two-col two-col-wide">
+  <section class="card" aria-labelledby="meta-title">
+    <h2 id="meta-title">元数据</h2>
+    <dl class="meta-grid">
+      <dt>状态</dt><dd>{{ m.status_badge(paper.status) }}</dd>
+      <dt>类型</dt><dd>{{ paper.paper_type }}</dd>
+      <dt>local_id</dt><dd><code>{{ paper.local_id }}</code></dd>
+      {% if paper.doi %}<dt>DOI</dt><dd><code>{{ paper.doi }}</code></dd>{% endif %}
+      {% if paper.arxiv %}<dt>arXiv</dt><dd><code>{{ paper.arxiv }}</code></dd>{% endif %}
+      {% if paper.openalex_id %}<dt>OpenAlex</dt><dd><code>{{ paper.openalex_id | short(24) }}</code></dd>{% endif %}
+      <dt>引用数</dt><dd>{{ paper.citation_count or 0 }}</dd>
+    </dl>
+  </section>
+
+  <section class="card" aria-labelledby="abstract-title">
+    <h2 id="abstract-title">摘要</h2>
+    {% if paper.abstract %}
+    <p class="abstract">{{ paper.abstract }}</p>
+    {% else %}
+    <p class="muted">该文献没有摘要记录。</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card" aria-labelledby="outline-title">
+  <div class="card-head">
+    <h2 id="outline-title">章节结构</h2>
+    <span class="muted small">{{ detail.outline | length }} 个节点{% if detail.outline | length >= 300 %}（已截断）{% endif %}</span>
+  </div>
+  {% if detail.outline %}
+  <ul class="outline">
+    {% for node in detail.outline %}
+    <li class="outline-node" style="--depth: {{ node.depth }}">
+      <span class="outline-title">{{ node.title or '(未命名章节)' }}</span>
+      {% if node.node_id %}<code class="outline-id">{{ node.node_id }}</code>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="muted small">node_id 即证据定位符，可与运行裁决中的 <code>paper:node</code> 引用对照。</p>
+  {% else %}
+  {{ m.empty_state('没有可用的章节树', '该文献可能尚未完成 ingest（tree.json 缺失）。') }}
+  {% endif %}
+</section>
+
+<div class="two-col">
+  <section class="card" aria-labelledby="concepts-title">
+    <div class="card-head">
+      <h2 id="concepts-title">概念</h2>
+      <span class="muted small">{{ detail.concepts | length }} 条</span>
+    </div>
+    {% if detail.concepts %}
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th scope="col">标签</th><th scope="col">类型</th><th scope="col" class="num">置信度</th></tr></thead>
+        <tbody>
+          {% for c in detail.concepts %}
+          <tr><td>{{ c.label }}</td><td>{{ c.type }}</td><td class="num">{{ '%.2f' % c.confidence }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">尚未抽取概念（先运行 drbrain build）。</p>
+    {% endif %}
+  </section>
+
+  <section class="card" aria-labelledby="arguments-title">
+    <div class="card-head">
+      <h2 id="arguments-title">论证</h2>
+      <span class="muted small">{{ detail.arguments | length }} 条</span>
+    </div>
+    {% if detail.arguments %}
+    <ul class="list">
+      {% for a in detail.arguments %}
+      <li class="list-row">
+        <div class="list-main">
+          <p class="arg-claim">{{ a.claim }}</p>
+          <span class="muted small">{{ a.claim_type }} → {{ a.target_label }}（{{ a.target_type }}）
+            {% if a.section %} · {{ a.section }}{% endif %}</span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">尚未抽取论证。</p>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

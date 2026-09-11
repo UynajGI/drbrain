@@ -5,6 +5,8 @@ DEPRECATED (T9, 终态清理): superseded by ``drbrain.rag`` BM25Retriever for C
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from typing import Any
@@ -98,29 +100,45 @@ class BM25Search:
 _bm25_cache: dict[tuple, BM25Search] = {}
 
 
-def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
+def build_bm25_index(
+    db, k1: float = 1.5, b: float = 0.75, paper_ids: list[str] | None = None
+) -> BM25Search:
     """Build a BM25 index from database papers, concepts, and arguments.
 
     Cached per database path: building the index reads every paper + concept
     into memory (hundreds of thousands of rows), so re-building it on every
     ``search_concepts`` call would stall an agent loop. In-memory databases
     (no ``path``) are never cached.
+
+    ``paper_ids`` restricts the *candidate set* before ranking: a
+    project-scoped caller must not lose matching documents to a global top-N
+    cutoff that was applied before the membership filter.
     """
     db_path = str(getattr(db, "path", "") or "")
     # Only cache on-disk databases: in-memory DBs (``:memory:``) share the same
     # ``path`` string across tests and would otherwise collide in the cache.
     cacheable = bool(db_path) and os.path.isfile(db_path)
-    # Key on path + ranking params + db mtime so writes invalidate the cached
-    # index and a changed k1/b is honoured (review P2).
-    cache_key = (db_path, k1, b, os.path.getmtime(db_path)) if cacheable else None
+    scope_key = ""
+    if paper_ids is not None:
+        digest = hashlib.sha1(
+            ",".join(sorted(str(pid) for pid in paper_ids)).encode("utf-8")
+        ).hexdigest()
+        scope_key = f"{len(paper_ids)}:{digest}"
+    # Key on path + ranking params + scope + db mtime so writes invalidate the
+    # cached index and a changed k1/b/scope is honoured.
+    cache_key = (db_path, k1, b, scope_key, os.path.getmtime(db_path)) if cacheable else None
     if cache_key is not None and cache_key in _bm25_cache:
         return _bm25_cache[cache_key]
 
     index = BM25Search()
+    allowed = set(paper_ids) if paper_ids is not None else None
+    scope_json = json.dumps(list(paper_ids)) if paper_ids is not None else None
 
     # Add paper titles + abstracts
     papers = db.get_all_papers()
     for p in papers:
+        if allowed is not None and p["local_id"] not in allowed:
+            continue
         index.add_document(
             p["local_id"],
             "Paper",
@@ -130,19 +148,23 @@ def build_bm25_index(db, k1: float = 1.5, b: float = 0.75) -> BM25Search:
         )
 
     # Add concept labels
+    scope_sql = "AND c.local_id IN (SELECT value FROM json_each(?))" if scope_json else ""
     rows = db.conn.execute(
         "SELECT c.local_id, c.type, c.label, c.confidence, p.year "
         "FROM concepts c JOIN papers p ON c.local_id = p.local_id "
-        "WHERE p.year IS NOT NULL"
+        f"WHERE p.year IS NOT NULL {scope_sql}",
+        (scope_json,) if scope_json else (),
     ).fetchall()
     for local_id, ctype, label, confidence, year in rows:
         index.add_document(local_id, ctype, label, year=year, confidence=confidence)
 
     # Add argument claims
+    arg_scope_sql = "AND a.source_paper IN (SELECT value FROM json_each(?))" if scope_json else ""
     args = db.conn.execute(
         "SELECT a.source_paper, a.claim, a.claim_type, a.confidence, p.year "
         "FROM arguments a JOIN papers p ON a.source_paper = p.local_id "
-        "WHERE p.year IS NOT NULL"
+        f"WHERE p.year IS NOT NULL {arg_scope_sql}",
+        (scope_json,) if scope_json else (),
     ).fetchall()
     for local_id, claim, claim_type, confidence, year in args:
         index.add_document(

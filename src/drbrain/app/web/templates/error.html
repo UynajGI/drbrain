@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% set heading = title or '请求未完成' %}
+{% block title %}{{ heading }} · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>{{ heading }}</h1>
+    <p class="muted">{{ message or '请求未能完成，请检查输入或返回后重试。' }}</p>
+  </div>
+</header>
+<p class="muted small">代码：<code>{{ code }}</code>。请返回
+  <a class="link" href="/">概览</a> 重新选择项目或条目。</p>
+{% endblock %}
