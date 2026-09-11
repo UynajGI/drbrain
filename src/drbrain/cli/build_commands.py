@@ -169,9 +169,10 @@ def build_cmd(
     db = Database(cfg["db"]["path"])
 
     # LLM response cache (deduplicate retries across stages)
-    from drbrain.security import configured_secret_values
+    from drbrain.security import configured_secret_values, safe_error
 
-    cache = ApiCache("data/spool/llm_cache", secrets=configured_secret_values(cfg))
+    secrets = configured_secret_values(cfg)
+    cache = ApiCache("data/spool/llm_cache", secrets=secrets)
 
     # Select papers to process
     if all_papers:
@@ -216,6 +217,7 @@ def build_cmd(
 
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     all_results = []
+    failed = 0
 
     for paper in papers:
         pid = paper["local_id"]
@@ -248,10 +250,12 @@ def build_cmd(
                 tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
                 typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
             except Exception as e:
-                typer.echo(f"  Tree regeneration failed: {e}")
+                typer.echo(f"  Tree regeneration failed: {safe_error(e, secrets=secrets)}")
+                failed += 1
                 continue
         elif not md_path.exists():
             typer.echo("  No raw.md — ingest this paper first")
+            failed += 1
             continue
 
         import json as _json
@@ -260,15 +264,21 @@ def build_cmd(
         structure = tree.get("structure", [])
         if not structure:
             typer.echo("  Empty tree structure — skipping")
+            failed += 1
             continue
 
         # Run 5-stage pipeline
         typer.echo("  Stage 1: Ontology...")
-        result = asyncio.run(
-            build_graph_from_tree(
-                md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+        try:
+            result = asyncio.run(
+                build_graph_from_tree(
+                    md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+                )
             )
-        )
+        except Exception as exc:
+            failed += 1
+            typer.echo(f"  Extraction failed: {safe_error(exc, secrets=secrets)}")
+            continue
 
         concepts = result.get("concepts", [])
         relations = result.get("relations", [])
@@ -362,8 +372,12 @@ def build_cmd(
         typer.echo(
             f"\nBuild complete: {total_c} concepts, {total_r} relations across {len(all_results)} papers"
         )
+    if failed:
+        typer.echo(f"\n{failed} paper(s) failed — see errors above", err=True)
 
     db.close()
+    if failed:
+        raise typer.Exit(1)
 
 
 def embed_cmd(
