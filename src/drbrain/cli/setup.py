@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import typer
@@ -16,32 +15,38 @@ from drbrain.cli._setup_i18n import t as _t
 
 
 def _write_private_yaml(path: Path, data: dict) -> Path:
-    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
-        from drbrain.runtime import RuntimeContext
-
-        path = RuntimeContext.create().assert_within_root(path, label="config.local.yaml")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_name, path)
-        os.chmod(path, 0o600)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    os.chmod(path, 0o600)
     return path
 
 
 def _config_local_path() -> Path:
     """Resolve setup's writable config inside an explicitly selected root."""
-    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+    if "DRBRAIN_ROOT" in __import__("os").environ:
         from drbrain.runtime import runtime_root
 
         return runtime_root() / "config.local.yaml"
     return Path("config.local.yaml")
+
+
+def _ensure_base_config() -> Path:
+    """Bootstrap a minimal base config in a fresh runtime root.
+
+    Setup is the only command allowed to start without config.yaml, so it
+    must be able to seed the skeleton that ``load_config`` resolves paths
+    against; every other command fails closed on a missing base config.
+    """
+    if "DRBRAIN_ROOT" in os.environ:
+        from drbrain.runtime import runtime_root
+
+        base = runtime_root() / "config.yaml"
+    else:
+        base = Path("config.yaml")
+    if not base.exists():
+        base.write_text("db:\n  path: data/drbrain.db\n", encoding="utf-8")
+    return base
 
 
 def _check_python_package(module: str) -> bool:
@@ -116,7 +121,7 @@ def generate_local_config(
     config["embed"] = embed_cfg
 
     out = Path(output_path)
-    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+    if "DRBRAIN_ROOT" in os.environ:
         from drbrain.runtime import RuntimeContext
 
         out = RuntimeContext.create().assert_within_root(out, label="config.local.yaml")
@@ -143,7 +148,7 @@ def _ensure_directories(cfg: dict) -> int:
     created = 0
     for d in dir_paths:
         p = Path(d)
-        if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        if "DRBRAIN_ROOT" in os.environ:
             from drbrain.runtime import RuntimeContext
 
             p = RuntimeContext.create().assert_within_root(p, label=f"setup directory {d!r}")
@@ -272,8 +277,6 @@ def setup_cmd(
             typer.echo("Passwords don't match.", err=True)
             raise typer.Exit(1)
 
-        import yaml
-
         config_path = _config_local_path()
         if config_path.exists():
             local = yaml.safe_load(config_path.read_text()) or {}
@@ -318,8 +321,6 @@ def setup_cmd(
 
     # ── Quick mode: skip prompts, read from env vars ──
     if quick:
-        import os
-
         llm_provider = os.getenv("DRBRAIN_LLM_PROVIDER", "openai")
         llm_model = os.getenv("DRBRAIN_LLM_MODEL", "")
         llm_key = os.getenv(
@@ -377,6 +378,7 @@ def setup_cmd(
         elif embed_provider == "local" and embed_model:
             config["embed"]["model"] = embed_model  # type: ignore[index]  # pre-existing: see mypy debt
 
+        _ensure_base_config()
         out = _config_local_path()
         out.parent.mkdir(parents=True, exist_ok=True)
         _write_private_yaml(out, config)
@@ -583,6 +585,7 @@ def setup_cmd(
         embed_cfg["model"] = embed_model
     config["embed"] = embed_cfg
 
+    _ensure_base_config()
     out = _config_local_path()
     out.parent.mkdir(parents=True, exist_ok=True)
     _write_private_yaml(out, config)

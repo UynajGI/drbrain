@@ -51,6 +51,7 @@ _PATH_FIELDS: tuple[tuple[str, ...], ...] = (
     ("llamaindex", "eval", "golden_set"),
     ("autoresearch", "run_dir"),
     ("autoresearch", "plugins_dir"),
+    ("pageindex", "storage_path"),
 )
 
 # Paths that contain the mutable corpus or runtime state.  Model caches and

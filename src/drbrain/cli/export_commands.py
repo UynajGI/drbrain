@@ -653,6 +653,7 @@ def metrics_cmd(
     """Show user behavior analytics — top keywords, most-read papers, weekly trends."""
     from pathlib import Path as _Path
 
+    from drbrain.cli._helpers.runtime import runtime_data_path
     from drbrain.services.metrics_panel import (
         _ensure_metrics_db,
         get_most_read_papers,
@@ -660,9 +661,9 @@ def metrics_cmd(
         get_weekly_trend,
     )
 
-    runtime = (ctx.obj or {}).get("runtime")
-    db_path = runtime.root / "data" / "metrics.db" if runtime else _Path("data/metrics.db")
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Metrics writes must land in the selected runtime namespace, not the
+    # process CWD a caller happened to launch from.
+    db_path = _Path(runtime_data_path(ctx, "data/metrics.db", label="metrics database"))
     _ensure_metrics_db(db_path)
     trend = get_weekly_trend(db_path)
     keywords = get_top_keywords(db_path, limit=5)

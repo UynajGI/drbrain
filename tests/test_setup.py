@@ -1,5 +1,6 @@
 """Tests for setup.py config generation."""
 
+import os
 import stat
 import tempfile
 from pathlib import Path
@@ -161,6 +162,7 @@ def test_generate_local_config_writes_and_contains_keys(tmp_path):
     assert data["embed"]["provider"] == "local"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
 def test_generate_local_config_restricts_file_permissions(tmp_path):
     """Generated config.local.yaml must not be readable by other users."""
     out = generate_local_config(
@@ -171,6 +173,7 @@ def test_generate_local_config_restricts_file_permissions(tmp_path):
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
 def test_private_yaml_writer_restricts_existing_file_permissions(tmp_path):
     """Updating an existing local config also tightens an overly broad mode."""
     from drbrain.cli.setup import _write_private_yaml
@@ -184,6 +187,7 @@ def test_private_yaml_writer_restricts_existing_file_permissions(tmp_path):
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior is not portable on Windows")
 def test_setup_paths_stay_inside_active_runtime_root(tmp_path, monkeypatch):
     """Setup helpers cannot create dirs or secret files in another root."""
     from drbrain.cli.setup import _ensure_directories, generate_local_config
