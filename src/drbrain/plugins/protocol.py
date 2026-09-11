@@ -46,6 +46,14 @@ Backend = Literal["subprocess", "inprocess", "static"]
 OnFailure = Literal["abstain", "stale", "none"]
 PluginSideEffect = Literal["pure", "read", "write", "irreversible", "unspecified"]
 
+# Plugin ABI contract.  ``HOST_ABI_VERSION`` is the newest descriptor revision
+# this build speaks; a plugin that declares a version outside
+# ``SUPPORTED_ABI_VERSIONS`` is rejected at registration time (fail closed)
+# instead of being loaded with unknown fields silently dropped.  Plugins that
+# do not declare ``abi_version`` at all default to 1 and stay loadable.
+HOST_ABI_VERSION = 1
+SUPPORTED_ABI_VERSIONS: tuple[int, ...] = (1,)
+
 
 class ResultStatus(StrEnum):
     """Machine-readable outcome of one plugin call (degradation-aware).
@@ -153,6 +161,11 @@ class Plugin:
     supports_cancel: bool = False
     sandbox_profile: str = ""
     approval_policy: str = "default"
+    # Protocol revision this plugin was written against.  Appended LAST so the
+    # pre-ABI positional argument layout is preserved for external plugins
+    # (``1`` covers every plugin written before the field existed; a value
+    # outside ``SUPPORTED_ABI_VERSIONS`` fails registration).
+    abi_version: int = 1
 
 
 def _job_method_not_implemented(*_args: Any) -> Any:

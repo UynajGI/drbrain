@@ -1,0 +1,143 @@
+# 插件系统规范（Plugin ABI）
+
+> 状态：**v2（现行）** · 宿主 ABI：`HOST_ABI_VERSION = 1` · 支持集合：`{1}`
+>
+> 插件系统是本平台的**领域化入口**：四层核心（数据管线 / 检索 RAG / 能力面 / 研究回路）
+> 保持领域无关，一切领域知识——评测集、语料、实算工具、领域模型——都经由本协议进入。
+> 材料学（A 线）是第一个领域插件包，不是核心的一部分。
+
+## 1. 插件形态
+
+一个插件 = 一个 `.py` 文件，放在插件目录（如 `research/plugins/`），定义：
+
+```python
+from drbrain.plugins import Plugin
+
+def register(registry):
+    registry.register(
+        Plugin(
+            name="predict_flatband_score",       # 全局唯一
+            description="给定成分与空间群，预测平带度",
+            input_schema={"type": "object", ...},  # JSON Schema，宿主据此生成工具签名
+            plugin_type="model",                  # model | software | data | formula | other
+            version="flatness_prod_v2",           # 插件自身版本
+            abi_version=1,                        # 声明针对的宿主协议版本（缺省 = 1）
+            side_effect="read",                   # pure | read | write | irreversible | unspecified
+            resource="models/flatness_prod_v2.joblib",
+            summary_fields=("S_bandwidth",),      # 随原始 JSON 摘要给 LLM 的关键字段
+        ),
+        handler,          # Callable[[dict], Any]
+        jobs=JobMethods(submit, poll, cancel),   # 可选：小时级长作业
+    )
+```
+
+宿主在 `discover(plugins_dir)` 时逐文件导入并调用 `register(registry)`；
+任一模块失败只跳过自身，不阻断其他插件。
+
+## 1.1 Manifest 声明（v2，元数据与代码分离）
+
+v2 起支持**数据优先**的声明风格：模块级 `PLUGIN_MANIFEST` 字典 + `HANDLER`
+可调用对象（可选 `JOB_METHODS`），元数据与代码分离，声明即注册：
+
+```python
+from types import SimpleNamespace
+
+PLUGIN_MANIFEST = {
+    "name": "predict_flatband_score",       # 必填，全局唯一
+    "description": "给定成分与空间群，预测平带度",  # 必填
+    "input_schema": {"type": "object", ...},  # 必填，JSON Schema
+    "plugin_type": "model",                 # 可选，缺省 "other"
+    "version": "flatness_prod_v2",
+    "abi_version": 1,                       # 缺省 1；协商规则与 §3 相同（fail-closed）
+    "side_effect": "read",
+    "timeout_s": 60.0,
+    "summary_fields": ["S_bandwidth"],
+    "resource": "models/flatness_prod_v2.joblib",
+    "metadata": {"family": "gbdt"},
+    # ... 其余 Plugin 数据类字段均可直接写进 manifest
+}
+
+
+def HANDLER(arguments):                     # 必须是模块级可调用对象
+    ...
+
+
+JOB_METHODS = SimpleNamespace(submit=..., poll=..., cancel=...)  # 可选
+```
+
+- `discover()` 发现 `PLUGIN_MANIFEST` 时直接由 manifest 构建 `Plugin` 并注册
+  `HANDLER` / `JOB_METHODS`；缺 `name` / `description` / `input_schema` 或
+  `HANDLER` 不可调用的模块 → 告警跳过（与 inline 风格的失败语义一致）。
+- ABI 协商同样适用：manifest 里声明了不支持的 `abi_version` → fail-closed 跳过。
+- manifest 同时声明了 `register()` 的模块按 manifest 注册，`register()` 不被调用。
+- 未知 manifest 键由 `Plugin` 构造器静默丢弃（与 inline 风格同一条前向兼容
+  契约）；符合性自检（§7）会把未知键报出来，避免拼写错误无声失效。
+- 两种风格可共存于同一目录；inline `register(registry)` 风格保持原样，完全兼容。
+
+## 2. 描述符契约（`Plugin` 字段分组）
+
+| 分组 | 字段 | 说明 |
+|---|---|---|
+| 身份与模式 | `name` `description` `input_schema` `plugin_type` `version` `abi_version` | 工具签名由 `input_schema` 生成；`abi_version` 见 §3 |
+| 行为分类 | `backend` `side_effect` `timeout_s` `summary_fields` | `side_effect` 是研究回路的实算门/结算依据（`write`/`irreversible` 触发更严的门） |
+| 安全信封 | `resource` `resource_scope` `code_digest` `secret_refs` `max_output_bytes` `sandbox_profile` `approval_policy` | 秘钥只经 `secret_refs` 引用，永不进描述符；输出超过 `max_output_bytes` 被截断 |
+| 长作业 | `JobMethods(submit, poll, cancel)` | 结果只认 `jobs/<job_id>.json`（+ `.log`），`Artifact(path, sha256)` 支持逐字节复核 |
+| 能力声明 | `required_capabilities` `supports_idempotency` `supports_reconcile` `supports_cancel` `cost_hint` | 研究回路的结算幂等 / CAS 依赖这些声明 |
+
+## 3. ABI 版本协商
+
+- 插件声明 `abi_version`（缺省 = 1，覆盖所有早期插件，向后兼容）。
+- `abi_version ∉ SUPPORTED_ABI_VERSIONS` → `register()` 抛 `ValueError`（fail-closed），
+  `discover()` 跳过该插件并告警——**绝不带病加载**。
+- 升级策略：`HOST_ABI_VERSION` 只增不减；被弃用的版本随主版本（major）从支持集合移除。
+- 未知关键字参数目前被静默丢弃（向后兼容旧插件）；声明了 `abi_version` 的插件视为
+  已知契约，未来对声明版本的插件收紧此行为。
+
+## 4. 运行信封
+
+默认每次调用独立子进程（超时可 SIGKILL 真回收）；不可 pickle 的 handler 自动回退共享线程。
+超时取 `timeout_s`；输出超过 `max_output_bytes` 被截断并在结果中标注。
+
+## 5. 插件作者符合性清单
+
+- [ ] `register(registry)` 幂等（重复调用不产生副作用堆积）
+- [ ] `input_schema` 是合法 JSON Schema（宿主据此生成 LLM 工具签名）
+- [ ] 长作业：`submit` 只入队快速返回；结果写 `jobs/<job_id>.json` + `.log`；`Artifact` 带 sha256
+- [ ] `side_effect` 如实声明（研究回路的门按此分级）
+- [ ] 秘钥经 `secret_refs` 引用，不硬编码
+- [ ] `abi_version` 显式声明（省略 = 1，仅限兼容期）
+- [ ] 不 import 宿主内部模块（`drbrain.plugins` 除外）
+- [ ] manifest 声明的键名与 `Plugin` 字段一致（未知键会被加载器静默丢弃）
+- [ ] 交付前跑一遍符合性自检（§7）全绿
+
+## 6. 参考实现
+
+- 协议与注册表：`src/drbrain/plugins/`（protocol / registry / backends / manifest / conformance）
+- 最小示例：`tests/fixtures/plugins/`（model + software 各一，经 `test_plugin_discovery.py` 验证）
+- 真实领域插件：`research/plugins/`（材料学 A 线：GBDT 预测、GPAW 实算、physics/topology 重算）
+
+## 7. 符合性自检（插件作者可自跑）
+
+交付前对插件目录跑一遍静态符合性检查（**绝不执行 handler**）：
+
+```bash
+python -m drbrain.plugins.conformance <plugin_dir>
+```
+
+逐条打印 `[PASS]/[FAIL] 检查名 — 说明`，全部通过退出码 0，任一失败退出码 1。
+检查项（每个 `*.py` 模块，跳过 `_` 前缀文件）：
+
+| 检查 | 内容 |
+|---|---|
+| `imports` | 按 `discover()` 同样的规则可干净导入 |
+| `entrypoint` | 声明了 `PLUGIN_MANIFEST`（manifest 风格）或 `register()`（inline 风格） |
+| `manifest` / `manifest_fields` | 必填键齐全、类型正确；未知键直接报 FAIL（加载器会静默丢弃它们） |
+| `input_schema` | 是 `type: "object"` 的 JSON Schema，且 `properties` 为字典 |
+| `timeout_s` / `side_effect` / `abi_version` | `> 0` / 已知字面量 / 宿主支持集合内 |
+| `code_digest` | 声明了就必须等于模块文件的 sha256——把声明的 digest 值本身置空后再哈希（自指声明：manifest 里填 `"code_digest": ""` 哈希一次，再回填值，校验时同样置空重算比对；可带 `sha256:` 前缀） |
+| `secrets` | 源码不含硬编码密钥形态字符串（`sk-…` / `AKIA…` / `ghp_…` / `xox…`），秘钥只经 `secret_refs` 引用 |
+| `job_methods` | 声明了 `JOB_METHODS` 就必须暴露可调用的 `submit`/`poll`/`cancel` |
+
+inline 风格模块的 `register()` 会在一次性临时 registry 上执行一次（注册本身
+是文档化契约的一部分，handler 永不执行），使描述符级检查对两种风格统一生效。
+

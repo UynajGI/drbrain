@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
+
+import pytest
 
 from drbrain.plugins import Plugin, PluginRegistry, PluginResult, ResultStatus
+from drbrain.plugins.protocol import HOST_ABI_VERSION, SUPPORTED_ABI_VERSIONS
 
 
 def _flatband_plugin(**overrides) -> Plugin:
@@ -255,3 +259,51 @@ def test_required_property_with_explicit_null_default_stays_required():
 
     ok = reg.call("needs_q", {"query": "topological"})
     assert ok.ok and ok.data == {"q": "topological"}
+
+
+# ── ABI version negotiation ──────────────────────────────────────────────────
+
+
+def test_abi_version_defaults_to_host_supported():
+    plugin = _flatband_plugin()
+    assert plugin.abi_version == HOST_ABI_VERSION
+    assert plugin.abi_version in SUPPORTED_ABI_VERSIONS
+
+
+def test_register_rejects_unsupported_abi_version():
+    registry = PluginRegistry()
+    with pytest.raises(ValueError, match="ABI v2"):
+        registry.register(
+            replace(_flatband_plugin(), name="future", abi_version=2), lambda args: {}
+        )
+    assert registry.list_plugins() == []
+
+
+def test_register_rejects_bool_abi_version():
+    """bool subclasses int: ``abi_version: true`` must not silently pass as v1."""
+    registry = PluginRegistry()
+    with pytest.raises(ValueError, match="ABI vTrue"):
+        registry.register(
+            replace(_flatband_plugin(), name="truthy", abi_version=True), lambda args: {}
+        )
+    assert registry.list_plugins() == []
+
+
+def test_register_abi_rejection_fails_before_mutation():
+    registry = PluginRegistry()
+    good = _flatband_plugin()
+    registry.register(good, lambda args: {})
+
+    with pytest.raises(ValueError, match="ABI"):
+        registry.register(replace(good, name="bad-plugin", abi_version=99), lambda args: {})
+
+    assert registry.get(good.name) is good
+    assert "bad-plugin" not in [p.name for p in registry.list_plugins()]
+
+
+def test_positional_plugin_construction_compat():
+    """Pre-ABI positional calls keep their layout: abi_version is appended last."""
+    plugin = Plugin("n", "d", {"type": "object"}, {"o": 1}, "model", "v1", "models/x.joblib")
+    assert plugin.resource == "models/x.joblib"
+    assert plugin.abi_version == 1
+    assert plugin.plugin_type == "model"
