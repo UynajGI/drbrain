@@ -303,9 +303,7 @@ def test_register_abi_rejection_fails_before_mutation():
 
 def test_positional_plugin_construction_compat():
     """Pre-ABI positional calls keep their layout: abi_version is appended last."""
-    plugin = Plugin(
-        "n", "d", {"type": "object"}, {"o": 1}, "model", "v1", "models/x.joblib"
-    )
+    plugin = Plugin("n", "d", {"type": "object"}, {"o": 1}, "model", "v1", "models/x.joblib")
     assert plugin.resource == "models/x.joblib"
     assert plugin.abi_version == 1
     assert plugin.plugin_type == "model"
