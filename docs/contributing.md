@@ -34,7 +34,7 @@ src/drbrain/
 │   ├── session_agent.py  # Persistent DB-backed SessionAgent for multi-turn reasoning
 │   ├── reasoner.py       # Stateless ReasonerAgent with tool-calling
 │   ├── raptor.py         # RAPTOR recursive semantic tree summarization
-│   ├── llm_client.py     # acall_with_fallback(), litellm wrappers
+│   ├── llm_client.py     # acall_with_fallback(), OpenAI SDK client with provider fallback
 │   ├── openalex.py       # OpenAlex API client
 │   ├── crossref.py       # CrossRef API client
 │   ├── cache.py          # API response cache
@@ -111,6 +111,10 @@ src/drbrain/
 ├── report/               # Analysis reports
 │   ├── analyzer.py       # Knowledge frontier analyzer
 │   └── generator.py      # Report generation utilities
+├── rag/                  # LlamaIndex RAG layer (fusion retrieval, FunctionAgent, eval, authority/status)
+├── loop/                 # Research loop orchestration (workflow, director, roles, discussion, ledger store)
+├── plugins/              # Model-as-Tool plugin protocol (ABI, manifest, conformance suite, registry)
+├── app/                  # Local WebUI (drbrain webui): FastAPI + htmx, token auth, service facade
 ├── config.py             # Typed Config dataclass
 ├── log.py                # loguru-based structured logging
 ├── metrics.py            # LLM token usage tracking

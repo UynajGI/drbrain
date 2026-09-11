@@ -89,6 +89,7 @@ drbrain pipeline --preset full
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm |
 | **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
+| **WebUI** | Local research workbench | `drbrain webui` — FastAPI + htmx, single-user token auth; overview / literature / sessions / runs (live SSE events, claims + evidence, report download) / plugins / settings, scoped by project |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
 | **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification |
 | **Export** | BibTeX, RIS, Markdown + **OKF** | 4 citation styles (APA, Vancouver, Chicago, MLA) + OKF v0.1 markdown bundle |
@@ -137,7 +138,7 @@ Copilot, and other AI coding tools.
 `drbrain setup` walks you through the basics interactively (bilingual
 EN / 中文):
 
-- LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, …)
+- LLM API key (any OpenAI-compatible provider: OpenAI, DeepSeek, Ollama, vLLM, …)
 - MinerU token (optional; PyMuPDF fallback for PDF parsing)
 - Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate
   limits)

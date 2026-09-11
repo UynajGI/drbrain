@@ -369,6 +369,11 @@ Additional modules not covered in the sections above:
 - `storage/citation_graph.py` -- Citation graph queries (refs, citing papers, shared references)
 - `storage/connection.py` -- WAL-mode database connection helper with thread safety
 
+#### WebUI
+- `app/service.py` -- business facade for the WebUI: resolves the request scope (project/session), dashboard/search, cursor-paged library, sessions + layered memory, durable run launch, report/evidence readers; every HTTP route calls it
+- `app/auth.py` -- single-user token boundary: bootstrap token at `config/webui_token` (0600), login sessions in `webui_sessions` (hashes only), Bearer support, rotation revokes every live session
+- `app/web/` -- FastAPI app: `routes/pages.py` (server-rendered pages), `routes/fragments.py` (htmx fragments), `routes/api.py` (JSON contract), `routes/stream.py` (SSE run stream), `auth_routes.py`, `deps.py` (auth + scope + CSRF dependencies), `labels.py` (status/error tables), plus templates/static with htmx vendored locally. Contract: [webui-design.md](webui-design.md)
+
 ### Structure-First Retrieval
 `query/tree_retrieval.py` -- Full PageIndex implementation. Iterative tree-search with adaptive depth navigation. Small skeletons get one-shot selection; large skeletons get top-level -> branch selection -> leaf selection.
 
