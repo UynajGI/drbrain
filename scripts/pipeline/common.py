@@ -143,6 +143,8 @@ def _worker_process_init() -> None:
             os.setsid()
         except OSError:
             pass
+
+
 def run_process_pool_fail_fast(
     tasks: Iterable[tuple],
     worker: Callable[[tuple], dict],
