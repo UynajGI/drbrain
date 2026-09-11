@@ -53,10 +53,12 @@ def job_methods_from(module: Any) -> JobMethods | None:
         return None
     if isinstance(raw, JobMethods):
         return raw
-    methods = [getattr(raw, attr, None) for attr in _JOB_ATTRS]
-    if not all(callable(method) for method in methods):
+    submit = getattr(raw, "submit", None)
+    poll = getattr(raw, "poll", None)
+    cancel = getattr(raw, "cancel", None)
+    if not (callable(submit) and callable(poll) and callable(cancel)):
         raise TypeError(f"{JOB_METHODS_KEY} must expose callable submit/poll/cancel")
-    return JobMethods(**dict(zip(_JOB_ATTRS, methods, strict=True)))
+    return JobMethods(submit=submit, poll=poll, cancel=cancel)
 
 
 def build_from_manifest(
