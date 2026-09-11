@@ -74,6 +74,8 @@ def test_evidence_record_id_changes_when_generation_or_content_changes():
 
 
 def test_capture_index_generation_makes_legacy_snapshot_explicit(monkeypatch):
+    from drbrain.rag import index_generations as indexer
+
     monkeypatch.setattr(
         indexer, "get_llamaindex_config", lambda _cfg: SimpleNamespace(storage_dir="unused")
     )
@@ -83,6 +85,8 @@ def test_capture_index_generation_makes_legacy_snapshot_explicit(monkeypatch):
 
 
 def test_capture_index_generation_refuses_an_invalid_active_pointer(monkeypatch):
+    from drbrain.rag import index_generations as indexer
+
     monkeypatch.setattr(
         indexer, "get_llamaindex_config", lambda _cfg: SimpleNamespace(storage_dir="unused")
     )

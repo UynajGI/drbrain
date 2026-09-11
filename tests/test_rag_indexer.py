@@ -98,7 +98,7 @@ class _PaperDB:
 def _make_cfg(tmp_path: Path, papers_dir: Path) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
-            enabled=True, vector_store="memory", storage_dir=str(tmp_path / "li")
+            enabled=True, rag_engine="llamaindex", vector_store="memory", storage_dir=str(tmp_path / "li")
         ),
         dirs=DirsConfig(papers=str(papers_dir)),
         embed=EmbedConfig(provider="none", model="fake-embed", top_k=5),
@@ -368,7 +368,7 @@ def test_build_index_chunk_metadata_and_sizes(tmp_path):
         (
             n
             for n in index.docstore.docs.values()
-            if n.metadata["paper_id"] == PAPER_B and n.metadata["node_id"] == "0000"
+            if n.metadata["paper_id"] == PAPER_B and n.metadata.get("parent_node_id") == "0000"
         ),
         key=lambda n: n.metadata["chunk_index"],
     )
@@ -376,15 +376,12 @@ def test_build_index_chunk_metadata_and_sizes(tmp_path):
     assert [n.metadata["chunk_index"] for n in chunks] == [0, 1, 2]
     assert all(n.metadata["chunk_count"] == 3 for n in chunks)
     assert all(n.metadata["title"] == chunks[0].metadata["title"] for n in chunks)
-    assert all(n.metadata["line_start"] == chunks[0].metadata["line_start"] for n in chunks)
+    assert all("line_start" not in n.metadata for n in chunks)
     assert chunks[0].node_id == f"{PAPER_B}:0000#0"
     assert chunks[2].node_id == f"{PAPER_B}:0000#2"
-    # chunk text re-prefixes the section title
-    assert chunks[2].text.startswith(chunks[2].metadata["title"])
-    # concatenation of chunk bodies reconstructs the parent content (minus
-    # hard-sliced overlong paragraphs, if any)
-    joined = "\n\n".join(n.text[len(n.metadata["title"]) + 1 :].strip() for n in chunks)
-    assert joined
+    parent = next(doc for doc in collect_tree_nodes(papers_dir / PAPER_B)
+                  if doc.metadata["node_id"] == "0000")
+    assert "".join(n.text for n in chunks) == parent.text
 
 
 def test_collect_tree_nodes_max_node_tokens_splits(tmp_path):
@@ -605,6 +602,8 @@ def test_generation_pruning_keeps_a_durably_referenced_snapshot(tmp_path):
 
 
 def test_retain_index_generation_writes_an_isolated_run_reference(tmp_path, monkeypatch):
+    from drbrain.rag import index_generations as rag_indexer
+
     root = tmp_path / "li"
     (root / "generations" / "g-1").mkdir(parents=True)
     monkeypatch.setattr(

@@ -250,6 +250,7 @@ def test_rag_data_contracts_remain_additive_only():
         "timeout",
         "source_unavailable",
         "insufficient_evidence",
+        "degraded",
     ]
     assert [field.name for field in fields(ResolvedClaim)][:9] == [
         "label",

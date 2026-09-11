@@ -388,6 +388,13 @@ if _LLAMA_INDEX_AVAILABLE:
             passages = [_passage_text(nws.node) for nws in top]
             try:
                 scores = reranker.rerank(query, passages)
+                import math
+
+                if scores is None or len(scores) != len(top):
+                    raise ValueError(f"rerank returned {len(scores or [])} scores for {len(top)} passages")
+                scores = [float(score) for score in scores]
+                if not all(math.isfinite(score) for score in scores):
+                    raise ValueError("rerank scores must be finite")
             except Exception as exc:  # noqa: BLE001 - degrade, never raise
                 log.warning("[rag] rerank failed (%s); falling back to coarse order", exc)
                 self._set_trace(

@@ -96,7 +96,11 @@ _SENSITIVE_TEXT_LABEL = (
     r"bearer[-_ ]?tokens?|"
     r"secret[-_ ]?(?:keys?|tokens?)|"
     r"private[-_ ]?keys?|"
-    r"(?:[A-Za-z0-9]+[-_ ])*(?:keys?(?:[-_ ]?id)?|tokens?|secrets?|credentials?)|"
+    # Bound vendor prefixes and never consume arbitrary prose as a prefix.
+    # The former unbounded word/space repetition retried every suffix of long
+    # messages, making ordinary session text quadratic to redact. Multiword
+    # labels ("access key", "private key", etc.) are handled explicitly above.
+    r"(?:[A-Za-z0-9]{1,64}[-_]){0,4}(?:keys?(?:[-_ ]?id)?|tokens?|secrets?|credentials?)|"
     r"password|passwd|cookies?)"
 )
 

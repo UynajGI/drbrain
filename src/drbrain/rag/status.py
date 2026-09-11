@@ -31,6 +31,7 @@ class RetrievalStatus(StrEnum):
     TIMEOUT = "timeout"
     SOURCE_UNAVAILABLE = "source_unavailable"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    DEGRADED = "degraded"
 
 
 class RetrievalError(Exception):
@@ -72,4 +73,8 @@ def classify_failure(exc: BaseException) -> RetrievalStatus:
     """
     if isinstance(exc, TimeoutError):
         return RetrievalStatus.TIMEOUT
+    if isinstance(exc, PermissionError):
+        return RetrievalStatus.PERMISSION_DENIED
+    if isinstance(exc, (FileNotFoundError, RetrievalUnavailableError)):
+        return RetrievalStatus.SOURCE_UNAVAILABLE
     return RetrievalStatus.RETRIEVAL_FAILURE

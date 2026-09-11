@@ -161,7 +161,7 @@ def _mk_node(
 def _make_cfg(tmp_path, papers_dir=None) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
-            enabled=True, vector_store="memory", storage_dir=str(tmp_path / "li")
+            enabled=True, rag_engine="llamaindex", vector_store="memory", storage_dir=str(tmp_path / "li")
         ),
         dirs=DirsConfig(papers=str(papers_dir or REAL_PAPERS)),
         embed=EmbedConfig(provider="local", model="fake-embed", top_k=5),

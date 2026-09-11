@@ -12,7 +12,16 @@ Ticket ownership:
     T8 — rag/rerank.py
 """
 
-from drbrain.rag.agent import build_agent, reason_llamaindex
-from drbrain.rag.llm import init_llamaindex_settings
-
 __all__ = ["build_agent", "init_llamaindex_settings", "reason_llamaindex"]
+
+
+def __getattr__(name):
+    """Keep the core and SQL backend importable without loading agent SDKs."""
+    from importlib import import_module
+
+    if name not in __all__:
+        raise AttributeError(name)
+    module = "llm" if name == "init_llamaindex_settings" else "agent"
+    value = getattr(import_module(f"drbrain.rag.{module}"), name)
+    globals()[name] = value
+    return value

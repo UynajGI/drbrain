@@ -49,8 +49,9 @@ def rag_index_cmd(
         from drbrain.rag.config import get_llamaindex_config
         from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
 
-        available, build = _LLAMA_INDEX_AVAILABLE, build_index
-        max_node_tokens = get_llamaindex_config(cfg).max_node_tokens
+        li = get_llamaindex_config(cfg)
+        available, build = _LLAMA_INDEX_AVAILABLE or li.rag_engine == "sql", build_index
+        max_node_tokens = None if li.rag_engine == "sql" else li.max_node_tokens
     except ImportError:  # pragma: no cover - defensive
         available, build, max_node_tokens = False, None, None
 
@@ -74,7 +75,7 @@ def rag_index_cmd(
         typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
         return
 
-    table = Table(title="LlamaIndex RAG Index")
+    table = Table(title="RAG Index")
     table.add_column("Metric", style="cyan")
     table.add_column("Count", justify="right", style="green")
     for key, label in (
@@ -88,6 +89,8 @@ def rag_index_cmd(
     ):
         table.add_row(label, str(stats.get(key, 0)))
     table.add_row("Storage dir", str(stats.get("storage_dir", "")))
+    if stats.get("generation"):
+        table.add_row("Published generation", str(stats["generation"]))
     if max_node_tokens:
         table.add_row("Max node tokens", str(max_node_tokens))
     console.print(table)

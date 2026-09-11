@@ -20,17 +20,26 @@ evidence machinery (``build_evidence_record``) works unchanged.
 
 from __future__ import annotations
 
-import hashlib
+import math
 import os
 import re
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from loguru import logger as log
 
 from drbrain.rag.evidence import build_evidence_record
+from drbrain.rag.contracts import (
+    LegResult,
+    RetrievalRequest,
+    failure_leg,
+    finish_retrieval,
+    matches_scope,
+)
+from drbrain.rag.status import RetrievalUnavailableError
 from drbrain.utils.rrf import DEFAULT_K as _RRF_K
 from drbrain.utils.rrf import rrf_fuse_scores
 
@@ -76,29 +85,23 @@ def _default_rag_db(cfg: Any) -> Path:
     return rag_path
 
 
-def _open(cfg: Any) -> sqlite3.Connection | None:
-    path = _default_rag_db(cfg)
-    if not path.exists():
-        log.warning("[rag-sql] {} not found", path)
-        return None
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        import sqlite_vec
+def _open(cfg: Any, generation: str | None = None) -> sqlite3.Connection:
+    from drbrain.rag.sql_snapshot import resolve_sql_snapshot
 
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-    except Exception as exc:  # noqa: BLE001 - vector leg becomes unavailable
-        log.warning("[rag-sql] sqlite-vec unavailable: {}", exc)
+    path = resolve_sql_snapshot(cfg, generation) if generation is not None else _default_rag_db(cfg)
+    if not path.exists():
+        raise RetrievalUnavailableError("SQL corpus is unavailable")
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    # All legs see one read transaction, including the mutable working-copy mode.
+    conn.execute("BEGIN")
     return conn
 
 
 def _generation_id(conn: sqlite3.Connection) -> str:
-    """Content fingerprint of the SQL snapshot (evidence-pinning anchor)."""
-    n = conn.execute("SELECT COUNT(*) FROM node_texts").fetchone()[0]
-    sample = conn.execute("SELECT content_hash FROM node_texts ORDER BY rowid LIMIT 1").fetchone()
-    seed = f"{n}:{sample[0] if sample else '-'}"
-    return "sql-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    """Complete fingerprint for publishing/auditing, never a query-time scan."""
+    from drbrain.storage.rag_snapshot import content_fingerprint
+
+    return content_fingerprint(conn)
 
 
 def _fts_query(query: str) -> str | None:
@@ -126,13 +129,15 @@ def _categories_filter(
     else:
         raw = list(categories or [])
     wanted = [str(c).strip().lower() for c in raw if str(c).strip()]
-    if not wanted:
+    if categories is None:
         return "", []
+    if not wanted:
+        return " AND 0", []
     has_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_categories'"
     ).fetchone()
     if not has_table:
-        return "", []
+        raise ValueError("categories filter requires paper_categories metadata")
     clauses: list[str] = []
     params: list[str] = []
     for cat in wanted:
@@ -171,7 +176,7 @@ def _bm25_leg(
         ).fetchall()
     except sqlite3.OperationalError as exc:
         log.warning("[rag-sql] FTS5 query failed: {}", exc)
-        return []
+        raise
     return [(r[0], float(r[1])) for r in rows]
 
 
@@ -197,7 +202,7 @@ def _rerank_with_vectors(
         qvec = _embed_batch([query], cfg.embed)[0]
     except Exception as exc:  # noqa: BLE001 - embedding must not raise here
         log.warning("[rag-sql] query embedding failed: {}", exc)
-        return []
+        raise
     import numpy as np
 
     from drbrain.storage import vector_index as vi
@@ -277,7 +282,7 @@ def _raptor_leg(
         qvec = _embed_batch([query], cfg.embed)[0]
     except Exception as exc:  # noqa: BLE001 - embedding must not raise here
         log.warning("[rag-sql] raptor leg embedding failed: {}", exc)
-        return []
+        raise
     import numpy as np
 
     from drbrain.storage import vector_index as vi
@@ -317,7 +322,7 @@ def _graph_neighbors(
         neighbors = get_neighbors(graph, label, hops=1, direction="both") or []
     except Exception as exc:  # noqa: BLE001 - graph outage must not break the leg
         log.warning("[rag-sql] graph neighbor expansion failed for {}: {}", label, exc)
-        return []
+        raise
     out: list[dict[str, Any]] = []
     for nb in neighbors[:max_neighbors]:
         target = str(nb.get("target") or "").strip()
@@ -357,7 +362,7 @@ def _graph_leg(db: Any, graph: Any, query: str, k: int) -> list[dict[str, Any]]:
         concepts = search_concepts(db, query, limit=k) or []
     except Exception as exc:  # noqa: BLE001
         log.warning("[rag-sql] graph concept search failed: {}", exc)
-        return []
+        raise
     best: dict[str, dict] = {}
     for c in concepts:
         label = str(c.get("label") or "").strip()
@@ -427,7 +432,7 @@ def _claims_leg(db: Any, query: str, k: int) -> list[dict[str, Any]]:
         ).fetchall()
     except Exception as exc:  # noqa: BLE001 — schema drift must not break the leg
         log.warning("[rag-sql] claims leg read failed: {}", exc)
-        return []
+        raise
     lowered = [w.lower() for w in words]
     scored: list[tuple[float, tuple]] = []
     for row in rows:
@@ -460,213 +465,256 @@ def retrieve_documents_sql(
     filters: dict[str, Any] | None = None,
     top_k: int = 5,
     graph: Any = None,
+    generation: str | None = None,
+    acl_filter: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """SQL-native replacement for the LlamaIndex fused retriever.
+    """Retrieve from a pinned SQL snapshot or an explicitly live working copy.
 
-    Legs are gated by ``llamaindex.retrievers`` (default ``["bm25", "vector"]``;
-    add ``"raptor"`` / ``"graph"`` to enable the hierarchical-summary and
-    knowledge-graph legs). The vector and raptor legs share the BM25 candidate
-    pool (two-stage retrieval), so ``bm25`` recall always runs when either is
-    wanted. Each output row carries an additive ``legs`` field naming the legs
-    that surfaced it.
+    Vector and RAPTOR are BM25-pool rerankers, not independent recall legs.
+    Diagnostics remain available as rows.result, including empty results.
     """
-    conn = _open(cfg)
-    if conn is None:
-        return []
+    from drbrain.rag.config import get_llamaindex_config
+
+    request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
+    li = get_llamaindex_config(cfg)
+    wanted = list(dict.fromkeys(li.retrievers or ["bm25", "vector"]))
+    unsupported = set(wanted) - {"bm25", "vector", "raptor", "graph", "claims"}
+    if unsupported:
+        raise ValueError(f"unsupported SQL retrieval legs: {sorted(unsupported)}")
+    if generation is not None and set(wanted).intersection({"graph", "claims"}):
+        raise ValueError("pinned SQL retrieval cannot include live graph/claims sources")
+    if set(request.acl_filter) - {"paper_id"}:
+        raise ValueError(
+            "SQL access filters only support paper_id; other scope metadata is unavailable"
+        )
+    conn = _open(cfg, generation) if generation is not None else _open(cfg)
+    resolved = generation or ("working-" + uuid.uuid4().hex)
+    traces: list[LegResult] = []
+    capabilities = {
+        "backend": "sql",
+        "snapshot": generation is not None,
+        "vector_recall": "bm25_pool",
+        "raptor_recall": "bm25_papers",
+    }
     try:
-        from drbrain.rag.fusion import get_llamaindex_config
-
-        wanted = [
-            str(x).strip() for x in (get_llamaindex_config(cfg).retrievers or ["bm25", "vector"])
-        ]
-        generation = _generation_id(conn)
-        started = time.perf_counter()
-
-        need_pool = any(w in wanted for w in ("bm25", "vector", "raptor"))
-        categories = (filters or {}).get("categories")
-        cats_filter = _categories_filter(conn, categories)
-        bm25 = _bm25_leg(conn, query, 1000, categories_filter=cats_filter) if need_pool else []
-        pool = [k for k, _ in bm25]
-        pool_papers = list(dict.fromkeys(k.split(":", 1)[0] for k in pool))
-
+        scope_sql, scope_params = _categories_filter(conn, request.filters.get("categories"))
+        if "paper_ids" in request.filters:
+            papers = request.filters["paper_ids"]
+            if not papers:
+                scope_sql += " AND 0"
+            else:
+                scope_sql += " AND nt.paper_id IN (" + ",".join("?" for _ in papers) + ")"
+                scope_params += papers
+        if request.acl_filter.get("paper_id") not in (None, "*"):
+            scope_sql += " AND nt.paper_id = ?"
+            scope_params += [request.acl_filter["paper_id"]]
+        if top_k == 0:
+            return finish_retrieval([], generation=resolved, legs=[], capabilities=capabilities)
+        pool_error: Exception | None = None
+        pool_started = time.perf_counter()
+        try:
+            bm25 = (
+                _bm25_leg(conn, query, 1000, categories_filter=(scope_sql, scope_params))
+                if set(wanted).intersection({"bm25", "vector", "raptor"})
+                else []
+            )
+        except Exception as exc:
+            pool_error, bm25 = exc, []
+        pool_ms = (time.perf_counter() - pool_started) * 1000
+        pool = [key for key, _ in bm25]
+        pool_papers = list(dict.fromkeys(key.split(":", 1)[0] for key in pool))
         legs: list[tuple[str, list[dict[str, Any]]]] = []
-        leg_ms: list[str] = []
-        if "bm25" in wanted:
-            t0 = time.perf_counter()
-            legs.append(("bm25", [{"key": k, "score": s} for k, s in bm25]))
-            leg_ms.append(f"bm25={len(pool)}@{(time.perf_counter() - t0) * 1000:.0f}ms")
-        if "vector" in wanted:
-            t0 = time.perf_counter()
-            legs.append(
-                (
-                    "vector",
-                    [
-                        {"key": k, "score": s}
-                        for k, s in _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
-                    ],
-                )
-            )
-            leg_ms.append(f"vector@{(time.perf_counter() - t0) * 1000:.0f}ms")
-        if "raptor" in wanted:
-            t0 = time.perf_counter()
-            legs.append(
-                (
-                    "raptor",
-                    [
-                        {"key": k, "score": s}
-                        for k, s in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)
-                    ],
-                )
-            )
-            leg_ms.append(f"raptor@{(time.perf_counter() - t0) * 1000:.0f}ms")
-        if "graph" in wanted:
-            t0 = time.perf_counter()
-            legs.append(("graph", _graph_leg(db, graph, query, top_k)))
-            leg_ms.append(f"graph={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
-        if "claims" in wanted:
-            t0 = time.perf_counter()
-            legs.append(("claims", _claims_leg(db, query, top_k)))
-            leg_ms.append(f"claims={len(legs[-1][1])}@{(time.perf_counter() - t0) * 1000:.0f}ms")
-        if not legs:
-            return []
-
-        rich = {
-            e["key"]: e
-            for name, entries in legs
-            if name in ("graph", "claims")  # self-describing legs
-            for e in entries
-        }
-        tuple_legs = [[(e["key"], e["score"]) for e in entries] for _, entries in legs]
-        fused = _fuse(tuple_legs)
-        membership: dict[str, list[str]] = {}
-        for (name, _entries), pairs in zip(legs, tuple_legs):
-            for key, _s in pairs:
-                names = membership.setdefault(key, [])
-                if name not in names:
-                    names.append(name)
-
-        # Cross-encoder rerank (same "粗排截断 → 精排" contract as the legacy
-        # RerankPostprocessor): only the first ``rerank_top_k`` fused candidates
-        # are re-scored; a missing/failed model degrades to the RRF order.
-        li = get_llamaindex_config(cfg)
-        rerank_top_k = int(getattr(li, "rerank_top_k", None) or 20)
-        reranker = _get_reranker(cfg)
-        cand = fused[: max(rerank_top_k, top_k)] if reranker is not None else fused[:top_k]
-
-        # Meta resolution: graph rows carry their own metadata; node rows come
-        # from node_texts (pageindex units) with tree_summaries as the raptor
-        # fallback.
-        text_keys = [k for k, _ in cand if k not in rich]
-        meta: dict[str, tuple[str, str]] = {}
-        if text_keys:
-            ph = ",".join("?" * len(text_keys))
-            meta.update(
-                (r[0], (r[1], r[2]))
-                for r in conn.execute(
-                    f"SELECT node_key, paper_id, text FROM node_texts WHERE node_key IN ({ph})",
-                    text_keys,
-                )
-            )
-            missing = [k for k in text_keys if k not in meta]
-            if missing:
-                ph2 = ",".join("?" * len(missing))
-                meta.update(
-                    (r[0], (r[1], r[2]))
-                    for r in conn.execute(
-                        "SELECT node_id, paper_id, summary_text FROM tree_summaries "
-                        f"WHERE node_id IN ({ph2})",
-                        missing,
+        for name in wanted:
+            started = time.perf_counter()
+            try:
+                if name in {"bm25", "vector", "raptor"} and pool_error is not None:
+                    raise pool_error
+                if name == "bm25":
+                    entries = [{"key": key, "score": score} for key, score in bm25]
+                elif name == "vector":
+                    entries = [
+                        {"key": key, "score": score}
+                        for key, score in _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
+                    ]
+                elif name == "raptor":
+                    entries = [
+                        {"key": key, "score": score}
+                        for key, score in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)
+                    ]
+                elif name == "graph":
+                    entries = _graph_leg(db, graph, query, max(top_k, 20))
+                else:
+                    entries = _claims_leg(db, query, max(top_k, 20))
+                traces.append(
+                    LegResult(
+                        name,
+                        "ok" if entries else "empty",
+                        len(entries),
+                        pool_ms if name == "bm25" else (time.perf_counter() - started) * 1000,
                     )
                 )
-
-        def _text_of(key: str) -> str:
-            if key in rich:
-                return str(rich[key].get("text") or "")
-            return meta.get(key, ("", ""))[1]
-
-        primary: list[tuple[str, float]] = cand[:top_k]
-        if reranker is not None and cand:
+                legs.append((name, entries))
+            except PermissionError:
+                raise
+            except Exception as exc:
+                traces.append(failure_leg(name, exc, (time.perf_counter() - started) * 1000))
+        finish_retrieval([], generation=resolved, legs=traces, capabilities=capabilities)
+        rich = {
+            entry["key"]: entry
+            for name, entries in legs
+            if name in {"graph", "claims"}
+            for entry in entries
+        }
+        membership: dict[str, list[str]] = {}
+        for name, entries in legs:
+            for entry in entries:
+                membership.setdefault(entry["key"], []).append(name)
+        fused = _fuse(
+            [[(entry["key"], entry["score"]) for entry in entries] for _, entries in legs]
+        )
+        candidates = _materialize(conn, fused, rich, membership)
+        candidates = [
+            row for row in candidates if matches_scope(row, request.filters, request.acl_filter)
+        ]
+        rerank_status = "disabled"
+        reranker = _get_reranker(cfg)
+        if reranker is not None and candidates:
+            count = max(int(li.rerank_top_k or 20), top_k)
+            head = candidates[:count]
             try:
-                passages = [_text_of(k)[:2000] for k, _ in cand]
-                scores = reranker.rerank(query, passages)
-                if scores and len(scores) == len(cand):
-                    primary = sorted(
-                        ((k, float(s)) for (k, _s), s in zip(cand, scores) if s is not None),
-                        key=lambda kv: kv[1],
-                        reverse=True,
-                    )[:top_k]
-            except Exception as exc:  # noqa: BLE001 - degrade to coarse order
-                log.warning("[rag-sql] rerank failed ({}); falling back to RRF order", exc)
-                primary = cand[:top_k]
-
-        # Leg diversity guarantee: bm25+vector share the same retrieval units, so
-        # their double-hits mathematically crowd single-leg raptor / graph
-        # entries out of the fused ranking. The (possibly reranked) head ordering
-        # is untouched; when a specialised leg's best entry still missed the cut,
-        # it is appended (marked) so downstream consumers see summary-level and
-        # graph-level evidence.
-        primary_keys = {k for k, _ in primary}
-        # claims 与 graph/raptor 一样参与保底：融合头部挤不掉已沉淀结论的
-        # 最佳命中（claims 条目自描述，rich 里已带元数据，渲染无需回查）。
-        for name in ("raptor", "graph", "claims"):
-            leg_entries = next((entries for lname, entries in legs if lname == name), [])
-            best = max(leg_entries, key=lambda e: e["score"], default=None)
-            if best is not None and best["key"] not in primary_keys:
-                key = best["key"]
-                primary.append((key, best["score"]))
-                if key not in rich and key not in meta:
-                    if ":" not in key:
-                        row_ = conn.execute(
-                            "SELECT paper_id, summary_text FROM tree_summaries WHERE node_id = ?",
-                            (key,),
-                        ).fetchone()
-                    else:
-                        row_ = conn.execute(
-                            "SELECT paper_id, text FROM node_texts WHERE node_key = ?",
-                            (key,),
-                        ).fetchone()
-                    if row_:
-                        meta[key] = (row_[0], row_[1])
-        rows: list[dict[str, Any]] = []
-        for rank, (key, score) in enumerate(primary, start=1):
-            node_id = key
-            if key in rich:
-                paper_id = str(rich[key].get("paper_id") or "")
-                full_text = str(rich[key].get("text") or "")
-                title = str(rich[key].get("title") or "")
-                node_id = str(rich[key].get("node_id") or key)
-            else:
-                paper_id, full_text = meta.get(key, ("", ""))
-                if ":" in key:
-                    node_id = key.split(":", 1)[1]
-                title = full_text.split("\n", 1)[0].strip()[:120]
-            row: dict[str, Any] = {
-                "paper_id": paper_id,
-                "node_id": node_id,
-                "title": title,
-                "source": "sql-fusion",
-                "score": round(float(score), 6),
-                "text": full_text[:500],
-                "legs": membership.get(key, []),
-            }
+                scores = reranker.rerank(query, [row["text"][:2000] for row in head])
+                if len(scores) != len(head) or any(
+                    score is None or not math.isfinite(float(score)) for score in scores
+                ):
+                    raise ValueError("invalid rerank scores")
+                for row, score in zip(head, scores):
+                    row["score"] = float(score)
+                candidates = sorted(head, key=lambda row: row["score"], reverse=True)
+                rerank_status = "ok"
+            except Exception:
+                rerank_status = "degraded"
+        elif li.rerank:
+            rerank_status = "unavailable"
+        capabilities["rerank_status"] = rerank_status
+        primary = _diverse_head(candidates, top_k)
+        rows = []
+        for rank, row in enumerate(primary, 1):
+            full_text = row["text"]
+            row = {key: value for key, value in row.items() if key != "key"}
+            row["score"] = round(float(row["score"]), 6)
+            row["text"] = full_text[:500]
             row.update(
                 build_evidence_record(
-                    generation=generation,
+                    generation=resolved,
                     query=query,
                     retriever="sql-fusion",
                     rank=rank,
                     score=row["score"],
                     source={**row, "text": full_text},
-                    filters=filters,
-                    excerpt=str(row["text"]),
+                    filters=request.filters,
+                    excerpt=row["text"],
                 )
             )
             rows.append(row)
-        log.debug(
-            "[rag-sql] {} | total={:.0f}ms",
-            " ".join(leg_ms),
-            (time.perf_counter() - started) * 1000,
-        )
-        return rows
+        result = finish_retrieval(rows, generation=resolved, legs=traces, capabilities=capabilities)
+        if rerank_status in {"degraded", "unavailable"}:
+            result.result.status = "degraded"
+        return result
     finally:
         conn.close()
+
+
+def _materialize(conn, fused, rich, membership) -> list[dict[str, Any]]:
+    """Resolve candidate metadata before scope checks and truncation."""
+    meta = {}
+    keys = [key for key, _ in fused if key not in rich]
+    for offset in range(0, len(keys), 500):
+        batch = keys[offset : offset + 500]
+        ph = ",".join("?" for _ in batch)
+        meta.update(
+            (row[0], (row[1], row[2]))
+            for row in conn.execute(
+                f"SELECT node_key, paper_id, text FROM node_texts WHERE node_key IN ({ph})", batch
+            )
+        )
+        missing = [key for key in batch if key not in meta]
+        if missing:
+            ph = ",".join("?" for _ in missing)
+            meta.update(
+                (row[0], (row[1], row[2]))
+                for row in conn.execute(
+                    f"SELECT node_id, paper_id, summary_text FROM tree_summaries WHERE node_id IN ({ph})",
+                    missing,
+                )
+            )
+    categories = {}
+    papers = list(
+        {str(row.get("paper_id") or "") for row in rich.values()}
+        | {value[0] for value in meta.values()}
+    )
+    has_categories = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_categories'"
+    ).fetchone()
+    if has_categories:
+        for offset in range(0, len(papers), 500):
+            batch = papers[offset : offset + 500]
+            ph = ",".join("?" for _ in batch)
+            categories.update(
+                conn.execute(
+                    f"SELECT paper_id, categories FROM paper_categories WHERE paper_id IN ({ph})",
+                    batch,
+                )
+            )
+    rows = []
+    for key, score in fused:
+        if not math.isfinite(float(score)):
+            continue
+        if key in rich:
+            item = rich[key]
+            paper, text = str(item.get("paper_id") or ""), str(item.get("text") or "")
+            node_id, title = item.get("node_id", key), item.get("title", "")
+        else:
+            if key not in meta:
+                continue
+            paper, text = meta[key]
+            node_id, title = key.split(":", 1)[-1], text.split("\n", 1)[0][:120]
+        rows.append(
+            {
+                "key": key,
+                "paper_id": paper,
+                "node_id": node_id,
+                "title": title,
+                "text": text,
+                "source": "sql-fusion",
+                "score": score,
+                "categories": categories.get(paper, ""),
+                "legs": membership.get(key, []),
+            }
+        )
+    return rows
+
+
+def _diverse_head(candidates, top_k):
+    """Reserve specialised hits within the cap, keeping the best overall hit."""
+    if top_k <= 0:
+        return []
+    selected = list(candidates[:top_k])
+    protected = {selected[0]["key"]} if selected else set()
+    for name in ("raptor", "graph", "claims"):
+        best = next((row for row in candidates if name in row["legs"]), None)
+        if best is None:
+            continue
+        if best not in selected:
+            replace = next(
+                (
+                    i
+                    for i in range(len(selected) - 1, -1, -1)
+                    if selected[i]["key"] not in protected
+                ),
+                None,
+            )
+            if replace is None:
+                continue
+            selected[replace] = best
+        protected.add(best["key"])
+    return selected

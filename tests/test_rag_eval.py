@@ -307,7 +307,7 @@ def test_build_golden_set_ok_and_idempotent(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [
             {"id": "q1", "q": "Question about perovskite stability?", "papers": ["p1"]},
             {"id": "q2", "q": "Question about zinc anodes?", "papers": ["p2"]},
@@ -343,7 +343,7 @@ def test_build_golden_set_missing_papers_skipped(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [{"id": "q1", "q": "Q?", "papers": ["p1", "p-ghost"]}],
     )
     papers = _fake_papers(tmp_path)
@@ -360,7 +360,7 @@ def test_build_golden_set_query_ids_subset(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [
             {"id": "q1", "q": "Q1?", "papers": ["p1"]},
             {"id": "q2", "q": "Q2?", "papers": ["p2"]},
@@ -381,7 +381,7 @@ def test_build_golden_set_query_ids_subset(monkeypatch, tmp_path):
 
 
 def test_split_assignment_covers_all_splits_and_is_deterministic():
-    from drbrain.rag.eval import _GOLDEN_QUERIES, _assign_splits
+    from drbrain.rag.eval_data import _GOLDEN_QUERIES, _assign_splits
 
     assert 30 <= len(_GOLDEN_QUERIES) <= 50, "golden set must stay within the 30-50 ticket range"
     split_of = _assign_splits(_GOLDEN_QUERIES)
