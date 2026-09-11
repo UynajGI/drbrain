@@ -298,7 +298,18 @@ def dashboard(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
             if project_row is None:
                 raise ProjectNotFoundError(f"unknown project: {pid}")
             paper_ids = project_paper_ids(cfg, pid, db=db)
-            stats = db.get_stats(paper_ids)
+            if paper_ids == []:
+                # An empty workspace must not fall through to the unfiltered
+                # branch of get_stats (a falsy list is not "all papers").
+                stats = {
+                    "papers": 0,
+                    "concepts": 0,
+                    "edges": 0,
+                    "arguments": 0,
+                    "uploaded": 0,
+                }
+            else:
+                stats = db.get_stats(paper_ids)
             recent_sessions = [
                 s for s in db.list_agent_sessions(pid, limit=5)[0] if s["messages"] > 1
             ][:3]
@@ -385,8 +396,9 @@ def search(
 ) -> list[dict]:
     """BM25 keyword search — same engine as ``drbrain search``.
 
-    With a workspace-backed project the results are filtered to the project
-    membership after ranking; the default project searches the whole library.
+    A workspace-backed project restricts the index's candidate set *before*
+    ranking, so a matching document can never be lost to a global top-N cutoff
+    that ran before the membership filter.
     """
     query = query.strip()
     if not query:
@@ -396,15 +408,9 @@ def search(
     pid = normalize_project_id(project_id)
     with _db(cfg) as db:
         paper_ids = project_paper_ids(cfg, pid, db=db)
-        bm25 = build_bm25_index(db)
-        # Over-fetch so a post-filter can still fill the requested page; the
-        # cap keeps one request from materialising the whole corpus.
-        fetch = min(max(int(limit) * 20, int(limit)), 2000) if paper_ids is not None else int(limit)
-        results = bm25.search(query, type_filter=type_filter, limit=fetch)
-    if paper_ids is None:
-        return [dict(r) for r in results]
-    allowed = set(paper_ids)
-    return [dict(r) for r in results if str(r["local_id"]) in allowed][: int(limit)]
+        bm25 = build_bm25_index(db, paper_ids=paper_ids)
+        results = bm25.search(query, type_filter=type_filter, limit=int(limit))
+    return [dict(r) for r in results]
 
 
 def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
@@ -701,20 +707,39 @@ def run_events(
     after: int = 0,
     limit: int = 200,
     project_id: str | None = None,
+    before: int | None = None,
 ) -> list[dict[str, Any]]:
+    """Events in ascending ``event_seq`` order.
+
+    ``after`` walks forward (live/history replay); ``before`` walks backward
+    from a cursor — used by "load earlier history", where the rows must still
+    come back ascending so a ``prepend`` keeps them ordered.
+    """
     _assert_run_scope(_run_row(cfg, run_id), project_id)
+    bounded = max(1, min(int(limit), 1000))
     with _ledger(cfg) as conn:
         if conn is None:
             return []
         try:
-            rows = conn.execute(
-                """
-                SELECT event_seq, actor, event_type, payload_json, created_at
-                FROM research_events WHERE run_id = ? AND event_seq > ?
-                ORDER BY event_seq LIMIT ?
-                """,
-                (run_id, int(after), max(1, min(int(limit), 1000))),
-            ).fetchall()
+            if before is not None:
+                rows = conn.execute(
+                    """
+                    SELECT event_seq, actor, event_type, payload_json, created_at
+                    FROM research_events WHERE run_id = ? AND event_seq < ?
+                    ORDER BY event_seq DESC LIMIT ?
+                    """,
+                    (run_id, int(before), bounded),
+                ).fetchall()
+                rows = list(reversed(rows))
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_seq, actor, event_type, payload_json, created_at
+                    FROM research_events WHERE run_id = ? AND event_seq > ?
+                    ORDER BY event_seq LIMIT ?
+                    """,
+                    (run_id, int(after), bounded),
+                ).fetchall()
         except sqlite3.OperationalError:
             return []
     return [
@@ -728,6 +753,44 @@ def run_events(
             }
         )
         for r in rows
+    ]
+
+
+def run_events_tail(
+    cfg: Any, run_id: str, limit: int = 100, project_id: str | None = None
+) -> list[dict[str, Any]]:
+    """The newest ``limit`` events (ascending), for the initial run page.
+
+    The live SSE stream only appends *new* events, so the page must open on
+    the tail; earlier history is then fetched backwards with ``before``.
+    """
+    _assert_run_scope(_run_row(cfg, run_id), project_id)
+    bounded = max(1, min(int(limit), 1000))
+    with _ledger(cfg) as conn:
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                """
+                SELECT event_seq, actor, event_type, payload_json, created_at
+                FROM research_events WHERE run_id = ?
+                ORDER BY event_seq DESC LIMIT ?
+                """,
+                (run_id, bounded),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [
+        redact_sensitive(
+            {
+                "seq": r["event_seq"],
+                "actor": r["actor"],
+                "type": r["event_type"],
+                "payload": _loads(r["payload_json"], {}),
+                "created_at": r["created_at"],
+            }
+        )
+        for r in reversed(rows)
     ]
 
 
@@ -942,7 +1005,14 @@ def evidence_detail(
     with _db(cfg) as db:
         row = db.get_evidence(evidence_id)
         if row is not None:
-            paper = db.get_paper(row["paper_id"]) if row.get("paper_id") else None
+            paper_id = str(row.get("paper_id") or "")
+            membership = project_paper_ids(cfg, pid, db=db)
+            if membership is not None and paper_id not in set(membership):
+                # Core evidence rows are not exempt from the project boundary.
+                raise EvidenceNotFoundError(
+                    f"evidence {evidence_id!r} is not in the current project"
+                )
+            paper = db.get_paper(paper_id) if paper_id else None
             return {
                 "evidence_id": evidence_id,
                 "source": "core",
@@ -1078,10 +1148,13 @@ def get_session(cfg: Any, session_id: str, project_id: str | None = None) -> dic
         if row is None or row["status"] == "deleted" or row["project_id"] != pid:
             raise SessionNotFoundError("unknown session")
         messages = db.get_agent_messages(session_id, limit=500)
+    session_runs = runs(cfg, pid, session_id=session_id)
+    for run_row in session_runs:
+        run_row["display_status"] = display_run_status(cfg, run_row)
     return {
         "session": row,
         "messages": messages,
-        "runs": runs(cfg, pid, session_id=session_id),
+        "runs": session_runs,
         "memory": session_memory(cfg, session_id, project_id=pid),
     }
 

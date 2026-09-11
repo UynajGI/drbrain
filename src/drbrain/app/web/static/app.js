@@ -8,14 +8,20 @@
   const MAX_EVENT_NODES = 500;
 
   // ── project switcher: keep the current page, swap scope ──
+  function listRoute(pathname) {
+    // Detail pages belong to a single entity of the old project; switching the
+    // project must land on the corresponding list page instead of a 404.
+    const match = pathname.match(/^\/(papers|sessions|runs)\/.+/);
+    return match ? "/" + match[1] : pathname;
+  }
+
   document.addEventListener("change", function (event) {
     const select = event.target.closest("[data-project-switcher]");
     if (!select) return;
     const url = new URL(window.location.href);
     url.searchParams.set("project_id", select.value);
-    // Scope-specific detail routes resolve their own project; use the list
-    // route for those so the switch never points at another project's entity.
-    window.location.assign(url.pathname + "?" + url.searchParams.toString());
+    url.searchParams.delete("cursor"); // cursors are scoped to the old project
+    window.location.assign(listRoute(url.pathname) + "?" + url.searchParams.toString());
   });
 
   // ── submit guards: disable once, restore on success/failure/back ──

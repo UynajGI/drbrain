@@ -391,7 +391,9 @@ def run_detail_page(
     detail = service.run_detail(cfg, run_id, project["project_id"])
     claims = service.run_claims(cfg, run_id, project_id=project["project_id"])
     experiments_list = service.experiments(cfg, run_id=run_id, project_id=project["project_id"])
-    events = service.run_events(cfg, run_id, after=0, limit=100, project_id=project["project_id"])
+    # Open on the newest events: the SSE stream can only append forward, so the
+    # page must not start from the oldest slice (it would show a gap).
+    events = service.run_events_tail(cfg, run_id, limit=100, project_id=project["project_id"])
     return deps.render(
         request,
         "run_detail.html",

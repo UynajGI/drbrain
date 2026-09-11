@@ -50,6 +50,7 @@ def run_events(
     request: Request,
     run_id: str = Query(""),
     after: int = Query(0, ge=0),
+    before: int | None = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     project_id: str = Query(""),
 ) -> Response:
@@ -62,7 +63,12 @@ def run_events(
         raise HTTPException(status_code=404, detail="unknown research run") from None
     project = deps.resolve_project(request, pid)
     events = service.run_events(
-        cfg, run_id, after=after, limit=limit, project_id=project["project_id"]
+        cfg,
+        run_id,
+        after=after,
+        limit=limit,
+        project_id=project["project_id"],
+        before=before,
     )
     return deps.render(
         request,

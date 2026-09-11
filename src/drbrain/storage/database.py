@@ -3123,7 +3123,8 @@ class Database:
 
         The ``project_id`` is the durable identity: re-running this with the
         same id but a new name renames the project without breaking the
-        sessions/runs that reference it.
+        sessions/runs that reference it.  A ``workspace_name=None`` update
+        keeps the existing corpus link instead of silently clearing it.
         """
         if not str(project_id).strip() or not str(name).strip():
             raise ValueError("project id and name must not be empty")
@@ -3135,7 +3136,9 @@ class Database:
                 ON CONFLICT(project_id) DO UPDATE SET
                     name = excluded.name,
                     description = excluded.description,
-                    workspace_name = excluded.workspace_name,
+                    workspace_name = COALESCE(
+                        excluded.workspace_name, projects.workspace_name
+                    ),
                     is_default = excluded.is_default,
                     updated_at = CURRENT_TIMESTAMP
                 """,
@@ -3147,6 +3150,30 @@ class Database:
                     1 if is_default else 0,
                 ),
             )
+
+    def rename_workspace_project(self, old_name: str, new_name: str) -> str | None:
+        """Re-point a project after its workspace was renamed.
+
+        Returns the project id that was updated, or ``None`` when no project
+        references the old workspace (nothing to preserve).
+        """
+        with self._write_scope():
+            row = self.conn.execute(
+                "SELECT project_id, name FROM projects WHERE workspace_name = ?",
+                (old_name,),
+            ).fetchone()
+            if row is None:
+                return None
+            project_id = str(row[0])
+            # Only rename the display name when it still mirrors the workspace
+            # name; a customised project name is left alone.
+            display = new_name if str(row[1] or "") == old_name else str(row[1] or "")
+            self.conn.execute(
+                "UPDATE projects SET workspace_name = ?, name = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE project_id = ?",
+                (new_name, display, project_id),
+            )
+            return project_id
 
     def get_project(self, project_id: str) -> dict | None:
         """Return one project row as a plain dict."""
@@ -3166,7 +3193,7 @@ class Database:
         return self._project_row(row)
 
     def list_projects(self) -> list[dict]:
-        """List projects, default first, then most recently touched."""
+        """List projects: default first, then display name (case-insensitive)."""
         rows = self.conn.execute(
             """
             SELECT project_id, name, description, workspace_name, is_default

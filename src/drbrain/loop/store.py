@@ -115,6 +115,14 @@ class AmbiguousRunError(ValueError):
     """
 
 
+class ClientRequestConflictError(ValueError):
+    """Raised when one idempotency key is reused for a different run.
+
+    ``client_request_id`` is a retry key, not a general-purpose alias: the same
+    key with a different topic/scope would otherwise return an unrelated run.
+    """
+
+
 def _as_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
 
@@ -574,6 +582,13 @@ class RunLedger:
             finally:
                 conn.execute("PRAGMA legacy_alter_table=OFF")
                 conn.execute("PRAGMA foreign_keys=ON")
+        # Backfill rows created between v9 rollout and this run (columns exist
+        # but scope was never stamped) *before* the unique indexes exist, so a
+        # pre-existing ('', topic) row cannot collide during index creation.
+        conn.execute(
+            "UPDATE research_runs SET project_id = ? WHERE project_id = ''",
+            (DEFAULT_PROJECT_ID,),
+        )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_research_runs_scope_topic "
             "ON research_runs(project_id, session_id, topic)"
@@ -585,12 +600,6 @@ class RunLedger:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_research_runs_scope "
             "ON research_runs(project_id, updated_at DESC)"
-        )
-        # Backfill rows created between v9 rollout and this run (columns exist
-        # but scope was never stamped): legacy/default attribution only.
-        conn.execute(
-            "UPDATE research_runs SET project_id = ? WHERE project_id = ''",
-            (DEFAULT_PROJECT_ID,),
         )
 
     def get_run(
@@ -1133,7 +1142,9 @@ class RunLedger:
         """
         project = str(project_id or DEFAULT_PROJECT_ID)
         session = str(session_id or "")
-        request_key = str(client_request_id).strip() if client_request_id else None
+        # A blank key is "no key": storing '' would make it collide with every
+        # other blank-key request under the partial unique index.
+        request_key = (str(client_request_id).strip() or None) if client_request_id else None
         with self.transaction() as conn:
             if request_key:
                 row = conn.execute(
@@ -1147,6 +1158,16 @@ class RunLedger:
                 if row is not None:
                     existing = self._run_from_row(row)
                     assert existing is not None
+                    if (
+                        existing.topic != topic
+                        or existing.project_id != project
+                        or existing.session_id != session
+                    ):
+                        # Same key, different payload: returning the old run
+                        # would make the caller drive a run it did not ask for.
+                        raise ClientRequestConflictError(
+                            f"client_request_id is already bound to another run ({existing.run_id})"
+                        )
                     return existing
             row = conn.execute(
                 """

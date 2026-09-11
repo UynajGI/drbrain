@@ -702,3 +702,99 @@ def test_plugin_catalog_and_conformance_run(web, tmp_path):
     assert fragment.status_code == 200 and "通过" in fragment.text
     unknown = web.client.post("/api/plugins/nope/conformance", headers={"X-CSRF-Token": web.csrf})
     assert unknown.status_code == 404
+
+
+def test_empty_workspace_reports_zero_counts(web):
+    _seed_paper(web.root, "p-1", "Library paper")
+    _make_workspace(web.root, "empty-ws", [])
+    ws_project = next(
+        p
+        for p in web.client.get("/api/projects").json()["items"]
+        if p["workspace_name"] == "empty-ws"
+    )["project_id"]
+    dash = web.client.get(f"/api/dashboard?project_id={ws_project}").json()
+    assert (dash["papers"], dash["concepts"], dash["edges"], dash["arguments"]) == (0, 0, 0, 0)
+    assert web.client.get("/api/dashboard").json()["papers"] == 1
+
+
+def test_core_evidence_respects_project_membership(web):
+    _seed_paper(web.root, "p-in", "Member paper")
+    _seed_paper(web.root, "p-out", "Outside paper")
+    _make_workspace(web.root, "evidence-ws", ["p-in"])
+    ws_project = next(
+        p
+        for p in web.client.get("/api/projects").json()["items"]
+        if p["workspace_name"] == "evidence-ws"
+    )["project_id"]
+    db = Database(web.root / "data" / "test.db")
+    outside_evidence = db.record_evidence("p-out", "n-1")
+    db.close()
+    run_id = _seed_run(web.cfg, "evidence scope", project_id=ws_project)
+    blocked = web.client.get(
+        f"/api/runs/{run_id}/evidence/{outside_evidence}?project_id={ws_project}"
+    )
+    assert blocked.status_code == 404
+    member = web.client.get(f"/api/runs/{run_id}/evidence/p-in:n-1?project_id={ws_project}")
+    assert member.status_code == 200
+
+
+def test_run_event_history_uses_tail_and_before_cursor(web):
+    run_id = _seed_run(web.cfg, "history run")
+    ledger = RunLedger(service.ledger_path(web.cfg))
+    with ledger.transaction() as conn:
+        for index in range(120):
+            ledger.append_event(
+                conn, run_id, actor="analyst", event_type="tick", payload={"i": index}
+            )
+    tail = service.run_events_tail(web.cfg, run_id, limit=100)
+    assert len(tail) == 100
+    everything = service.run_events(web.cfg, run_id, limit=1000)
+    assert tail[-1]["seq"] == everything[-1]["seq"]
+    older = service.run_events(web.cfg, run_id, before=tail[0]["seq"], limit=100)
+    assert older and [e["seq"] for e in older] == sorted(e["seq"] for e in older)
+    assert all(e["seq"] < tail[0]["seq"] for e in older)
+    assert older[-1]["seq"] == tail[0]["seq"] - 1
+    # The page opens on the tail and offers the earlier-history cursor.
+    page = web.client.get(f"/runs/{run_id}")
+    assert "首屏为最近 100 条" in page.text
+    assert f"before={tail[0]['seq']}" in page.text
+    api = web.client.get(f"/api/runs/{run_id}/events?before={tail[0]['seq']}&limit=100").json()
+    assert api and api[-1]["seq"] == tail[0]["seq"] - 1
+
+
+def test_session_run_list_carries_display_status(web):
+    created = web.client.post(
+        "/api/projects/prj-default/sessions",
+        json={"title": "interrupted session"},
+        headers={"X-CSRF-Token": web.csrf},
+    ).json()
+    session_id = created["session_id"]
+    run_id = _seed_run(web.cfg, "session interrupted", status="running")
+    ledger = RunLedger(service.ledger_path(web.cfg))
+    with ledger.transaction() as conn:
+        conn.execute(
+            "UPDATE research_runs SET session_id = ? WHERE run_id = ?",
+            (session_id, run_id),
+        )
+    data = web.client.get(f"/api/sessions/{session_id}").json()
+    assert data["runs"][0]["display_status"] == "interrupted"
+    page = web.client.get(f"/sessions/{session_id}")
+    assert "已中断" in page.text
+
+
+def test_project_search_restricts_candidates_before_ranking(web):
+    for index in range(40):
+        _seed_paper(web.root, f"noise-{index}", f"common term {index}")
+    # A very long member document ranks below the global top-5, so a
+    # post-filter would silently lose it.
+    _seed_paper(web.root, "target", "common term " + "filler " * 200)
+    _make_workspace(web.root, "narrow-ws", ["target"])
+    ws_project = next(
+        p
+        for p in web.client.get("/api/projects").json()["items"]
+        if p["workspace_name"] == "narrow-ws"
+    )["project_id"]
+    scoped = service.search(web.cfg, "common", limit=5, project_id=ws_project)
+    assert [row["local_id"] for row in scoped] == ["target"]
+    unscoped = service.search(web.cfg, "common", limit=5)
+    assert "target" not in {row["local_id"] for row in unscoped}

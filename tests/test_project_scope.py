@@ -13,7 +13,11 @@ from pathlib import Path
 import pytest
 
 from drbrain.app import service
-from drbrain.loop.store import AmbiguousRunError, RunLedger
+from drbrain.loop.store import (
+    AmbiguousRunError,
+    ClientRequestConflictError,
+    RunLedger,
+)
 from drbrain.projects import DEFAULT_PROJECT_ID
 from drbrain.storage.database import Database
 
@@ -93,6 +97,24 @@ def test_project_identity_survives_rename(tmp_path):
     db.close()
 
 
+def test_workspace_rename_repoints_project_without_changing_id(tmp_path):
+    db = Database(tmp_path / "t.db")
+    db.upsert_project("prj-abc", "flatband", workspace_name="flatband")
+    assert db.rename_workspace_project("flatband", "flatband-v2") == "prj-abc"
+    row = db.get_project("prj-abc")
+    assert row["workspace_name"] == "flatband-v2" and row["name"] == "flatband-v2"
+    # A customised display name survives later renames, and the corpus link is
+    # not cleared by an upsert that omits workspace_name.
+    db.upsert_project("prj-abc", "My corpus")
+    assert db.get_project("prj-abc")["workspace_name"] == "flatband-v2"
+    db.rename_workspace_project("flatband-v2", "flatband-v3")
+    row = db.get_project("prj-abc")
+    assert row["workspace_name"] == "flatband-v3" and row["name"] == "My corpus"
+    # Renaming a workspace no project references is a no-op.
+    assert db.rename_workspace_project("ghost", "whatever") is None
+    db.close()
+
+
 # ── ledger scope ─────────────────────────────────────────────────────────────
 
 
@@ -123,16 +145,36 @@ def test_client_request_id_is_the_idempotency_key(tmp_path):
     first = ledger.get_or_create_run(
         "goal", project_id="prj-a", session_id="s1", client_request_id="req-1"
     )
-    # The same key resolves to the same run even if the retried body differs.
+    # A retry with the same payload resolves to the same run.
     retry = ledger.get_or_create_run(
-        "goal retried", project_id="prj-a", session_id="s1", client_request_id="req-1"
+        "goal", project_id="prj-a", session_id="s1", client_request_id="req-1"
     )
     assert retry.run_id == first.run_id
+    # Reusing the key for a different payload is a client bug: returning the
+    # old run would make the caller drive a run it never asked for.
+    with pytest.raises(ClientRequestConflictError):
+        ledger.get_or_create_run(
+            "different goal", project_id="prj-a", session_id="s1", client_request_id="req-1"
+        )
+    with pytest.raises(ClientRequestConflictError):
+        ledger.get_or_create_run(
+            "goal", project_id="prj-b", session_id="s1", client_request_id="req-1"
+        )
     # A different topic/scope with a fresh key is a new run.
     other = ledger.get_or_create_run(
         "another goal", project_id="prj-a", session_id="s1", client_request_id="req-2"
     )
     assert other.run_id != first.run_id
+    # Blank keys mean "no key": they are stored as NULL and never collide.
+    blank_a = ledger.get_or_create_run("blank-a", client_request_id="   ")
+    blank_b = ledger.get_or_create_run("blank-b", client_request_id="   ")
+    assert blank_a.run_id != blank_b.run_id
+    with ledger.transaction() as conn:
+        stored = conn.execute(
+            "SELECT client_request_id FROM research_runs WHERE run_id = ?",
+            (blank_a.run_id,),
+        ).fetchone()
+    assert stored[0] is None
     # …while the same topic in the same scope always resumes the existing run,
     # regardless of which key the caller now carries.
     repeat = ledger.get_or_create_run(

@@ -1,12 +1,12 @@
 {% import "_macros.html" as m %}
 {% if report and report.status == 'pending' %}
-<div id="conf-{{ plugin_name }}"
+<div id="conf-{{ plugin_name | dom_id }}"
      hx-get="/ui/fragments/conformance?plugin_name={{ plugin_name | urlencode }}&check_id={{ check_id | urlencode }}"
      hx-trigger="load delay:1500ms" hx-swap="outerHTML">
   <p class="muted small">检查中…（{{ check_id }}）</p>
 </div>
 {% else %}
-<div id="conf-{{ plugin_name }}">
+<div id="conf-{{ plugin_name | dom_id }}">
   {% if report %}
   {{ m.status_badge(report.status) }}
   <p class="muted small">报告 {{ report.completed_at | ts }} · {{ report.check_id }}</p>

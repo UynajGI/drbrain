@@ -158,21 +158,48 @@ def ws_delete_cmd(
 
 @ws_app.command("rename")
 def ws_rename_cmd(
+    ctx: typer.Context,
     old_name: str = typer.Argument(..., help="Current workspace name"),
     new_name: str = typer.Argument(..., help="New workspace name"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
-    """Rename a workspace."""
+    """Rename a workspace (its project keeps its stable id)."""
+    from pathlib import Path
+
     from drbrain.storage.workspace import rename_workspace
 
     try:
         new_path = rename_workspace(old_name, new_name)
-        if json_output:
-            typer.echo(json.dumps({"renamed": old_name, "to": new_name, "path": str(new_path)}))
-        else:
-            typer.echo(f"Workspace renamed: {old_name} -> {new_name}")
     except (ValueError, FileNotFoundError, FileExistsError) as e:
         _workspace_error(e, json_output=json_output)
+
+    # Best-effort: re-point the project row so the project id, its sessions and
+    # its runs survive the rename.  A missing/absent database is not an error.
+    project_id: str | None = None
+    obj = getattr(ctx, "obj", None)
+    cfg = obj.get("config") if isinstance(obj, dict) else None
+    if cfg is not None:
+        try:
+            from drbrain.storage.database import Database
+
+            db_path = cfg["db"]["path"]
+            if str(db_path) != ":memory:" and Path(db_path).is_file():
+                db = Database(db_path)
+                try:
+                    project_id = db.rename_workspace_project(old_name, new_name)
+                finally:
+                    db.close()
+        except Exception:  # noqa: BLE001 - the rename itself already succeeded
+            project_id = None
+
+    if json_output:
+        payload = {"renamed": old_name, "to": new_name, "path": str(new_path)}
+        if project_id:
+            payload["project_id"] = project_id
+        typer.echo(json.dumps(payload))
+    else:
+        suffix = f" (project {project_id} preserved)" if project_id else ""
+        typer.echo(f"Workspace renamed: {old_name} -> {new_name}{suffix}")
 
 
 # -- repair + import commands --

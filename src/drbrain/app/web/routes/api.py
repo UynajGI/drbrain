@@ -301,6 +301,7 @@ def run_events(
     request: Request,
     run_id: str,
     after: int = Query(0, ge=0),
+    before: int | None = Query(None, ge=0),
     limit: int = Query(200, ge=1, le=1000),
     project_id: str = Query(""),
 ) -> list[dict[str, Any]]:
@@ -308,7 +309,12 @@ def run_events(
     pid = project_id or service.run_project(cfg, run_id)
     project = deps.resolve_project(request, pid)
     return service.run_events(
-        cfg, run_id, after=after, limit=limit, project_id=project["project_id"]
+        cfg,
+        run_id,
+        after=after,
+        limit=limit,
+        project_id=project["project_id"],
+        before=before,
     )
 
 

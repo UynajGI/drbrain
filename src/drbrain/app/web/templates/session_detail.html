@@ -70,7 +70,7 @@
           <input class="input" type="number" id="max_cycles" name="max_cycles" min="1" max="100" placeholder="使用配置默认值">
         </div>
         <button type="submit" class="btn btn-primary btn-block" data-submit-once>启动运行</button>
-        <p class="field-hint">重复提交同一运行目标会恢复同一条持久运行记录，不会重复创建。</p>
+        <p class="field-hint">同一会话中重复提交相同目标会恢复同一条持久运行（按 项目 + 会话 + 目标 去重）；刷新页面后再次提交同样如此。</p>
       </form>
     </section>
 
@@ -109,7 +109,7 @@
             <a class="link strong" href="/runs/{{ run.run_id }}?project_id={{ project.project_id }}">{{ run.topic }}</a>
             <span class="muted small">{{ run.updated_at | ts }}</span>
           </div>
-          {{ m.status_badge(run.status) }}
+          {{ m.status_badge(run.display_status or run.status) }}
         </li>
         {% endfor %}
       </ul>

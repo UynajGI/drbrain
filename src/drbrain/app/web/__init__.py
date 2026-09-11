@@ -8,6 +8,7 @@ business facade, and ``auth.py`` the single authentication boundary.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -49,12 +50,19 @@ def _short(value: Any, limit: int = 12) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _dom_id(value: Any) -> str:
+    """Slug for DOM ids: plugin names are author metadata, not id-safe."""
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", str(value or "")).strip("-")
+    return slug or "item"
+
+
 def build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     env = templates.env
     env.filters["ts"] = _fmt_ts
     env.filters["status"] = labels.status_of
     env.filters["short"] = _short
+    env.filters["dom_id"] = _dom_id
     env.globals["status_label"] = labels.status_of
     env.globals["role_labels"] = labels.ROLE_LABELS
     env.globals["layer_labels"] = labels.LAYER_LABELS

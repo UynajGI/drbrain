@@ -800,7 +800,9 @@ source = { editable = "." }
 dependencies = [
     { name = "arxiv" },
     { name = "deepxiv-sdk" },
+    { name = "fastapi" },
     { name = "httpx", extra = ["socks"] },
+    { name = "jinja2" },
     { name = "llama-index-core" },
     { name = "llama-index-llms-openai" },
     { name = "llama-index-retrievers-bm25" },
@@ -816,6 +818,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "pymupdf4llm" },
+    { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "rank-bm25" },
     { name = "requests" },
@@ -825,6 +828,7 @@ dependencies = [
     { name = "tiktoken" },
     { name = "typer" },
     { name = "umap-learn" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -863,8 +867,10 @@ requires-dist = [
     { name = "arxiv", specifier = ">=2.0" },
     { name = "deepxiv-sdk", specifier = ">=0.2.5" },
     { name = "duckdb", marker = "extra == 'analytics'" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "firecrawl-anydoc", marker = "extra == 'anydoc'", specifier = ">=0.1" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
+    { name = "jinja2", specifier = ">=3.1" },
     { name = "llama-index-core", specifier = ">=0.14.23" },
     { name = "llama-index-llms-openai", specifier = ">=0.6.0" },
     { name = "llama-index-retrievers-bm25", specifier = ">=0.7.1" },
@@ -882,6 +888,7 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.27.2.3" },
     { name = "pymupdf4llm", specifier = ">=0.0.13" },
     { name = "python-docx", marker = "extra == 'office'", specifier = ">=1.1" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "python-pptx", marker = "extra == 'office'", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rank-bm25", specifier = ">=0.2" },
@@ -893,6 +900,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'gnn'", specifier = ">=2.0,<2.14" },
     { name = "typer", specifier = ">=0.15" },
     { name = "umap-learn", specifier = ">=0.5" },
+    { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["office", "gnn", "analytics", "anydoc"]
 
@@ -946,6 +954,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
+]
+
+[[package]]
+name = "fastapi"
+version = "0.141.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
 ]
 
 [[package]]
