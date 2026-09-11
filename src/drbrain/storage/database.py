@@ -383,7 +383,20 @@ class Database:
         runs in serialized threading mode, so cross-thread use of the shared
         connection is safe; ``busy_timeout`` below absorbs write contention.
         """
-        self.path = Path(db_path)
+        import os
+
+        from drbrain.runtime import RuntimeContext, _is_special_path, _is_uri
+
+        if _is_uri(db_path):
+            raise ValueError(f"database path must be a local filesystem path, not a URI: {db_path}")
+        selector = os.environ.get("DRBRAIN_ROOT") or os.environ.get("DRBRAIN_RUNTIME_ROOT")
+        if selector and _is_special_path(db_path):
+            # The in-memory sentinel must not require a valid disk root.
+            self.path = Path(str(db_path))
+        elif selector:
+            self.path = RuntimeContext.create().assert_within_root(db_path, label="database path")
+        else:
+            self.path = Path(db_path)
         self._write_lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
