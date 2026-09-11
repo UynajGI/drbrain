@@ -24,6 +24,8 @@
 数据库均为真实临时 SQLite；完整非集成套件 `pytest -m "not integration"` **3273 passed / 15 skipped**
 （约 12 分钟，慢测为既有的 layer6/director 用例）。轮子打包已验证包含模板/静态资源/vendored htmx 与许可证
 （`uv build --wheel` 后检查 whl 内容），性能基线见 §7.1（`scripts/webui_baseline.py`）。
+真实 uvicorn 冒烟：`drbrain --root <root> webui --port 8792` 打印令牌并监听，登录页/静态资源 200、
+未认证 `/api/dashboard` 401、`config/webui_token` 权限 0600、正确令牌 `POST /api/auth/verify` 返回 200 + cookie。
 浏览器实机视觉验收与真实 provider 联调不在本轮范围内，验收清单 §7.1 中相应条目保持未勾选。
 
 ## 1. 目标与阶段
