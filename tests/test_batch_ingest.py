@@ -189,7 +189,7 @@ def test_ingest_directory():
 
 
 def test_ingest_skips_failed_papers():
-    """ingest_cmd continues processing when one paper fails."""
+    """ingest_cmd continues processing but reports a non-zero batch result."""
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "test.db"
         reports_dir = Path(td) / "reports"
@@ -208,7 +208,8 @@ def test_ingest_skips_failed_papers():
         ):
             with pytest.raises(typer.Exit) as exc_info:
                 ingest_cmd(ctx, [str(pdfs_dir)])
-            assert exc_info.value.exit_code == 1
+
+        assert exc_info.value.exit_code == 1
 
         # Should have attempted all 3 files.
         assert calls[0] == 3
@@ -220,6 +221,40 @@ def test_ingest_skips_failed_papers():
         # Only the two non-failing papers should land in the DB.
         assert len(papers) == 2
         db.close()
+
+
+def test_ingest_isolates_raised_single_paper_failure():
+    """An adapter exception does not abort later files, but fails the batch."""
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        reports_dir = Path(td) / "reports"
+        reports_dir.mkdir()
+        pdfs_dir = Path(td) / "pdfs"
+        pdfs_dir.mkdir()
+        for name in ("ok.pdf", "raises.pdf", "later.pdf"):
+            (pdfs_dir / name).write_bytes(b"%PDF-1.4 dummy")
+
+        calls: list[str] = []
+
+        def side_effect(pdf_path, cfg, db, dedup, **kwargs):
+            calls.append(Path(pdf_path).name)
+            if Path(pdf_path).name == "raises.pdf":
+                raise RuntimeError("simulated ingest exception")
+            return {"ok": True, "report": {"local_id": Path(pdf_path).stem}}
+
+        ctx = _make_ctx(_make_minimal_config(str(db_path), str(reports_dir)))
+        with mock.patch(
+            "drbrain.cli.ingest_commands._ingest_single_paper", side_effect=side_effect
+        ):
+            with pytest.raises(typer.Exit) as exc_info:
+                ingest_cmd(ctx, [str(pdfs_dir)])
+
+        assert exc_info.value.exit_code == 1
+        assert calls == ["later.pdf", "ok.pdf", "raises.pdf"] or set(calls) == {
+            "ok.pdf",
+            "raises.pdf",
+            "later.pdf",
+        }
 
 
 def test_ingest_multiple_files():

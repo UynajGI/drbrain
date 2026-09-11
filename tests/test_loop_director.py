@@ -92,6 +92,23 @@ def test_checkpoint_manifest_fingerprints_plugin_source_and_mcp_policy(tmp_path)
     assert changed_mcp.tool_manifest != changed_plugin.tool_manifest
 
 
+def test_checkpoint_manifest_redacts_mcp_urls_and_command_arguments():
+    server = {
+        "name": "private-search",
+        "url": "https://user:pw@example.test/mcp?api_key=query-secret",
+        "command": "python --token command-secret server.py",
+        "args": ["--api-key", "argument-secret"],
+        "env": {"API_KEY": "env-secret"},
+    }
+
+    manifest = ResearchDirector(cfg=_cfg(), mcp_servers=[server])._checkpoint_manifest()
+    rendered = json.dumps(manifest.tool_manifest, ensure_ascii=False)
+
+    for secret in ("user:pw", "query-secret", "command-secret", "argument-secret", "env-secret"):
+        assert secret not in rendered
+    assert "[REDACTED]" in rendered
+
+
 def _cyclic_llm(monkeypatch, script):
     """Scripted LLM that cycles through ``script`` (one entry per agent call)."""
     calls = [0]

@@ -16,6 +16,12 @@ class TestProceedingsStore:
 
         assert proceedings is not None
 
+    def test_default_path_follows_runtime_root(self, tmp_path, monkeypatch):
+        from drbrain.storage.proceedings import default_path
+
+        monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+        assert default_path() == tmp_path / "data" / "proceedings.json"
+
     def test_create_proceeding(self, tmp_path):
         from drbrain.storage.proceedings import (
             create_proceeding,

@@ -4,7 +4,50 @@ from unittest import mock
 
 import pytest
 
-from drbrain.extractor.llm_client import KeyRotator
+from drbrain.extractor.llm_client import KeyRotator, _log_llm_call, _safe_error
+
+
+def test_llm_trace_follows_runtime_root(tmp_path, monkeypatch):
+    """The privacy-safe LLM trace must not fall back to the caller cwd."""
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+    _log_llm_call(
+        model="test-model",
+        provider="test-provider",
+        status="ok",
+        prompt_hash="hash",
+        n_messages=1,
+    )
+    trace = tmp_path / "data" / "logs" / "llm_calls.jsonl"
+    assert trace.exists()
+    assert "test-model" in trace.read_text(encoding="utf-8")
+
+
+def test_safe_error_scrubs_the_active_key_even_when_unlabelled():
+    rendered = _safe_error(
+        "provider rejected sk-unlabelled-secret", secrets=("sk-unlabelled-secret",)
+    )
+    assert "sk-unlabelled-secret" not in rendered
+    assert "[REDACTED]" in rendered
+
+
+def test_llm_trace_does_not_follow_a_symlink(tmp_path, monkeypatch):
+    logs = tmp_path / "data" / "logs"
+    logs.mkdir(parents=True)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("untouched\n", encoding="utf-8")
+    (logs / "llm_calls.jsonl").symlink_to(outside)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+
+    _log_llm_call(
+        model="test-model",
+        provider="test-provider",
+        status="error",
+        prompt_hash="hash",
+        n_messages=1,
+        error="api_key=trace-secret",
+    )
+
+    assert outside.read_text(encoding="utf-8") == "untouched\n"
 
 
 def test_call_with_fallback_records_metrics():
