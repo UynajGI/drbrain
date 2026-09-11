@@ -28,7 +28,7 @@
     </tbody>
   </table>
 </div>
-{{ m.cursor_pager('/papers', project.project_id, data.next_cursor, q=data.query, status=status) }}
+{{ m.cursor_pager('/papers', project.project_id, data.next_cursor, q=data.query, status=status, boost_target='#paper-rows') }}
 {% elif data.query %}
 {{ m.empty_state('没有匹配的文献', '换一个关键词，或清空筛选条件。') }}
 {% else %}

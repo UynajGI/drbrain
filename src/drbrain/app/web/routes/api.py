@@ -25,7 +25,10 @@ from drbrain.app.web import deps
 from drbrain.loop.store import AmbiguousRunError, RunLedger
 from drbrain.projects import DEFAULT_PROJECT_ID
 
-router = APIRouter(prefix="/api", dependencies=[Depends(deps.authenticate)])
+router = APIRouter(
+    prefix="/api",
+    dependencies=[Depends(deps.authenticate), Depends(deps.require_csrf)],
+)
 
 
 class RunStartRequest(BaseModel):

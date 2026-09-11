@@ -6,14 +6,17 @@ JSON API over HTTP, so there is one data path per view.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from drbrain.app import service
 from drbrain.app.web import deps
 from drbrain.projects import DEFAULT_PROJECT_ID
 
-router = APIRouter(prefix="/ui/fragments", dependencies=[Depends(deps.authenticate)])
+router = APIRouter(
+    prefix="/ui/fragments",
+    dependencies=[Depends(deps.authenticate), Depends(deps.require_csrf)],
+)
 
 
 @router.get("/paper-rows")
@@ -52,12 +55,10 @@ def run_events(
 ) -> Response:
     cfg = deps.get_cfg(request)
     if not run_id:
-        return Response(status_code=422)
+        raise HTTPException(status_code=422, detail="run_id is required")
     try:
         pid = project_id or service.run_project(cfg, run_id)
     except service.RunNotFoundError:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="unknown research run") from None
     project = deps.resolve_project(request, pid)
     events = service.run_events(
@@ -82,12 +83,10 @@ def session_messages(
 ) -> Response:
     cfg = deps.get_cfg(request)
     if not session_id:
-        return Response(status_code=422)
+        raise HTTPException(status_code=422, detail="session_id is required")
     try:
         pid = project_id or service.session_project(cfg, session_id)
     except service.SessionNotFoundError:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="unknown session") from None
     project = deps.resolve_project(request, pid)
     messages = service.session_messages(cfg, session_id, project["project_id"], after_seq=after)

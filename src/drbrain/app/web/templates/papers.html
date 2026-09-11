@@ -28,7 +28,9 @@
   <button type="submit" class="btn btn-primary">检索</button>
 </form>
 
-<div id="paper-rows" hx-boost="true" hx-target="#paper-rows" hx-select="#paper-rows" hx-push-url="true">
+{# htmx attributes stay on the form / pager only: detail links inside must
+   navigate normally, and an inherited hx-select would swallow that click. #}
+<div id="paper-rows">
   {% include "fragments/paper_rows.html" %}
 </div>
 {% endblock %}

@@ -8,7 +8,6 @@ business facade, and ``auth.py`` the single authentication boundary.
 
 from __future__ import annotations
 
-import hmac
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -24,40 +23,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from drbrain.app import auth
+from drbrain.app.web import labels
 from drbrain.app.web.deps import login_redirect_target
 
 WEB_DIR = Path(__file__).parent
 STATIC_DIR = WEB_DIR / "static"
 TEMPLATE_DIR = WEB_DIR / "templates"
-
-#: Paths that establish a login and therefore cannot carry a session CSRF token.
-_CSRF_EXEMPT = {"/login", "/api/auth/verify"}
-
-_STATUS_LABELS = {
-    "created": ("待运行", "muted"),
-    "running": ("运行中", "run"),
-    "paused": ("暂停", "warn"),
-    "succeeded": ("成功", "ok"),
-    "failed": ("失败", "bad"),
-    "cancelled": ("已取消", "muted"),
-    "interrupted": ("已中断", "warn"),
-    "keep": ("保留", "ok"),
-    "discard": ("废弃", "bad"),
-    "insufficient": ("证据不足", "warn"),
-    "pending": ("待处理", "muted"),
-    "checking": ("检查中", "run"),
-    "passed": ("通过", "ok"),
-    "stale": ("已过期", "warn"),
-    "not_tested": ("未检测", "muted"),
-    "proposed": ("已提出", "muted"),
-    "critiqued": ("已评审", "run"),
-    "discarded": ("已舍弃", "bad"),
-    "discussion_pending": ("讨论中", "warn"),
-    "uploaded": ("已上传", "run"),
-    "extracted": ("已抽取", "ok"),
-    "placeholder": ("占位", "muted"),
-    "merged": ("已合并", "muted"),
-}
 
 
 def _fmt_ts(value: Any) -> str:
@@ -73,12 +44,6 @@ def _fmt_ts(value: Any) -> str:
     return str(value)[:19]
 
 
-def _status(value: Any) -> dict[str, str]:
-    text = str(value or "")
-    label, tone = _STATUS_LABELS.get(text, (text or "未知", "muted"))
-    return {"label": label, "tone": tone, "raw": text}
-
-
 def _short(value: Any, limit: int = 12) -> str:
     text = str(value or "")
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -88,9 +53,12 @@ def build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     env = templates.env
     env.filters["ts"] = _fmt_ts
-    env.filters["status"] = _status
+    env.filters["status"] = labels.status_of
     env.filters["short"] = _short
-    env.globals["status_label"] = _status
+    env.globals["status_label"] = labels.status_of
+    env.globals["role_labels"] = labels.ROLE_LABELS
+    env.globals["layer_labels"] = labels.LAYER_LABELS
+    env.globals["error_text"] = labels.error_text
     return templates
 
 
@@ -116,47 +84,6 @@ class _SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class _CsrfMiddleware(BaseHTTPMiddleware):
-    """Double-submit CSRF guard for cookie-authenticated unsafe requests.
-
-    Bearer requests carry an explicit credential and are exempt; so are the
-    login endpoints themselves (there is no session yet).  ``SameSite=Strict``
-    is the primary control — this is defense in depth, including an Origin
-    check when the browser sends one.
-    """
-
-    UNSAFE = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
-        if (
-            request.method in self.UNSAFE
-            and request.url.path not in _CSRF_EXEMPT
-            and not bearer
-            and request.cookies.get(auth.SESSION_COOKIE)
-        ):
-            cookie = request.cookies.get(auth.CSRF_COOKIE, "")
-            supplied = request.headers.get("x-csrf-token", "")
-            if not supplied:
-                form = await request.form()
-                supplied = str(form.get("csrf_token") or "")
-            if not cookie or not supplied or not hmac.compare_digest(cookie, supplied):
-                return JSONResponse(
-                    {"error": "CSRF token missing or invalid", "code": "csrf"},
-                    status_code=403,
-                )
-            origin = request.headers.get("origin")
-            if origin:
-                from urllib.parse import urlparse
-
-                if urlparse(origin).netloc != request.url.netloc:
-                    return JSONResponse(
-                        {"error": "cross-origin request rejected", "code": "origin"},
-                        status_code=403,
-                    )
-        return await call_next(request)
-
-
 def _error_payload(detail: Any, code: str = "error") -> dict[str, Any]:
     if isinstance(detail, dict):
         payload = dict(detail)
@@ -178,7 +105,12 @@ def _render_error(request: Request, message: str, code: str, status_code: int) -
         from drbrain.app.web import deps
 
         return deps.render(
-            request, "error.html", status_code=status_code, message=message, code=code
+            request,
+            "error.html",
+            status_code=status_code,
+            message=message,
+            code=code,
+            title=labels.error_title(code, status_code),
         )
     except Exception:  # noqa: BLE001 - never let the error page itself crash the response
         return JSONResponse({"error": message, "code": code}, status_code=status_code)
@@ -202,7 +134,6 @@ def create_app(cfg: Any, *, app_title: str = "DrBrain WebUI") -> FastAPI:
     )
     app.state.cfg = cfg
     app.state.templates = build_templates()
-    app.add_middleware(_CsrfMiddleware)
     app.add_middleware(_SecurityHeadersMiddleware)
 
     if STATIC_DIR.is_dir():
@@ -219,7 +150,20 @@ def create_app(cfg: Any, *, app_title: str = "DrBrain WebUI") -> FastAPI:
             if not request.url.path.startswith("/api/"):
                 return RedirectResponse(login_redirect_target(request), status_code=303)
             return JSONResponse(_error_payload(detail, "unauthorized"), status_code=401)
-        code = "not_found" if exc.status_code == 404 else "http_error"
+        if isinstance(detail, dict):
+            # Dependencies raise structured errors (csrf/origin); keep the code.
+            return _render_error(
+                request,
+                str(detail.get("error") or ""),
+                str(detail.get("code") or "http_error"),
+                exc.status_code,
+            )
+        if exc.status_code == 404:
+            code = "not_found"
+        elif exc.status_code == 422:
+            code = "validation_error"
+        else:
+            code = "http_error"
         return _render_error(request, str(detail), code, exc.status_code)
 
     @app.exception_handler(RequestValidationError)

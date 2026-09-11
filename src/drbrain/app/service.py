@@ -1200,7 +1200,9 @@ def record_run_memory(cfg: Any, run_id: str, project_id: str | None = None) -> i
             )
             if created:
                 written += 1
-            if evidence and created:
+            # The evidence row has its own dedup key: a retry must be able to
+            # fill it in even when the claim row already existed.
+            if evidence:
                 if db.insert_session_memory(
                     memory_id=f"mem-{uuid.uuid4().hex[:12]}",
                     project_id=pid,
@@ -1364,7 +1366,10 @@ class RunManager:
             existing_thread = self._run_threads.get(run.run_id)
             if existing_thread is not None and existing_thread.is_alive():
                 return self._launch_payload(run, started=False)
+            # _run records failures under both keys; clear both so a retried
+            # run does not keep reporting the previous failure.
             self._errors.pop(key, None)
+            self._errors.pop(run.run_id, None)
             thread = threading.Thread(
                 target=self._run,
                 args=(runtime_cfg, settings, topic, max_cycles, project, session, run.run_id),

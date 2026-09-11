@@ -8,20 +8,37 @@ layer on every entity-bearing route.
 from __future__ import annotations
 
 import secrets
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import RedirectResponse, Response
 
 from drbrain.app import auth, service
-from drbrain.app.web import deps
+from drbrain.app.web import deps, labels
 from drbrain.projects import DEFAULT_PROJECT_ID
 
-router = APIRouter(dependencies=[Depends(deps.authenticate)])
+router = APIRouter(dependencies=[Depends(deps.authenticate), Depends(deps.require_csrf)])
+
+MAX_FORM_CYCLES = 100
 
 
-def _query(model_value: str, **params: str) -> str:
-    pairs = "&".join(f"{key}={value}" for key, value in params.items() if value not in (None, ""))
-    return f"{model_value}?{pairs}" if pairs else model_value
+def _query(path: str, **params: str) -> str:
+    pairs = "&".join(
+        f"{quote(str(key))}={quote(str(value))}"
+        for key, value in params.items()
+        if value not in (None, "")
+    )
+    return f"{path}?{pairs}" if pairs else path
+
+
+def _parse_cycles(raw: str) -> int | None:
+    """Parse the form's max_cycles with the same bound as the JSON API."""
+    text = raw.strip()
+    if not text:
+        return None
+    if not text.isdigit() or not (1 <= int(text) <= MAX_FORM_CYCLES):
+        raise ValueError("invalid max_cycles")
+    return int(text)
 
 
 # ── dashboard ────────────────────────────────────────────────────────────────
@@ -147,7 +164,7 @@ def session_detail_page(
     request: Request,
     session_id: str,
     project_id: str = Query(""),
-    error: str = Query(""),
+    error_code: str = Query(""),
     synced: str = Query(""),
 ) -> Response:
     cfg = deps.get_cfg(request)
@@ -160,7 +177,7 @@ def session_detail_page(
         nav="sessions",
         project=project,
         data=data,
-        error=error,
+        error=labels.error_text(error_code),
         synced=synced,
         client_request_id=secrets.token_hex(8),
     )
@@ -177,20 +194,32 @@ def session_chat_form(
     pid = project_id or service.session_project(cfg, session_id)
     project = deps.resolve_project(request, pid)
     if deps.is_htmx(request):
-        result = service.chat_in_session(cfg, session_id, question, project["project_id"])
-        new_messages = result.get("messages", [])
+        try:
+            result = service.chat_in_session(cfg, session_id, question, project["project_id"])
+        except ValueError:
+            return deps.render(
+                request,
+                "fragments/session_messages.html",
+                messages=[],
+                unavailable=False,
+                error=labels.error_text("empty_question"),
+            )
         return deps.render(
             request,
             "fragments/session_messages.html",
-            messages=new_messages,
+            messages=result.get("messages", []),
             unavailable=result.get("unavailable", False),
-            error=result.get("error", ""),
+            error="" if result.get("unavailable") else result.get("error", ""),
         )
     try:
         service.chat_in_session(cfg, session_id, question, project["project_id"])
     except ValueError:
         return RedirectResponse(
-            _query(f"/sessions/{session_id}", project_id=project["project_id"], error="请输入问题"),
+            _query(
+                f"/sessions/{session_id}",
+                project_id=project["project_id"],
+                error_code="empty_question",
+            ),
             status_code=303,
         )
     return RedirectResponse(
@@ -211,7 +240,17 @@ def start_run_form(
     cfg = deps.get_cfg(request)
     pid = project_id or service.session_project(cfg, session_id)
     project = deps.resolve_project(request, pid)
-    cycles = int(max_cycles) if max_cycles.strip().isdigit() else None
+    try:
+        cycles = _parse_cycles(max_cycles)
+    except ValueError:
+        return RedirectResponse(
+            _query(
+                f"/sessions/{session_id}",
+                project_id=project["project_id"],
+                error_code="invalid_max_cycles",
+            ),
+            status_code=303,
+        )
     try:
         started = service.start_run(
             cfg,
@@ -221,21 +260,23 @@ def start_run_form(
             session_id=session_id,
             client_request_id=client_request_id.strip() or None,
         )
-    except (ValueError, RuntimeError) as exc:
-        from drbrain.security import safe_error
-
+    except RuntimeError:
+        code = "autoresearch_disabled"
+    except ValueError:
+        code = "empty_topic" if not topic.strip() else "run_start_failed"
+    else:
         return RedirectResponse(
             _query(
-                f"/sessions/{session_id}",
+                f"/runs/{started['run_id']}",
                 project_id=project["project_id"],
-                error=safe_error(exc, limit=200),
             ),
             status_code=303,
         )
     return RedirectResponse(
         _query(
-            f"/runs/{started['run_id']}",
+            f"/sessions/{session_id}",
             project_id=project["project_id"],
+            error_code=code,
         ),
         status_code=303,
     )
@@ -251,7 +292,17 @@ def promote_memory_form(
     cfg = deps.get_cfg(request)
     pid = project_id or service.session_project(cfg, session_id)
     project = deps.resolve_project(request, pid)
-    service.promote_memory(cfg, session_id, memory_id, project["project_id"])
+    try:
+        service.promote_memory(cfg, session_id, memory_id, project["project_id"])
+    except ValueError:
+        return RedirectResponse(
+            _query(
+                f"/sessions/{session_id}",
+                project_id=project["project_id"],
+                error_code="memory_promote_failed",
+            ),
+            status_code=303,
+        )
     return RedirectResponse(
         _query(f"/sessions/{session_id}", project_id=project["project_id"], synced="promoted"),
         status_code=303,
@@ -265,7 +316,7 @@ def promote_memory_form(
 def runs_page(
     request: Request,
     project_id: str = Query(DEFAULT_PROJECT_ID),
-    error: str = Query(""),
+    error_code: str = Query(""),
 ) -> Response:
     cfg = deps.get_cfg(request)
     project = deps.resolve_project(request, project_id)
@@ -280,7 +331,7 @@ def runs_page(
         project=project,
         items=items,
         sessions=sessions_list,
-        error=error,
+        error=labels.error_text(error_code),
         client_request_id=secrets.token_hex(8),
     )
 
@@ -296,7 +347,13 @@ def start_run_from_runs(
 ) -> Response:
     cfg = deps.get_cfg(request)
     project = deps.resolve_project(request, project_id)
-    cycles = int(max_cycles) if max_cycles.strip().isdigit() else None
+    try:
+        cycles = _parse_cycles(max_cycles)
+    except ValueError:
+        return RedirectResponse(
+            _query("/runs", project_id=project["project_id"], error_code="invalid_max_cycles"),
+            status_code=303,
+        )
     try:
         started = service.start_run(
             cfg,
@@ -306,19 +363,17 @@ def start_run_from_runs(
             session_id=session_id.strip(),
             client_request_id=client_request_id.strip() or None,
         )
-    except (ValueError, RuntimeError) as exc:
-        from drbrain.security import safe_error
-
+    except RuntimeError:
+        code = "autoresearch_disabled"
+    except ValueError:
+        code = "empty_topic" if not topic.strip() else "run_start_failed"
+    else:
         return RedirectResponse(
-            _query(
-                "/runs",
-                project_id=project["project_id"],
-                error=safe_error(exc, limit=200),
-            ),
+            _query(f"/runs/{started['run_id']}", project_id=project["project_id"]),
             status_code=303,
         )
     return RedirectResponse(
-        _query(f"/runs/{started['run_id']}", project_id=project["project_id"]),
+        _query("/runs", project_id=project["project_id"], error_code=code),
         status_code=303,
     )
 

@@ -1,9 +1,11 @@
+{# Swapped with hx-swap="beforeend" into the <ul id="messages"> list, so every
+   branch must produce <li> children. #}
 {% import "_macros.html" as m %}
 {% if error %}
-<div class="alert alert-bad" role="alert">{{ error }}</div>
+<li class="message message-system" role="alert">{{ error }}</li>
 {% endif %}
 {% if unavailable %}
-<div class="alert alert-warn" role="alert">会话问答当前不可用：请先在配置中设置 llm.models。</div>
+<li class="message message-system" role="alert">会话问答当前不可用：请先在配置中设置 llm.models。</li>
 {% endif %}
 {% for message in messages %}
   {% if message.role != 'system' %}

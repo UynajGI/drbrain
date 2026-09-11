@@ -261,6 +261,8 @@ def test_sessions_and_runs_are_project_scoped(web):
     assert web.client.get(f"/api/runs/{run_id}/claims?project_id=prj-default").status_code == 404
     report = web.client.get(f"/api/runs/{run_id}/report?project_id=prj-default")
     assert report.status_code == 404
+    # The SSE route must reject a foreign scope before the stream starts.
+    assert web.client.get(f"/api/runs/{run_id}/stream?project_id=prj-default").status_code == 404
 
 
 def test_ambiguous_topic_status_is_explicit(web):
@@ -318,7 +320,7 @@ def test_pages_render_with_scope_and_content(web):
 
     # Unknown page entities render the explicit 404 page, not a 500.
     missing = web.client.get("/runs/nope")
-    assert missing.status_code == 404 and "找不到内容" in missing.text
+    assert missing.status_code == 404 and "找不到研究运行" in missing.text
 
 
 def test_fragments_render_rows_and_events(web):
@@ -329,6 +331,46 @@ def test_fragments_render_rows_and_events(web):
     events = web.client.get(f"/ui/fragments/run-events?run_id={run_id}&limit=10")
     assert events.status_code == 200 and "proposal_recorded" in events.text
     assert web.client.get("/ui/fragments/run-events?run_id=nope").status_code == 404
+    # Missing required parameters keep the JSON error contract for htmx callers.
+    missing = web.client.get("/ui/fragments/run-events")
+    assert missing.status_code == 422
+    htmx_missing = web.client.get("/ui/fragments/run-events", headers={"HX-Request": "true"})
+    assert htmx_missing.status_code == 422
+    assert htmx_missing.json()["code"] == "validation_error"
+
+
+def test_form_redirects_carry_codes_not_free_text(web):
+    created = web.client.post(
+        "/api/projects/prj-default/sessions",
+        json={"title": "codes"},
+        headers={"X-CSRF-Token": web.csrf},
+    ).json()
+    session_id = created["session_id"]
+    response = web.client.post(
+        f"/sessions/{session_id}/runs",
+        data={"topic": "x", "max_cycles": "999999", "csrf_token": web.csrf},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    location = response.headers["location"]
+    assert "error_code=invalid_max_cycles" in location and "999999" not in location
+    page = web.client.get(location)
+    assert "最大轮数需在 1–100 之间" in page.text
+    # A crafted code link cannot render arbitrary text.
+    spoofed = web.client.get(
+        f"/sessions/{session_id}?error_code=%E6%82%A8%E5%B7%B2%E8%A2%AB%E9%AA%97"
+    )
+    assert "您已被骗" not in spoofed.text
+
+
+def test_paper_rows_container_is_not_hx_boosted(web):
+    _seed_paper(web.root, "p-1", "Flat band magic")
+    page = web.client.get("/papers")
+    assert page.status_code == 200
+    start = page.text.find('id="paper-rows"')
+    container = page.text[start : start + 120]
+    assert "hx-boost" not in container  # detail links must navigate normally
+    assert "hx-boost" in page.text  # the search form still boosts
 
 
 def test_cursor_pagination_is_stable_and_rejects_garbage(web):

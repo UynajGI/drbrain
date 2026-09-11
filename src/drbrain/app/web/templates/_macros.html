@@ -7,9 +7,9 @@
 {% set s = value | status %}<span class="badge badge-{{ s.tone }}">{{ s.label }}</span>
 {%- endmacro %}
 
-{% macro cursor_pager(path, project_id, next_cursor, q='', status='') %}
+{% macro cursor_pager(path, project_id, next_cursor, q='', status='', boost_target='') %}
 {% if next_cursor %}
-<nav class="pager" aria-label="分页导航">
+<nav class="pager" aria-label="分页导航"{% if boost_target %} hx-boost="true" hx-target="{{ boost_target }}" hx-select="{{ boost_target }}" hx-push-url="true"{% endif %}>
   <a class="btn btn-ghost" rel="next" href="{{ path }}?project_id={{ project_id }}&cursor={{ next_cursor | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if status %}&status={{ status }}{% endif %}">下一页 →</a>
   <span class="pager-info">按时间倒序，仅加载当前页</span>
 </nav>
@@ -21,14 +21,6 @@
   <p class="empty-title">{{ title }}</p>
   {% if hint %}<p class="empty-hint">{{ hint }}</p>{% endif %}
 </div>
-{% endmacro %}
-
-{% macro pagination_summary(data) %}
-<p class="muted small">共 {{ data.total }} 条{% if data.total %}，本页 {{ data.items | length }} 条{% endif %}</p>
-{% endmacro %}
-
-{% macro run_status_cell(row) %}
-{{ status_badge(row.display_status or row.status) }}
 {% endmacro %}
 
 {% macro event_row(event) %}
@@ -51,7 +43,7 @@
 {% macro message_block(message) %}
 <article class="message message-{{ message.role }}" data-seq="{{ message.seq }}">
   <header class="message-head">
-    <span class="message-role">{{ {'user': '我', 'assistant': '助手', 'system': '系统', 'tool': '工具'}.get(message.role, message.role) }}</span>
+    <span class="message-role">{{ role_labels.get(message.role, message.role) }}</span>
     {% if message.tool_name %}<span class="muted small">via {{ message.tool_name }}</span>{% endif %}
     <time class="muted small">{{ message.created_at | ts }}</time>
   </header>
@@ -62,7 +54,7 @@
 {% macro memory_entry(entry, csrf_token, project_id, promotable=False) %}
 <li class="memory" id="memory-{{ entry.memory_id }}">
   <div class="memory-head">
-    <span class="layer layer-{{ entry.layer }}">{{ {'project': '项目记忆', 'session': '会话记忆', 'run': '运行记忆'}.get(entry.layer, entry.layer) }}</span>
+    <span class="layer layer-{{ entry.layer }}">{{ layer_labels.get(entry.layer, entry.layer) }}</span>
     <span class="muted small">{{ entry.kind }}</span>
     <time class="muted small">{{ entry.created_at | ts }}</time>
   </div>

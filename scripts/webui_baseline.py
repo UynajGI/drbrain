@@ -1,6 +1,6 @@
 """WebUI service baseline: fixed machine / data scale timings (design §7.1).
 
-Run: .venv/bin/python tests/manual/webui_baseline.py  (not a pytest file)
+Run: .venv/bin/python scripts/webui_baseline.py  (not a pytest file)
 """
 
 from __future__ import annotations

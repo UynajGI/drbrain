@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}找不到内容 · DrBrain 工作台{% endblock %}
+{% set heading = title or '请求未完成' %}
+{% block title %}{{ heading }} · DrBrain 工作台{% endblock %}
 {% block content %}
 <header class="page-head">
   <div>
-    <h1>找不到内容</h1>
-    <p class="muted">{{ message or '请求的资源不存在，或不属于当前项目。' }}</p>
+    <h1>{{ heading }}</h1>
+    <p class="muted">{{ message or '请求未能完成，请检查输入或返回后重试。' }}</p>
   </div>
 </header>
 <p class="muted small">代码：<code>{{ code }}</code>。请返回

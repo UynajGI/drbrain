@@ -12,11 +12,12 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from drbrain.app import auth, service
-from drbrain.app.web import deps
+from drbrain.app.web import deps, labels
+from drbrain.projects import normalize_project_id
 
 router = APIRouter(dependencies=[Depends(deps.authenticate)])
 
@@ -43,13 +44,16 @@ async def stream_run(
     project_id: str = Query(""),
 ) -> StreamingResponse:
     cfg = deps.get_cfg(request)
+    # Resolve and validate ownership *before* the response starts: once the
+    # event-stream headers are committed a scope mismatch can no longer be a
+    # clean 404.
     try:
-        pid = project_id or service.run_project(cfg, run_id)
+        owner = service.run_project(cfg, run_id)
     except service.RunNotFoundError:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=404, detail="unknown research run") from None
-    project = deps.resolve_project(request, pid)
+    if project_id and normalize_project_id(project_id) != owner:
+        raise HTTPException(status_code=404, detail="unknown research run")
+    project = deps.resolve_project(request, owner)
     scoped_project = project["project_id"]
     # EventSource reconnect: the browser sends the last event id back.
     last_event_id = request.headers.get("last-event-id")
@@ -72,12 +76,15 @@ async def stream_run(
                     cursor = int(event["seq"])
                     yield _sse("message", event, event_id=cursor)
                 detail = await asyncio.to_thread(service.run_detail, cfg, run_id, scoped_project)
+                badge = labels.status_of(detail["display_status"])
                 yield _sse(
                     "status",
                     {
                         "seq": cursor,
                         "status": detail["status"],
                         "display_status": detail["display_status"],
+                        "label": badge["label"],
+                        "tone": badge["tone"],
                         "events": detail["events"],
                         "claims": detail["claims"],
                         "verified": detail["verified"],

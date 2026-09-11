@@ -27,7 +27,7 @@
     <div class="card-foot">
       {% if plugin.conformance and plugin.conformance.status == 'pending' %}
       <div id="conf-{{ plugin.name }}"
-           hx-get="/ui/fragments/conformance?plugin_name={{ plugin.name }}&check_id={{ plugin.conformance.check_id }}"
+           hx-get="/ui/fragments/conformance?plugin_name={{ plugin.name | urlencode }}&check_id={{ plugin.conformance.check_id | urlencode }}"
            hx-trigger="load delay:1500ms" hx-swap="outerHTML">
         <p class="muted small">检查中…（{{ plugin.conformance.check_id }}）</p>
       </div>

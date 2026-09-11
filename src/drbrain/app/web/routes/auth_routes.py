@@ -6,13 +6,13 @@ import threading
 import time
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from drbrain.app import auth, service
 from drbrain.app.web import deps
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(deps.require_csrf)])
 
 #: Small in-process throttle for failed bootstrap-token attempts.
 _FAILURES: dict[str, list[float]] = {}
@@ -25,7 +25,12 @@ def _throttled(remote: str) -> bool:
     cutoff = time.time() - _FAILURE_WINDOW
     with _FAILURE_LOCK:
         attempts = [t for t in _FAILURES.get(remote, []) if t >= cutoff]
-        _FAILURES[remote] = attempts
+        if attempts:
+            _FAILURES[remote] = attempts
+        else:
+            # Drop empty buckets: the key is attacker-influenced (X-Forwarded-For)
+            # and would otherwise grow without bound.
+            _FAILURES.pop(remote, None)
         return len(attempts) >= _FAILURE_LIMIT
 
 

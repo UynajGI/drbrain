@@ -10,8 +10,8 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}' hx-history="false"
-      {% if project %}data-project-id="{{ project.project_id }}"{% endif %}
-      data-csrf="{{ csrf_token }}">
+      data-login-url="/login"
+      {% if project %}data-project-id="{{ project.project_id }}"{% endif %}>
   <a class="skip-link" href="#main">跳到主要内容</a>
   <div class="layout">
     <aside class="sidebar" aria-label="主导航">
@@ -60,8 +60,9 @@
 
     <div class="content-wrap">
       <main id="main" class="content" tabindex="-1">
-        {% if request and request.query_params.get('error') %}
-        <div class="alert alert-bad" role="alert">{{ request.query_params.get('error') }}</div>
+        {% set redirect_error = error_text(request.query_params.get('error_code')) if request else '' %}
+        {% if redirect_error %}
+        <div class="alert alert-bad" role="alert">{{ redirect_error }}</div>
         {% endif %}
         {% if error %}<div class="alert alert-bad" role="alert">{{ error }}</div>{% endif %}
         {% block content %}{% endblock %}

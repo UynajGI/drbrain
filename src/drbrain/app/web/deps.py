@@ -7,6 +7,7 @@ SQL or the loop internals themselves.
 
 from __future__ import annotations
 
+import hmac
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -15,6 +16,53 @@ from fastapi.responses import Response
 
 from drbrain.app import auth, service
 from drbrain.projects import DEFAULT_PROJECT_ID, UNBOUND_SESSION_LABEL, normalize_project_id
+
+#: HTTP methods that need CSRF protection for cookie-authenticated callers.
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+#: Paths that establish a login and therefore cannot carry a session CSRF token.
+CSRF_EXEMPT = frozenset({"/login", "/api/auth/verify"})
+
+
+async def require_csrf(request: Request) -> None:
+    """Double-submit CSRF guard, expressed as a dependency.
+
+    It must live on the *same* Request instance the route parses: reading the
+    form in middleware consumed the body for the downstream endpoint, so every
+    HTML form arrived with empty fields.  Bearer requests carry an explicit
+    credential and skip the check; login endpoints are exempt (no session yet).
+    """
+    if request.method not in UNSAFE_METHODS or request.url.path in CSRF_EXEMPT:
+        return
+    if request.headers.get("authorization", "").lower().startswith("bearer "):
+        return
+    if not request.cookies.get(auth.SESSION_COOKIE):
+        return  # unauthenticated; the authenticate dependency owns the 401
+    cookie = request.cookies.get(auth.CSRF_COOKIE, "")
+    supplied = request.headers.get("x-csrf-token", "")
+    if not supplied:
+        form = await request.form()
+        supplied = str(form.get("csrf_token") or "")
+    if not cookie or not supplied or not hmac.compare_digest(cookie, supplied):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "CSRF token missing or invalid", "code": "csrf"},
+        )
+    origin = request.headers.get("origin")
+    if origin:
+        parsed = urlparse(origin)
+        # Scheme matters: an http:// origin on the same host must not pass an
+        # https deployment.  Behind a TLS-terminating proxy the forwarded
+        # scheme is the effective one.
+        effective_scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+        effective_scheme = effective_scheme.split(",")[0].strip()
+        if parsed.netloc != request.url.netloc or parsed.scheme != effective_scheme:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "cross-origin request rejected",
+                    "code": "origin",
+                },
+            )
 
 
 def get_cfg(request: Request) -> Any:
@@ -130,6 +178,7 @@ __all__ = [
     "login_redirect_target",
     "projects_for_switcher",
     "render",
+    "require_csrf",
     "resolve_project",
     "resolve_session",
     "safe_next",
