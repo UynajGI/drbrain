@@ -240,10 +240,10 @@ Python CLI framework used by DrBrain. Commands are typer functions registered in
 `cli/main.py`.
 
 **OpenAI-compatible provider**
-DrBrain's LLM client (`extractor/llm_client.py`) calls the OpenAI Chat
-Completions API directly (OpenAI SDK) with a YAML-configured fallback chain.
-Any provider exposing an OpenAI-compatible endpoint works (OpenAI, DeepSeek,
-Ollama, vLLM, …).
+DrBrain's LLM client (`extractor/llm_client.py`) speaks the OpenAI wire formats
+directly (OpenAI SDK) with a YAML-configured fallback chain: Chat Completions by
+default, and the Responses API for models configured with `wire_api: responses`.
+Any provider exposing those endpoints works (OpenAI, DeepSeek, Ollama, vLLM, …).
 
 **MinerU**
 PDF parsing service. Primary parser; PyMuPDF is the fallback.
