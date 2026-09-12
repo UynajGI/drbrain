@@ -1200,19 +1200,55 @@ drbrain hybrid "quantum error correction" --json
 
 ### `drbrain rag index`
 
-Build (or incrementally update) the LlamaIndex vector + BM25 indexes. Reads
-each paper's tree structure into nodes, embeds only changed nodes, and
-persists everything under `llamaindex.storage_dir`.
+Publish the configured RAG backend under `llamaindex.storage_dir`. With
+`llamaindex.rag_engine: sql` it copies the existing `drbrain_rag.db` working
+copy into an immutable generation and computes no embeddings; with the
+`llamaindex` engine it builds or incrementally updates the vector + BM25
+index, embedding only changed nodes.
 
 | Flag | Description |
 |------|-------------|
-| `-f`, `--force` | Force full rebuild (ignore content_hash) |
+| `-f`, `--force` | Force full rebuild (LlamaIndex engine; ignore content_hash) |
 | `--paper ID` | Restrict to paper local_id (repeatable) |
 | `--json` | Output JSON to stdout |
 
 ```bash
 drbrain rag index
 drbrain rag index --paper p0001a2b3 --force
+```
+
+### `drbrain rag prepare`
+
+Prepare and publish the configured RAG backend in one operation. In SQL mode
+it rebuilds the derived text/vector database (`drbrain_rag.db`: node text,
+FTS5, vectors, RAPTOR summaries, categories) and then publishes an immutable
+generation; in LlamaIndex mode it delegates to the normal index builder and
+keeps its incremental cache.
+
+| Flag | Description |
+|------|-------------|
+| `-f`, `--force` | Force a full rebuild (LlamaIndex mode) |
+| `--paper ID` | Restrict to paper local_id (repeatable) |
+| `--json` | Output JSON to stdout |
+
+```bash
+drbrain rag prepare
+drbrain rag prepare --paper p0001a2b3 --json
+```
+
+### `drbrain rag health`
+
+Check RAG readiness without querying, embedding, or writing. Exits non-zero
+when the backend is not ready (in SQL mode the active snapshot and required
+tables are verified).
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output the readiness report as JSON |
+
+```bash
+drbrain rag health
+drbrain rag health --json
 ```
 
 ### `drbrain rag eval`

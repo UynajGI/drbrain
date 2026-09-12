@@ -83,7 +83,7 @@ drbrain pipeline --preset full
 | **Ingest** | PDF → structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
 | **Build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
-| **RAG Retrieval** | LlamaIndex hybrid engine | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag index/eval` |
+| **RAG Retrieval** | Hybrid RAG engine (SQL snapshots / LlamaIndex) | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag prepare/index/eval` |
 | **Knowledge Graph** | Rule-based closure *(incremental)* | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
 | **Concept Graph** | Corpus-scale co-occurrence map | `drbrain cg` — concept graph build/embed/neighbors, UMAP map export, leakage-free trend prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
@@ -161,6 +161,7 @@ EN / 中文):
 | [Embedding](docs/embedding.md) | Local, openai-compat, and none providers |
 | [Concept Graph Handover](docs/concept-graph-handover.md) | Corpus-scale concept graph design and status |
 | [RAG Current State](docs/drbrain-rag-current-state.md) | LlamaIndex retrieval layer baseline and status |
+| [RAG Layer Completion](docs/rag-layer-completion.md) | RAG layer contracts, SQL snapshots, fragment locators, acceptance record |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
 | [Skills Reference](docs/skills.md) | 27 agent skills and their CLI commands |
 | [Contributing](docs/contributing.md) | How to add commands, modules, and skills |

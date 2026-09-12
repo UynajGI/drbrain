@@ -2,6 +2,7 @@
 
 > 目的:为"是否引入 LlamaIndex 做二次升级"提供现状基线。纯调研,未修改任何代码。
 > 基线日期:2026-08-12(HEAD: `3dd7bb1`,分支 `feat/llamaindex-upgrade-research`)
+> 后续演进:[LlamaIndex 集成进度](llamaindex-integration-progress.md) → [RAG 层实现与验收记录](rag-layer-completion.md)。
 > 范围:`src/drbrain/query/`、`src/drbrain/parser/pageindex/`、`src/drbrain/services/embedding.py`、`src/drbrain/extractor/raptor.py`、`extractor/reasoner.py`、`extractor/session_agent.py`、`extractor/agent_tools.py`、`extractor/llm_client.py`、`cli/query_commands.py`、`cli/analysis_commands.py`、`cli/build_commands.py`、`cli/_helpers/db_ingest.py`、`storage/database.py` 相关表。
 
 ---

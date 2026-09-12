@@ -75,7 +75,7 @@ drbrain pipeline --preset full
 | **入库** | `ingest` `fetch` | PDF 经 MinerU 解析 → 5 源元数据交叉验证（arXiv、CrossRef、S2、OpenAlex、DeepXiv）→ LLM 树结构化 |
 | **构建** | `build` | 5 阶段概念抽取（增量）：本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
 | **检索** | `query` `search` | BM25 关键词搜索 + PageRank 加权、有向图遍历、混合排序 |
-| **RAG 检索** | `hybrid` `rag` | LlamaIndex 混合引擎：BM25 + 向量 + 树检索 RRF 融合、重排、`drbrain rag index/eval` |
+| **RAG 检索** | `hybrid` `rag` | 混合 RAG 引擎（SQL 快照 / LlamaIndex）：BM25 + 向量 + 树检索 RRF 融合、重排、`drbrain rag prepare/index/eval` |
 | **知识图谱** | `closure` | 规则闭包（增量）：8+4 条推理规则、t-norm 传递接地、TransE 嵌入链接预测 |
 | **概念图** | `cg` | 语料级概念共现图：build/embed/neighbors、UMAP 交互地图导出、防泄漏年度趋势预测 |
 | **嵌入** | `embed` | TransE 图嵌入（增量微调）或 PageIndex/RAPTOR 文本向量 |
@@ -157,6 +157,7 @@ Copilot 等 AI 编程工具。
 | [嵌入](docs/embedding.md) | local、openai-compat、none 三种 provider |
 | [概念图交接](docs/concept-graph-handover.md) | 语料级概念图设计与现状 |
 | [RAG 现状](docs/drbrain-rag-current-state.md) | LlamaIndex 检索层基线与状态 |
+| [RAG 层实现与验收记录](docs/rag-layer-completion.md) | 统一检索契约、SQL 快照与片段定位、阶段验收记录 |
 | [故障排除](docs/troubleshooting.md) | 常见问题与恢复 |
 | [技能参考](docs/skills.md) | 27 个代理技能及其 CLI 命令 |
 | [贡献指南](docs/contributing.md) | 如何添加命令、模块和技能 |
