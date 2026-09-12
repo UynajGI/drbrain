@@ -442,8 +442,21 @@ class CapabilityCatalog:
             evidence=host_evidence,
         )
 
-    def to_llamaindex_tools(self, *, kinds: IterableABC[str] | None = None) -> AnyList:
-        """Optional bridge for function-calling agents; core stays LlamaIndex-free."""
+    def to_llamaindex_tools(
+        self,
+        *,
+        kinds: IterableABC[str] | None = None,
+        include: Callable[[CapabilityDescriptor], bool] | None = None,
+        call_override: Callable[[CapabilityDescriptor, dict[str, Any]], Any] | None = None,
+        name_for: Callable[[CapabilityDescriptor], str] | None = None,
+    ) -> AnyList:
+        """Bridge descriptors to FunctionTools without coupling the catalog to LlamaIndex.
+
+        ``include`` lets a host apply a per-agent policy before a tool reaches
+        the model. ``call_override`` is the durable-loop hook: it can route the
+        invocation through a broker while the catalog remains responsible for
+        schema validation and result normalization.
+        """
         try:
             from llama_index.core.tools import FunctionTool
         except ImportError:
@@ -455,24 +468,50 @@ class CapabilityCatalog:
             descriptor = entry.descriptor
             if allowed is not None and descriptor.kind not in allowed:
                 continue
+            if include is not None and not include(descriptor):
+                continue
             model = None
             try:
                 from drbrain.plugins.registry import json_schema_to_model
 
                 model = json_schema_to_model(descriptor.name, descriptor.input_schema)
-            except ImportError:
+            except Exception:  # noqa: BLE001 - schema bridge is optional per tool
+                # JSON Schema validation remains authoritative in ``ainvoke``;
+                # a provider-specific model projection may be unavailable for
+                # an otherwise valid 2020-12 schema. Expose the tool without
+                # the projection rather than dropping the whole tool space.
                 pass
 
-            def _make_fn(capability_id: str) -> Callable[..., str]:
-                def _fn(**kwargs: Any) -> str:
-                    return self.invoke(capability_id, dict(kwargs)).to_llm_message()
+            def _make_fn(
+                capability_id: str,
+                descriptor: CapabilityDescriptor,
+            ) -> Callable[..., Any]:
+                if call_override is None:
 
-                return _fn
+                    def _fn(**kwargs: Any) -> str:
+                        return self.invoke(capability_id, dict(kwargs)).to_llm_message()
+
+                    return _fn
+
+                async def _async_fn(**kwargs: Any) -> str:
+                    result = call_override(descriptor, dict(kwargs))
+                    if inspect.isawaitable(result):
+                        result = await result
+                    if isinstance(result, InvocationResult):
+                        return result.to_llm_message()
+                    if hasattr(result, "to_llm_message"):
+                        return str(result.to_llm_message())
+                    return json.dumps(result, ensure_ascii=False, default=str)
+
+                return _async_fn
 
             tools.append(
                 FunctionTool.from_defaults(
-                    fn=_make_fn(descriptor.id),
-                    name=function_tool_name(descriptor.id, used_names),
+                    fn=_make_fn(descriptor.id, descriptor),
+                    name=function_tool_name(
+                        name_for(descriptor) if name_for is not None else descriptor.id,
+                        used_names,
+                    ),
                     description=descriptor.description,
                     fn_schema=model,
                 )

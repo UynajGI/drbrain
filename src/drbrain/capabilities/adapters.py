@@ -50,7 +50,12 @@ class APIAdapter:
             input_schema=dict(self.input_schema),
             annotations=CapabilityAnnotations(read_only=self.method.upper() == "GET"),
             execution=CapabilityExecution(timeout_seconds=self.timeout_seconds),
-            metadata={"method": self.method.upper(), "provider": self.provider},
+            permissions=(f"api:{self.provider}:{self.name}",),
+            metadata={
+                "method": self.method.upper(),
+                "provider": self.provider,
+                "side_effect": "read" if self.method.upper() == "GET" else "write",
+            },
             provenance=CapabilityProvenance(
                 source=f"api:{self.provider}",
                 version=self.version,
@@ -104,7 +109,8 @@ class CLIAdapter:
             input_schema=dict(self.input_schema),
             annotations=CapabilityAnnotations(read_only=False),
             execution=CapabilityExecution(timeout_seconds=self.timeout_seconds),
-            metadata={"argv": list(self.command)},
+            permissions=(f"cli:{self.name}",),
+            metadata={"argv": list(self.command), "side_effect": "write"},
             provenance=CapabilityProvenance(
                 source=f"cli:{self.command[0] if self.command else ''}",
                 version=self.version,
@@ -177,6 +183,8 @@ class ModelAdapter:
             output_schema=dict(self.output_schema) if self.output_schema else None,
             annotations=CapabilityAnnotations(read_only=True),
             execution=CapabilityExecution(),
+            permissions=(f"model:{self.name}",),
+            metadata={"side_effect": "pure"},
             provenance=CapabilityProvenance(
                 source=f"model:{self.name}",
                 version=self.version,

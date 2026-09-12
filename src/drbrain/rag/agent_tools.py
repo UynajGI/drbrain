@@ -163,6 +163,21 @@ def _durable_tool_definition(
     )
 
 
+def _tool_is_visible(
+    definition: Any,
+    *,
+    tool_space: Any = None,
+    tool_policy: Any = None,
+    workflow_step: str | None = None,
+) -> bool:
+    """Apply one shared loop tool-space decision when one is attached."""
+    if tool_space is not None:
+        return bool(tool_space.is_visible(definition))
+    return tool_policy is not None and tool_policy.is_visible(
+        node_name=workflow_step or "", definition=definition
+    )
+
+
 def _make_graph_tool(
     name: str,
     db: Any,
@@ -172,6 +187,7 @@ def _make_graph_tool(
     tool_broker: Any = None,
     tool_policy: Any = None,
     workflow_step: str | None = None,
+    tool_space: Any = None,
 ) -> Any | None:
     """Build one ``FunctionTool`` backed by ``agent_tools.execute_tool``.
 
@@ -183,8 +199,8 @@ def _make_graph_tool(
     spec = CANONICAL_TOOL_SPECS[name]
     fn_spec = spec["function"]
     definition = None
-    if tool_broker is not None:
-        if not workflow_step:
+    if tool_broker is not None or tool_space is not None:
+        if tool_broker is not None and not workflow_step:
             raise ValueError("brokered graph tools require workflow_step")
         definition = _durable_tool_definition(
             name=name,
@@ -193,8 +209,11 @@ def _make_graph_tool(
             side_effect="read",
             required_capabilities=("graph:read",),
         )
-        if tool_policy is None or not tool_policy.is_visible(
-            node_name=workflow_step, definition=definition
+        if not _tool_is_visible(
+            definition,
+            tool_space=tool_space,
+            tool_policy=tool_policy,
+            workflow_step=workflow_step,
         ):
             return None
 
@@ -229,6 +248,7 @@ def _make_validate_tool(
     tool_broker: Any = None,
     tool_policy: Any = None,
     workflow_step: str | None = None,
+    tool_space: Any = None,
 ) -> Any | None:
     """Optional ``kg_validate`` tool (T9 decision: ADD as the 8th tool).
 
@@ -256,8 +276,8 @@ def _make_validate_tool(
         "required": ["hypothesis"],
     }
     definition = None
-    if tool_broker is not None:
-        if not workflow_step:
+    if tool_broker is not None or tool_space is not None:
+        if tool_broker is not None and not workflow_step:
             raise ValueError("brokered graph tools require workflow_step")
         definition = _durable_tool_definition(
             name="kg_validate",
@@ -266,8 +286,11 @@ def _make_validate_tool(
             side_effect="read",
             required_capabilities=("graph:read",),
         )
-        if tool_policy is None or not tool_policy.is_visible(
-            node_name=workflow_step, definition=definition
+        if not _tool_is_visible(
+            definition,
+            tool_space=tool_space,
+            tool_policy=tool_policy,
+            workflow_step=workflow_step,
         ):
             return None
 
@@ -309,6 +332,7 @@ def _build_retrieval_tool(
     tool_policy: Any = None,
     workflow_step: str | None = None,
     rag_generation: str | None = None,
+    tool_space: Any = None,
 ) -> Any | None:
     """Optional search tool bound to a published retrieval generation.
 
@@ -327,8 +351,8 @@ def _build_retrieval_tool(
         "required": ["query"],
     }
     definition = None
-    if tool_broker is not None:
-        if not workflow_step:
+    if tool_broker is not None or tool_space is not None:
+        if tool_broker is not None and not workflow_step:
             raise ValueError("brokered retrieval tools require workflow_step")
         definition = _durable_tool_definition(
             name="search_documents",
@@ -337,8 +361,11 @@ def _build_retrieval_tool(
             side_effect="read",
             required_capabilities=("rag:read",),
         )
-        if tool_policy is None or not tool_policy.is_visible(
-            node_name=workflow_step, definition=definition
+        if not _tool_is_visible(
+            definition,
+            tool_space=tool_space,
+            tool_policy=tool_policy,
+            workflow_step=workflow_step,
         ):
             return None
     try:
