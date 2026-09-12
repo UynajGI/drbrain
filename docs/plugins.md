@@ -196,3 +196,48 @@ python -m drbrain.plugins.conformance --mode probe <plugin_dir>  # controlled di
 
 `lint` 不会 import 模块或运行 `register()`；`probe` 保留现有发现语义，便于在受控
 环境中验证实际注册结果。
+
+## 9. 研究回路工具空间
+
+`ResearchLoopWorkflow` 为每个节点创建一个轻量的 `LoopToolSpace`。目录只在工作流
+生命周期内发现一次，节点拿到的是带 `step`、`role`、`ToolPolicy` 和可选
+`ToolBroker` 的视图；因此发现、推荐、调用、审计使用同一份描述符，节点之间不会
+重复加载插件或 MCP。
+
+```python
+from drbrain.loop import ResearchLoopWorkflow
+
+workflow = ResearchLoopWorkflow(
+    cfg=config,
+    plugins_dir="research/plugins",
+    mcp_servers=mcp_servers,
+    skills_root="skills",
+    capability_adapters=[paper_api, local_parser, bandgap_model],
+    require_trusted_mcp=True,
+)
+```
+
+`capability_adapters` 可以是任何实现 `descriptor()` 和 `invoke(arguments)` 的对象，
+所以新的协议只需要写适配器，不需要修改 loop 或 RAG。内置 `APIAdapter`、`CLIAdapter`
+和 `ModelAdapter` 覆盖 HTTP API、固定 argv 命令、已训练或托管模型；`ResearchDirector`
+也接受同样的参数，长期运行与直接工作流保持一致。
+
+节点权限在宿主侧强制执行，提示词只是辅助说明：
+
+| 节点/角色 | 默认可见面 | 硬边界 |
+|---|---|---|
+| retrieve | graph、RAG、检索插件；其他能力需显式 capability | 由 `ToolPolicy` 和 broker 决定 |
+| identify_gaps / analyst | 无执行工具 | 不搜索、不计算 |
+| critique / critic | 无执行工具 | 不搜索、不计算 |
+| compute / computer | 宿主显式授予的模型、软件、CLI、API | 禁止 graph/RAG；写入按 approval/idempotency 处理 |
+| verify / verifier | graph/RAG 只读及宿主授予的只读能力 | 禁止 write/irreversible |
+| report | graph/RAG 只读 | 由 `ToolPolicy` 决定 |
+
+能力在目录中使用稳定命名空间（例如 `mcp:papers:search`、
+`api:crossref:lookup`、`model:bandgap-v2`）。发送给模型供应商的函数名会单独做合法化
+和冲突消解，调用仍通过 canonical ID 回到目录。Skill 只作为有长度上限的参考指令注入
+当前 agent 的 system prompt，从不生成 FunctionTool，也不会成为权限授予来源。
+
+可以用 `LoopToolSpace.recommend(query)` 给规划器做候选推荐；返回值已经过当前节点的
+角色边界与 policy 过滤。直接调用或 FunctionTool 调用都会再次经过目录 schema 校验，
+并在存在 broker 时记录统一的 intent、结果、输入摘要和资源边界。

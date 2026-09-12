@@ -19,7 +19,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -594,6 +594,10 @@ class ResearchLoopWorkflow(Workflow):
         cfg: Any = None,
         db: Any = None,
         graph: Any = None,
+        capability_catalog: Any = None,
+        skills_root: str | None = None,
+        capability_adapters: Iterable[Any] | None = None,
+        require_trusted_mcp: bool = False,
         timeout: float | None = 600.0,
         n_critics: int = DEFAULT_N_CRITICS,
         tool_broker: ToolBroker | None = None,
@@ -623,6 +627,14 @@ class ResearchLoopWorkflow(Workflow):
         self._cfg = cfg
         self._db = db
         self._graph = graph
+        self._capability_catalog = capability_catalog
+        self._skills_root = skills_root
+        self._capability_adapters = tuple(capability_adapters or ())
+        self._require_trusted_mcp = bool(require_trusted_mcp)
+        # Even an injected catalog may need to be augmented by the workflow's
+        # configured plugins, MCP servers, Skills or adapters. Discover once on
+        # first node construction while retaining the injected entries.
+        self._capability_catalog_loaded = False
         self._last_job_ids: dict[str, str] = {}
         self._last_summaries: dict[str, str] = {}
         self._tool_broker = tool_broker
@@ -744,6 +756,55 @@ class ResearchLoopWorkflow(Workflow):
         parsing free-form agent output. Returns paper titles, or ``[]`` when
         the plugin is absent or finds nothing.
         """
+        if self._capability_catalog is not None:
+            from drbrain.loop.tool_space import LoopToolSpace
+
+            descriptor = next(
+                (
+                    item
+                    for item in self._capability_catalog.list(kind="plugin")
+                    if item.name == "search_papers"
+                ),
+                None,
+            )
+            if descriptor is not None:
+                arguments = {"query": query, "limit": limit}
+                space = self._tool_space(step_name="retrieve")
+                definition = LoopToolSpace.definition_for_descriptor(descriptor)
+                if not space.is_visible(definition):
+                    if self._tool_broker is None:
+                        return []
+                    observation = await self._tool_broker.execute(
+                        node_name="retrieve",
+                        definition=definition,
+                        arguments=arguments,
+                        executor=lambda: self._capability_catalog.ainvoke(descriptor.id, arguments),
+                    )
+                    if getattr(observation, "execution_blocked", False):
+                        raise RunExecutionBlockedError(
+                            observation.error or "direct search was blocked"
+                        )
+                    return []
+                if self._tool_broker is not None:
+                    observation = await self._tool_broker.execute(
+                        node_name="retrieve",
+                        definition=definition,
+                        arguments=arguments,
+                        executor=lambda: self._capability_catalog.ainvoke(descriptor.id, arguments),
+                    )
+                    if getattr(observation, "execution_blocked", False):
+                        raise RunExecutionBlockedError(
+                            observation.error or "direct search was blocked"
+                        )
+                    payload = observation.output
+                else:
+                    result = await self._capability_catalog.ainvoke(descriptor.id, arguments)
+                    payload = result.data
+                if isinstance(payload, dict):
+                    papers = payload.get("papers", []) or []
+                    return [str(p.get("title", "")).strip() for p in papers if p.get("title")]
+                return []
+
         registry = self.load_plugins()
         try:
             arguments = {"query": query, "limit": limit}
@@ -1084,6 +1145,28 @@ class ResearchLoopWorkflow(Workflow):
             )
         return "\n".join(lines)
 
+    def _tool_space(self, *, step_name: str, role: str | None = None) -> Any:
+        """Return a per-node view over one shared capability catalog."""
+        from drbrain.loop.tool_space import LoopToolSpace
+
+        if not self._capability_catalog_loaded:
+            self._capability_catalog = LoopToolSpace.discover_catalog(
+                catalog=self._capability_catalog,
+                plugins_dir=self._plugins_dir,
+                mcp_servers=self._mcp_servers,
+                skills_root=self._skills_root,
+                adapters=self._capability_adapters,
+                require_trusted_mcp=self._require_trusted_mcp,
+            )
+            self._capability_catalog_loaded = True
+        return LoopToolSpace(
+            step_name=step_name,
+            role=role,
+            policy=self._tool_policy,
+            broker=self._tool_broker,
+            catalog=self._capability_catalog,
+        )
+
     def build_node_agent(
         self,
         *,
@@ -1109,6 +1192,8 @@ class ResearchLoopWorkflow(Workflow):
             return None
         from drbrain.rag.agent import build_agent
 
+        tool_space = self._tool_space(step_name=step_name or "", role=role)
+
         # per-node 模型分配（llm.node_models[step_name]）：质量敏感节点
         # （critique/verify/identify_gaps）与高频节点（retrieve/compute）可配
         # 不同模型档位；未命中 step 用全局 llm.models。
@@ -1129,6 +1214,8 @@ class ResearchLoopWorkflow(Workflow):
             workflow_step=step_name,
             rag_generation=self._rag_generation,
             models_override=models_override,
+            role=role,
+            tool_space=tool_space,
         )
         if agent is not None and role:
             from drbrain.loop.roles import ROLE_SYSTEM_PROMPTS
@@ -1150,6 +1237,18 @@ class ResearchLoopWorkflow(Workflow):
         Best-effort: a plugin that fails to list must not raise.
         """
         names: list[str] = []
+        if self._capability_catalog is not None:
+            try:
+                space = self._tool_space(step_name="compute", role="compute")
+                visible = [
+                    descriptor
+                    for descriptor in self._capability_catalog.list()
+                    if space.descriptor_is_visible(descriptor)
+                ]
+                names += [descriptor.name for descriptor in visible]
+                names += [descriptor.id for descriptor in visible]
+            except Exception:  # noqa: BLE001 — capability probe must never break a node
+                pass
         try:
             plugins = self.load_plugins().list_plugins()
             if self._tool_broker is not None and self._tool_policy is not None:

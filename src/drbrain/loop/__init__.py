@@ -1,9 +1,10 @@
 """Research loop — the orchestration layer (third layer of the three-in-one).
 
 Domain-agnostic: the loop schedules retrieval → extraction → gap → hypothesis →
-critique → verification → report, while concrete capabilities (models, software)
-are injected through the plugin layer (:mod:`drbrain.plugins`) and literature
-understanding through the RAG layer (:mod:`drbrain.rag`).
+critique → verification → report, while concrete capabilities (plugins, MCP,
+APIs, CLIs, models and Skills) are discovered through the shared
+:class:`LoopToolSpace`; literature understanding remains in the RAG layer
+(:mod:`drbrain.rag`).
 """
 
 from drbrain.loop.director import ResearchDirector
@@ -17,6 +18,7 @@ from drbrain.loop.events import (
 from drbrain.loop.governance import RunGovernance
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
 from drbrain.loop.tool_broker import ToolBroker, ToolCallStatus, ToolObservation
+from drbrain.loop.tool_space import LoopToolSpace
 from drbrain.loop.workflow import ResearchLoopWorkflow
 
 __all__ = [
@@ -34,4 +36,5 @@ __all__ = [
     "ToolDefinition",
     "ToolObservation",
     "ToolPolicy",
+    "LoopToolSpace",
 ]
