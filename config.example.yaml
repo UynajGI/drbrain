@@ -138,6 +138,27 @@ queue:
   weak_threshold: 0.7 # confidence below this → review queue
   auto_accept: 0.9 # confidence above this → auto-accept
 
+# ── RAG Retrieval (LlamaIndex) ────────────────────────────────────
+# Hybrid retrieval for `drbrain hybrid` / `ask` / `reason` and the RAG agent.
+# Publish or refresh the index with `drbrain rag prepare`; check readiness
+# with `drbrain rag health`.
+llamaindex:
+  enabled: true # false = RAG commands warn and exit (no legacy fallback)
+  rag_engine: "sql" # sql = derived corpus copy (drbrain_rag.db) via immutable snapshots; llamaindex = persisted docstore index (single-library / debugging)
+  vector_store: "memory" # "memory" | "chroma" (chromadb optional)
+  storage_dir: "data/llamaindex" # published index generations
+  retrievers: ["bm25", "vector"] # fusion legs
+  fusion_mode: "reciprocal_rank" # | relative_score
+  rerank: true
+  rerank_model: "Qwen/Qwen3-Reranker-0.6B"
+  rerank_top_k: 20 # candidates fed to the reranker
+  similarity_cutoff: 0.7 # similarity post-processor threshold
+  max_node_tokens: 4000 # long nodes split into bounded fragments; changing it requires a full rebuild
+  streaming: true
+  eval:
+    golden_set: "data/llamaindex/golden.jsonl"
+    split: ["dev", "val", "test"] # splits to prevent leakage
+
 # ── Autoresearch ──────────────────────────────────────────────────
 # `drbrain autoresearch run "topic"`; repeat a topic to resume its durable run.
 autoresearch:
