@@ -1,100 +1,108 @@
-"""Evaluation layer: golden set, retriever metrics, RAGAS-style metrics.
+"""Evaluation runners and compatibility exports.
 
-Ticket: T7 (评估体系). Depends on T3 (index layer) / T4 (fusion) / T5 (query
-engine). Implements the design-doc §4.5 evaluation loop:
-
-* :func:`build_golden_set` — semi-automated golden set construction from the
-  ``test-run/papers`` corpus (query = title/abstract-derived question, relevant
-  papers = source paper + same-topic papers, relevant nodes derived from
-  ``tree.json`` structure). Idempotent: an existing file is left untouched
-  unless ``force=True``.
-* :func:`load_golden` — read the JSONL golden set, filtered by split.
-* :func:`run_retriever_eval` — HitRate@K / MRR@K over the T4 fusion retriever
-  (paper-level and node-level relevance), aggregated per split.
-* :func:`run_ragas_eval` — self-written 4-metric prompt evaluation of the T5
-  ``ask_llamaindex`` output (faithfulness / answer_relevancy /
-  context_precision / answer_correctness), scored through the DrbrainLLM
-  bridge (the drbrain fallback chain).
-* :func:`format_eval_report` — markdown baseline report for
-  ``docs/llamaindex-eval-baseline.md``.
-
-Design decisions (llama-index-core 0.14.23):
-
-* ``RetrieverEvaluator`` *is* importable in 0.14.23, but its ``evaluate``
-  expects a single flat list of ``expected_ids`` per query (node-level only).
-  Our golden set carries both paper-level and node-level relevance, and the
-  framework's hit_rate/mrr semantics are awkward to bend for a fused
-  multi-leg retriever — so the ticket's fallback clause is used: hit_rate/mrr
-  are computed by hand (the math is a one-liner; the framework adds no value
-  here).
-* RAGAS is not installed (heavy dependency, optional extra per design §5) —
-  the 4 metrics are self-written prompt evaluations through
-  ``DrbrainLLM.complete`` (``call_text_with_fallback``, drbrain fallback chain
-  intact). See :mod:`drbrain.rag.llm`.
-* ``answer_correctness`` compares the generated answer against a
-  ``reference_answer`` stored in the golden set — the abstract of the primary
-  relevant paper (cheap, non-LLM ground truth; no golden answers were
-  hand-written, keeping annotation cost low per ticket guidance).
-"""
+Dataset construction, deterministic metrics, model judges and report rendering
+live in separate modules. These runners distinguish unavailable/empty results
+from measured scores; unit checks do not establish real-world retrieval quality."""
 
 from __future__ import annotations
 
-from drbrain.rag.eval_report import (
-    format_eval_report as format_eval_report,
-)
-
-from drbrain.rag.eval_judges import (
-    _prompt_faithfulness as _prompt_faithfulness,
-    _prompt_answer_relevancy as _prompt_answer_relevancy,
-    _prompt_context_precision as _prompt_context_precision,
-    _prompt_answer_correctness as _prompt_answer_correctness,
-    _parse_score as _parse_score,
-    _score_metric as _score_metric,
-    _context_for as _context_for,
-)
-
-from drbrain.rag.eval_metrics import (
-    _node_identity as _node_identity,
-    _rank_metrics as _rank_metrics,
-    _aggregate_rank as _aggregate_rank,
-)
-
-from drbrain.rag.eval_data import (
-    _runtime_selected as _runtime_selected,
-    _ensure_eval_parent as _ensure_eval_parent,
-    _safe_eval_output as _safe_eval_output,
-    _write_text_atomically as _write_text_atomically,
-    _append_text_atomically as _append_text_atomically,
-    load_golden as load_golden,
-    _paper_nodes as _paper_nodes,
-    _is_authorish as _is_authorish,
-    _reference_paragraph as _reference_paragraph,
-    _is_content_title as _is_content_title,
-    _relevant_nodes_for as _relevant_nodes_for,
-    _assign_splits as _assign_splits,
-    build_golden_set as build_golden_set,
-)
-
 import json
 import logging
-import os
-import random
-import re
-import tempfile
 from collections.abc import Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
-from drbrain.security import redact_sensitive_text
-from drbrain.storage.paths import (
-    raw_md_path,
-    resolve_paper_dir,
-    tree_json_path,
-    writable_artifact_path,
+from drbrain.rag.eval_data import (
+    _ABSTRACT_TITLE_PREFIXES as _ABSTRACT_TITLE_PREFIXES,
 )
+from drbrain.rag.eval_data import (
+    _CONTENT_TITLE_PREFIXES as _CONTENT_TITLE_PREFIXES,
+)
+from drbrain.rag.eval_data import (
+    _REFERENCE_MAX_CHARS as _REFERENCE_MAX_CHARS,
+)
+from drbrain.rag.eval_data import (
+    _SPLIT_SEED as _SPLIT_SEED,
+)
+from drbrain.rag.eval_data import (
+    DEFAULT_SPLIT_RATIO as DEFAULT_SPLIT_RATIO,
+)
+from drbrain.rag.eval_data import (
+    _append_text_atomically as _append_text_atomically,
+)
+from drbrain.rag.eval_data import (
+    _assign_splits as _assign_splits,
+)
+from drbrain.rag.eval_data import (
+    _ensure_eval_parent as _ensure_eval_parent,
+)
+from drbrain.rag.eval_data import (
+    _is_authorish as _is_authorish,
+)
+from drbrain.rag.eval_data import (
+    _is_content_title as _is_content_title,
+)
+from drbrain.rag.eval_data import (
+    _paper_nodes as _paper_nodes,
+)
+from drbrain.rag.eval_data import (
+    _reference_paragraph as _reference_paragraph,
+)
+from drbrain.rag.eval_data import (
+    _relevant_nodes_for as _relevant_nodes_for,
+)
+from drbrain.rag.eval_data import (
+    _runtime_selected as _runtime_selected,
+)
+from drbrain.rag.eval_data import (
+    _safe_eval_output as _safe_eval_output,
+)
+from drbrain.rag.eval_data import (
+    _write_text_atomically as _write_text_atomically,
+)
+from drbrain.rag.eval_data import (
+    build_golden_set as build_golden_set,
+)
+from drbrain.rag.eval_data import (
+    load_golden as load_golden,
+)
+from drbrain.rag.eval_judges import _CONTEXT_CHUNK_MAX_CHARS as _CONTEXT_CHUNK_MAX_CHARS
+from drbrain.rag.eval_judges import (
+    _context_for as _context_for,
+)
+from drbrain.rag.eval_judges import (
+    _parse_score as _parse_score,
+)
+from drbrain.rag.eval_judges import (
+    _prompt_answer_correctness as _prompt_answer_correctness,
+)
+from drbrain.rag.eval_judges import (
+    _prompt_answer_relevancy as _prompt_answer_relevancy,
+)
+from drbrain.rag.eval_judges import (
+    _prompt_context_precision as _prompt_context_precision,
+)
+from drbrain.rag.eval_judges import (
+    _prompt_faithfulness as _prompt_faithfulness,
+)
+from drbrain.rag.eval_judges import (
+    _score_metric as _score_metric,
+)
+from drbrain.rag.eval_metrics import (
+    _aggregate_rank as _aggregate_rank,
+)
+from drbrain.rag.eval_metrics import (
+    _node_identity as _node_identity,
+)
+from drbrain.rag.eval_metrics import (
+    _rank_metrics as _rank_metrics,
+)
+from drbrain.rag.eval_report import (
+    format_eval_report as format_eval_report,
+)
+from drbrain.security import redact_sensitive_text
 
 try:
     from llama_index.core.schema import NodeWithScore
@@ -116,62 +124,6 @@ __all__ = [
 ]
 
 #: Default dev/val/test split ratio for the golden set (design §4.5, 60/20/20).
-DEFAULT_SPLIT_RATIO = (0.6, 0.2, 0.2)
-#: Fixed shuffle seed so split assignment is deterministic across runs
-#: (idempotent regeneration and reproducible baselines).
-_SPLIT_SEED = 20260812
-#: Cap on reference answers (abstracts) — enough text for a correctness check.
-_REFERENCE_MAX_CHARS = 800
-#: Cap on a single context chunk handed to the scoring LLM.
-_CONTEXT_CHUNK_MAX_CHARS = 1500
-#: Titles treated as "content" nodes when deriving relevant_nodes.
-_CONTENT_TITLE_PREFIXES = (
-    "abstract",
-    "summary",
-    "overview",
-    "introduction",
-    "results",
-    "discussion",
-    "conclusion",
-    "experimental",
-    "methods",
-    "materials",
-    "section ",
-)
-#: Titles preferred as the ``reference_answer`` source (abstract first).
-_ABSTRACT_TITLE_PREFIXES = ("abstract", "summary")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _coerce_cfg(cfg: Config | dict[str, Any]) -> Config:
@@ -233,35 +185,9 @@ def run_retriever_eval(
 # ── RAGAS-style generation metrics (self-written prompts) ───────────────────
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _coerce_llm_cfg(cfg: Config | dict[str, Any]) -> Any:
-    """Minimal object bearing ``llm.models`` for ``DrbrainLLM`` from a dict.
-
-    Mirrors T6's dict/Config dual-form support: CLI tests pass plain dicts,
-    while the CLI itself always passes a real :class:`Config`.
-    """
-    if not isinstance(cfg, dict):
-        return cfg
-    from types import SimpleNamespace
-
-    return SimpleNamespace(
-        llm=SimpleNamespace(models=list((cfg.get("llm") or {}).get("models") or [])),
-        api=SimpleNamespace(cache_ttl=(cfg.get("api") or {}).get("cache_ttl") or 0),
-        dirs=SimpleNamespace(cache=(cfg.get("dirs") or {}).get("cache", "data/cache")),
-    )
+    """Compatibility alias for the shared configuration boundary."""
+    return _coerce_cfg(cfg)
 
 
 def run_ragas_eval(
@@ -362,8 +288,6 @@ def run_ragas_eval(
 
 
 # ── baseline report ──────────────────────────────────────────────────────────
-
-
 
 
 def _semantic_answer_text(result: Any) -> tuple[str, str | None]:

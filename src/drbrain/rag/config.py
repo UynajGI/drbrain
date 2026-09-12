@@ -7,8 +7,8 @@ the section into the RAG layer. Ticket: T1 (infrastructure).
 
 from __future__ import annotations
 
-from typing import Any
 from dataclasses import fields, is_dataclass
+from typing import Any
 
 from drbrain.config import Config, LlamaIndexConfig, load_config
 
@@ -27,7 +27,7 @@ def coerce_config(cfg: Config | dict[str, Any]) -> Config:
     for key, value in cfg.items():
         default = getattr(result, key)
         if is_dataclass(default) and isinstance(value, dict):
-            constructor = type(default)
+            constructor: Any = type(default)
             convert = getattr(constructor, "from_dict", None)
             value = convert(value) if convert is not None else constructor(**value)
         setattr(result, key, value)

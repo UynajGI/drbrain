@@ -1,7 +1,10 @@
 """Human-readable evaluation reports from explicit measured results."""
+
 from __future__ import annotations
+
 from datetime import datetime
 from typing import Any
+
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
 

@@ -1,85 +1,103 @@
-"""Agent orchestration: LlamaIndex ``FunctionAgent`` replacing ReasonerAgent.
+"""Research assistant orchestration and compatibility exports.
 
-Ticket: T6 (Agent 替换). Depends on T2 (``DrbrainLLM``), T4 (fusion
-retrievers). Tools = drbrain's 8 graph tools (``extractor/agent_tools.py``,
-``execute_tool`` as the execution body) + an optional fused-retrieval tool.
-
-0.14.23 API note: the classic ``FunctionCallingAgentWorker``/``AgentRunner``
-are gone from ``llama_index.core.agent``; the successor is the workflow-based
-:class:`FunctionAgent` (with ``ReActAgent`` as the non-function-calling
-fallback). ``FunctionAgent.take_step`` hard-requires
-``llm.metadata.is_function_calling_model`` and calls ``llm.achat_with_tools``
-— ``DrbrainLLM`` (rag/llm.py, T2-owned, untouched) advertises ``False`` and
-never forwards ``tools``. So this module defines :class:`_AgentFunctionLLM`, a
-``FunctionCallingLLM`` glue over ``DrbrainLLM`` that adds exactly those two
-capabilities (mirroring the native LlamaIndex function-calling
-reference implementation) while delegating every completion to the same drbrain
-fallback chain / ApiCache / metrics.
-
-Session persistence is minimal but two-way: when ``session_id`` is given,
-prior turns are restored from the ``agent_sessions``/``agent_messages`` tables
-and injected as ``chat_history`` (T9 read recovery + SessionAgent-style
-compression, see :func:`load_session_history`), and the new run is appended in
-a shape ``SessionAgent.load_session`` can read back.
-
-Everything degrades gracefully when llama-index is not installed:
-``build_agent`` returns ``None`` and ``reason_llamaindex`` returns an error
-dict, so the CLI and existing tests never break.
-"""
+Model adaptation, tool assembly, retrieval and session persistence live in
+separate modules. This facade composes them and keeps existing public imports."""
 
 from __future__ import annotations
-
-from drbrain.rag.agent_tools import (
-    _resolve_papers_dir as _resolve_papers_dir,
-    _schema_to_model as _schema_to_model,
-    _resolve_durable_policy as _resolve_durable_policy,
-    _normalize_side_effect as _normalize_side_effect,
-    _durable_tool_definition as _durable_tool_definition,
-    _make_graph_tool as _make_graph_tool,
-    _make_validate_tool as _make_validate_tool,
-    _build_retrieval_tool as _build_retrieval_tool,
-    _load_plugin_tools as _load_plugin_tools,
-    _string_tuple as _string_tuple,
-    _mcp_tool_definition as _mcp_tool_definition,
-    _load_mcp_tools as _load_mcp_tools,
-)
-
-from drbrain.rag.agent_llm import (
-    AgentFunctionLLM as AgentFunctionLLM,
-)
-
-from drbrain.rag.agent_sessions import (
-    _history_summary as _history_summary,
-    _session_principal_matches as _session_principal_matches,
-    load_session_history as load_session_history,
-    _persist_reason_session as _persist_reason_session,
-)
-
-from drbrain.rag.retrieval import (
-    _retrieval_rows as _retrieval_rows,
-    retrieve_documents as retrieve_documents,
-)
 
 import asyncio
 import json
 import logging
-import uuid
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any
 
-from drbrain.config import ApiConfig, Config, DBConfig, DirsConfig, EmbedConfig, LLMConfig
-from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
+from drbrain.config import Config
+from drbrain.rag.agent_defaults import (
+    AGENT_MAX_TOKENS as AGENT_MAX_TOKENS,
+)
+from drbrain.rag.agent_defaults import (
+    AGENT_TEMPERATURE as AGENT_TEMPERATURE,
+)
+from drbrain.rag.agent_defaults import (
+    CANONICAL_TOOL_SPECS as CANONICAL_TOOL_SPECS,
+)
+from drbrain.rag.agent_defaults import (
+    GRAPH_TOOL_NAMES as GRAPH_TOOL_NAMES,
+)
+from drbrain.rag.agent_defaults import (
+    MAX_RESULT_SUMMARY_CHARS as MAX_RESULT_SUMMARY_CHARS,
+)
+from drbrain.rag.agent_defaults import (
+    SESSION_KEEP_RECENT as SESSION_KEEP_RECENT,
+)
+from drbrain.rag.agent_defaults import (
+    SESSION_TOKEN_BUDGET as SESSION_TOKEN_BUDGET,
+)
+from drbrain.rag.agent_llm import (
+    AgentFunctionLLM as AgentFunctionLLM,
+)
+from drbrain.rag.agent_sessions import (
+    _history_summary as _history_summary,
+)
+from drbrain.rag.agent_sessions import (
+    _persist_reason_session as _persist_reason_session,
+)
+from drbrain.rag.agent_sessions import (
+    _session_principal_matches as _session_principal_matches,
+)
+from drbrain.rag.agent_sessions import (
+    load_session_history as load_session_history,
+)
+from drbrain.rag.agent_tools import (
+    _build_retrieval_tool as _build_retrieval_tool,
+)
+from drbrain.rag.agent_tools import (
+    _durable_tool_definition as _durable_tool_definition,
+)
+from drbrain.rag.agent_tools import (
+    _load_mcp_tools as _load_mcp_tools,
+)
+from drbrain.rag.agent_tools import (
+    _load_plugin_tools as _load_plugin_tools,
+)
+from drbrain.rag.agent_tools import (
+    _make_graph_tool as _make_graph_tool,
+)
+from drbrain.rag.agent_tools import (
+    _make_validate_tool as _make_validate_tool,
+)
+from drbrain.rag.agent_tools import (
+    _mcp_tool_definition as _mcp_tool_definition,
+)
+from drbrain.rag.agent_tools import (
+    _normalize_side_effect as _normalize_side_effect,
+)
+from drbrain.rag.agent_tools import (
+    _resolve_durable_policy as _resolve_durable_policy,
+)
+from drbrain.rag.agent_tools import (
+    _resolve_papers_dir as _resolve_papers_dir,
+)
+from drbrain.rag.agent_tools import (
+    _schema_to_model as _schema_to_model,
+)
+from drbrain.rag.agent_tools import (
+    _string_tuple as _string_tuple,
+)
 from drbrain.rag.evidence import (
     INSUFFICIENT_EVIDENCE_MESSAGE,
     INSUFFICIENT_EVIDENCE_STATUS,
-    build_evidence_record,
     evidence_ids_from_records,
     has_retrieved_evidence,
 )
-from drbrain.rag.llm import DrbrainLLM
-from drbrain.rag.status import RetrievalStatus, RetrievalUnavailableError
-from drbrain.security import public_model_configs, redact_sensitive
+from drbrain.rag.retrieval import (
+    _retrieval_rows as _retrieval_rows,
+)
+from drbrain.rag.retrieval import (
+    retrieve_documents as retrieve_documents,
+)
+from drbrain.rag.status import RetrievalStatus
+from drbrain.rag.status import RetrievalUnavailableError as RetrievalUnavailableError
 
 try:
     from llama_index.core.agent import FunctionAgent
@@ -118,37 +136,6 @@ BASE_SYSTEM_PROMPT = (
 )
 
 #: Agent-loop LLM settings matching the legacy ReasonerAgent loop.
-AGENT_TEMPERATURE = 0.3
-AGENT_MAX_TOKENS = 1024
-
-#: Result summary length cap in the returned tool trajectory.
-MAX_RESULT_SUMMARY_CHARS = 800
-
-#: Token budget for session-history compression (mirrors
-#: ``SessionAgent.DEFAULT_TOKEN_BUDGET``; estimated = ``len(content)//4``).
-SESSION_TOKEN_BUDGET = 8000
-#: Recent messages kept verbatim when a long history is compressed
-#: (mirrors ``SessionAgent._maybe_compress``'s ``keep``).
-SESSION_KEEP_RECENT = 6
-
-#: Canonical OpenAI-format tool specs, keyed by tool name — the exact dicts the
-#: legacy ReasonerAgent sent over the wire, so tool schemas are byte-identical.
-CANONICAL_TOOL_SPECS: dict[str, dict[str, Any]] = {
-    d["function"]["name"]: d for d in TOOL_DEFINITIONS
-}
-GRAPH_TOOL_NAMES: list[str] = list(CANONICAL_TOOL_SPECS)
-
-_JSON_TYPE_MAP: dict[str, Any] = {
-    "string": str,
-    "integer": int,
-    "number": float,
-    "boolean": bool,
-    "array": list,
-    "object": dict,
-}
-
-
-# ── small config helpers (dict & typed Config both accepted) ───────────────
 
 
 def _coerce_cfg(cfg: Config | dict[str, Any]) -> Config:
@@ -297,36 +284,6 @@ def _record_answer(
         log.warning("[rag] record_answer failed (reason_llamaindex)", exc_info=True)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def build_agent(
     cfg: Config,
     db: Any = None,
@@ -451,14 +408,6 @@ def build_agent(
 
 
 # ── session persistence (write-only; read/restore + compression → T9) ───────
-
-
-
-
-
-
-
-
 
 
 def reason_llamaindex(

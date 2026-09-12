@@ -1,22 +1,24 @@
 """Function-calling model adapter, independent of agent assembly and sessions."""
+
 from __future__ import annotations
+
 import json
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
 from drbrain.config import Config
-from drbrain.extractor.agent_tools import TOOL_DEFINITIONS
+from drbrain.rag.agent_defaults import AGENT_MAX_TOKENS, AGENT_TEMPERATURE, CANONICAL_TOOL_SPECS
 from drbrain.rag.llm import DrbrainLLM
+
 try:
     from llama_index.core.base.llms.types import ChatMessage, ChatResponse, MessageRole
     from llama_index.core.llms.function_calling import FunctionCallingLLM
     from llama_index.core.llms.llm import ToolSelection
     from llama_index.core.tools import BaseTool
 except ImportError:
-    ChatMessage = ChatResponse = MessageRole = ToolSelection = BaseTool = None
-    FunctionCallingLLM = object
-AGENT_TEMPERATURE = 0.3
-AGENT_MAX_TOKENS = 1024
-CANONICAL_TOOL_SPECS = {d["function"]["name"]: d for d in TOOL_DEFINITIONS}
+    if not TYPE_CHECKING:
+        ChatMessage = ChatResponse = MessageRole = ToolSelection = BaseTool = None
+        FunctionCallingLLM = object
 
 
 class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):

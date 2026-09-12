@@ -47,11 +47,12 @@
    `tree.json + raw.md` 生成持久化 VectorStore/BM25；自定义 tree/RAPTOR retriever
    仍分别读取磁盘树和 SQLite 向量表，再由 FusionRetriever 合并。
 
-因此，当前 `pipeline --preset full` 的内置顺序
-`ingest → build → embed --tree → closure` 不会自动执行 SQL 派生步骤。它能生成
-PageIndex 和主库向量，但要得到可服务的固定 generation，还需要一次
-`drbrain rag prepare`（SQL 模式；或大语料脚本 + `rag index`），`pipeline` 目前不包含
-这一步。树正文重建也已收敛为单一投影：`storage/node_projection.collect_tree_node_records`
+因此，兼容性保留的 `pipeline --preset full` 内置顺序仍是
+`ingest → build → embed --tree → closure`；需要可服务固定 generation 时，应使用
+`pipeline --preset full-rag`，它在向量阶段之后自动执行 `rag prepare`。也可以单独运行
+`drbrain rag prepare`（SQL 模式；大语料仍走分片脚本 + `rag index`）。SQL 准备是完整语料
+快照，不能用 `--paper` 发布会丢失其他论文的子集；LlamaIndex 后端继续支持按论文增量索引。
+树正文重建也已收敛为单一投影：`storage/node_projection.collect_tree_node_records`
 是唯一实现，`services.embedding`、`rag/index_nodes`、`rag/preparation` 以及 `build` 的
 节点计数都调用它；哈希回归对齐保留为测试，防止树格式演进时主库向量、`node_texts`
 与 LlamaIndex 索引发生漂移。
@@ -134,5 +135,17 @@ SQL 列表入口省略 `generation` 时保留读取工作库的能力，返回 `
 pytest 选择排除了 `test_rag_smoke.py`，使用 `-m "not integration" --timeout=8`，
 并设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，在执行进程中禁用 socket 连接。
 测试没有调用真实模型或外部服务；SQLite 使用临时库。类型检查同时覆盖模块拆分后的兼容导出。
+
+## 可恢复的阶段状态
+
+主库的 `paper_artifacts` 表为每篇论文记录 `raw/tree/kg/pageindex/raptor/rag_text/rag_snapshot`
+各阶段的 `pending/running/ready/degraded/failed/skipped` 状态、指纹、错误和尝试次数。
+阶段写入遵循“先持久化输入，再推进派生物”：树或图谱失败不会删除已保存的原始材料，
+批量 ingest 与 `pipeline --continue-on-error` 会隔离单篇或单阶段失败，并在最后汇总失败项。
+PDF 继续使用 MinerU → PyMuPDF fallback；Markdown、纯文本和 LaTeX 直接保留原文进入同一
+`raw.md` 投影，避免把可读素材再次送进 PDF 解析器。RAG 文本、向量和快照均从共享投影生成，
+工作库采用临时文件 + 原子替换，发布失败时保留上一代 generation。
+当没有任何可用 PageIndex 树时，准备步骤只记录 `degraded` 状态并保留旧 generation，
+不会用空库覆盖可用索引。
 
 本阶段不启动真实语料发布，不进行检索效果或性能集成验收；这些结果不能从单元测试通过推导。

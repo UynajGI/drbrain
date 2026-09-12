@@ -70,6 +70,8 @@ drbrain ask "What gaps remain in deep learning?"
 
 # Or chain everything at once
 drbrain pipeline --preset full
+# Include SQL/LlamaIndex RAG materialization and publication
+drbrain pipeline --preset full-rag
 ```
 
 > `pipx install drbrain` and `uv tool install drbrain` are coming in beta.

@@ -221,7 +221,10 @@ def test_missing_categories_table_rejects_filter(rag_db, cfg, monkeypatch):
     _patch_embed(monkeypatch, [1.0] * DIM)
     with pytest.raises(ValueError, match="categories filter"):
         sql_retrie.retrieve_documents_sql(
-            cfg, None, "kagome flat band corrosion steel", top_k=5,
+            cfg,
+            None,
+            "kagome flat band corrosion steel",
+            top_k=5,
             filters={"categories": "cond-mat"},
         )
 

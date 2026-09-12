@@ -608,7 +608,7 @@ def test_atomic_append_text_preserves_existing_artifact_on_replace_failure(monke
     def fail_replace(*args, **kwargs):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("drbrain.rag.eval.os.replace", fail_replace)
+    monkeypatch.setattr("drbrain.rag.eval_data.os.replace", fail_replace)
     with pytest.raises(OSError, match="simulated replace failure"):
         _append_text_atomically(path, "new baseline\n")
 

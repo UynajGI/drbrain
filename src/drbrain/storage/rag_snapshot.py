@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,12 @@ def content_fingerprint(conn: sqlite3.Connection) -> str:
     and their schemas are the versioned semantic data.
     """
     digest = hashlib.sha256()
+    # Tokenizers, virtual-index declarations and views also affect retrieval.
+    schema = conn.execute(
+        "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' "
+        "ORDER BY type, name"
+    ).fetchall()
+    digest.update(json.dumps(schema, ensure_ascii=False).encode())
     tables = [
         row[1]
         for row in conn.execute("PRAGMA table_list")
@@ -41,10 +48,11 @@ def content_fingerprint(conn: sqlite3.Connection) -> str:
 
 def copy_snapshot(source: Path, destination: Path) -> dict[str, Any]:
     """SQLite backup includes committed WAL data and yields a standalone database."""
-    with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as reader:
-        with sqlite3.connect(destination) as writer:
+    with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
+        with closing(sqlite3.connect(destination)) as writer:
             reader.backup(writer)
-    with sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True) as snapshot:
+    with closing(sqlite3.connect(destination.as_uri() + "?mode=ro", uri=True)) as snapshot:
+        snapshot.execute("SELECT rowid FROM node_texts_fts LIMIT 1").fetchall()
         return {
             "content_fingerprint": content_fingerprint(snapshot),
             "node_count": snapshot.execute("SELECT COUNT(*) FROM node_texts").fetchone()[0],

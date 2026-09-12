@@ -1,85 +1,14 @@
-"""Index layer: tree.json/raw.md → LlamaIndex Documents/Nodes; VectorStoreIndex + BM25.
+"""Index build orchestration and compatible index-loading APIs.
 
-Ticket: T3 (索引层). Depends on T1.
-
-Converts drbrain's PageIndex assets (``tree.json`` + ``raw.md`` per paper) into
-LlamaIndex objects:
-
-* :func:`collect_tree_nodes` — one :class:`~llama_index.core.schema.Document`
-  per tree node (``paper_id:node_id`` unique key, PageIndex metadata).
-* :func:`build_index` — incremental ``VectorStoreIndex`` build (embeds only
-  nodes whose ``content_hash`` changed) + persistent BM25 inverted index.
-  New builds are staged as a complete generation, validated, then activated by
-  an atomic pointer swap so readers never observe mixed vector/BM25 artifacts.
-* :func:`load_index` — restore ``(VectorStoreIndex, BM25Retriever)`` from disk
-  without rebuilding.
-
-Legacy persistence layout under ``storage_dir``::
-
-    storage_dir/
-      manifest.json      # embed_model + {paper_id: {node_key: content_hash}}
-      vector/            # StorageContext.persist (docstore, index_store, SimpleVectorStore)
-      bm25/              # BM25Retriever.persist (bm25s index + corpus)
-
-New builds preserve the legacy files for migration compatibility but read from
-the active generation::
-
-    storage_dir/
-      active.json         # atomically swapped {"generation": "..."}
-      generations/<id>/
-        manifest.json
-        vector/
-        bm25/
-
-Everything degrades gracefully when llama-index is not installed: the CLI
-fails with a clear message instead of a traceback, and importing the module
-never raises.
-"""
+Node preparation, embedding execution and immutable generation management live
+in index_nodes, index_embeddings and index_generations. SQL publication copies
+the corpus through the same generation lifecycle without running embeddings."""
 
 from __future__ import annotations
 
-from drbrain.rag.index_embeddings import (
-    _load_old_embeddings as _load_old_embeddings,
-    _load_old_index_nodes as _load_old_index_nodes,
-    _default_embed_model as _default_embed_model,
-    _embed_devices as _embed_devices,
-    _embed_model_path as _embed_model_path,
-    _embed_chunk_worker as _embed_chunk_worker,
-)
-
-from drbrain.rag.index_generations import (
-    _storage_dirs as _storage_dirs,
-    _pointer_path as _pointer_path,
-    _active_storage_root as _active_storage_root,
-    get_active_index_generation as get_active_index_generation,
-    capture_index_generation as capture_index_generation,
-    _storage_root_for_generation as _storage_root_for_generation,
-    _new_generation_id as _new_generation_id,
-    _write_json_atomically as _write_json_atomically,
-    _load_manifest as _load_manifest,
-    _write_manifest as _write_manifest,
-    _generation_references as _generation_references,
-    _referenced_generations as _referenced_generations,
-    retain_index_generation as retain_index_generation,
-    _prune_inactive_generations as _prune_inactive_generations,
-)
-
-from drbrain.rag.index_nodes import (
-    _content_hash as _content_hash,
-    _node_key as _node_key,
-    _paragraph_chunks as _paragraph_chunks,
-    _chunk_document as _chunk_document,
-    collect_tree_nodes as collect_tree_nodes,
-)
-
-import hashlib
 import json
-import os
 import shutil
-import stat
-import tempfile
 import time
-import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -88,11 +17,117 @@ from loguru import logger
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.index_embeddings import (
+    _default_embed_model as _default_embed_model,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_chunk_worker as _embed_chunk_worker,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_devices as _embed_devices,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_model_path as _embed_model_path,
+)
+from drbrain.rag.index_embeddings import (
+    _load_old_embeddings as _load_old_embeddings,
+)
+from drbrain.rag.index_embeddings import (
+    _load_old_index_nodes as _load_old_index_nodes,
+)
+from drbrain.rag.index_embeddings import preserve_gc_state
+from drbrain.rag.index_generations import (
+    ACTIVE_POINTER_NAME as ACTIVE_POINTER_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_PRUNE_GRACE_SECONDS as GENERATION_PRUNE_GRACE_SECONDS,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_REFERENCES_DIR_NAME as GENERATION_REFERENCES_DIR_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_REFERENCES_NAME as GENERATION_REFERENCES_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_RETAIN_COUNT as GENERATION_RETAIN_COUNT,
+)
+from drbrain.rag.index_generations import (
+    GENERATIONS_DIR_NAME as GENERATIONS_DIR_NAME,
+)
+from drbrain.rag.index_generations import (
+    LEGACY_INDEX_GENERATION as LEGACY_INDEX_GENERATION,
+)
+from drbrain.rag.index_generations import (
+    MANIFEST_NAME as MANIFEST_NAME,
+)
+from drbrain.rag.index_generations import (
+    _active_storage_root as _active_storage_root,
+)
+from drbrain.rag.index_generations import (
+    _generation_references as _generation_references,
+)
+from drbrain.rag.index_generations import (
+    _load_manifest as _load_manifest,
+)
+from drbrain.rag.index_generations import (
+    _new_generation_id as _new_generation_id,
+)
+from drbrain.rag.index_generations import (
+    _pointer_path as _pointer_path,
+)
+from drbrain.rag.index_generations import (
+    _prune_inactive_generations as _prune_inactive_generations,
+)
+from drbrain.rag.index_generations import (
+    _referenced_generations as _referenced_generations,
+)
+from drbrain.rag.index_generations import (
+    _storage_dirs as _storage_dirs,
+)
+from drbrain.rag.index_generations import (
+    _storage_root_for_generation as _storage_root_for_generation,
+)
+from drbrain.rag.index_generations import (
+    _write_json_atomically as _write_json_atomically,
+)
+from drbrain.rag.index_generations import (
+    _write_manifest as _write_manifest,
+)
+from drbrain.rag.index_generations import (
+    capture_index_generation as capture_index_generation,
+)
+from drbrain.rag.index_generations import (
+    get_active_index_generation as get_active_index_generation,
+)
+from drbrain.rag.index_generations import (
+    retain_index_generation as retain_index_generation,
+)
+from drbrain.rag.index_nodes import (
+    CHARS_PER_TOKEN as CHARS_PER_TOKEN,
+)
+from drbrain.rag.index_nodes import (
+    DEFAULT_MAX_NODE_TOKENS as DEFAULT_MAX_NODE_TOKENS,
+)
+from drbrain.rag.index_nodes import (
+    TREE_LAYER_PAGEINDEX as TREE_LAYER_PAGEINDEX,
+)
+from drbrain.rag.index_nodes import (
+    _chunk_document as _chunk_document,
+)
+from drbrain.rag.index_nodes import (
+    _content_hash as _content_hash,
+)
+from drbrain.rag.index_nodes import (
+    _node_key as _node_key,
+)
+from drbrain.rag.index_nodes import (
+    _paragraph_chunks as _paragraph_chunks,
+)
+from drbrain.rag.index_nodes import (
+    collect_tree_nodes as collect_tree_nodes,
+)
 from drbrain.storage.paths import (
-    paper_id_from_dir,
-    raw_md_path,
     resolve_paper_dir,
-    tree_json_path,
 )
 
 try:  # pragma: no cover - exercised in environments without llama-index
@@ -121,84 +156,6 @@ __all__ = [
     "retain_index_generation",
 ]
 
-#: Layer tag stored on PageIndex nodes (mirrors ``tree_vectors.tree_layer``).
-TREE_LAYER_PAGEINDEX = "pageindex"
-#: Filename of the incremental-update manifest under ``storage_dir``.
-MANIFEST_NAME = "manifest.json"
-#: Atomically swapped pointer to the complete index generation readers use.
-ACTIVE_POINTER_NAME = "active.json"
-#: Directory holding immutable, fully-built index generations.
-GENERATIONS_DIR_NAME = "generations"
-#: Explicit snapshot label for the pre-generation flat storage layout.
-LEGACY_INDEX_GENERATION = "legacy"
-#: Completed generations retained for rollback and in-flight readers.
-GENERATION_RETAIN_COUNT = 3
-#: Minimum completed-generation age before automatic retention pruning.
-GENERATION_PRUNE_GRACE_SECONDS = 3600.0
-#: Durable autoresearch run -> immutable generation references.
-GENERATION_REFERENCES_NAME = "generation-references.json"
-#: Per-run references avoid read-modify-write races between concurrent directors.
-GENERATION_REFERENCES_DIR_NAME = "generation-references"
-#: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
-#: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
-#: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
-#: finding). Nodes above the cap are split into paragraph chunks at
-#: ``4 chars/token`` — each chunk inherits the parent node_id + ``#i`` suffix
-#: (T9 decision: split, not truncate — preserves full content).
-#:
-#: 4000, not 8000: the GPU memory profile of the Qwen3-Embedding-0.6B fp32
-#: forward pass is quadratic in sequence length (measured per-sample: 4096
-#: tokens ≈ 3.6GB, 8192 tokens ≈ 12.2GB). On a 16GB V100 (≈2.5GB weights +
-#: ~1GB overhead) a single 8000-token sequence lands at ~15GB and OOMs;
-#: 4000-token chunks leave comfortable headroom (T9 GPU verification).
-DEFAULT_MAX_NODE_TOKENS = 4000
-#: Chars-per-token heuristic used to convert ``max_node_tokens`` → char cap.
-CHARS_PER_TOKEN = 4
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
     """Locate a paper's asset directory across on-disk layouts.
@@ -214,12 +171,7 @@ def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
 # ── Build ────────────────────────────────────────────────────────────────────
 
 
-
-
-
-
-
-
+@preserve_gc_state
 def build_index(
     cfg: Config,
     db: Any,
@@ -228,7 +180,10 @@ def build_index(
     embed_model: Any | None = None,
     max_node_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Build (or incrementally update) the LlamaIndex vector + BM25 indexes.
+    """Publish the selected backend's immutable retrieval generation.
+
+    SQL publishes a copy of the prepared corpus database; it does not build
+    embeddings and rejects paper selection or embedding-build overrides.
 
     For every target paper (``paper_ids``, or all papers known to ``db`` when
     ``None``), collects its PageIndex Documents, embeds only the nodes whose
@@ -236,10 +191,10 @@ def build_index(
     everything), persists ``VectorStoreIndex`` + ``BM25Retriever`` under
     ``llamaindex.storage_dir``, and records hashes in ``manifest.json``.
 
-    ``max_node_tokens`` (default ``llamaindex.max_node_tokens``) caps
-    the size of a single embedded sequence: nodes above the cap are split into
-    paragraph chunks (each chunk = one indexed TextNode carrying the parent's
-    metadata + ``#i`` suffix). Change detection stays per parent node — an
+    For LlamaIndex, ``max_node_tokens`` (default ``llamaindex.max_node_tokens``)
+    estimates a character cap per embedded fragment. Oversized nodes become
+    exact parent-text slices with unique ids and explicit parent locators.
+    Change detection stays per parent node — an
     unchanged node reuses all its chunk embeddings; only changed nodes (or
     nodes with missing chunk embeddings) are re-embedded. Non-positive values
     retain the safe default cap.

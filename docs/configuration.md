@@ -214,6 +214,7 @@ Current schema version: **v21** (`project_scope`).
 | v19 | `claim_provenance` | claims provenance columns |
 | v20 | `embedding_revision` | `vector_metadata` embedding-revision watermark |
 | v21 | `project_scope` | `projects` table + `agent_sessions.project_id` scope column (WebUI project / session scope) |
+| v22 | `paper_artifacts` | Per-paper stage state, fingerprints and failure diagnostics for resumable ingestion/RAG |
 
 The `updated_at` columns (v8) and `last_run:<stage>` watermarks (stored in `vector_metadata`) together drive the incremental pipeline: stages compare `max(papers.updated_at)` against their watermark to decide whether to skip. The `embedding_revision` watermark (v20) is bumped whenever embeddings are saved or cleared, so cached TransE models cannot survive an identity merge or a cache wipe. There is nothing to configure here — it is automatic — but if you ever need a full rebuild, pass `--all` (build), `--full` (closure/pipeline), or `--retrain` (embed) to bypass the watermarks.
 

@@ -1,5 +1,7 @@
 """Deterministic retrieval metrics, independent of model judges and dataset generation."""
+
 from __future__ import annotations
+
 from collections.abc import Sequence
 from typing import Any
 
@@ -9,8 +11,11 @@ def _node_identity(nws: Any) -> tuple[str, str]:
     node = getattr(nws, "node", None)
     meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
     pid = str(meta.get("paper_id") or "")
-    nid = str(meta.get("parent_node_id") or meta.get("node_id") or getattr(node, "node_id", None) or "")
+    nid = str(
+        meta.get("parent_node_id") or meta.get("node_id") or getattr(node, "node_id", None) or ""
+    )
     return pid, nid
+
 
 def _rank_metrics(nodes: Sequence[Any], item: dict[str, Any], ks: Sequence[int]) -> dict[str, Any]:
     """Paper-level + node-level hit/mrr ranks for one golden query.
@@ -54,6 +59,7 @@ def _rank_metrics(nodes: Sequence[Any], item: dict[str, Any], ks: Sequence[int])
         "paper": _levels(paper_rank),
         "node": _levels(node_rank),
     }
+
 
 def _aggregate_rank(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Mean hit_rate/MRR over per-query rows, for paper and node levels."""

@@ -1,17 +1,24 @@
 """Session history projection and persistence for the research assistant."""
+
 from __future__ import annotations
+
 import json
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
 from drbrain.config import Config
+from drbrain.rag.agent_defaults import (
+    MAX_RESULT_SUMMARY_CHARS,
+    SESSION_KEEP_RECENT,
+    SESSION_TOKEN_BUDGET,
+)
 from drbrain.security import public_model_configs, redact_sensitive
+
 try:
     from llama_index.core.base.llms.types import ChatMessage, MessageRole
 except ImportError:
-    ChatMessage = MessageRole = None
-SESSION_TOKEN_BUDGET = 8000
-SESSION_KEEP_RECENT = 6
-MAX_RESULT_SUMMARY_CHARS = 800
+    if not TYPE_CHECKING:
+        ChatMessage = MessageRole = None
 
 
 def _history_summary(messages: list[dict]) -> str:
@@ -34,6 +41,7 @@ def _history_summary(messages: list[dict]) -> str:
             parts.append(f"[{role}] {content[:200]}")
     return "\n".join(parts)
 
+
 def _session_principal_matches(db: Any, session_id: str, principal: str | None) -> bool:
     """Check a session owner when a caller supplies an authenticated principal.
 
@@ -51,6 +59,7 @@ def _session_principal_matches(db: Any, session_id: str, principal: str | None) 
         (session_id,),
     ).fetchone()
     return row is not None and (principal is None or str(row[0] or "") == principal)
+
 
 def load_session_history(
     db: Any,
@@ -143,6 +152,7 @@ def load_session_history(
                 ChatMessage(role=MessageRole.TOOL, content=m["content"], additional_kwargs=ak)
             )
     return out
+
 
 def _persist_reason_session(
     cfg: Config,

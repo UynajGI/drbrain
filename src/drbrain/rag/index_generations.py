@@ -1,5 +1,7 @@
 """Atomic index publication, pinned readers, and retention; independent of model SDKs."""
+
 from __future__ import annotations
+
 import hashlib
 import json
 import os
@@ -11,9 +13,12 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
 from loguru import logger
+
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+
 MANIFEST_NAME = "manifest.json"
 ACTIVE_POINTER_NAME = "active.json"
 GENERATIONS_DIR_NAME = "generations"
@@ -29,8 +34,10 @@ def _storage_dirs(storage_dir: str | Path) -> tuple[Path, Path, Path]:
     root = Path(storage_dir)
     return root, root / "vector", root / "bm25"
 
+
 def _pointer_path(storage_root: Path) -> Path:
     return storage_root / ACTIVE_POINTER_NAME
+
 
 def _active_storage_root(storage_dir: str | Path) -> tuple[Path, str | None] | None:
     """Return the physical active store and its generation, if one is active.
@@ -60,6 +67,7 @@ def _active_storage_root(storage_dir: str | Path) -> tuple[Path, str | None] | N
         return None
     return active_root, generation
 
+
 def get_active_index_generation(cfg: Config) -> str | None:
     """Return the active generation id, or ``None`` for legacy/no active index.
 
@@ -68,6 +76,7 @@ def get_active_index_generation(cfg: Config) -> str | None:
     """
     active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
     return active[1] if active is not None else None
+
 
 def capture_index_generation(cfg: Config) -> str | None:
     """Capture the snapshot a long-running caller must keep using.
@@ -93,6 +102,7 @@ def capture_index_generation(cfg: Config) -> str | None:
         return None
     return active[1] or LEGACY_INDEX_GENERATION
 
+
 def _storage_root_for_generation(storage_dir: str | Path, generation: str | None) -> Path | None:
     """Resolve an optional immutable snapshot without following a newer pointer."""
     root = Path(storage_dir)
@@ -106,8 +116,10 @@ def _storage_root_for_generation(storage_dir: str | Path, generation: str | None
     candidate = root / GENERATIONS_DIR_NAME / generation
     return candidate if candidate.is_dir() and not candidate.is_symlink() else None
 
+
 def _new_generation_id() -> str:
     return f"g-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
+
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Atomically replace a small JSON control file without torn readers."""
@@ -142,6 +154,7 @@ def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
             pass
         raise
 
+
 def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
     active = _active_storage_root(storage_dir)
     if active is None:
@@ -157,8 +170,10 @@ def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
         logger.warning("[rag] ignoring unreadable manifest at %s", manifest_path)
         return {}
 
+
 def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
     _write_json_atomically(Path(storage_dir) / MANIFEST_NAME, manifest)
+
 
 def _generation_references(storage_root: Path) -> dict[str, str] | None:
     """Read durable run references, returning ``None`` for unsafe control data."""
@@ -209,6 +224,7 @@ def _generation_references(storage_root: Path) -> dict[str, str] | None:
         references[run_id] = generation
     return references
 
+
 def _referenced_generations(storage_root: Path) -> set[str]:
     """Return immutable snapshots still required by durable autoresearch runs."""
     references = _generation_references(storage_root)
@@ -225,6 +241,7 @@ def _referenced_generations(storage_root: Path) -> set[str]:
         }
     except OSError:
         return set()
+
 
 def retain_index_generation(cfg: Config, generation: str | None, run_id: str) -> bool:
     """Durably retain a run's index snapshot without introducing another service."""
@@ -245,6 +262,7 @@ def retain_index_generation(cfg: Config, generation: str | None, run_id: str) ->
         {"run_id": str(run_id), "generation": resolved_generation},
     )
     return True
+
 
 def _prune_inactive_generations(
     storage_root: Path,

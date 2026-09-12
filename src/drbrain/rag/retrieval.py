@@ -1,21 +1,41 @@
 """Retrieval service shared by agents and CLI adapters; no loop/session dependency."""
+
 from __future__ import annotations
+
 import logging
 from collections.abc import Sequence
 from typing import Any
+
 from drbrain.config import Config
+from drbrain.rag.contracts import (
+    LegResult,
+    RetrievalRequest,
+    RetrievalResult,
+    RetrievalRows,
+    finish_retrieval,
+    matches_scope,
+)
 from drbrain.rag.evidence import build_evidence_record
 from drbrain.rag.status import RetrievalUnavailableError
+
 log = logging.getLogger(__name__)
 
 
-def retrieve(cfg, db, graph, request):
+def retrieve(
+    cfg: Config | dict[str, Any], db: Any, graph: Any, request: RetrievalRequest
+) -> RetrievalResult:
     """Structured API; the historical list API remains available below."""
     from drbrain.rag.config import coerce_config
 
     rows = retrieve_documents(
-        coerce_config(cfg), db, graph, request.query, generation=request.generation,
-        filters=request.filters, top_k=request.top_k, acl_filter=request.acl_filter,
+        coerce_config(cfg),
+        db,
+        graph,
+        request.query,
+        generation=request.generation,
+        filters=request.filters,
+        top_k=request.top_k,
+        acl_filter=request.acl_filter,
     )
     return rows.result
 
@@ -84,6 +104,7 @@ def _retrieval_rows(
         rows.append(row)
     return rows
 
+
 def retrieve_documents(
     cfg: Config,
     db: Any,
@@ -94,7 +115,7 @@ def retrieve_documents(
     filters: dict[str, Any] | None = None,
     top_k: int = 5,
     acl_filter: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> RetrievalRows:
     """Retrieve RAG records, optionally constrained to one published snapshot.
 
     A supplied generation intentionally enables only persisted BM25/vector legs:
@@ -102,12 +123,6 @@ def retrieve_documents(
     a supposedly pinned result mix index epochs.
     """
     from drbrain.rag.config import get_llamaindex_config
-    from drbrain.rag.contracts import (
-        RetrievalRequest,
-        LegResult,
-        finish_retrieval,
-        matches_scope,
-    )
 
     request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
 
@@ -174,7 +189,7 @@ def retrieve_documents(
         top_k=top_k,
     )
     trace = fused.get_last_trace() if hasattr(fused, "get_last_trace") else {}
-    legs = [
+    leg_results = [
         LegResult(
             str(item["source"]),
             "unavailable"
@@ -191,6 +206,6 @@ def retrieve_documents(
     return finish_retrieval(
         rows,
         generation=resolved_generation,
-        legs=legs,
+        legs=leg_results,
         capabilities={"backend": "llamaindex", "snapshot": True, "vector_recall": "independent"},
     )

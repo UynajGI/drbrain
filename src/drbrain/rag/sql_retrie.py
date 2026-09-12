@@ -31,14 +31,15 @@ from typing import Any
 
 from loguru import logger as log
 
-from drbrain.rag.evidence import build_evidence_record
 from drbrain.rag.contracts import (
     LegResult,
     RetrievalRequest,
+    RetrievalRows,
     failure_leg,
     finish_retrieval,
     matches_scope,
 )
+from drbrain.rag.evidence import build_evidence_record
 from drbrain.rag.status import RetrievalUnavailableError
 from drbrain.utils.rrf import DEFAULT_K as _RRF_K
 from drbrain.utils.rrf import rrf_fuse_scores
@@ -119,10 +120,9 @@ def _categories_filter(
 
     ``categories`` comes from ``filters["categories"]`` (a string, or list of
     strings). Matching is arXiv token-prefix aware — ``cond-mat`` hits
-    ``cond-mat.mes-hall`` but never ``xcond-mat``. Returns ``("", [])`` when
-    the filter is absent or the corpus predates category metadata (no
-    ``paper_categories`` table): missing metadata must silently widen, never
-    error.
+    ``cond-mat.mes-hall`` but never ``xcond-mat``. An absent filter adds no
+    constraint; an empty allow-list matches nothing. A requested category
+    filter requires metadata and raises when its table is missing.
     """
     if isinstance(categories, str):
         raw: list[str] = [categories]
@@ -418,7 +418,7 @@ def _claims_leg(db: Any, query: str, k: int) -> list[dict[str, Any]]:
     written at settle time) so the next cycle's retrieve step can see — and
     cite — what earlier cycles concluded. Entries carry their own row metadata
     because claims have no ``node_texts`` counterpart. Keywords score by
-    hit count × claim confidence; failures degrade to an empty leg.
+    hit count × claim confidence; read failures propagate to the leg trace.
     """
     if db is None:
         return []
@@ -430,7 +430,7 @@ def _claims_leg(db: Any, query: str, k: int) -> list[dict[str, Any]]:
             "SELECT claim_id, claim_text, claim_type, confidence FROM claims "
             "ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
-    except Exception as exc:  # noqa: BLE001 — schema drift must not break the leg
+    except Exception as exc:  # noqa: BLE001 — classify schema drift at the fusion boundary
         log.warning("[rag-sql] claims leg read failed: {}", exc)
         raise
     lowered = [w.lower() for w in words]
@@ -467,7 +467,7 @@ def retrieve_documents_sql(
     graph: Any = None,
     generation: str | None = None,
     acl_filter: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> RetrievalRows:
     """Retrieve from a pinned SQL snapshot or an explicitly live working copy.
 
     Vector and RAPTOR are BM25-pool rerankers, not independent recall legs.
@@ -524,6 +524,7 @@ def retrieve_documents_sql(
         pool = [key for key, _ in bm25]
         pool_papers = list(dict.fromkeys(key.split(":", 1)[0] for key in pool))
         legs: list[tuple[str, list[dict[str, Any]]]] = []
+        entries: list[dict[str, Any]]
         for name in wanted:
             started = time.perf_counter()
             try:
@@ -589,6 +590,7 @@ def retrieve_documents_sql(
                     raise ValueError("invalid rerank scores")
                 for row, score in zip(head, scores):
                     row["score"] = float(score)
+                    row["score_kind"] = "rerank"
                 candidates = sorted(head, key=lambda row: row["score"], reverse=True)
                 rerank_status = "ok"
             except Exception:
@@ -624,9 +626,14 @@ def retrieve_documents_sql(
         conn.close()
 
 
-def _materialize(conn, fused, rich, membership) -> list[dict[str, Any]]:
+def _materialize(
+    conn: sqlite3.Connection,
+    fused: list[tuple[str, float]],
+    rich: dict[str, dict[str, Any]],
+    membership: dict[str, list[str]],
+) -> list[dict[str, Any]]:
     """Resolve candidate metadata before scope checks and truncation."""
-    meta = {}
+    meta: dict[str, tuple[str, str]] = {}
     keys = [key for key, _ in fused if key not in rich]
     for offset in range(0, len(keys), 500):
         batch = keys[offset : offset + 500]
@@ -647,7 +654,7 @@ def _materialize(conn, fused, rich, membership) -> list[dict[str, Any]]:
                     missing,
                 )
             )
-    categories = {}
+    categories: dict[str, str] = {}
     papers = list(
         {str(row.get("paper_id") or "") for row in rich.values()}
         | {value[0] for value in meta.values()}
@@ -687,6 +694,7 @@ def _materialize(conn, fused, rich, membership) -> list[dict[str, Any]]:
                 "text": text,
                 "source": "sql-fusion",
                 "score": score,
+                "score_kind": "rrf",
                 "categories": categories.get(paper, ""),
                 "legs": membership.get(key, []),
             }

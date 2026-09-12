@@ -94,7 +94,11 @@ def resolve_sql_snapshot(cfg: Any, generation: str) -> Path:
         manifest = json.loads((root / indexer.MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RetrievalUnavailableError("unreadable SQL snapshot manifest") from exc
-    if not isinstance(manifest, dict) or manifest.get("backend") != "sql" or manifest.get("generation") != generation:
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("backend") != "sql"
+        or manifest.get("generation") != generation
+    ):
         raise RetrievalUnavailableError("SQL snapshot identity mismatch")
     if manifest.get("embedding") != embedding_identity(cfg):
         raise RetrievalUnavailableError(
@@ -109,11 +113,19 @@ def resolve_sql_snapshot(cfg: Any, generation: str) -> Path:
 def sql_index_health(cfg: Any) -> dict[str, Any]:
     """Inspect snapshot identity/schema without loading models or changing data."""
     import sqlite3
+    from contextlib import closing
+
     from drbrain.rag.index_generations import get_active_index_generation
 
     li = get_llamaindex_config(cfg)
-    report = {"ready": False, "status": "unavailable", "backend": "sql",
-              "storage_dir": str(li.storage_dir), "reasons": [], "checks": {}}
+    report = {
+        "ready": False,
+        "status": "unavailable",
+        "backend": "sql",
+        "storage_dir": str(li.storage_dir),
+        "reasons": [],
+        "checks": {},
+    }
     if not li.enabled:
         report.update(status="disabled", reasons=["disabled"])
         return report
@@ -124,7 +136,7 @@ def sql_index_health(cfg: Any) -> dict[str, Any]:
         return report
     try:
         path = resolve_sql_snapshot(cfg, generation)
-        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
             conn.execute("SELECT node_key, text FROM node_texts LIMIT 1").fetchall()
             conn.execute("SELECT rowid FROM node_texts_fts LIMIT 1").fetchall()
     except (OSError, ValueError, sqlite3.Error, RetrievalUnavailableError):

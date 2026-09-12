@@ -1,20 +1,45 @@
 """Embedding execution and cache reuse for index construction."""
+
 from __future__ import annotations
-import json
+
+import gc
 import os
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
 from loguru import logger
+
 from drbrain.config import Config
+
 try:
     from llama_index.core import load_index_from_storage
     from llama_index.core.schema import TextNode
     from llama_index.core.storage import StorageContext
     from llama_index.core.vector_stores import SimpleVectorStore
+
     _LLAMA_INDEX_AVAILABLE = True
 except ImportError:
-    load_index_from_storage = TextNode = StorageContext = SimpleVectorStore = None
+    if not TYPE_CHECKING:
+        load_index_from_storage = TextNode = StorageContext = SimpleVectorStore = None
     _LLAMA_INDEX_AVAILABLE = False
+
+
+def preserve_gc_state(operation):
+    """Restore the caller's GC setting even when an index build fails early."""
+
+    @wraps(operation)
+    def run(*args, **kwargs):
+        enabled = gc.isenabled()
+        try:
+            return operation(*args, **kwargs)
+        finally:
+            if enabled:
+                gc.enable()
+            else:
+                gc.disable()
+
+    return run
 
 
 def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
@@ -27,6 +52,7 @@ def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("[rag] could not read previous vector store: %s", exc)
         return {}
+
 
 def _load_old_index_nodes(vector_dir: Path, embed_model: Any) -> dict[str, TextNode]:
     """Load all previously indexed nodes (with embeddings) from a persisted index.
@@ -58,11 +84,13 @@ def _load_old_index_nodes(vector_dir: Path, embed_model: Any) -> dict[str, TextN
         logger.warning("[rag] could not load previous index nodes: %s", exc)
         return {}
 
+
 def _default_embed_model(cfg: Config) -> Any:
     """T1 DrbrainEmbedding adapter (lazy; loads the model on first embed call)."""
     from drbrain.rag.llm import DrbrainEmbedding
 
     return DrbrainEmbedding(cfg)
+
 
 def _embed_devices(cfg: Config) -> list[int]:
     """GPU ids for parallel chunk embedding: configured cuda:N plus extra_gpus."""
@@ -78,6 +106,7 @@ def _embed_devices(cfg: Config) -> list[int]:
             devices.append(int(g))
     return devices
 
+
 def _embed_model_path(cfg: Config) -> str:
     from drbrain.services.embedding import _resolve_model_path
 
@@ -90,6 +119,7 @@ def _embed_model_path(cfg: Config) -> str:
 
 
 _WORKER_MODEL: Any = None
+
 
 def _embed_chunk_worker(args: tuple[Any, int, list[str], int, int]) -> Any:
     """Spawn-pool worker: pin one GPU, embed a chunk, return vectors."""

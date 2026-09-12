@@ -1,5 +1,7 @@
 """Golden-set construction, loading and atomic evaluation artifacts."""
+
 from __future__ import annotations
+
 import json
 import logging
 import os
@@ -10,23 +12,41 @@ from collections.abc import Sequence
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
+
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
-from drbrain.security import redact_sensitive_text
-from drbrain.storage.paths import raw_md_path, resolve_paper_dir, tree_json_path, writable_artifact_path
+from drbrain.storage.paths import (
+    raw_md_path,
+    resolve_paper_dir,
+    tree_json_path,
+    writable_artifact_path,
+)
+
 log = logging.getLogger(__name__)
 _LLAMA_INDEX_AVAILABLE = find_spec("llama_index") is not None
 DEFAULT_SPLIT_RATIO = (0.6, 0.2, 0.2)
 _SPLIT_SEED = 20260812
 _REFERENCE_MAX_CHARS = 800
-_CONTENT_TITLE_PREFIXES = ("abstract", "summary", "overview", "introduction", "results",
-                          "discussion", "conclusion", "experimental", "methods", "materials", "section ")
+_CONTENT_TITLE_PREFIXES = (
+    "abstract",
+    "summary",
+    "overview",
+    "introduction",
+    "results",
+    "discussion",
+    "conclusion",
+    "experimental",
+    "methods",
+    "materials",
+    "section ",
+)
 _ABSTRACT_TITLE_PREFIXES = ("abstract", "summary")
 
 
 def _runtime_selected() -> bool:
     """Return whether an invocation explicitly selected a runtime root."""
     return "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+
 
 def _ensure_eval_parent(path: Path) -> Path:
     """Create an evaluation-output parent without following symlinks."""
@@ -52,6 +72,7 @@ def _ensure_eval_parent(path: Path) -> Path:
         raise ValueError(f"evaluation output directory is not a real directory: {parent}")
     return parent
 
+
 def _safe_eval_output(path: str | Path) -> Path:
     """Resolve an evaluation output under the selected runtime, if any."""
     candidate = Path(path).expanduser()
@@ -65,6 +86,7 @@ def _safe_eval_output(path: str | Path) -> Path:
         raise ValueError(f"evaluation output is not a regular file: {candidate}")
     parent = _ensure_eval_parent(candidate)
     return writable_artifact_path(parent, candidate.name)
+
 
 def _write_text_atomically(path: Path, content: str) -> None:
     """Atomically replace ``path`` through same-directory staging.
@@ -94,6 +116,7 @@ def _write_text_atomically(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
         raise
 
+
 def _append_text_atomically(path: Path, content: str) -> None:
     """Append text through an atomic replace, retaining the old file on error."""
     path = _safe_eval_output(path)
@@ -102,6 +125,7 @@ def _append_text_atomically(path: Path, content: str) -> None:
 
 
 # ── golden set ───────────────────────────────────────────────────────────────
+
 
 def load_golden(cfg: Config | dict[str, Any] | None = None, split: str | None = None) -> list[dict]:
     """Load the golden set (JSONL), optionally filtered by split.
@@ -409,6 +433,7 @@ _GOLDEN_QUERIES: list[dict[str, Any]] = [
     },
 ]
 
+
 def _paper_nodes(paper_dir: Path) -> list[dict[str, str]]:
     """Flatten a paper's tree.json into ``[{node_id, title, text}]``.
 
@@ -480,9 +505,11 @@ _AUTHORISH_SIGNS = (
     "\\*",
 )
 
+
 def _is_authorish(block: str) -> bool:
     b = block.strip().lower()
     return any(s in b for s in _AUTHORISH_SIGNS)
+
 
 def _reference_paragraph(raw_text: str, min_chars: int = 120) -> str:
     """Best-effort abstract extraction from ``raw.md``.
@@ -511,9 +538,11 @@ def _reference_paragraph(raw_text: str, min_chars: int = 120) -> str:
             return block
     return max(long_blocks, key=len)
 
+
 def _is_content_title(title: str) -> bool:
     t = (title or "").strip().lower()
     return any(t.startswith(p) for p in _CONTENT_TITLE_PREFIXES)
+
 
 def _relevant_nodes_for(papers_dir: Path, paper_id: str) -> tuple[list[dict[str, str]], str | None]:
     """Derive relevant nodes + a reference answer for one paper.
@@ -556,6 +585,7 @@ def _relevant_nodes_for(papers_dir: Path, paper_id: str) -> tuple[list[dict[str,
         )
     return selected, reference or None
 
+
 def _assign_splits(
     entries: list[dict[str, Any]], ratio: tuple[float, float, float] = DEFAULT_SPLIT_RATIO
 ) -> dict[str, str]:
@@ -579,6 +609,7 @@ def _assign_splits(
         else:
             split_of[idx] = "test"
     return {entry["id"]: split_of[i] for i, entry in enumerate(entries)}
+
 
 def build_golden_set(
     cfg: Config | dict[str, Any] | None = None,

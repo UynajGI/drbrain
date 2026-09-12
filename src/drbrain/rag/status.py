@@ -37,10 +37,9 @@ class RetrievalStatus(StrEnum):
 class RetrievalError(Exception):
     """Every fusion leg failed; the caller must abstain, never hallucinate.
 
-    Raised by :class:`~drbrain.rag.fusion.FusionRetriever` only when *all*
-    legs raise (not when they all return empty — that is ``NO_RESULTS``). A
-    single failing leg is still degraded away silently inside the fusion
-    layer, so this error signals a systemic outage, not a sparse index.
+    Raised when all retrieval legs fail. Successful legs with no hits produce
+    an empty result; partial failures produce a degraded result whose trace
+    retains each leg's status. This error identifies a systemic outage.
     """
 
     def __init__(

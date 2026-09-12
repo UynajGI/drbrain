@@ -32,7 +32,7 @@ from drbrain.services.fetch import (  # noqa: F401
     fetch_paper,
     resolve_pdf_url,
 )
-from drbrain.storage.inbox import first_symlink_component, scan_inbox
+from drbrain.storage.inbox import first_symlink_component, scan_materials
 from drbrain.storage.paths import paper_dir as resolve_paper_dir_path
 from drbrain.storage.paths import paper_fs_key, writable_artifact_path
 
@@ -353,7 +353,8 @@ def _run_pipeline_step(
 def ingest_cmd(
     ctx: typer.Context,
     paths: list[str] = typer.Argument(
-        None, help="PDF file(s) or directory. Defaults to data/spool/inbox/."
+        None,
+        help="Source file(s) or directory (.pdf, .md, .txt, .tex). Defaults to data/spool/inbox/.",
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
@@ -361,7 +362,7 @@ def ingest_cmd(
 ):
     """Ingest pipeline: parse -> identify -> tree -> paper record.
 
-    Accepts single file, multiple files, or a directory of PDFs.
+    Accepts PDF, Markdown, text and LaTeX files, or a directory of them.
     Defaults to data/spool/inbox/ when no paths provided.
     """
     cfg = ctx.obj["config"]
@@ -372,7 +373,8 @@ def ingest_cmd(
 def _ingest_cmd_impl(
     ctx: typer.Context,
     paths: list[str] = typer.Argument(
-        None, help="PDF file(s) or directory. Defaults to data/spool/inbox/."
+        None,
+        help="Source file(s) or directory (.pdf, .md, .txt, .tex). Defaults to data/spool/inbox/.",
     ),
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
@@ -396,7 +398,7 @@ def _ingest_cmd_impl(
 
         path = _runtime_path(ctx, p)
         if path.is_dir():
-            pdf_files.extend(scan_inbox(path))
+            pdf_files.extend(scan_materials(path))
         elif path.is_file():
             pdf_files.append(path)
         else:
@@ -413,7 +415,7 @@ def _ingest_cmd_impl(
     with open_db(cfg) as db:
         dedup = DedupEngine(db)
 
-        logger.info("[ingest] batch start — %d PDF(s)", len(pdf_files))
+        logger.info("[ingest] batch start — %d source file(s)", len(pdf_files))
         results = []
         for i, pdf_path in enumerate(pdf_files, 1):
             if not json_output and len(pdf_files) > 1:
@@ -460,6 +462,7 @@ def _ingest_cmd_impl(
                 "ingested": len(results),
                 "successful": sum(1 for r in results if r.get("ok")),
                 "failed": sum(1 for r in results if not r.get("ok")),
+                "partial": sum(1 for r in results if r.get("status") == "partial"),
                 "papers": [r.get("report", {}) for r in results if r.get("ok")],
                 "errors": [
                     r.get("error", str(pdf_files[i]))
@@ -481,6 +484,9 @@ def _ingest_cmd_impl(
                 typer.echo(f"Batch complete: {len(results)} papers ingested")
                 success = sum(1 for r in results if r.get("ok"))
                 typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
+                partial = sum(1 for r in results if r.get("status") == "partial")
+                if partial:
+                    typer.echo(f"  Partial (raw kept, derived stage pending): {partial}")
 
         success = sum(1 for r in results if r.get("ok"))
         logger.info("[ingest] batch done — %d/%d papers ingested", success, len(results))
@@ -1141,6 +1147,16 @@ def ingest_link_cmd(
                 openalex_id=ids.openalex_id,
                 strict=True,
             )
+            db.upsert_paper_artifact(
+                local_id,
+                "raw",
+                "ready",
+                fingerprint=hashlib.sha256(md_content.encode("utf-8")).hexdigest(),
+                metadata_json=json.dumps({"source": "url", "url": canonical_web_url(url)}),
+            )
+            db.upsert_paper_artifact(
+                local_id, "tree", "pending", error="run build to structure URL"
+            )
 
             results.append(
                 {
@@ -1310,7 +1326,7 @@ def _print_patent_ppubs(ppub, idx: int | None = None):
 
 def pipeline_cmd(
     ctx: typer.Context,
-    preset: str = typer.Option(None, "--preset", "-p", help="Preset: full, quick, embed"),
+    preset: str = typer.Option(None, "--preset", "-p", help="Preset: full, full-rag, quick, embed"),
     steps: str = typer.Option(None, "--steps", "-s", help="Comma-separated step names"),
     list_steps_flag: bool = typer.Option(False, "--list", help="List available steps and presets"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview steps without executing"),
@@ -1319,15 +1335,24 @@ def pipeline_cmd(
         "--full",
         help="Force full (non-incremental) processing on every step. Default is incremental.",
     ),
+    continue_on_error: bool = typer.Option(
+        False,
+        "--continue-on-error",
+        help="Continue eligible later stages and report failures at the end.",
+    ),
 ):
     """Chain multiple processing steps in sequence (ingest → build → embed → closure).
 
     By default each step runs in incremental mode: build only touches papers
     not yet extracted (or touched since last build), closure only scans the
     neighborhood of recently-changed concepts, embed only trains on new edges.
-    Use --full to force a complete rebuild across every step.
+    Use --full to force a complete rebuild across every step. The ``full-rag``
+    preset also materializes and publishes the configured RAG generation.
     """
     from drbrain.services.pipeline import list_steps_info, resolve_steps
+
+    if isinstance(continue_on_error, typer.models.OptionInfo):
+        continue_on_error = bool(continue_on_error.default)
 
     if list_steps_flag:
         steps_info, presets_info = list_steps_info()
@@ -1370,6 +1395,7 @@ def pipeline_cmd(
         args.extend([step, *step_args])
         return args
 
+    failures: list[str] = []
     for i, name in enumerate(step_names, 1):
         typer.echo(f"[{i}/{len(step_names)}] {name} ...")
         if name == "ingest":
@@ -1392,12 +1418,28 @@ def pipeline_cmd(
             args = child_command("closure")
             if full:
                 args.append("--full")
+        elif name == "rag":
+            args = child_command("rag", "prepare")
+            if full:
+                args.append("--force")
         else:  # resolve_steps currently prevents this; keep the invariant local.
             typer.echo(f"Pipeline failed: unsupported step '{name}'.", err=True)
             raise typer.Exit(1)
 
-        _run_pipeline_step(name, args, root=root, env=child_env)
+        try:
+            _run_pipeline_step(name, args, root=root, env=child_env)
+        except typer.Exit:
+            if not continue_on_error:
+                raise
+            failures.append(name)
+            typer.echo(f"Continuing after failed step '{name}'.", err=True)
 
+    if failures:
+        typer.echo(
+            f"\nPipeline completed with failures ({mode_label}): {', '.join(failures)}",
+            err=True,
+        )
+        raise typer.Exit(1)
     typer.echo(f"\nPipeline complete ({mode_label}): {', '.join(step_names)}")
 
 

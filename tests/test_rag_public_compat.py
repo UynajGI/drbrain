@@ -19,9 +19,11 @@ PUBLIC_SYMBOLS: dict[str, tuple[str, ...]] = {
     "drbrain.rag": ("build_agent", "init_llamaindex_settings", "reason_llamaindex"),
     "drbrain.rag.agent": (
         "AgentFunctionLLM",
+        "RetrievalUnavailableError",
         "build_agent",
         "load_session_history",
         "reason_llamaindex",
+        "retrieve_documents",
     ),
     "drbrain.rag.authority": ("ResolvedClaim", "authority_rank", "is_stale", "resolve_claims"),
     "drbrain.rag.config": ("get_llamaindex_config",),

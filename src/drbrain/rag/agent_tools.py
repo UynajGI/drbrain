@@ -1,25 +1,31 @@
 """Tool assembly adapters: graph, retrieval, plugin and MCP capabilities."""
+
 from __future__ import annotations
-import asyncio
+
 import json
 import logging
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
+
 from drbrain.config import Config
-from drbrain.extractor.agent_tools import TOOL_DEFINITIONS, execute_tool
+from drbrain.extractor.agent_tools import execute_tool
+from drbrain.rag.agent_defaults import CANONICAL_TOOL_SPECS
 from drbrain.rag.retrieval import _retrieval_rows, retrieve_documents
-from drbrain.rag.status import RetrievalUnavailableError
-from drbrain.security import redact_sensitive
+
 try:
     from llama_index.core.tools import FunctionTool
 except ImportError:
-    FunctionTool = None
+    if not TYPE_CHECKING:
+        FunctionTool = None
 log = logging.getLogger(__name__)
-MAX_RESULT_SUMMARY_CHARS = 800
-CANONICAL_TOOL_SPECS = {d["function"]["name"]: d for d in TOOL_DEFINITIONS}
-GRAPH_TOOL_NAMES = list(CANONICAL_TOOL_SPECS)
-_JSON_TYPE_MAP = {"string": str, "integer": int, "number": float,
-                  "boolean": bool, "array": list, "object": dict}
+_JSON_TYPE_MAP = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
 
 
 def _resolve_papers_dir(cfg: Any, db: Any) -> Path | None:
@@ -46,6 +52,7 @@ def _resolve_papers_dir(cfg: Any, db: Any) -> Path | None:
 
 # ── JSON-schema → pydantic model (for FunctionTool schemas) ─────────────────
 
+
 def _schema_to_model(name: str, schema: dict) -> Any:
     """Convert a JSON-schema ``parameters`` dict into a pydantic model.
 
@@ -54,8 +61,6 @@ def _schema_to_model(name: str, schema: dict) -> Any:
     declared defaults). ``FunctionTool.acall`` does not validate against it —
     the schema only feeds the OpenAI tool spec.
     """
-    from typing import Literal
-
     from pydantic import Field, create_model
 
     props = schema.get("properties") or {}
@@ -63,6 +68,7 @@ def _schema_to_model(name: str, schema: dict) -> Any:
     fields: dict[str, Any] = {}
     for pname, pinfo in props.items():
         jt = pinfo.get("type", "string")
+        ptype: Any
         if pinfo.get("enum"):
             # ``Literal`` is parameterized with a runtime tuple of literal
             # values, which mypy rejects as an invalid type expression
@@ -83,6 +89,7 @@ def _schema_to_model(name: str, schema: dict) -> Any:
 
 # ── graph tools: FunctionTool wrappers over execute_tool ────────────────────
 
+
 def _resolve_durable_policy(tool_broker: Any, tool_policy: Any) -> Any | None:
     """Return the policy for a brokered agent without importing loop at module load.
 
@@ -97,6 +104,7 @@ def _resolve_durable_policy(tool_broker: Any, tool_policy: Any) -> Any | None:
         raise ValueError("tool_broker requires a ToolPolicy")
     return policy
 
+
 def _normalize_side_effect(
     value: str,
 ) -> Literal["pure", "read", "write", "irreversible", "unspecified"]:
@@ -104,6 +112,7 @@ def _normalize_side_effect(
     if value not in {"pure", "read", "write", "irreversible", "unspecified"}:
         value = "unspecified"
     return cast(Literal["pure", "read", "write", "irreversible", "unspecified"], value)
+
 
 def _durable_tool_definition(
     *,
@@ -151,6 +160,7 @@ def _durable_tool_definition(
         allowed_tools=allowed_tools,
         timeout_s=timeout_s,
     )
+
 
 def _make_graph_tool(
     name: str,
@@ -210,6 +220,7 @@ def _make_graph_tool(
         description=fn_spec["description"],
         fn_schema=_schema_to_model(name, fn_spec["parameters"]),
     )
+
 
 def _make_validate_tool(
     db: Any,
@@ -288,6 +299,7 @@ def _make_validate_tool(
         fn_schema=_schema_to_model("kg_validate", schema),
     )
 
+
 def _build_retrieval_tool(
     cfg: Config,
     db: Any,
@@ -298,13 +310,11 @@ def _build_retrieval_tool(
     workflow_step: str | None = None,
     rag_generation: str | None = None,
 ) -> Any | None:
-    """Optional fused-retrieval tool (``search_documents``) over LlamaIndex legs.
+    """Optional search tool bound to a published retrieval generation.
 
-    Only registered when the LlamaIndex index/legs actually exist on disk —
-    ``get_retrievers`` returns ``{}`` and ``build_fusion_retriever`` returns
-    ``None`` when there is nothing to fuse, in which case this returns ``None``
-    and the agent keeps the 8 graph tools. Any failure is swallowed (the tool
-    is a bonus, never a blocker).
+    SQL uses its immutable corpus snapshot; LlamaIndex uses persisted legs.
+    Missing retrieval infrastructure leaves the graph tools available.
+    Runtime retrieval failures retain their normal failure semantics.
     """
     schema = {
         "type": "object",
@@ -381,7 +391,7 @@ def _build_retrieval_tool(
                     top_k=10,
                     generation=resolved_generation,
                 )
-            return json.dumps(rows, ensure_ascii=False, default=str)[:12000]
+            return json.dumps(rows, ensure_ascii=False, default=str)
 
         try:
             from llama_index.core.tools import FunctionTool
@@ -452,6 +462,7 @@ def _build_retrieval_tool(
 
 
 # ── LLM glue: FunctionCallingLLM over DrbrainLLM ────────────────────────────
+
 
 def _load_plugin_tools(
     plugins_dir: str | Path,
@@ -529,11 +540,13 @@ def _load_plugin_tools(
         log.warning("[rag] plugin discovery failed for %s: %s", plugins_dir, exc)
         return []
 
+
 def _string_tuple(value: Any) -> tuple[str, ...]:
     """Normalize host-owned list metadata without exposing arbitrary objects."""
     from drbrain.rag.mcp_tools import normalize_mcp_strings
 
     return normalize_mcp_strings(value)
+
 
 def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> Any:
     """Map a trusted MCP descriptor onto the same durable tool contract."""
@@ -586,6 +599,7 @@ def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> 
         allowed_tools=_string_tuple(server.get("allowed_tools")),
         timeout_s=timeout_s,
     )
+
 
 def _load_mcp_tools(
     mcp_servers: list[dict[str, Any]],

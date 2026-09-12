@@ -969,11 +969,12 @@ Chain multiple processing steps in sequence via presets or custom step lists. **
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--preset` | `-p` | Preset: `full`, `quick`, `embed` |
+| `--preset` | `-p` | Preset: `full`, `full-rag`, `quick`, `embed` |
 | `--steps` | `-s` | Comma-separated step names |
 | `--list` | | List available steps and presets |
 | `--dry-run` | | Preview steps without executing |
 | `--full` | | Force full (non-incremental) processing on every step |
+| `--continue-on-error` | | Keep independent later steps running and report failures at the end |
 
 ```bash
 drbrain pipeline --preset full              # incremental (default)
@@ -981,10 +982,11 @@ drbrain pipeline --preset full --full       # force full rebuild
 drbrain pipeline --preset quick
 drbrain pipeline --steps build,embed
 drbrain pipeline --preset full --dry-run
+drbrain pipeline --preset full-rag --continue-on-error
 drbrain pipeline --list
 ```
 
-**Available steps:** `ingest`, `build`, `embed`, `closure`
+**Available steps:** `ingest`, `build`, `embed`, `rag`, `closure`
 
 ---
 
@@ -1209,7 +1211,7 @@ index, embedding only changed nodes.
 | Flag | Description |
 |------|-------------|
 | `-f`, `--force` | Force full rebuild (LlamaIndex engine; ignore content_hash) |
-| `--paper ID` | Restrict to paper local_id (repeatable) |
+| `--paper ID` | Restrict to paper local_id (repeatable; LlamaIndex backend only) |
 | `--json` | Output JSON to stdout |
 
 ```bash
@@ -1223,17 +1225,18 @@ Prepare and publish the configured RAG backend in one operation. In SQL mode
 it rebuilds the derived text/vector database (`drbrain_rag.db`: node text,
 FTS5, vectors, RAPTOR summaries, categories) and then publishes an immutable
 generation; in LlamaIndex mode it delegates to the normal index builder and
-keeps its incremental cache.
+keeps its incremental cache. SQL preparation is corpus-wide; `--paper` is
+accepted only by the LlamaIndex backend.
 
 | Flag | Description |
 |------|-------------|
 | `-f`, `--force` | Force a full rebuild (LlamaIndex mode) |
-| `--paper ID` | Restrict to paper local_id (repeatable) |
+| `--paper ID` | Restrict to paper local_id (repeatable; LlamaIndex backend only) |
 | `--json` | Output JSON to stdout |
 
 ```bash
 drbrain rag prepare
-drbrain rag prepare --paper p0001a2b3 --json
+drbrain rag prepare --json
 ```
 
 ### `drbrain rag health`

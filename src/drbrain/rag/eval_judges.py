@@ -1,9 +1,12 @@
 """Model-judge prompts and response parsing; scores are not calibrated probabilities."""
+
 from __future__ import annotations
-import re
+
 import logging
+import re
 from collections.abc import Sequence
 from typing import Any
+
 log = logging.getLogger(__name__)
 _CONTEXT_CHUNK_MAX_CHARS = 1500
 
@@ -20,6 +23,7 @@ def _prompt_faithfulness(question: str, answer: str, context: str) -> str:
         "Reply with exactly one line: SCORE: <number between 0 and 1>"
     )
 
+
 def _prompt_answer_relevancy(question: str, answer: str) -> str:
     return (
         "You are an evaluation judge for a question answering system.\n"
@@ -30,6 +34,7 @@ def _prompt_answer_relevancy(question: str, answer: str) -> str:
         "Reply with exactly one line: SCORE: <number between 0 and 1>"
     )
 
+
 def _prompt_context_precision(question: str, context: str) -> str:
     return (
         "You are an evaluation judge for a retrieval-augmented question answering system.\n"
@@ -39,6 +44,7 @@ def _prompt_context_precision(question: str, context: str) -> str:
         f"Retrieved context:\n{context}\n\n"
         "Reply with exactly one line: SCORE: <number between 0 and 1>"
     )
+
 
 def _prompt_answer_correctness(question: str, answer: str, reference: str) -> str:
     return (
@@ -54,6 +60,7 @@ def _prompt_answer_correctness(question: str, answer: str, reference: str) -> st
 
 
 _SCORE_RE = re.compile(r"\bSCORE\s*[:=]\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+
 
 def _parse_score(text: str | None) -> float | None:
     """Parse ``SCORE: 0.75`` (or a bare number) out of an LLM verdict."""
@@ -75,6 +82,7 @@ def _parse_score(text: str | None) -> float | None:
             continue
     return None
 
+
 def _score_metric(llm: Any, prompt: str) -> float | None:
     """Run one scoring prompt through the DrbrainLLM bridge."""
     try:
@@ -83,6 +91,7 @@ def _score_metric(llm: Any, prompt: str) -> float | None:
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("[rag] metric scoring call failed: %s", exc)
         return None
+
 
 def _context_for(nodes: Sequence[Any], limit: int = 3) -> str:
     """Join top retrieved node texts for the context-based metrics."""

@@ -848,15 +848,61 @@ def _identify(cleaned: dict, db: Database, dedup: DedupEngine, *, persist: bool 
     return local_id
 
 
-def _write_db(rec: dict, db: Database) -> None:
-    """Persist a successful worker result after its artifacts are complete."""
-    if not rec.get("ok"):
+def _write_db(
+    rec: dict,
+    db: Database,
+    cfg: dict | None = None,
+    *,
+    allow_partial: bool = False,
+) -> None:
+    """Persist worker output after artifacts are written.
+
+    A failed worker may still have produced ``raw.md``.  Keep that durable
+    input and its identity in the shard, while marking the failed tree stage so
+    a later resume can retry only the missing work.
+    """
+    local_id = rec.get("local_id")
+    if not local_id or (not rec.get("ok") and not allow_partial):
         return
-    local_id = rec["local_id"]
     ids = _paper_ids(rec, rec.get("doi"))
+    papers_root = Path(db.path).parent / "papers"
+    # The configured path is preferred; this fallback keeps the cache loader
+    # useful for data-only runtimes where the DB sits beside ``papers/``.
+    configured_root = rec.get("papers_root") or ((cfg or {}).get("dirs", {}) or {}).get("papers")
+    if configured_root:
+        papers_root = Path(configured_root)
+    paper_path = paper_dir(papers_root, local_id)
+    raw_path = paper_path / "raw.md"
+    tree_path = paper_path / "tree.json"
+    if not raw_path.is_file():
+        return
     _persist_identity(rec, local_id, ids, db)
-    db.set_paper_type(local_id, rec.get("paper_type", "paper"))
+    if rec.get("paper_type"):
+        db.set_paper_type(local_id, rec["paper_type"])
     db.set_paper_status(local_id, "uploaded")
+    if raw_path.is_file():
+        db.upsert_paper_artifact(
+            local_id,
+            "raw",
+            "ready",
+            fingerprint=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+            metadata_json=json.dumps({"source": "scibase"}),
+        )
+    if tree_path.is_file():
+        db.upsert_paper_artifact(
+            local_id,
+            "tree",
+            "ready",
+            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+            metadata_json=json.dumps({"sections": rec.get("sections", 0)}),
+        )
+    else:
+        db.upsert_paper_artifact(
+            local_id,
+            "tree",
+            "degraded" if rec.get("ok") else "failed",
+            error=str(rec.get("error") or "tree.json missing"),
+        )
     db.commit()
 
 
@@ -1037,9 +1083,9 @@ def main() -> int:
 
         def consume_worker_result(rec: dict) -> None:
             """Publish one worker result, keeping DB writes after artifacts."""
-            if not args.no_db and rec.get("ok"):
+            if not args.no_db and db is not None and rec.get("local_id"):
                 try:
-                    _write_db(rec, db)
+                    _write_db(rec, db, cfg, allow_partial=True)
                 except Exception as exc:  # noqa: BLE001
                     if db is not None:
                         db.conn.rollback()

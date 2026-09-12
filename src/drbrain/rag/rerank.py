@@ -391,7 +391,9 @@ if _LLAMA_INDEX_AVAILABLE:
                 import math
 
                 if scores is None or len(scores) != len(top):
-                    raise ValueError(f"rerank returned {len(scores or [])} scores for {len(top)} passages")
+                    raise ValueError(
+                        f"rerank returned {len(scores or [])} scores for {len(top)} passages"
+                    )
                 scores = [float(score) for score in scores]
                 if not all(math.isfinite(score) for score in scores):
                     raise ValueError("rerank scores must be finite")
@@ -405,25 +407,15 @@ if _LLAMA_INDEX_AVAILABLE:
                     output_nodes=len(nodes),
                 )
                 return list(nodes)
-            if not scores or len(scores) != len(top):
-                log.warning(
-                    "[rag] rerank returned %s scores for %s passages; falling back to coarse order",
-                    len(scores or []),
-                    len(top),
-                )
-                self._set_trace(
-                    "invalid_scores",
-                    started=started,
-                    input_nodes=input_nodes,
-                    candidates=len(top),
-                    output_nodes=len(nodes),
-                )
-                return list(nodes)
             reranked = sorted(
                 (
-                    NodeWithScore(node=nws.node, score=float(s))
+                    NodeWithScore(
+                        node=nws.node.model_copy(
+                            update={"metadata": {**nws.node.metadata, "score_kind": "rerank"}}
+                        ),
+                        score=float(s),
+                    )
                     for nws, s in zip(top, scores)
-                    if s is not None
                 ),
                 key=lambda x: x.score if x.score is not None else float("-inf"),
                 reverse=True,

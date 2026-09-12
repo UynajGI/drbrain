@@ -98,7 +98,10 @@ class _PaperDB:
 def _make_cfg(tmp_path: Path, papers_dir: Path) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
-            enabled=True, rag_engine="llamaindex", vector_store="memory", storage_dir=str(tmp_path / "li")
+            enabled=True,
+            rag_engine="llamaindex",
+            vector_store="memory",
+            storage_dir=str(tmp_path / "li"),
         ),
         dirs=DirsConfig(papers=str(papers_dir)),
         embed=EmbedConfig(provider="none", model="fake-embed", top_k=5),
@@ -379,8 +382,9 @@ def test_build_index_chunk_metadata_and_sizes(tmp_path):
     assert all("line_start" not in n.metadata for n in chunks)
     assert chunks[0].node_id == f"{PAPER_B}:0000#0"
     assert chunks[2].node_id == f"{PAPER_B}:0000#2"
-    parent = next(doc for doc in collect_tree_nodes(papers_dir / PAPER_B)
-                  if doc.metadata["node_id"] == "0000")
+    parent = next(
+        doc for doc in collect_tree_nodes(papers_dir / PAPER_B) if doc.metadata["node_id"] == "0000"
+    )
     assert "".join(n.text for n in chunks) == parent.text
 
 

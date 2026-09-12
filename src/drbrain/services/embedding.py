@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from drbrain.storage.paths import paper_id_from_dir, raw_md_path, tree_json_path
+from drbrain.storage.paths import paper_id_from_dir
 
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
@@ -657,56 +657,13 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
 
 
 def _collect_tree_nodes(paper_dir: Path) -> list[dict]:
-    """Collect all tree nodes from a paper's tree.json, with their text content."""
-    tree_path = tree_json_path(paper_dir)
-    if not tree_path.is_file():
-        return []
+    """Collect nodes through the shared PageIndex text projection."""
+    from drbrain.storage.node_projection import collect_tree_node_records
 
-    tree = json.loads(tree_path.read_text(encoding="utf-8"))
-    structure = tree.get("structure", [])
-
-    raw_path = raw_md_path(paper_dir)
-    if raw_path.is_file():
-        raw_text = raw_path.read_text(encoding="utf-8")
-    else:
-        raw_text = ""
-
-    def _walk(nodes: list[dict], path_prefix: str = "") -> list[dict]:
-        result = []
-        for node in nodes:
-            nid = node.get("node_id", "")
-            title = node.get("title", "")
-            text = f"{title}\n"
-
-            # Try to extract content from raw.md using line ranges
-            line_start = node.get("line_start")
-            line_end = node.get("line_end")
-            if line_start is not None and line_end is not None and raw_text:
-                text += "\n".join(raw_text.split("\n")[line_start:line_end])
-            elif node.get("content"):
-                text += str(node.get("content", ""))
-            elif node.get("summary"):
-                # scibase/oa 管线的 tree.json 只有 title+line_num+summary——
-                # summary 即节点文本（短节点存原文，长节点存 LLM 摘要）。
-                # 缺了这条回退，节点只会拿标题做嵌入（泛化标题 → 大量重复向量簇）
-                text += str(node.get("summary", ""))
-            elif node.get("prefix_summary"):
-                text += str(node.get("prefix_summary", ""))
-
-            result.append(
-                {
-                    "node_id": nid,
-                    "title": title,
-                    "text": text.strip(),
-                }
-            )
-
-            child_nodes = node.get("nodes", [])
-            if child_nodes:
-                result.extend(_walk(child_nodes, f"{path_prefix}{nid}/"))
-        return result
-
-    return _walk(structure)
+    return [
+        {"node_id": row["node_id"], "title": row["title"], "text": row["text"]}
+        for row in collect_tree_node_records(paper_dir)
+    ]
 
 
 def build_tree_vectors(
@@ -841,6 +798,32 @@ async def build_paper_tree_vectors(
     pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg, paper_id=paper_id)
     raptor_count = 0
     if llm_models:
+        # PageIndex hashing tells us whether the leaf layer changed.  RAPTOR
+        # summaries carry random IDs, so rebuilding them on every unchanged
+        # run would duplicate evidence; clear the old layer only when a leaf
+        # changed or when no RAPTOR layer has ever been produced.
+        from drbrain.storage.database import Database
+
+        resolved_paper_id = paper_id or paper_id_from_dir(paper_dir)
+        raptor_exists = False
+        raptor_needs_rebuild = pageindex_count > 0
+        raptor_db = Database(db_path)
+        try:
+            raptor_exists = bool(
+                raptor_db.conn.execute(
+                    "SELECT 1 FROM tree_vectors WHERE paper_id = ? "
+                    "AND tree_layer LIKE 'raptor_%' LIMIT 1",
+                    (resolved_paper_id,),
+                ).fetchone()
+            )
+            raptor_needs_rebuild = raptor_needs_rebuild or not raptor_exists
+            if raptor_needs_rebuild:
+                raptor_db.clear_raptor_artifacts(resolved_paper_id)
+                raptor_db.commit()
+        finally:
+            raptor_db.close()
+        if not raptor_needs_rebuild:
+            return pageindex_count
         try:
             raptor_count = await build_raptor_tree(
                 paper_dir,

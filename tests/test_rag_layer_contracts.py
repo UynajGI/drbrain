@@ -46,6 +46,30 @@ def sql_corpus(tmp_path, monkeypatch):
     return cfg, path
 
 
+@pytest.mark.asyncio
+async def test_sql_agent_tool_keeps_valid_json_and_pinned_generation(sql_corpus, monkeypatch):
+    import json
+
+    from drbrain.rag import agent_tools
+    from drbrain.rag.indexer import build_index
+
+    cfg, _ = sql_corpus
+    generation = build_index(cfg, None)["generation"]
+    rows = [{"text": "reference " * 1500, "generation": generation}]
+    calls = []
+
+    def retrieve(*args, **kwargs):
+        calls.append(kwargs)
+        return rows
+
+    monkeypatch.setattr(agent_tools, "retrieve_documents", retrieve)
+    tool = agent_tools._build_retrieval_tool(cfg, None, None, rag_generation=generation)
+    assert tool is not None
+    output = await tool.acall(query="reference")
+    assert json.loads(output.content) == rows
+    assert calls[0]["generation"] == generation
+
+
 def test_sql_fingerprint_covers_nonfirst_content_and_vectors(sql_corpus):
     _, path = sql_corpus
     with sqlite3.connect(path) as conn:
@@ -58,8 +82,8 @@ def test_sql_fingerprint_covers_nonfirst_content_and_vectors(sql_corpus):
 
 
 def test_sql_publish_keeps_previous_content_and_pins_configuration(sql_corpus):
-    from drbrain.rag.indexer import build_index, capture_index_generation, retain_index_generation
     from drbrain.rag.agent import retrieve_documents
+    from drbrain.rag.indexer import build_index, capture_index_generation, retain_index_generation
 
     cfg, path = sql_corpus
     first = build_index(cfg, None)["generation"]
@@ -81,8 +105,8 @@ def test_sql_publish_keeps_previous_content_and_pins_configuration(sql_corpus):
 
 
 def test_sql_pinned_requests_reject_live_sources(sql_corpus):
-    from drbrain.rag.indexer import build_index
     from drbrain.rag.agent import retrieve_documents
+    from drbrain.rag.indexer import build_index
 
     cfg, _ = sql_corpus
     generation = build_index(cfg, None)["generation"]
@@ -118,8 +142,11 @@ def test_sql_reports_failure_instead_of_empty(sql_corpus, monkeypatch):
 def test_partial_sql_outage_is_visible_even_when_other_leg_is_empty(sql_corpus, monkeypatch):
     cfg, _ = sql_corpus
     cfg.llamaindex.retrievers = ["bm25", "vector"]
-    monkeypatch.setattr(sql_retrie, "_rerank_with_vectors",
-                        lambda *args: (_ for _ in ()).throw(TimeoutError("offline fixture")))
+    monkeypatch.setattr(
+        sql_retrie,
+        "_rerank_with_vectors",
+        lambda *args: (_ for _ in ()).throw(TimeoutError("offline fixture")),
+    )
     rows = sql_retrie.retrieve_documents_sql(cfg, None, "absent")
     assert rows == []
     assert rows.result.status == "degraded"
@@ -127,16 +154,17 @@ def test_partial_sql_outage_is_visible_even_when_other_leg_is_empty(sql_corpus, 
 
 
 def test_failed_sql_publication_keeps_previous_generation(sql_corpus, monkeypatch):
-    from drbrain.rag.indexer import build_index, capture_index_generation, get_index_health
     from drbrain.rag import sql_snapshot
+    from drbrain.rag.indexer import build_index, capture_index_generation, get_index_health
 
     cfg, _ = sql_corpus
     cfg.llamaindex.enabled = True
     assert get_index_health(cfg)["ready"] is False
     generation = build_index(cfg, None)["generation"]
     assert get_index_health(cfg)["ready"] is True
-    monkeypatch.setattr(sql_snapshot, "copy_snapshot",
-                        lambda *args: (_ for _ in ()).throw(OSError("copy failure")))
+    monkeypatch.setattr(
+        sql_snapshot, "copy_snapshot", lambda *args: (_ for _ in ()).throw(OSError("copy failure"))
+    )
     with pytest.raises(OSError):
         build_index(cfg, None)
     assert capture_index_generation(cfg) == generation
@@ -153,6 +181,7 @@ def test_long_plain_text_redaction_preserves_text_and_redacts_secrets():
 
 def test_fragment_offsets_recover_exact_text():
     from llama_index.core.schema import Document
+
     from drbrain.rag.indexer import _chunk_document
 
     original = "Heading\n" + "paragraph words " * 50 + "\n\n" + "second part " * 30
@@ -181,6 +210,7 @@ def test_fragment_offsets_recover_exact_text():
 @pytest.mark.parametrize("scores", [[float("nan"), 1.0], [float("inf"), 1.0], [None, 1.0]])
 def test_invalid_rerank_scores_preserve_coarse_order(scores):
     from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+
     from drbrain.rag.rerank import RerankPostprocessor
 
     class Reranker:
@@ -189,10 +219,110 @@ def test_invalid_rerank_scores_preserve_coarse_order(scores):
         def rerank(self, query, passages):
             return scores
 
-    nodes = [NodeWithScore(node=TextNode(text="first"), score=0.5),
-             NodeWithScore(node=TextNode(text="second"), score=0.4)]
+    nodes = [
+        NodeWithScore(node=TextNode(text="first"), score=0.5),
+        NodeWithScore(node=TextNode(text="second"), score=0.4),
+    ]
     processor = RerankPostprocessor(top_k=2, reranker=Reranker())
     output = processor.postprocess_nodes(nodes, query_bundle=QueryBundle(query_str="question"))
     assert [(row.node.node_id, row.score) for row in output] == [
         (row.node.node_id, row.score) for row in nodes
     ]
+
+
+@pytest.mark.parametrize("backend", ["sql", "llamaindex"])
+def test_backends_share_scope_count_and_empty_contract(sql_corpus, monkeypatch, backend):
+    from llama_index.core.retrievers import BaseRetriever
+    from llama_index.core.schema import NodeWithScore, TextNode
+
+    from drbrain.rag import fusion
+    from drbrain.rag.contracts import RetrievalRequest
+    from drbrain.rag.retrieval import retrieve
+
+    cfg, _ = sql_corpus
+    cfg.llamaindex.rag_engine = backend
+
+    class LocalRetriever(BaseRetriever):
+        def _retrieve(self, bundle):
+            return [
+                NodeWithScore(
+                    node=TextNode(
+                        text=f"{pid} reference",
+                        id_=pid,
+                        metadata={"paper_id": pid, "node_id": "1", "categories": category},
+                    ),
+                    score=score,
+                )
+                for pid, category, score in [("a", "physics", 1.0), ("b", "biology", 0.5)]
+            ]
+
+    monkeypatch.setattr(fusion, "get_retrievers", lambda *a, **kw: {"bm25": LocalRetriever()})
+    generation = "g-fixture" if backend == "llamaindex" else None
+    request = RetrievalRequest("reference", 1, generation, {"paper_ids": ["b"]})
+    result = retrieve(cfg, None, None, request)
+    assert result.status == "ok"
+    assert [row["paper_id"] for row in result.records] == ["b"]
+    empty = retrieve(
+        cfg, None, None, RetrievalRequest("reference", 5, generation, {"paper_ids": []})
+    )
+    assert empty.records == [] and empty.status == "empty"
+
+
+def test_core_retrieval_modules_do_not_import_agent_or_loop():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "drbrain" / "rag"
+    for name in ("contracts.py", "retrieval.py", "index_generations.py", "eval_metrics.py"):
+        tree = ast.parse((root / name).read_text(encoding="utf-8"))
+        modules = [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+        assert not any(
+            module.startswith(("drbrain.rag.agent", "drbrain.loop")) for module in modules
+        )
+
+
+def test_query_engine_adapter_uses_the_sql_snapshot(sql_corpus):
+    from drbrain.rag.engine import build_hybrid_retriever
+    from drbrain.rag.indexer import build_index
+
+    cfg, _ = sql_corpus
+    cfg.llamaindex.enabled = True
+    generation = build_index(cfg, None)["generation"]
+    retriever = build_hybrid_retriever(cfg, None, top_k=1)
+    nodes = retriever.retrieve("reference")
+    assert len(nodes) == 1
+    assert nodes[0].node.metadata["generation"] == generation
+
+
+def test_failed_index_build_restores_process_gc_state(tmp_path):
+    import gc
+
+    from drbrain.rag.indexer import build_index
+
+    cfg = Config(
+        llamaindex=LlamaIndexConfig(rag_engine="llamaindex", storage_dir=str(tmp_path / "index"))
+    )
+    before = gc.isenabled()
+    gc.enable()
+    try:
+        with pytest.raises(AttributeError):
+            build_index(cfg, None)
+        assert gc.isenabled()
+    finally:
+        if before:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+def test_similarity_cutoff_does_not_misinterpret_rrf_rank_scores():
+    from llama_index.core.schema import NodeWithScore, TextNode
+
+    from drbrain.rag.engine import SimilarityCutoffPostprocessor
+
+    coarse = NodeWithScore(node=TextNode(text="coarse", metadata={"score_kind": "rrf"}), score=0.02)
+    ranked = NodeWithScore(
+        node=TextNode(text="ranked", metadata={"score_kind": "rerank"}), score=0.02
+    )
+    processor = SimilarityCutoffPostprocessor(similarity_cutoff=0.7)
+    assert processor.postprocess_nodes([coarse, ranked]) == [coarse]
