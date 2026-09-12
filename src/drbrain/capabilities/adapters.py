@@ -119,7 +119,9 @@ class CLIAdapter:
         if self.env is not None:
             environment.update(self.env)
         try:
-            completed = subprocess.run(
+            # ``command`` is host-owned adapter configuration; shell parsing is
+            # disabled so arguments are passed verbatim to the executable.
+            completed = subprocess.run(  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
                 list(self.command),
                 input=json.dumps(arguments, ensure_ascii=False),
                 text=True,
@@ -127,6 +129,7 @@ class CLIAdapter:
                 timeout=self.timeout_seconds,
                 check=False,
                 env=environment,
+                shell=False,
             )
         except subprocess.TimeoutExpired:
             return InvocationResult(
