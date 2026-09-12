@@ -43,6 +43,7 @@ Rank-comparison helpers (:func:`top_k_overlap`, :func:`mean_rank_displacement`,
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -388,6 +389,13 @@ if _LLAMA_INDEX_AVAILABLE:
             passages = [_passage_text(nws.node) for nws in top]
             try:
                 scores = reranker.rerank(query, passages)
+                if scores is None or len(scores) != len(top):
+                    raise ValueError(
+                        f"rerank returned {len(scores or [])} scores for {len(top)} passages"
+                    )
+                scores = [float(score) for score in scores]
+                if not all(math.isfinite(score) for score in scores):
+                    raise ValueError("rerank scores must be finite")
             except Exception as exc:  # noqa: BLE001 - degrade, never raise
                 log.warning("[rag] rerank failed (%s); falling back to coarse order", exc)
                 self._set_trace(
@@ -398,25 +406,15 @@ if _LLAMA_INDEX_AVAILABLE:
                     output_nodes=len(nodes),
                 )
                 return list(nodes)
-            if not scores or len(scores) != len(top):
-                log.warning(
-                    "[rag] rerank returned %s scores for %s passages; falling back to coarse order",
-                    len(scores or []),
-                    len(top),
-                )
-                self._set_trace(
-                    "invalid_scores",
-                    started=started,
-                    input_nodes=input_nodes,
-                    candidates=len(top),
-                    output_nodes=len(nodes),
-                )
-                return list(nodes)
             reranked = sorted(
                 (
-                    NodeWithScore(node=nws.node, score=float(s))
+                    NodeWithScore(
+                        node=nws.node.model_copy(
+                            update={"metadata": {**nws.node.metadata, "score_kind": "rerank"}}
+                        ),
+                        score=float(s),
+                    )
                     for nws, s in zip(top, scores)
-                    if s is not None
                 ),
                 key=lambda x: x.score if x.score is not None else float("-inf"),
                 reverse=True,

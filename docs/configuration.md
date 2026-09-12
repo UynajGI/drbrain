@@ -189,7 +189,7 @@ Metrics tracked separately in `data/metrics.db`.
 
 The database schema is versioned in the `schema_versions` table and migrated automatically on every `Database.__init__` via `_migrate()`. Each migration is idempotent: it detects whether the target column/index exists via `PRAGMA table_info` and only then runs `ALTER TABLE` / `CREATE INDEX`. You never need to run a manual migration step — opening the DB upgrades it in place.
 
-Current schema version: **v20** (`embedding_revision`).
+Current schema version: **v21** (`project_scope`).
 
 | Version | Name | What it adds |
 |---------|------|--------------|
@@ -213,6 +213,8 @@ Current schema version: **v20** (`embedding_revision`).
 | v18 | `paper_categories` | `papers.categories` column |
 | v19 | `claim_provenance` | claims provenance columns |
 | v20 | `embedding_revision` | `vector_metadata` embedding-revision watermark |
+| v21 | `project_scope` | `projects` table + `agent_sessions.project_id` scope column (WebUI project / session scope) |
+| v22 | `paper_artifacts` | Per-paper stage state, fingerprints and failure diagnostics for resumable ingestion/RAG |
 
 The `updated_at` columns (v8) and `last_run:<stage>` watermarks (stored in `vector_metadata`) together drive the incremental pipeline: stages compare `max(papers.updated_at)` against their watermark to decide whether to skip. The `embedding_revision` watermark (v20) is bumped whenever embeddings are saved or cleared, so cached TransE models cannot survive an identity merge or a cache wipe. There is nothing to configure here — it is automatic — but if you ever need a full rebuild, pass `--all` (build), `--full` (closure/pipeline), or `--retrain` (embed) to bypass the watermarks.
 
@@ -347,6 +349,57 @@ Disables all text embeddings. Search falls back to pure BM25 + LLM tree navigati
 | Field | Description |
 |-------|-------------|
 | `top_k` | Ignored. BM25 and tree traversal handle retrieval. |
+
+---
+
+## RAG Retrieval (LlamaIndex)
+
+```yaml
+llamaindex:
+  enabled: true
+  rag_engine: "sql"
+  vector_store: "memory"
+  storage_dir: "data/llamaindex"
+  retrievers: ["bm25", "vector"]
+  fusion_mode: "reciprocal_rank"
+  rerank: true
+  rerank_model: "Qwen/Qwen3-Reranker-0.6B"
+  rerank_top_k: 20
+  similarity_cutoff: 0.7
+  max_node_tokens: 4000
+  streaming: true
+  eval:
+    golden_set: "data/llamaindex/golden.jsonl"
+    split: ["dev", "val", "test"]
+```
+
+Hybrid retrieval behind `drbrain hybrid`, `ask`, `reason` and the RAG agent
+search tools. `drbrain rag prepare` rebuilds and publishes in one step,
+`drbrain rag index` publishes the current working copy (or incrementally
+updates the LlamaIndex index), `drbrain rag health` checks readiness, and
+`drbrain rag eval` runs the golden set. Unknown fields inside `llamaindex:`
+raise a config error at load time.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Master switch; the shipped `config.yaml` enables it |
+| `rag_engine` | `"sql"` | `sql` queries the derived corpus copy (`drbrain_rag.db`: node text + FTS5 + vectors) through immutable snapshots; `llamaindex` builds a persisted docstore index (single-library / debugging use) |
+| `vector_store` | `"memory"` | `memory` (`SimpleVectorStore`) or `chroma`; recorded in the published index manifest |
+| `storage_dir` | `data/llamaindex` | Published generations (`generations/<id>/` + `active.json`) |
+| `retrievers` | `["bm25", "vector"]` | Fusion legs of the retriever stack |
+| `fusion_mode` | `"reciprocal_rank"` | `reciprocal_rank` or `relative_score` |
+| `rerank` | `true` | Enable reranking |
+| `rerank_model` | `Qwen/Qwen3-Reranker-0.6B` | Reranker model |
+| `rerank_top_k` | `20` | Candidates fed to the reranker |
+| `similarity_cutoff` | `0.7` | Similarity post-processor threshold |
+| `max_node_tokens` | `4000` | Nodes above this size are split into bounded physical fragments with exact parent-text offsets; changing it requires a full index rebuild |
+| `streaming` | `true` | Enable streaming responses |
+| `mcp_require_trusted` | `false` | Require `trusted: true` + a non-empty tool allowlist for MCP tools on the agent path |
+| `eval.golden_set` | `data/llamaindex/golden.jsonl` | Golden query set for `drbrain rag eval` |
+| `eval.split` | `["dev", "val", "test"]` | Evaluation splits |
+
+See [RAG layer contracts and migration](rag-layer-completion.md) for backend
+capabilities, fragment locators and the SQL snapshot lifecycle.
 
 ---
 

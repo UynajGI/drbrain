@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -180,6 +182,20 @@ CREATE TABLE IF NOT EXISTS build_stages (
     PRIMARY KEY (paper_id, stage)
 );
 CREATE INDEX IF NOT EXISTS idx_build_stages_paper_stage ON build_stages(paper_id, stage);
+
+CREATE TABLE IF NOT EXISTS paper_artifacts (
+    paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','running','ready','degraded','failed','skipped')),
+    fingerprint TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (paper_id, stage)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status ON paper_artifacts(stage, status);
 
 CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
@@ -569,9 +585,10 @@ class Database:
 
     def _migrate(self) -> None:
         """Apply pending schema migrations in order."""
-        current = self.conn.execute(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_versions"
-        ).fetchone()[0]
+        applied = {
+            int(row[0])
+            for row in self.conn.execute("SELECT version FROM schema_versions").fetchall()
+        }
 
         migrations = [
             (1, "paper_type", self._migrate_add_paper_type),
@@ -595,10 +612,15 @@ class Database:
             (19, "claim_provenance", self._migrate_add_claim_provenance),
             (20, "embedding_revision", self._migrate_add_embedding_revision),
             (21, "project_scope", self._migrate_add_project_scope),
+            (22, "paper_artifacts", self._migrate_add_paper_artifacts),
         ]
 
         for version, name, fn in migrations:
-            if current < version:
+            # Check membership rather than only MAX(version): an interrupted
+            # or manually repaired database can lose an older marker while a
+            # newer migration remains recorded.  Each migration is written to
+            # be idempotent, so repairing that hole is safe.
+            if version not in applied:
                 logger.info("[db] applying migration v%d: %s", version, name)
                 fn()
                 self.conn.execute(
@@ -606,9 +628,10 @@ class Database:
                     (version,),
                 )
                 self.conn.commit()
+                applied.add(version)
                 logger.info("[db] migration v%d (%s) applied", version, name)
-        if current >= len(migrations):
-            logger.debug("[db] schema up to date (v%d)", current)
+        if len(applied) >= len(migrations):
+            logger.debug("[db] schema up to date (v%d)", max(applied, default=0))
 
     def _migrate_add_paper_type(self) -> None:
         """Add paper_type column if missing (pre-v2 DBs)."""
@@ -1057,6 +1080,27 @@ class Database:
             "INSERT OR IGNORE INTO projects(project_id, name, description, is_default) "
             "VALUES (?, ?, '', 1)",
             (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME),
+        )
+
+    def _migrate_add_paper_artifacts(self) -> None:
+        """Create the canonical per-paper derived-artifact state table."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS paper_artifacts (
+                paper_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','running','ready','degraded','failed','skipped')),
+                fingerprint TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (paper_id, stage)
+            );
+            CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status
+                ON paper_artifacts(stage, status);
+            """
         )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1597,6 +1641,184 @@ class Database:
             "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (paper_id, stage, status, result_json),
         )
+
+    def upsert_paper_artifact(
+        self,
+        paper_id: str,
+        stage: str,
+        status: str,
+        *,
+        fingerprint: str = "",
+        error: str = "",
+        metadata_json: str = "{}",
+    ) -> None:
+        """Record one derived artifact without changing the paper lifecycle row."""
+        from drbrain.storage.artifacts import validate_artifact_stage, validate_artifact_status
+
+        self._validate_local_id(paper_id)
+        stage = validate_artifact_stage(stage)
+        status = validate_artifact_status(status)
+        self.conn.execute(
+            """INSERT INTO paper_artifacts
+               (paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+               ON CONFLICT(paper_id, stage) DO UPDATE SET
+                 status=excluded.status,
+                 fingerprint=excluded.fingerprint,
+                 error=excluded.error,
+                 metadata_json=excluded.metadata_json,
+                 attempts=paper_artifacts.attempts + 1,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (paper_id, stage, status, str(fingerprint), str(error), str(metadata_json)),
+        )
+
+    def get_paper_artifact(self, paper_id: str, stage: str) -> dict | None:
+        """Return one artifact state, or ``None`` when it has not run."""
+        from drbrain.storage.artifacts import validate_artifact_stage
+
+        self._validate_local_id(paper_id)
+        stage = validate_artifact_stage(stage)
+        row = self.conn.execute(
+            "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
+            "FROM paper_artifacts WHERE paper_id = ? AND stage = ?",
+            (paper_id, stage),
+        ).fetchone()
+        if row is None:
+            return None
+        # ``sqlite3`` is configured with tuple rows; map them using the
+        # explicit column order to keep this API stable across connections.
+        columns = (
+            "paper_id",
+            "stage",
+            "status",
+            "fingerprint",
+            "error",
+            "metadata_json",
+            "attempts",
+            "updated_at",
+        )
+        return dict(zip(columns, row, strict=False))
+
+    def list_paper_artifacts(self, paper_id: str | None = None) -> list[dict]:
+        """List artifact states, optionally restricted to one paper."""
+        if paper_id is None:
+            cursor = self.conn.execute(
+                "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
+                "FROM paper_artifacts ORDER BY paper_id, stage"
+            )
+        else:
+            self._validate_local_id(paper_id)
+            cursor = self.conn.execute(
+                "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
+                "FROM paper_artifacts WHERE paper_id = ? ORDER BY stage",
+                (paper_id,),
+            )
+        rows = cursor.fetchall()
+        columns = [item[0] for item in cursor.description or ()]
+        return [dict(zip(columns, row, strict=False)) for row in rows]
+
+    def clear_raptor_artifacts(self, paper_id: str) -> int:
+        """Remove derived RAPTOR rows before rebuilding one paper.
+
+        RAPTOR node IDs include a random suffix, so replacing a tree without
+        clearing the previous layer would accumulate duplicate summaries and
+        make every rebuild look like new evidence.  The optional sqlite-vec
+        shadow table is cleaned best-effort alongside the canonical rows.
+        """
+        self._validate_local_id(paper_id)
+        rows = self.conn.execute(
+            "SELECT node_id FROM tree_vectors WHERE paper_id = ? AND tree_layer LIKE 'raptor_%'",
+            (paper_id,),
+        ).fetchall()
+        node_ids = [str(row[0]) for row in rows]
+        if node_ids:
+            exists = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tree_vectors_vec'"
+            ).fetchone()
+            if exists:
+                # vec0 virtual tables reject some bulk ``IN`` deletes.  Match
+                # the per-node cleanup used by ``vec_upsert`` so stale ANN
+                # shadow rows cannot survive an artifact replacement.
+                for node_id in node_ids:
+                    try:
+                        self.conn.execute(
+                            "DELETE FROM tree_vectors_vec WHERE node_id = ?",
+                            (node_id,),
+                        )
+                    except sqlite3.Error as exc:
+                        logger.debug(
+                            "[db] failed to clear tree_vectors_vec node {} for {}: {}",
+                            node_id,
+                            paper_id,
+                            exc,
+                        )
+        self.conn.execute(
+            "DELETE FROM tree_vectors WHERE paper_id = ? AND tree_layer LIKE 'raptor_%'",
+            (paper_id,),
+        )
+        self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (paper_id,))
+        return len(node_ids)
+
+    def replace_raptor_artifacts(
+        self, paper_id: str, records: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Atomically replace one paper's RAPTOR rows from staged records.
+
+        Callers build the replacement outside the database first.  This keeps
+        the previous layer available when summarization or embedding fails and
+        makes the final swap a single database write scope.
+        """
+        self._validate_local_id(paper_id)
+        summaries: list[tuple[str, str, str, str, int]] = []
+        vectors: list[tuple[str, str, bytes, str, str]] = []
+        for record in records:
+            if str(record.get("paper_id") or paper_id) != paper_id:
+                raise ValueError("RAPTOR record paper_id does not match replacement paper")
+            node_id = str(record.get("node_id") or "")
+            if not node_id:
+                continue
+            if record.get("type") == "summary":
+                source_ids = record.get("source_node_ids") or []
+                summaries.append(
+                    (
+                        node_id,
+                        paper_id,
+                        str(record.get("summary_text") or ""),
+                        json.dumps(source_ids),
+                        int(record.get("tree_layer") or 0),
+                    )
+                )
+            elif record.get("type") == "vector":
+                blob = base64.b64decode(str(record.get("embedding_blob_b64") or ""))
+                vectors.append(
+                    (
+                        node_id,
+                        paper_id,
+                        blob,
+                        str(record.get("content_hash") or ""),
+                        str(record.get("tree_layer") or ""),
+                    )
+                )
+
+        if not summaries:
+            return {"summaries": 0, "vectors": 0}
+
+        with self._write_scope():
+            self.clear_raptor_artifacts(paper_id)
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO tree_summaries "
+                "(node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+                "VALUES (?, ?, ?, ?, ?)",
+                summaries,
+            )
+            if vectors:
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO tree_vectors "
+                    "(node_id, paper_id, embedding, content_hash, tree_layer) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    vectors,
+                )
+        return {"summaries": len(summaries), "vectors": len(vectors)}
 
     def merge_papers(self, keep_id: str, merge_id: str) -> dict:
         """Merge two paper records atomically, keeping ``keep_id``.

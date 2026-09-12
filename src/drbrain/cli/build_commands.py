@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
 import typer
+from loguru import logger as _build_log
 
 from drbrain.cli._common import open_db
 from drbrain.graph.engine import GraphEngine
+from drbrain.security import configured_secret_values, safe_error
 from drbrain.storage.database import Database
-from drbrain.storage.paths import raw_md_path, tree_json_path
+from drbrain.storage.paths import paper_id_from_dir, raw_md_path, resolve_paper_dir, tree_json_path
 
 
 def translate_cmd(
@@ -35,7 +38,13 @@ def translate_cmd(
         raise typer.Exit(1)
 
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    paper_dir = papers_dir / local_id
+    try:
+        paper_dir = resolve_paper_dir(papers_dir, local_id)
+        if paper_dir is None:
+            raise FileNotFoundError("paper directory unavailable")
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Cannot resolve paper storage for {local_id}: {safe_error(exc)}", err=True)
+        raise typer.Exit(1) from exc
 
     if not raw_md_path(paper_dir).exists():
         typer.echo(f"No raw.md found for {local_id}. Run 'drbrain ingest' first.", err=True)
@@ -160,8 +169,6 @@ def build_cmd(
     """Build knowledge graph from ingested papers using 5-stage LLM extraction."""
     import time as _time
 
-    from loguru import logger as _build_log
-
     from drbrain.extractor.cache import ApiCache
     from drbrain.extractor.concept import build_graph_from_tree
 
@@ -169,8 +176,6 @@ def build_cmd(
     db = Database(cfg["db"]["path"])
 
     # LLM response cache (deduplicate retries across stages)
-    from drbrain.security import configured_secret_values, safe_error
-
     secrets = configured_secret_values(cfg)
     cache = ApiCache("data/spool/llm_cache", secrets=secrets)
 
@@ -225,11 +230,36 @@ def build_cmd(
         _build_log.info(f"[build] paper={pid} title={paper['title'][:60]}")
         typer.echo(f"\n{pid}: {paper['title'][:80]}")
 
-        tree_path = tree_json_path(papers_dir / pid)
-        md_path = raw_md_path(papers_dir / pid)
+        try:
+            paper_path = resolve_paper_dir(papers_dir, pid)
+            if paper_path is None:
+                raise FileNotFoundError("paper directory unavailable")
+        except (OSError, ValueError) as exc:
+            message = safe_error(exc, secrets=secrets)
+            db.upsert_paper_artifact(pid, "kg", "failed", error=message)
+            db.commit()
+            typer.echo(f"  Paper directory unavailable: {message}")
+            failed += 1
+            continue
+        tree_path = tree_json_path(paper_path)
+        md_path = raw_md_path(paper_path)
+        db.upsert_paper_artifact(pid, "kg", "running")
+        db.commit()
 
-        # Retry tree generation if raw.md exists but tree.json is missing
-        if not tree_path.exists() and md_path.exists():
+        # Retry tree generation when raw.md exists but tree.json is missing or
+        # malformed.  A half-written tree must not block recovery on the next
+        # build run.
+        existing_tree = None
+        tree_invalid = False
+        if tree_path.exists():
+            try:
+                existing_tree = json.loads(tree_path.read_text(encoding="utf-8"))
+                tree_invalid = not isinstance(existing_tree, dict) or not isinstance(
+                    existing_tree.get("structure"), list
+                )
+            except (OSError, UnicodeError, ValueError):
+                tree_invalid = True
+        if (not tree_path.exists() or tree_invalid) and md_path.exists():
             typer.echo("  Tree missing, retrying...")
             try:
                 from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
@@ -243,26 +273,55 @@ def build_cmd(
                     max_node_tokens=10000,
                     min_token_threshold=5000,
                 )
-                configure_tree_backend(pageindex_cfg, getattr(cfg, "pageindex", None))
+                configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
                 doc_tree = asyncio.run(
                     md_to_tree(str(md_path), config=pageindex_cfg, models=llm_models)
                 )
                 tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
+                existing_tree = json.loads(tree_path.read_text(encoding="utf-8"))
+                db.upsert_paper_artifact(
+                    pid,
+                    "tree",
+                    "ready",
+                    fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+                    metadata_json=json.dumps({"nodes": len(doc_tree.structure)}),
+                )
+                db.commit()
                 typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
             except Exception as e:
+                db.upsert_paper_artifact(
+                    pid, "tree", "degraded", error=safe_error(e, secrets=secrets)
+                )
+                db.upsert_paper_artifact(pid, "kg", "skipped", error="tree unavailable")
+                db.commit()
                 typer.echo(f"  Tree regeneration failed: {safe_error(e, secrets=secrets)}")
                 failed += 1
                 continue
         elif not md_path.exists():
+            db.upsert_paper_artifact(pid, "tree", "skipped", error="raw.md missing")
+            db.upsert_paper_artifact(pid, "kg", "skipped", error="raw.md missing")
+            db.commit()
             typer.echo("  No raw.md — ingest this paper first")
             failed += 1
             continue
 
-        import json as _json
-
-        tree = _json.loads(tree_path.read_text(encoding="utf-8"))
-        structure = tree.get("structure", [])
+        try:
+            tree = existing_tree or json.loads(tree_path.read_text(encoding="utf-8"))
+            structure = tree.get("structure", []) if isinstance(tree, dict) else []
+            if not isinstance(structure, list):
+                structure = []
+        except (OSError, UnicodeError, ValueError) as exc:
+            message = safe_error(exc, secrets=secrets)
+            db.upsert_paper_artifact(pid, "tree", "failed", error=message)
+            db.upsert_paper_artifact(pid, "kg", "skipped", error="tree.json unreadable")
+            db.commit()
+            typer.echo(f"  Tree read failed: {message}")
+            failed += 1
+            continue
         if not structure:
+            db.upsert_paper_artifact(pid, "tree", "degraded", error="empty tree")
+            db.upsert_paper_artifact(pid, "kg", "skipped", error="empty tree")
+            db.commit()
             typer.echo("  Empty tree structure — skipping")
             failed += 1
             continue
@@ -276,6 +335,8 @@ def build_cmd(
                 )
             )
         except Exception as exc:
+            db.upsert_paper_artifact(pid, "kg", "failed", error=safe_error(exc, secrets=secrets))
+            db.commit()
             failed += 1
             typer.echo(f"  Extraction failed: {safe_error(exc, secrets=secrets)}")
             continue
@@ -332,6 +393,22 @@ def build_cmd(
 
         # Mark as extracted (set_paper_status also bumps updated_at)
         db.set_paper_status(pid, "extracted")
+        db.upsert_paper_artifact(
+            pid,
+            "tree",
+            "ready",
+            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+            metadata_json=json.dumps({"nodes": len(structure)}),
+        )
+        db.upsert_paper_artifact(
+            pid,
+            "kg",
+            "ready" if valid_count or relations else "degraded",
+            metadata_json=json.dumps(
+                {"concepts": valid_count, "relations": len(relations), "rejected": rejected}
+            ),
+            error="no valid concepts or relations" if not (valid_count or relations) else "",
+        )
         db.set_last_run("build")
         db.commit()
 
@@ -398,6 +475,7 @@ def embed_cmd(
     """Train TransE graph embeddings. Use --tree for text embeddings."""
     cfg = ctx.obj["config"]
     db = Database(db_path or cfg["db"]["path"])
+    embed_secrets = configured_secret_values(cfg)
 
     # --tree mode: text embeddings for tree nodes (Layer 2)
     if tree:
@@ -409,12 +487,80 @@ def embed_cmd(
         if isinstance(embed_cfg, dict):
             embed_cfg = EmbedConfig(**embed_cfg)
 
+        papers_dir = Path(cfg["dirs"]["papers"])
+        paper_filter = {p.strip() for p in papers.split(",") if p.strip()} if papers else None
+
+        def paper_specs() -> list[tuple[str, Path]]:
+            """Resolve paper IDs from the DB, retaining a legacy dir fallback."""
+            try:
+                rows = db.get_all_papers()
+            except Exception as exc:  # noqa: BLE001
+                _build_log.warning(
+                    "[embed] get_all_papers failed; falling back to dir scan: {}", exc
+                )
+                rows = []
+            specs: list[tuple[str, Path]] = []
+            resolution_errors = False
+            for row in rows or []:
+                pid = row.get("local_id") if isinstance(row, dict) else None
+                if not pid:
+                    continue
+                pid = str(pid)
+                if paper_filter is not None and pid not in paper_filter:
+                    continue
+                try:
+                    resolved_path = resolve_paper_dir(papers_dir, pid)
+                    if resolved_path is None:
+                        raise FileNotFoundError("paper directory unavailable")
+                    specs.append((pid, resolved_path))
+                except (OSError, ValueError) as exc:
+                    resolution_errors = True
+                    _build_log.warning("[embed] cannot resolve {}: {}", pid, exc)
+                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=safe_error(exc))
+                    db.upsert_paper_artifact(
+                        pid, "raptor", "skipped", error="paper path unavailable"
+                    )
+            if resolution_errors:
+                db.commit()
+            if specs:
+                return specs
+            # Old shard databases may not contain papers rows yet.  Keep the
+            # directory scan as a read-only compatibility fallback.
+            try:
+                candidates = sorted(papers_dir.iterdir())
+            except OSError as exc:
+                _build_log.warning("[embed] papers directory unavailable: {}", exc)
+                return []
+            fallback_specs: list[tuple[str, Path]] = []
+            for path in candidates:
+                if not path.is_dir():
+                    continue
+                try:
+                    pid = paper_id_from_dir(path, papers_root=papers_dir)
+                except (OSError, ValueError) as exc:
+                    _build_log.warning("[embed] ignoring invalid paper directory {}: {}", path, exc)
+                    continue
+                if (
+                    paper_filter is not None
+                    and pid not in paper_filter
+                    and path.name not in paper_filter
+                ):
+                    continue
+                fallback_specs.append((pid, path))
+            return fallback_specs
+
         if getattr(embed_cfg, "provider", "local") == "none":
             typer.echo("embed.provider=none; tree vector generation is disabled")
+            for pid, _paper_path in paper_specs():
+                if db.get_paper(pid) is not None:
+                    db.upsert_paper_artifact(
+                        pid, "pageindex", "skipped", error="embedding disabled"
+                    )
+                    db.upsert_paper_artifact(pid, "raptor", "skipped", error="embedding disabled")
+            db.commit()
             db.close()
             return
 
-        papers_dir = Path(cfg["dirs"]["papers"])
         llm_models_raw = cfg.get("llm", {})
         llm_models = (
             llm_models_raw.get("models", [])
@@ -422,22 +568,79 @@ def embed_cmd(
             else getattr(llm_models_raw, "models", [])
         )
         bridge_mod = __import__("drbrain.services.embedding", fromlist=["build_paper_tree_vectors"])
+        from drbrain.storage.node_projection import collect_tree_node_records
+
         total = 0
-        paper_filter = {p.strip() for p in papers.split(",") if p.strip()} if papers else None
-        for paper_path in sorted(papers_dir.iterdir()):
-            if not paper_path.is_dir():
+        failed = 0
+        for pid, paper_path in paper_specs():
+            track_artifacts = db.get_paper(pid) is not None
+            if track_artifacts:
+                db.upsert_paper_artifact(pid, "pageindex", "running")
+                db.upsert_paper_artifact(pid, "raptor", "pending")
+                db.commit()
+            try:
+                count = asyncio.run(
+                    bridge_mod.build_paper_tree_vectors(
+                        paper_path, db.path, embed_cfg, llm_models, paper_id=pid
+                    )
+                )
+                node_count = len(collect_tree_node_records(paper_path, paper_id=pid))
+                pageindex_count = int(
+                    db.conn.execute(
+                        "SELECT COUNT(*) FROM tree_vectors WHERE paper_id = ? AND tree_layer = ?",
+                        (pid, "pageindex"),
+                    ).fetchone()[0]
+                )
+                raptor_count = int(
+                    db.conn.execute(
+                        "SELECT COUNT(*) FROM tree_vectors WHERE paper_id = ? AND tree_layer LIKE ?",
+                        (pid, "raptor_%"),
+                    ).fetchone()[0]
+                )
+                page_status = "ready" if node_count and pageindex_count else "degraded"
+                if track_artifacts:
+                    db.upsert_paper_artifact(
+                        pid,
+                        "pageindex",
+                        page_status,
+                        metadata_json=json.dumps({"nodes": node_count, "vectors": pageindex_count}),
+                        error="no vectors created" if page_status == "degraded" else "",
+                    )
+                    if not llm_models:
+                        db.upsert_paper_artifact(pid, "raptor", "skipped", error="no LLM models")
+                    elif not node_count:
+                        db.upsert_paper_artifact(
+                            pid, "raptor", "skipped", error="PageIndex unavailable"
+                        )
+                    elif raptor_count:
+                        db.upsert_paper_artifact(
+                            pid,
+                            "raptor",
+                            "ready",
+                            metadata_json=json.dumps({"summaries": raptor_count}),
+                        )
+                    else:
+                        db.upsert_paper_artifact(
+                            pid, "raptor", "degraded", error="insufficient nodes or no summaries"
+                        )
+                    db.commit()
+            except Exception as exc:
+                failed += 1
+                message = safe_error(exc, secrets=embed_secrets)
+                if track_artifacts:
+                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=message)
+                    db.upsert_paper_artifact(pid, "raptor", "skipped", error="PageIndex failed")
+                    db.commit()
+                typer.echo(f"  {pid}: embedding failed: {message}", err=True)
                 continue
-            if paper_filter is not None and paper_path.name not in paper_filter:
-                continue
-            count = asyncio.run(
-                bridge_mod.build_paper_tree_vectors(paper_path, db.path, embed_cfg, llm_models)
-            )
             if count:
                 typer.echo(f"  {paper_path.name}: {count} vectors+summaries")
             total += count
 
         typer.echo(f"Tree vectors+summaries: {total} total")
         db.close()
+        if failed:
+            raise typer.Exit(1)
         return
     graph = GraphEngine()
     graph.load_from_db(db)

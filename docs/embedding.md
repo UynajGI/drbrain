@@ -5,7 +5,9 @@ How to choose and configure DrBrain's text embedding backend.
 ## What Gets Embedded
 
 Only **semantically-complete tree nodes** — PageIndex section leaves and RAPTOR recursive
-summaries. Never arbitrary text chunks. Embeddings live in the `tree_vectors` SQLite table
+summaries. Never arbitrary text chunks: when an index needs smaller units, a long section is
+split into bounded physical fragments that are exact slices of the logical unit (parent IDs +
+character offsets), not naive chunking. Embeddings live in the `tree_vectors` SQLite table
 alongside everything else; no separate vector database.
 
 Embeddings are used for:

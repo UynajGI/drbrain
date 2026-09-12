@@ -2,7 +2,7 @@
 
 ## Philosophy
 
-DrBrain is **symbol-driven with corpus-scale hybrid retrieval**. Rule-based symbolic reasoning forms the core; retrieval runs four legs in parallel -- BM25, dense vectors (sqlite-vec ANN over millions of tree-node vectors), RAPTOR tree summaries and graph traversal -- fused by reciprocal-rank fusion and reranked. Vectors are computed for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries), never for arbitrary text chunks, and live in the same SQLite database as the graph. `provider=none` disables vectors entirely, falling back to BM25 + LLM navigation.
+DrBrain is **symbol-driven with corpus-scale hybrid retrieval**. Rule-based symbolic reasoning forms the core. Retrieval combines configured BM25, vector, RAPTOR and graph sources through reciprocal-rank fusion and optional reranking. The SQL backend reranks a BM25 candidate pool with vectors and restricts RAPTOR to candidate papers; this is not independent vector recall. PageIndex sections and RAPTOR summaries are logical evidence units. Long sections may produce bounded physical index fragments with exact parent-text offsets. See [RAG layer contracts and migration](rag-layer-completion.md) for backend capabilities, immutable SQL snapshots and module boundaries.
 
 Every design decision follows from a single principle: **the knowledge graph is the source of truth**. Concepts, relations, and inference rules are explicit, auditable, and human-readable. Vectors serve retrieval, not knowledge representation.
 
@@ -452,9 +452,10 @@ Key tables:
 - `citation_cache` -- expanded citations from APIs
 - `queue` -- pending confidence items for human review
 - `build_stages` -- per-paper pipeline stage status (paper_id, stage, status, result_json) for agent idempotency
-- `schema_versions` -- versioned migrations (currently v20)
+- `paper_artifacts` -- per-paper raw/tree/KG/PageIndex/RAPTOR/RAG status, fingerprints and errors
+- `schema_versions` -- versioned migrations (currently v22)
 
-The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system; versions 9–20 added the concept-graph, epistemic, snapshot, answer, evidence, claims, provenance, and embedding-revision layers (see `docs/configuration.md` for the full migration table).
+The database uses **WAL mode** for concurrent read/write access. Schema migrations are versioned in `schema_versions` and applied automatically on `Database.__init__` via `_migrate()`. Each migration detects the target column/table via `PRAGMA table_info` and uses `ALTER TABLE` (idempotent). Version 8 (`change_tracking`) added `updated_at` columns to `papers`/`concepts`/`edges` — the foundation of the incremental update system; versions 9–22 added the concept-graph, epistemic, snapshot, answer, evidence, claims, provenance, embedding-revision, project-scope and artifact-state layers (see `docs/configuration.md` for the full migration table).
 
 **Centralized writes:** `Database` is the sole write surface. All `INSERT`/`UPDATE`/`DELETE` go through `Database` methods (`insert_paper`, `set_paper_field`, `merge_papers`, `upsert_build_stage`, etc.). Application-layer code must not write raw SQL — this guarantees `updated_at` is bumped, transactions are used for multi-step operations, and column allowlists prevent injection via dynamic field names. Read-only `SELECT` is tolerated in callers.
 
@@ -533,8 +534,8 @@ All file writes use the **tmp -> rename** pattern for crash safety:
 
 ## Key Design Decisions
 
-### Lightweight Vectors for Retrieval
-Vectors are used only for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries) to accelerate retrieval. Never for arbitrary text chunks. `provider=none` disables all vectors, falling back to pure BM25 + LLM navigation. Embeddings are stored in SQLite alongside everything else -- no separate vector database.
+### Retrieval Units and Vectors
+Vectors are computed for semantically-complete tree nodes (PageIndex sections, RAPTOR summaries), never for arbitrary text chunks. These logical units stay the evidence unit even when an index splits an oversized one into bounded physical fragments with distinct IDs, parent checksum and exact parent-text character offsets (see [RAG layer contracts and migration](rag-layer-completion.md)). `provider=none` disables all vectors, falling back to pure BM25 + LLM navigation. Embeddings are stored in SQLite alongside everything else -- no separate vector database.
 
 ### SQLite with WAL
 A single SQLite file with WAL mode is the only database. Simple, portable, no server needed. Concurrent reads work well under WAL mode. Appropriate for a personal research tool.
@@ -564,7 +565,7 @@ Stage 2 (entity extraction) runs with 10-way concurrency on leaf nodes. Translat
 `drbrain audit` applies 15 severity-graded rules covering paper metadata, concept integrity, edge consistency, and graph structure. PDF pre-validation detects encryption and corruption before ingest. Three non-blocking quality gates run during ingest.
 
 ### Incremental by Default
-The pipeline (`build`/`closure`/`embed`/`index`) is incremental by default — see [Incremental Update System](#incremental-update-system) above. Adding one paper to an N-paper library only re-processes the new paper and its 2-hop neighborhood; existing embeddings are warm-started and micro-adjusted rather than discarded. Stage watermarks (`last_run:<stage>` in `vector_metadata`) drive the skip logic. `--all` / `--full` / `--retrain` escape hatches force full rebuilds when needed.
+The pipeline (`build`/`closure`/`embed`/`index`) is incremental by default — see [Incremental Update System](#incremental-update-system) above. Adding one paper to an N-paper library only re-processes the new paper and its 2-hop neighborhood; existing embeddings are warm-started and micro-adjusted rather than discarded. Stage watermarks (`last_run:<stage>` in `vector_metadata`) drive the skip logic, while `paper_artifacts` records durable per-paper readiness and failure states. Use `pipeline --preset full-rag` when the SQL/LlamaIndex RAG generation should be materialized and published in the same ordered run. `--all` / `--full` / `--retrain` escape hatches force full rebuilds when needed.
 
 ### Centralized Write Surface
 `Database` is the only component that writes to SQLite. Application code calls methods like `set_paper_field`, `merge_papers`, `upsert_build_stage` — never raw `INSERT`/`UPDATE`/`DELETE`. This enforces `updated_at` bumping, transactional multi-step operations (e.g. `merge_papers` preflights external-ID and citation-cache conflicts, then runs full row migration + source deletion inside a `SAVEPOINT`, composing with caller transactions), and column-name allowlists. Read-only `SELECT` remains tolerated in callers.

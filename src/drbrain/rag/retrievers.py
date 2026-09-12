@@ -509,7 +509,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("[rag] tree navigation failed for %s: %s", paper_dir, exc)
-                return None
+                return []
 
     class DrbrainRAPTORRetriever(BaseRetriever):
         """RAPTOR two-stage tree traversal wrapped as a LlamaIndex retriever.
@@ -573,7 +573,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("[rag] RAPTOR traversal failed: %s", exc)
-                return []
+                raise
             rows = rows or []
             if self.paper_id:
                 rows = [r for r in rows if r.get("paper_id") == self.paper_id]
@@ -696,7 +696,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 concepts = search_concepts(self._db, query_bundle.query_str, limit=self.top_k)
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("[rag] graph concept search failed: %s", exc)
-                concepts = []
+                raise
             concepts = concepts or []
 
             # Dedup seed concepts by label, keeping the best-scoring row.
@@ -776,7 +776,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 neighbors = get_neighbors(self._graph, label, hops=1, direction="both")
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("[rag] graph neighbor expansion failed for %s: %s", label, exc)
-                return []
+                raise
             out: list[NodeWithScore] = []
             for nb in (neighbors or [])[: self.max_neighbors]:
                 target = str(nb.get("target") or "").strip()

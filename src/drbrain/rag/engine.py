@@ -28,9 +28,9 @@ API notes (llama-index-core 0.14.23, verified against the installed wheel):
   ``score=None`` node. Fused (RRF) scores are ~``1/(k + rank)`` — far below
   any meaningful similarity threshold — so the stock class would empty the
   result set of a fused engine. Hence :class:`SimilarityCutoffPostprocessor`,
-  which applies the cutoff to the best *original per-leg* score (from the
-  fusion ``contributions`` annotation) and keeps ``score=None`` nodes (the
-  tree/graph legs produce positional/decayed scores, not similarities).
+  which honors explicit score types: RRF ranks bypass the cutoff and reranked
+  results use their new score. Untagged legacy nodes retain the original
+  best-contribution fallback. Nodes with no comparable score are kept.
 * Streaming: ``query()`` on a streaming synthesizer returns a
   ``StreamingResponse``; ``response_gen`` yields ``str`` chunks (or objects
   exposing ``.delta``/``.text``), and ``source_nodes`` is populated eagerly.
@@ -106,6 +106,8 @@ _ENGINE_UNAVAILABLE_MSG = (
 _RETRIEVAL_FAILURE_MSG = "检索失败,无法回答"
 #: Abstention message when retrieval succeeded but matched nothing.
 _NO_RESULTS_MSG = "当前知识库中没有找到相关信息"
+#: Abstention message when some retrieval legs are unavailable.
+_DEGRADED_MSG = "部分检索路径不可用，当前证据不足"
 #: Stable refusal text when result nodes cannot be tied to auditable evidence.
 _INSUFFICIENT_EVIDENCE_MSG = INSUFFICIENT_EVIDENCE_MESSAGE
 
@@ -198,7 +200,7 @@ def build_query_engine(
     # T8 postprocessor chain: rerank → cutoff → dedup (order is load-bearing;
     # rerank must run before the cutoff so the cutoff sees reranked order).
     postprocessors: list[Any] = []
-    if li.rerank:
+    if li.rerank and li.rag_engine != "sql":
         from drbrain.rag.rerank import (
             DeduplicatePostprocessor,
             RerankPostprocessor,
@@ -210,7 +212,7 @@ def build_query_engine(
         )
     if li.similarity_cutoff is not None:
         postprocessors.append(SimilarityCutoffPostprocessor(similarity_cutoff=li.similarity_cutoff))
-    if li.rerank:
+    if li.rerank and li.rag_engine != "sql":
         postprocessors.append(DeduplicatePostprocessor())
 
     engine = RetrieverQueryEngine(
@@ -245,6 +247,12 @@ def _build_fusion(
     cfg: Config, db: Any, top_k: int | None = None, acl_filter: dict[str, str] | None = None
 ):
     """Assemble the named legs (T4 ``get_retrievers``) into one FusionRetriever."""
+    if get_llamaindex_config(cfg).rag_engine == "sql":
+        from drbrain.rag.sql_adapter import build_sql_retriever
+
+        return build_sql_retriever(
+            cfg, db, top_k=top_k or cfg.embed.top_k or 10, acl_filter=acl_filter
+        )
     from drbrain.rag.fusion import build_fusion_retriever, get_retrievers
 
     legs = get_retrievers(cfg, db)
@@ -293,6 +301,26 @@ def extract_sources(nodes: list[NodeWithScore] | None) -> list[dict[str, Any]]:
             or ([meta["source"]] if meta.get("source") else []),
         }
         line_start = meta.get("line_start")
+        for key in (
+            "evidence_id",
+            "generation",
+            "document_locator",
+            "chunk_locator",
+            "content_checksum",
+            "excerpt_checksum",
+            "content_length",
+            "excerpt_length",
+            "parent_node_id",
+            "parent_document_id",
+            "parent_checksum",
+            "char_start",
+            "char_end",
+            "offset_basis",
+            "parent_line_start",
+            "parent_line_end",
+        ):
+            if key in meta:
+                entry[key] = meta[key]
         line_end = meta.get("line_end")
         if line_start is not None and line_end is not None:
             try:
@@ -404,11 +432,13 @@ def ask_llamaindex(
         )
     sources = _response_sources(response)
     if not sources:
+        telemetry = _engine_telemetry(engine)
+        degraded = _retrieval_is_degraded(telemetry)
         return _abstain_answer(
             question,
-            RetrievalStatus.NO_RESULTS,
-            _NO_RESULTS_MSG,
-            telemetry=_engine_telemetry(engine),
+            RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
+            _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
+            telemetry=telemetry,
         )
     if not _evidence_ids_from_sources(sources):
         return _abstain_answer(
@@ -448,11 +478,13 @@ def _ask_llamaindex_stream(
         return
     sources = _response_sources(response)
     if not sources:
+        telemetry = _engine_telemetry(engine)
+        degraded = _retrieval_is_degraded(telemetry)
         yield _abstain_answer(
             question,
-            RetrievalStatus.NO_RESULTS,
-            _NO_RESULTS_MSG,
-            telemetry=_engine_telemetry(engine),
+            RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
+            _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
+            telemetry=telemetry,
         )
         return
     if not _evidence_ids_from_sources(sources):
@@ -538,6 +570,10 @@ def _engine_telemetry(engine: Any) -> dict[str, Any] | None:
     if stages:
         result["postprocessors"] = stages
     return result or None
+
+
+def _retrieval_is_degraded(telemetry: dict[str, Any] | None) -> bool:
+    return (telemetry or {}).get("retrieval", {}).get("fusion", {}).get("status") == "degraded"
 
 
 def _abstain_answer(
@@ -637,14 +673,10 @@ if _LLAMA_INDEX_AVAILABLE:
     class SimilarityCutoffPostprocessor(BaseNodePostprocessor):
         """Similarity cutoff honoring fused-score semantics (module docstring).
 
-        The stock ``SimilarityPostprocessor`` compares ``node.score`` against
-        the cutoff; fused (RRF) scores are rank-derived and far below any
-        similarity threshold, so this postprocessor instead evaluates the best
-        *original per-leg* score recorded by the T4 fusion layer in
-        ``node.metadata["contributions"]`` (these are the true
-        cosine/BM25/positional scores). Nodes without fusion contributions
-        fall back to their own score. ``score=None`` nodes are kept — the
-        tree/graph legs legitimately produce positional/decayed scores.
+        Explicit RRF scores bypass similarity filtering because ranks have no
+        calibrated similarity scale. Reranked nodes use the reranker's score.
+        Untagged legacy nodes retain the original best-contribution fallback.
+        Nodes with no comparable score are kept.
         """
 
         # Declared pydantic field (BaseNodePostprocessor is a pydantic model;
@@ -676,16 +708,21 @@ if _LLAMA_INDEX_AVAILABLE:
 
 
 def _effective_similarity(nws: Any) -> float | None:
-    """Best original per-leg score of a fused node, else its own score.
+    """Resolve the score space before applying a configured threshold.
 
-    ``contributions`` has shape ``{source: {rank, score, weight}}`` (T4
-    FusionRetriever annotation). The per-leg ``score`` is the quantity
-    comparable to a similarity threshold.
+    RRF ranks themselves cannot be thresholded as similarity, so fused nodes
+    use the best comparable score from their leg contributions. Rerank scores
+    supersede those coarse contributions. Untagged nodes keep the legacy
+    behavior for callers that supplied their own retriever metadata.
     """
     score = getattr(nws, "score", None)
     node = getattr(nws, "node", None)
     meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
     contributions = meta.get("contributions")
+    if meta.get("score_kind") == "rrf" and not isinstance(contributions, dict):
+        return None  # rank contributions are not a calibrated similarity scale
+    if meta.get("score_kind") == "rerank":
+        return float(score) if score is not None else None
     if isinstance(contributions, dict) and contributions:
         best: float | None = None
         for info in contributions.values():

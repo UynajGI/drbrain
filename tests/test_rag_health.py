@@ -11,7 +11,9 @@ from drbrain.config import Config, LlamaIndexConfig
 
 def _cfg(tmp_path, *, enabled: bool = True) -> Config:
     return Config(
-        llamaindex=LlamaIndexConfig(enabled=enabled, storage_dir=str(tmp_path / "llamaindex"))
+        llamaindex=LlamaIndexConfig(
+            enabled=enabled, rag_engine="llamaindex", storage_dir=str(tmp_path / "llamaindex")
+        )
     )
 
 

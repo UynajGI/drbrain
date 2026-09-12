@@ -226,7 +226,7 @@ audit → repair → check-citations → queue resolve-all
 
 ## Architecture
 
-DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses BM25 + vector + RAPTOR tree + graph legs (RRF + rerank); vectors live on semantically-complete tree nodes, never arbitrary chunks.
+DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses configured BM25/vector/RAPTOR/graph sources. SQL vectors rerank the BM25 pool; LlamaIndex can use independent vector recall. Logical evidence units are tree sections/summaries; bounded physical fragments carry exact parent-text offsets. See `docs/rag-layer-completion.md` for contracts and migration.
 
 ### Pipeline
 
@@ -277,7 +277,7 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 - **Logging/Metrics**: loguru + `get_session_id()` (UUID4), `ui()` for user output. SQLite metrics with WAL + thread-safety, `timer()` / `timed()`.
 - **API clients**: `requests.Session` + `urllib3.Retry` on 429/5xx. MinerU exponential backoff.
 - **LLM**: `acall_with_fallback()` iterates model list in config; any litellm provider.
-- **Lightweight vectors**: Vectors for semantically-complete tree nodes only (PageIndex sections, RAPTOR summaries). Stored in `tree_vectors` table with FAISS. `provider=none` disables — pure BM25 + LLM navigation. Never chunk-level embedding. Reference: ScholarAIO embedding engine.
+- **Retrieval units**: PageIndex sections and RAPTOR summaries are logical evidence units. Long LlamaIndex Documents may be split into physical index fragments with distinct IDs, parent checksum and exact character offsets. SQL fixed-version retrieval uses published, retained snapshots; mutable graph/claims sources cannot be mixed into a pinned SQL query. See `docs/rag-layer-completion.md`.
 - **Section provenance**: `section` and `node_id` fields flow from LLM extraction → DB → all reasoning layers (confidence decay, counterfactuals, etc.). `node_id` links back to PageIndex tree nodes.
 - **DB tables**: papers, paper_ids, paper_cite_keys, paper_citations, concepts, arguments, edges, aliases, embeddings, tree_vectors (+`*_vec` ANN shadow tables), tree_summaries, vector_metadata, confidence_queue, citation_cache, research_seeds, build_stages, corpus_sources, concept_nodes, concept_cooccurrence, concept_embeddings, paper_terms, agent_sessions, agent_messages, knowledge_snapshots, answer_records, evidence, claims, claim_evidence, schema_versions. Schema v8 added `updated_at` to papers/concepts/edges for incremental change tracking; `vector_metadata` stores `last_run:<stage>` watermarks and the `embedding_revision` counter (v20) that invalidates stale TransE caches.
 - **Atomic writes**: tmp→rename pattern throughout. `src/drbrain/storage/paths.py` for centralized paths.

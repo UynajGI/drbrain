@@ -124,11 +124,13 @@ def test_retrieve_sql_two_legs(rag_db, cfg, monkeypatch):
         assert row["text"]
 
 
-def test_diversity_guarantee_appends_leg_best(rag_db, cfg, monkeypatch):
+def test_diversity_guarantee_respects_top_k(rag_db, cfg, monkeypatch):
     _patch_embed(monkeypatch, [1.0] * DIM)
     cfg.llamaindex.retrievers = ["bm25", "vector", "raptor"]
     rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=1)
-    assert len(rows) == 2  # head(1) + raptor guarantee
+    assert len(rows) == 1
+    rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
+    assert len(rows) <= 2
     raptor_rows = [r for r in rows if "raptor" in r["legs"]]
     assert raptor_rows, "raptor leg must surface via guarantee"
     assert raptor_rows[0]["node_id"].startswith("raptor_")
@@ -211,20 +213,20 @@ def test_categories_filter_prefix_matches_arxiv_archives(rag_db, cfg, monkeypatc
     assert {r["paper_id"] for r in rows} == {"pA", "pB"}
 
 
-def test_missing_categories_table_widens_instead_of_erroring(rag_db, cfg, monkeypatch):
+def test_missing_categories_table_rejects_filter(rag_db, cfg, monkeypatch):
     conn = sqlite3.connect(rag_db)
     conn.execute("DROP TABLE paper_categories")
     conn.commit()
     conn.close()
     _patch_embed(monkeypatch, [1.0] * DIM)
-    rows = sql_retrie.retrieve_documents_sql(
-        cfg,
-        None,
-        "kagome flat band corrosion steel",
-        top_k=5,
-        filters={"categories": "cond-mat"},
-    )
-    assert rows, "corpora without category metadata must not error nor narrow"
+    with pytest.raises(ValueError, match="categories filter"):
+        sql_retrie.retrieve_documents_sql(
+            cfg,
+            None,
+            "kagome flat band corrosion steel",
+            top_k=5,
+            filters={"categories": "cond-mat"},
+        )
 
 
 def test_claims_leg_surfaces_settled_claims(rag_db, cfg, monkeypatch):

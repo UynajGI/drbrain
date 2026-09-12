@@ -1,51 +1,14 @@
-"""Index layer: tree.json/raw.md → LlamaIndex Documents/Nodes; VectorStoreIndex + BM25.
+"""Index build orchestration and compatible index-loading APIs.
 
-Ticket: T3 (索引层). Depends on T1.
-
-Converts drbrain's PageIndex assets (``tree.json`` + ``raw.md`` per paper) into
-LlamaIndex objects:
-
-* :func:`collect_tree_nodes` — one :class:`~llama_index.core.schema.Document`
-  per tree node (``paper_id:node_id`` unique key, PageIndex metadata).
-* :func:`build_index` — incremental ``VectorStoreIndex`` build (embeds only
-  nodes whose ``content_hash`` changed) + persistent BM25 inverted index.
-  New builds are staged as a complete generation, validated, then activated by
-  an atomic pointer swap so readers never observe mixed vector/BM25 artifacts.
-* :func:`load_index` — restore ``(VectorStoreIndex, BM25Retriever)`` from disk
-  without rebuilding.
-
-Legacy persistence layout under ``storage_dir``::
-
-    storage_dir/
-      manifest.json      # embed_model + {paper_id: {node_key: content_hash}}
-      vector/            # StorageContext.persist (docstore, index_store, SimpleVectorStore)
-      bm25/              # BM25Retriever.persist (bm25s index + corpus)
-
-New builds preserve the legacy files for migration compatibility but read from
-the active generation::
-
-    storage_dir/
-      active.json         # atomically swapped {"generation": "..."}
-      generations/<id>/
-        manifest.json
-        vector/
-        bm25/
-
-Everything degrades gracefully when llama-index is not installed: the CLI
-fails with a clear message instead of a traceback, and importing the module
-never raises.
-"""
+Node preparation, embedding execution and immutable generation management live
+in index_nodes, index_embeddings and index_generations. SQL publication copies
+the corpus through the same generation lifecycle without running embeddings."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
-import stat
-import tempfile
 import time
-import uuid
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -54,11 +17,117 @@ from loguru import logger
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.index_embeddings import (
+    _default_embed_model as _default_embed_model,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_chunk_worker as _embed_chunk_worker,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_devices as _embed_devices,
+)
+from drbrain.rag.index_embeddings import (
+    _embed_model_path as _embed_model_path,
+)
+from drbrain.rag.index_embeddings import (
+    _init_embed_worker as _init_embed_worker,
+)
+from drbrain.rag.index_embeddings import (
+    _load_old_embeddings as _load_old_embeddings,
+)
+from drbrain.rag.index_embeddings import (
+    _load_old_index_nodes as _load_old_index_nodes,
+)
+from drbrain.rag.index_embeddings import preserve_gc_state
+from drbrain.rag.index_generations import (
+    ACTIVE_POINTER_NAME as ACTIVE_POINTER_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_PRUNE_GRACE_SECONDS as GENERATION_PRUNE_GRACE_SECONDS,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_REFERENCES_DIR_NAME as GENERATION_REFERENCES_DIR_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_REFERENCES_NAME as GENERATION_REFERENCES_NAME,
+)
+from drbrain.rag.index_generations import (
+    GENERATION_RETAIN_COUNT as GENERATION_RETAIN_COUNT,
+)
+from drbrain.rag.index_generations import (
+    GENERATIONS_DIR_NAME as GENERATIONS_DIR_NAME,
+)
+from drbrain.rag.index_generations import (
+    LEGACY_INDEX_GENERATION as LEGACY_INDEX_GENERATION,
+)
+from drbrain.rag.index_generations import (
+    MANIFEST_NAME as MANIFEST_NAME,
+)
+from drbrain.rag.index_generations import (
+    _active_storage_root as _active_storage_root,
+)
+from drbrain.rag.index_generations import (
+    _generation_references as _generation_references,
+)
+from drbrain.rag.index_generations import (
+    _load_manifest as _load_manifest,
+)
+from drbrain.rag.index_generations import (
+    _new_generation_id as _new_generation_id,
+)
+from drbrain.rag.index_generations import (
+    _pointer_path as _pointer_path,
+)
+from drbrain.rag.index_generations import (
+    _prune_inactive_generations as _prune_inactive_generations,
+)
+from drbrain.rag.index_generations import (
+    _referenced_generations as _referenced_generations,
+)
+from drbrain.rag.index_generations import (
+    _storage_dirs as _storage_dirs,
+)
+from drbrain.rag.index_generations import (
+    _storage_root_for_generation as _storage_root_for_generation,
+)
+from drbrain.rag.index_generations import (
+    _write_json_atomically as _write_json_atomically,
+)
+from drbrain.rag.index_generations import (
+    _write_manifest as _write_manifest,
+)
+from drbrain.rag.index_generations import (
+    capture_index_generation as capture_index_generation,
+)
+from drbrain.rag.index_generations import (
+    get_active_index_generation as get_active_index_generation,
+)
+from drbrain.rag.index_generations import (
+    retain_index_generation as retain_index_generation,
+)
+from drbrain.rag.index_nodes import (
+    CHARS_PER_TOKEN as CHARS_PER_TOKEN,
+)
+from drbrain.rag.index_nodes import (
+    DEFAULT_MAX_NODE_TOKENS as DEFAULT_MAX_NODE_TOKENS,
+)
+from drbrain.rag.index_nodes import (
+    TREE_LAYER_PAGEINDEX as TREE_LAYER_PAGEINDEX,
+)
+from drbrain.rag.index_nodes import (
+    _chunk_document as _chunk_document,
+)
+from drbrain.rag.index_nodes import (
+    _content_hash as _content_hash,
+)
+from drbrain.rag.index_nodes import (
+    _node_key as _node_key,
+)
+from drbrain.rag.index_nodes import (
+    collect_tree_nodes as collect_tree_nodes,
+)
 from drbrain.storage.paths import (
-    paper_id_from_dir,
-    raw_md_path,
     resolve_paper_dir,
-    tree_json_path,
 )
 
 try:  # pragma: no cover - exercised in environments without llama-index
@@ -87,609 +156,6 @@ __all__ = [
     "retain_index_generation",
 ]
 
-#: Layer tag stored on PageIndex nodes (mirrors ``tree_vectors.tree_layer``).
-TREE_LAYER_PAGEINDEX = "pageindex"
-#: Filename of the incremental-update manifest under ``storage_dir``.
-MANIFEST_NAME = "manifest.json"
-#: Atomically swapped pointer to the complete index generation readers use.
-ACTIVE_POINTER_NAME = "active.json"
-#: Directory holding immutable, fully-built index generations.
-GENERATIONS_DIR_NAME = "generations"
-#: Explicit snapshot label for the pre-generation flat storage layout.
-LEGACY_INDEX_GENERATION = "legacy"
-#: Completed generations retained for rollback and in-flight readers.
-GENERATION_RETAIN_COUNT = 3
-#: Minimum completed-generation age before automatic retention pruning.
-GENERATION_PRUNE_GRACE_SECONDS = 3600.0
-#: Durable autoresearch run -> immutable generation references.
-GENERATION_REFERENCES_NAME = "generation-references.json"
-#: Per-run references avoid read-modify-write races between concurrent directors.
-GENERATION_REFERENCES_DIR_NAME = "generation-references"
-#: Default cap for a single embedded node, in LLM tokens. PageIndex nodes can
-#: exceed this (the real corpus has 39-94KB Abstract/References nodes ≈ 9-23k
-#: tokens); embedding them in one forward pass OOMs a 16GB fp32 GPU (T3/T7
-#: finding). Nodes above the cap are split into paragraph chunks at
-#: ``4 chars/token`` — each chunk inherits the parent node_id + ``#i`` suffix
-#: (T9 decision: split, not truncate — preserves full content).
-#:
-#: 4000, not 8000: the GPU memory profile of the Qwen3-Embedding-0.6B fp32
-#: forward pass is quadratic in sequence length (measured per-sample: 4096
-#: tokens ≈ 3.6GB, 8192 tokens ≈ 12.2GB). On a 16GB V100 (≈2.5GB weights +
-#: ~1GB overhead) a single 8000-token sequence lands at ~15GB and OOMs;
-#: 4000-token chunks leave comfortable headroom (T9 GPU verification).
-DEFAULT_MAX_NODE_TOKENS = 4000
-#: Chars-per-token heuristic used to convert ``max_node_tokens`` → char cap.
-CHARS_PER_TOKEN = 4
-
-
-def _content_hash(text: str) -> str:
-    """Stable content hash for incremental update detection (sha256[:16])."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _node_key(paper_id: str, node_id: str) -> str:
-    """Globally-unique node key (tree ``node_id``s are only unique per paper)."""
-    return f"{paper_id}:{node_id}"
-
-
-def _paragraph_chunks(text: str, max_chars: int) -> list[str]:
-    """Split ``text`` into paragraph-boundary chunks of at most ``max_chars``.
-
-    Greedy accumulation over ``\n\n``-separated paragraphs, preserving the
-    original text verbatim (only boundaries are chosen). A single paragraph
-    longer than the cap is hard-sliced at the cap, so the worst case stays
-    bounded even for ``\n``-only bodies.
-    """
-    if len(text) <= max_chars:
-        return [text]
-    paras = text.split("\n\n")
-    chunks: list[str] = []
-    cur = ""
-    for p in paras:
-        while len(p) > max_chars:
-            if cur:
-                chunks.append(cur)
-                cur = ""
-            chunks.append(p[:max_chars])
-            p = p[max_chars:]
-        if not p:
-            continue
-        if cur and len(cur) + len(p) + 2 > max_chars:
-            chunks.append(cur)
-            cur = p
-        else:
-            cur = f"{cur}\n\n{p}" if cur else p
-    if cur:
-        chunks.append(cur)
-    return chunks or [text]
-
-
-def _chunk_document(doc: Document, max_node_tokens: int) -> list[Document]:
-    """Split an over-long Document into paragraph chunks (T9 OOM fix).
-
-    A node whose text exceeds ``max_node_tokens`` tokens (≈ 4 chars/token) is
-    split at paragraph boundaries. Every chunk:
-      * keeps the parent's metadata (``paper_id``/``node_id``/``line_*``) so
-        downstream consumers (sources, eval node-level grading) still see the
-        original tree node;
-      * adds ``chunk_index`` / ``chunk_count``;
-      * is re-prefixed with the section title (aids BM25/vector matching);
-      * gets id ``<paper_id:node_id>#<i>`` (distinct from the parent key so
-        fusion dedup and the manifest never collide).
-
-    Sub-cap nodes are returned as-is (one Document, no ``#`` suffix).
-    """
-    max_chars = max(1, int(max_node_tokens)) * CHARS_PER_TOKEN
-    if len(doc.text) <= max_chars:
-        return [doc]
-    title = str(doc.metadata.get("title") or "")
-    body = doc.text
-    if title and body.startswith(title + "\n"):
-        body = body[len(title) + 1 :]
-    parts = _paragraph_chunks(body, max_chars)
-    out: list[Document] = []
-    for i, part in enumerate(parts):
-        md = dict(doc.metadata)
-        md["chunk_index"] = i
-        md["chunk_count"] = len(parts)
-        chunk_text = f"{title}\n{part}".strip() if title else part
-        out.append(
-            Document(
-                text=chunk_text,
-                id_=f"{doc.id_}#{i}",
-                metadata=md,
-            )
-        )
-    return out
-
-
-# ── Document collection ──────────────────────────────────────────────────────
-
-
-def collect_tree_nodes(
-    paper_dir: str | Path,
-    tree_json: str | Path | dict | None = None,
-    max_node_tokens: int | None = None,
-    *,
-    paper_id: str | None = None,
-) -> list[Document]:
-    """Collect one :class:`Document` per PageIndex tree node.
-
-    ``tree_json`` may be a path, a raw parsed dict, or ``None`` (defaults to
-    ``<paper_dir>/tree.json``). Each node becomes a Document with
-    ``text = "<title>\\n<body>"`` where the body is loaded from ``raw.md`` by
-    line range, and metadata::
-
-        {paper_id, node_id, title, line_start, line_end, tree_layer: "pageindex"}
-
-    When ``max_node_tokens`` is given (e.g. 8000), nodes above the cap are
-    split into paragraph chunks via :func:`_chunk_document` — each chunk keeps
-    the parent metadata plus ``chunk_index``/``chunk_count`` and an id with a
-    ``#i`` suffix (T9: bounds single-sequence embedding size on GPU). Without
-    the parameter the node↔Document mapping is 1:1 (backward compatible).
-
-    Body resolution order (mirrors ``services.embedding._collect_tree_nodes``
-    semantics, but also handles the actual tree.json format which carries
-    ``line_num`` + inline ``text``):
-
-    1. explicit ``line_start``/``line_end`` → ``raw.md[line_start:line_end]``
-    2. ``line_num`` (1-based header line) → flat range up to the next node's
-       header line in ``raw.md`` (same computation the PageIndex builder used)
-    3. inline node ``text`` → used verbatim (when ``raw.md`` is missing)
-
-    ``raw.md`` is only read when at least one node needs line-based extraction
-    (body loaded on demand). Documents whose text is empty are dropped.
-    """
-    if not _LLAMA_INDEX_AVAILABLE:  # pragma: no cover - envs without llama-index
-        raise RuntimeError("llama-index is not installed; cannot collect Documents")
-
-    paper_dir = Path(paper_dir)
-    # ``paper_id`` is the DB identity, not necessarily the directory basename:
-    # canonical DOI keys are percent-encoded and legacy DOI assets may be
-    # nested.  Index builds pass the DB id explicitly; direct callers get a
-    # best-effort decode from the path.
-    resolved_paper_id = paper_id or paper_id_from_dir(paper_dir)
-
-    if tree_json is None or isinstance(tree_json, (str, Path)):
-        tree_path = Path(tree_json) if tree_json else tree_json_path(paper_dir)
-        if not tree_path.exists():
-            return []
-        try:
-            tree = json.loads(tree_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.warning("[rag] cannot parse tree.json at %s: %s", tree_path, exc)
-            return []
-    elif isinstance(tree_json, dict):
-        tree = tree_json
-    else:  # pragma: no cover - defensive
-        raise TypeError("tree_json must be a path or parsed dict")
-
-    # Flatten the hierarchy in document order (pre-order) so sibling/aunt
-    # headers bound each node's raw.md line range, exactly like the builder.
-    flat: list[dict[str, Any]] = []
-
-    def _flatten(nodes: list[dict]) -> None:
-        for node in nodes:
-            flat.append(node)
-            children = node.get("nodes")
-            if isinstance(children, list) and children:
-                _flatten(children)
-
-    structure = tree.get("structure")
-    if isinstance(structure, list):
-        _flatten(structure)
-
-    if not flat:
-        return []
-
-    # Load raw.md on demand: only needed when some node wants line extraction.
-    raw_lines: list[str] | None = None
-    if any(
-        node.get("line_num") is not None
-        or (node.get("line_start") is not None and node.get("line_end") is not None)
-        for node in flat
-    ):
-        raw_path = raw_md_path(paper_dir)
-        if raw_path.exists():
-            raw_lines = raw_path.read_text(encoding="utf-8").split("\n")
-
-    docs: list[Document] = []
-    for i, node in enumerate(flat):
-        nid = str(node.get("node_id") or "").strip()
-        title = str(node.get("title") or "").strip()
-        if not nid:
-            continue
-
-        body = ""
-        line_start: int | None = None
-        line_end: int | None = None
-
-        ls, le = node.get("line_start"), node.get("line_end")
-        if ls is not None and le is not None and raw_lines is not None:
-            line_start, line_end = int(ls), int(le)
-            body = "\n".join(raw_lines[line_start:line_end])
-        elif node.get("line_num") is not None and raw_lines is not None:
-            start0 = int(node["line_num"]) - 1  # 1-based header line → 0-based
-            end0 = len(raw_lines)
-            nxt = flat[i + 1] if i + 1 < len(flat) else None
-            if nxt is not None and nxt.get("line_num") is not None:
-                end0 = int(nxt["line_num"]) - 1
-            line_start, line_end = start0, max(start0, end0)
-            body = "\n".join(raw_lines[start0:end0])
-        elif node.get("text"):
-            body = str(node["text"])
-
-        text = f"{title}\n{body}".strip()
-        if not text:
-            continue
-
-        docs.append(
-            Document(
-                text=text,
-                id_=_node_key(resolved_paper_id, nid),
-                metadata={
-                    "paper_id": resolved_paper_id,
-                    "node_id": nid,
-                    "title": title,
-                    "line_start": line_start,
-                    "line_end": line_end,
-                    "tree_layer": TREE_LAYER_PAGEINDEX,
-                },
-            )
-        )
-    if max_node_tokens and max_node_tokens > 0:
-        out: list[Document] = []
-        for doc in docs:
-            out.extend(_chunk_document(doc, int(max_node_tokens)))
-        return out
-    return docs
-
-
-# ── Persistence helpers ──────────────────────────────────────────────────────
-
-
-def _storage_dirs(storage_dir: str | Path) -> tuple[Path, Path, Path]:
-    """Return (root, vector_dir, bm25_dir) for a configured storage_dir."""
-    root = Path(storage_dir)
-    return root, root / "vector", root / "bm25"
-
-
-def _pointer_path(storage_root: Path) -> Path:
-    return storage_root / ACTIVE_POINTER_NAME
-
-
-def _active_storage_root(storage_dir: str | Path) -> tuple[Path, str | None] | None:
-    """Return the physical active store and its generation, if one is active.
-
-    A storage directory without ``active.json`` is a pre-generation legacy
-    index and remains readable. A malformed or dangling pointer is never
-    silently redirected to that legacy index: serving stale data is safer than
-    combining generations, but serving an explicitly invalid active pointer is
-    not safe at all, so callers receive ``None`` and can surface health failure.
-    """
-    storage_root = Path(storage_dir)
-    pointer = _pointer_path(storage_root)
-    if not pointer.exists():
-        return storage_root, None
-    try:
-        raw = json.loads(pointer.read_text(encoding="utf-8"))
-        generation = raw.get("generation") if isinstance(raw, dict) else None
-        if not isinstance(generation, str) or not generation.strip():
-            return None
-        generation = generation.strip()
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    active_root = storage_root / GENERATIONS_DIR_NAME / generation
-    if not active_root.is_dir():
-        return None
-    return active_root, generation
-
-
-def get_active_index_generation(cfg: Config) -> str | None:
-    """Return the active generation id, or ``None`` for legacy/no active index.
-
-    This is additive operational metadata. ``load_index`` keeps its historic
-    two-item return value so callers do not need to migrate.
-    """
-    active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
-    return active[1] if active is not None else None
-
-
-def capture_index_generation(cfg: Config) -> str | None:
-    """Capture the snapshot a long-running caller must keep using.
-
-    ``get_active_index_generation`` keeps its historic ``None`` return for both
-    a legacy flat index and an invalid pointer. Durable callers need to
-    distinguish them: only a missing pointer is the explicit ``"legacy"``
-    snapshot; a malformed or dangling pointer remains unavailable/fail-closed.
-    """
-    active = _active_storage_root(get_llamaindex_config(cfg).storage_dir)
-    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
-        # SQL-native engine: the evidence anchor is the content fingerprint of
-        # the working copy (node_texts + tree_vectors in drbrain_rag.db).
-        from drbrain.rag.sql_retrie import _default_rag_db, _generation_id
-
-        rag_db = _default_rag_db(cfg)
-        if not rag_db.exists():
-            return None
-        import sqlite3 as _sqlite3
-
-        _conn = _sqlite3.connect(f"file:{rag_db}?mode=ro", uri=True)
-        try:
-            return _generation_id(_conn)
-        finally:
-            _conn.close()
-    if active is None:
-        return None
-    return active[1] or LEGACY_INDEX_GENERATION
-
-
-def _storage_root_for_generation(storage_dir: str | Path, generation: str | None) -> Path | None:
-    """Resolve an optional immutable snapshot without following a newer pointer."""
-    root = Path(storage_dir)
-    if generation is None:
-        active = _active_storage_root(root)
-        return active[0] if active is not None else None
-    if generation == LEGACY_INDEX_GENERATION:
-        return root
-    if not generation or Path(generation).name != generation:
-        return None
-    candidate = root / GENERATIONS_DIR_NAME / generation
-    return candidate if candidate.is_dir() else None
-
-
-def _new_generation_id() -> str:
-    return f"g-{time.time_ns()}-{uuid.uuid4().hex[:8]}"
-
-
-def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically replace a small JSON control file without torn readers."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-    except OSError:
-        # ``Path.write_text`` historically created these public index metadata
-        # files as shared-readable on the default deployment filesystem.
-        mode = 0o644
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent, text=True
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            fd = -1  # ownership moved to the context manager
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp_name, mode)
-        os.replace(tmp_name, path)
-    except Exception:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
-
-
-def _load_manifest(storage_dir: str | Path) -> dict[str, Any]:
-    active = _active_storage_root(storage_dir)
-    if active is None:
-        logger.warning("[rag] active generation pointer is invalid at %s", storage_dir)
-        return {}
-    root, _ = active
-    manifest_path = root / MANIFEST_NAME
-    if not manifest_path.exists():
-        return {}
-    try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        logger.warning("[rag] ignoring unreadable manifest at %s", manifest_path)
-        return {}
-
-
-def _write_manifest(storage_dir: str | Path, manifest: dict[str, Any]) -> None:
-    _write_json_atomically(Path(storage_dir) / MANIFEST_NAME, manifest)
-
-
-def _generation_references(storage_root: Path) -> dict[str, str] | None:
-    """Read durable run references, returning ``None`` for unsafe control data."""
-    references: dict[str, str] = {}
-    # Read the first PR's single-file shape as a compatibility input, but write
-    # only isolated run files below so concurrent run creation cannot lose refs.
-    legacy_path = storage_root / GENERATION_REFERENCES_NAME
-    if legacy_path.exists():
-        try:
-            legacy_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            logger.error("[rag] generation references are unreadable at %s", legacy_path)
-            return None
-        raw = legacy_payload.get("references", {}) if isinstance(legacy_payload, dict) else {}
-        if not isinstance(raw, dict):
-            logger.error("[rag] generation references are malformed at %s", legacy_path)
-            return None
-        references.update(
-            {
-                str(run_id): str(generation)
-                for run_id, generation in raw.items()
-                if str(run_id).strip() and str(generation).strip()
-            }
-        )
-
-    references_dir = storage_root / GENERATION_REFERENCES_DIR_NAME
-    if not references_dir.exists():
-        return references
-    try:
-        paths = sorted(references_dir.glob("*.json"))
-    except OSError:
-        logger.error("[rag] generation reference directory is unreadable at %s", references_dir)
-        return None
-    for path in paths:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            logger.error("[rag] generation reference is unreadable at %s", path)
-            return None
-        if not isinstance(payload, dict):
-            logger.error("[rag] generation reference is malformed at %s", path)
-            return None
-        run_id = str(payload.get("run_id") or "").strip()
-        generation = str(payload.get("generation") or "").strip()
-        if not run_id or not generation:
-            logger.error("[rag] generation reference is malformed at %s", path)
-            return None
-        references[run_id] = generation
-    return references
-
-
-def _referenced_generations(storage_root: Path) -> set[str]:
-    """Return immutable snapshots still required by durable autoresearch runs."""
-    references = _generation_references(storage_root)
-    if references is not None:
-        return set(references.values())
-    # A damaged retention ledger must not become permission to delete audit
-    # evidence. Keep all completed snapshots until an operator repairs it.
-    generations_root = storage_root / GENERATIONS_DIR_NAME
-    try:
-        return {
-            child.name
-            for child in generations_root.iterdir()
-            if child.is_dir() and child.name.startswith("g-")
-        }
-    except OSError:
-        return set()
-
-
-def retain_index_generation(cfg: Config, generation: str | None, run_id: str) -> bool:
-    """Durably retain a run's index snapshot without introducing another service."""
-    resolved_generation = str(generation or "").strip()
-    if not resolved_generation or resolved_generation == LEGACY_INDEX_GENERATION:
-        return False
-    if getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") == "sql":
-        # SQL-native engine: the generation is a fingerprint of the working
-        # copy, not a prunable filesystem generation — nothing to retain.
-        return True
-    storage_root = Path(get_llamaindex_config(cfg).storage_dir)
-    generation_root = storage_root / GENERATIONS_DIR_NAME / resolved_generation
-    if not generation_root.is_dir():
-        raise RuntimeError(f"cannot retain unavailable index generation {resolved_generation!r}")
-    if _generation_references(storage_root) is None:
-        raise RuntimeError("cannot update unreadable generation references")
-    reference_name = hashlib.sha256(str(run_id).encode("utf-8")).hexdigest() + ".json"
-    _write_json_atomically(
-        storage_root / GENERATION_REFERENCES_DIR_NAME / reference_name,
-        {"run_id": str(run_id), "generation": resolved_generation},
-    )
-    return True
-
-
-def _prune_inactive_generations(
-    storage_root: Path,
-    active_generation: str,
-    *,
-    retain_count: int = GENERATION_RETAIN_COUNT,
-    grace_seconds: float = GENERATION_PRUNE_GRACE_SECONDS,
-    protected_generations: Iterable[str] = (),
-) -> list[str]:
-    """Bound completed snapshots while retaining a reader/rollback window.
-
-    At least ``retain_count`` completed generations, including the active one,
-    are kept. Older snapshots are only removed after a grace period, allowing
-    in-flight readers that resolved a previous pointer to finish loading.
-    Staging directories are never considered completed snapshots.
-    """
-    generations_root = storage_root / GENERATIONS_DIR_NAME
-    if retain_count < 1 or not generations_root.is_dir():
-        return []
-
-    entries = list(generations_root.iterdir())
-    completed = [child for child in entries if child.is_dir() and child.name.startswith("g-")]
-    completed.sort(key=lambda child: child.stat().st_mtime, reverse=True)
-    protected = {active_generation}
-    protected.update(str(generation) for generation in protected_generations if str(generation))
-    for child in completed:
-        if len(protected) >= retain_count:
-            break
-        protected.add(child.name)
-
-    cutoff = time.time() - max(0.0, grace_seconds)
-    pruned: list[str] = []
-    for child in completed:
-        if child.name in protected or child.stat().st_mtime > cutoff:
-            continue
-        try:
-            shutil.rmtree(child)
-        except OSError as exc:
-            logger.warning("[rag] could not prune stale generation %s: %s", child, exc)
-        else:
-            pruned.append(child.name)
-    for child in entries:
-        if not child.is_dir() or not child.name.startswith(".staging-g-"):
-            continue
-        if child.stat().st_mtime > cutoff:
-            continue
-        try:
-            shutil.rmtree(child)
-        except OSError as exc:
-            logger.warning("[rag] could not prune stale staging directory %s: %s", child, exc)
-        else:
-            pruned.append(child.name)
-    return pruned
-
-
-def _load_old_embeddings(vector_dir: Path) -> dict[str, list[float]]:
-    """Load node_id → embedding from a previously persisted SimpleVectorStore."""
-    if not _LLAMA_INDEX_AVAILABLE or not (vector_dir / "default__vector_store.json").exists():
-        return {}
-    try:
-        store = SimpleVectorStore.from_persist_dir(str(vector_dir))
-        return dict(store._data.embedding_dict)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("[rag] could not read previous vector store: %s", exc)
-        return {}
-
-
-def _load_old_index_nodes(vector_dir: Path, embed_model: Any) -> dict[str, TextNode]:
-    """Load all previously indexed nodes (with embeddings) from a persisted index.
-
-    Used to carry non-target papers through a ``--paper`` subset rebuild so the
-    persisted index keeps covering the whole library.
-    """
-    if not _LLAMA_INDEX_AVAILABLE or not (vector_dir / "docstore.json").exists():
-        return {}
-    try:
-        sc = StorageContext.from_defaults(persist_dir=str(vector_dir))
-        idx = load_index_from_storage(sc, embed_model=embed_model)
-        out: dict[str, TextNode] = {}
-        for node in idx.docstore.docs.values():
-            if not isinstance(node, TextNode):
-                continue
-            # ``.get(node_id)`` is the duck-typed vector-store lookup the
-            # concrete store (e.g. SimpleVectorStore) implements; the base
-            # ``BasePydanticVectorStore`` type does not declare it.
-            embedding = node.embedding or idx._vector_store.get(  # type: ignore[attr-defined]
-                node.node_id
-            )
-            if embedding is None:
-                continue
-            node.embedding = embedding
-            out[node.node_id] = node
-        return out
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("[rag] could not load previous index nodes: %s", exc)
-        return {}
-
-
-def _default_embed_model(cfg: Config) -> Any:
-    """T1 DrbrainEmbedding adapter (lazy; loads the model on first embed call)."""
-    from drbrain.rag.llm import DrbrainEmbedding
-
-    return DrbrainEmbedding(cfg)
-
 
 def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
     """Locate a paper's asset directory across on-disk layouts.
@@ -705,55 +171,7 @@ def _resolve_paper_dir(papers_root: Path, pid: str) -> Path | None:
 # ── Build ────────────────────────────────────────────────────────────────────
 
 
-def _embed_devices(cfg: Config) -> list[int]:
-    """GPU ids for parallel chunk embedding: configured cuda:N plus extra_gpus."""
-    devices: list[int] = []
-    dev = str(getattr(cfg.embed, "device", "") or "")
-    if dev.startswith("cuda:"):
-        try:
-            devices.append(int(dev.split(":", 1)[1]))
-        except ValueError:
-            pass
-    for g in getattr(cfg.embed, "extra_gpus", None) or []:
-        if int(g) not in devices:
-            devices.append(int(g))
-    return devices
-
-
-def _embed_model_path(cfg: Config) -> str:
-    from drbrain.services.embedding import _resolve_model_path
-
-    path = _resolve_model_path(
-        cfg.embed.model, os.path.expanduser(cfg.embed.cache_dir), cfg.embed.source
-    )
-    if not path:
-        raise RuntimeError("cannot resolve local model path for parallel embedding")
-    return str(path)
-
-
-_WORKER_MODEL: Any = None
-
-
-def _embed_chunk_worker(args: tuple[Any, int, list[str], int, int]) -> Any:
-    """Spawn-pool worker: pin one GPU, embed a chunk, return vectors."""
-    model_path, gpu, texts, ci, total = args
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    global _WORKER_MODEL
-    if _WORKER_MODEL is None:
-        from sentence_transformers import SentenceTransformer
-
-        _WORKER_MODEL = SentenceTransformer(model_path, device="cuda")
-        # Align with scripts/serve_embedding.py: truncate to 512 tokens so
-        # these vectors match the corpus-pipeline embedding semantics.
-        try:
-            _WORKER_MODEL.max_seq_length = 512
-        except Exception:  # noqa: BLE001 - non-fatal optimization
-            pass
-    logger.info("[rag] embedding chunk {}/{} ({} nodes) on GPU {}", ci, total, len(texts), gpu)
-    return _WORKER_MODEL.encode(texts, normalize_embeddings=True, batch_size=64)
-
-
+@preserve_gc_state
 def build_index(
     cfg: Config,
     db: Any,
@@ -762,7 +180,10 @@ def build_index(
     embed_model: Any | None = None,
     max_node_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Build (or incrementally update) the LlamaIndex vector + BM25 indexes.
+    """Publish the selected backend's immutable retrieval generation.
+
+    SQL publishes a copy of the prepared corpus database; it does not build
+    embeddings and rejects paper selection or embedding-build overrides.
 
     For every target paper (``paper_ids``, or all papers known to ``db`` when
     ``None``), collects its PageIndex Documents, embeds only the nodes whose
@@ -770,10 +191,10 @@ def build_index(
     everything), persists ``VectorStoreIndex`` + ``BM25Retriever`` under
     ``llamaindex.storage_dir``, and records hashes in ``manifest.json``.
 
-    ``max_node_tokens`` (default ``llamaindex.max_node_tokens``) caps
-    the size of a single embedded sequence: nodes above the cap are split into
-    paragraph chunks (each chunk = one indexed TextNode carrying the parent's
-    metadata + ``#i`` suffix). Change detection stays per parent node — an
+    For LlamaIndex, ``max_node_tokens`` (default ``llamaindex.max_node_tokens``)
+    estimates a character cap per embedded fragment. Oversized nodes become
+    exact parent-text slices with unique ids and explicit parent locators.
+    Change detection stays per parent node — an
     unchanged node reuses all its chunk embeddings; only changed nodes (or
     nodes with missing chunk embeddings) are re-embedded. Non-positive values
     retain the safe default cap.
@@ -785,6 +206,14 @@ def build_index(
     Returns historic stats plus additive ``generation`` and
     ``previous_generation`` after a successful publish.
     """
+    if get_llamaindex_config(cfg).rag_engine == "sql":
+        from drbrain.rag.sql_snapshot import publish_sql_snapshot
+
+        if paper_ids is not None or embed_model is not None or max_node_tokens is not None:
+            raise ValueError(
+                "SQL publication snapshots the corpus; per-paper embedding options are unsupported"
+            )
+        return publish_sql_snapshot(cfg)
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError(
             "llama-index is not installed; run `uv add llama-index-core llama-index-retrievers-bm25`"
@@ -871,7 +300,12 @@ def build_index(
     old_papers: dict[str, dict[str, str]] = manifest.get("papers", {})
     old_model = manifest.get("embed_model")
     new_model = cfg.embed.model
-    model_changed = bool(old_model) and old_model != new_model
+    format_changed = bool(manifest) and (
+        manifest.get("fragment_format") != 2 or manifest.get("max_node_tokens") != max_node_tokens
+    )
+    if format_changed and paper_ids is not None:
+        raise ValueError("fragment format changed; run a full rag index before indexing a subset")
+    model_changed = (bool(old_model) and old_model != new_model) or format_changed
 
     changed: set[str] = set()
     if force or model_changed:
@@ -977,8 +411,11 @@ def build_index(
                 for i, c in enumerate(_chunks)
             ]
             _ctx = _mp.get_context("spawn")
+            _worker_counter = _ctx.Value("i", 0)
             logger.info("[rag] parallel embedding on GPUs {}", _devices)
-            with _ctx.Pool(len(_devices)) as _pool:
+            with _ctx.Pool(
+                len(_devices), initializer=_init_embed_worker, initargs=(_devices, _worker_counter)
+            ) as _pool:
                 for _arr in _pool.imap(_embed_chunk_worker, _jobs, chunksize=2):
                     vectors.extend(_arr.tolist() if hasattr(_arr, "tolist") else _arr)
         else:
@@ -1085,6 +522,8 @@ def build_index(
         manifest = {
             "generation": generation,
             "embed_model": new_model,
+            "fragment_format": 2,
+            "max_node_tokens": max_node_tokens,
             "vector_store": li.vector_store,
             "papers": new_papers,
         }
@@ -1207,6 +646,10 @@ def get_index_health(cfg: Config) -> dict[str, Any]:
     constant-time operation.
     """
     li = get_llamaindex_config(cfg)
+    if li.rag_engine == "sql":
+        from drbrain.rag.sql_snapshot import sql_index_health
+
+        return sql_index_health(cfg)
     root = Path(li.storage_dir)
     pointer_path = _pointer_path(root)
     active_store = _active_storage_root(li.storage_dir)

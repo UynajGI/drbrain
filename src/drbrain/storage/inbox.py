@@ -54,6 +54,24 @@ def scan_inbox(inbox_dir: Path) -> list[Path]:
     )
 
 
+def scan_materials(
+    inbox_dir: Path,
+    extensions: tuple[str, ...] = (".pdf", ".md", ".markdown", ".txt", ".tex", ".text"),
+) -> list[Path]:
+    """Return supported source materials without following symlink aliases."""
+    inbox_dir = Path(inbox_dir)
+    if first_symlink_component(inbox_dir) is not None:
+        return []
+    if not inbox_dir.exists() or not inbox_dir.is_dir():
+        return []
+    allowed = {suffix.lower() for suffix in extensions}
+    return sorted(
+        p
+        for p in inbox_dir.iterdir()
+        if first_symlink_component(p) is None and p.is_file() and p.suffix.lower() in allowed
+    )
+
+
 def move_to_pending(pdf_path: Path, pending_dir: Path, reason: str) -> None:
     """Move a failed PDF to the pending directory and log the reason.
 

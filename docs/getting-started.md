@@ -160,6 +160,7 @@ Run all steps in sequence with a single command:
 
 ```bash
 drbrain pipeline --preset full       # ingest → build → embed → closure
+drbrain pipeline --preset full-rag   # above + prepare/publish RAG generation
 drbrain pipeline --preset quick      # build → embed → closure
 drbrain pipeline --preset full --dry-run  # preview only
 ```

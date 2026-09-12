@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import re
 import shutil
 import uuid
@@ -19,7 +21,9 @@ from drbrain.cli._helpers.enrich import (
     _enrich_doi_from_openalex,
 )
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
+from drbrain.parser.material import TEXT_SUFFIXES, extract_material
 from drbrain.parser.mineru_parser import extract_pdf
+from drbrain.security import configured_secret_values, safe_error
 from drbrain.services.fetch import fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
@@ -27,6 +31,7 @@ from drbrain.storage.paths import (
     raw_md_path,
     source_pdf_path,
     tree_json_path,
+    writable_artifact_path,
 )
 
 
@@ -72,17 +77,22 @@ def _ingest_single_paper(
     from loguru import logger as _ingest_log
 
     _t0 = _time.monotonic()
+    secrets = configured_secret_values(cfg)
 
     # Stage 1: Parse
     echo(f"Parsing: {pdf_path}")
     _ingest_log.info(f"[ingest] Stage 1/4 parse: {pdf_path.name}")
     try:
-        parsed = extract_pdf(pdf_path, cfg)
+        if pdf_path.suffix.lower() in TEXT_SUFFIXES:
+            parsed = extract_material(pdf_path, cfg)
+        else:
+            parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
-        _ingest_log.error(f"Parse failed for {pdf_path}: {e}")
-        echo(f"Error parsing PDF: {e}")
-        _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
-        return {"ok": False, "local_id": None, "error": str(e)}
+        message = safe_error(e, secrets=secrets)
+        _ingest_log.error(f"Parse failed for {pdf_path}: {message}")
+        echo(f"Error parsing PDF: {message}")
+        _move_to_pending(pdf_path, cfg, f"PDF parse error: {message}")
+        return {"ok": False, "local_id": None, "error": message}
 
     # Override parsed metadata with values from fetch_paper (e.g. arXiv API)
     if override_metadata:
@@ -163,8 +173,12 @@ def _ingest_single_paper(
     # Insert OpenAlex-derived Actor concepts (deduplicated author IDs)
     from drbrain.extractor.openalex import search_authors_by_work
 
+    # Normal PDF extraction already fetched authorships.  Legacy and split-PDF
+    # adapters may not, so retain a single fallback lookup.
     try:
-        oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title)
+        oa_authors = list(getattr(parsed, "authors", []) or [])
+        if not oa_authors:
+            oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title) or []
     except Exception:
         db.conn.rollback()
         raise
@@ -184,13 +198,27 @@ def _ingest_single_paper(
 
     # Save parsed markdown and source PDF into per-paper directory
     papers_base = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    paper_dir = papers_base / local_id  # type: ignore[operator]  # pre-existing: see mypy debt
+    # Resolve through the canonical filesystem-key helper.  DOI IDs may
+    # contain slashes and must remain a single safe artifact directory.
+    from drbrain.storage.paths import paper_dir as resolve_paper_dir
+
+    paper_dir = resolve_paper_dir(papers_base, local_id)  # type: ignore[arg-type]
     paper_dir.mkdir(parents=True, exist_ok=True)
     try:
         _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
     except Exception:
         db.conn.rollback()
         raise
+    db.upsert_paper_artifact(
+        local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
+        "raw",
+        "ready",
+        fingerprint=hashlib.sha256(raw_md_path(paper_dir).read_bytes()).hexdigest(),
+        metadata_json=json.dumps(
+            {"source": pdf_path.suffix.lower().lstrip(".") or "unknown", "path": pdf_path.name}
+        ),
+    )
+    db.commit()
 
     llm_models = cfg.get("llm", {}).get("models", [])
     if not llm_models:
@@ -222,6 +250,10 @@ def _ingest_single_paper(
     md_path = raw_md_path(paper_dir)
     tree_path = tree_json_path(paper_dir)
     echo("  Structuring document tree...")
+    tree_status = "ready"
+    tree_error = ""
+    db.upsert_paper_artifact(local_id, "tree", "running")  # type: ignore[arg-type]
+    db.commit()
     try:
         from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
         from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
@@ -241,11 +273,24 @@ def _ingest_single_paper(
         configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
+        tree_nodes = len(doc_tree.structure)
+        if tree_nodes == 0:
+            tree_status = "degraded"
+            tree_error = "empty tree"
+        db.upsert_paper_artifact(
+            local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
+            "tree",
+            tree_status,
+            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+            metadata_json=json.dumps({"nodes": tree_nodes}),
+            error=tree_error,
+        )
+        db.commit()
         _t3 = _time.monotonic()
         _ingest_log.info(
             f"[ingest] tree done in {_t3 - _t_pp:.1f}s — {len(doc_tree.structure)} sections"
         )
-        echo(f"  Document tree: {len(doc_tree.structure)} sections → {tree_path.name}")
+        echo(f"  Document tree: {tree_nodes} sections → {tree_path.name}")
         # Extract abstract from tree structure
         for node in doc_tree.structure:
             title = node.get("title", "") if isinstance(node, dict) else getattr(node, "title", "")
@@ -259,8 +304,17 @@ def _ingest_single_paper(
                     db.set_paper_abstract(local_id, abstract[:2000])  # type: ignore[arg-type]  # pre-existing: see mypy debt
                 break
     except Exception as e:
-        echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
-        _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
+        tree_status = "degraded"
+        tree_error = safe_error(e, secrets=secrets)
+        db.upsert_paper_artifact(  # type: ignore[arg-type]
+            local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
+            "tree",
+            tree_status,
+            error=tree_error,
+        )
+        db.commit()
+        echo(f"  [yellow]Warning: tree structuring failed: {tree_error}[/yellow]")
+        _log_error(cfg, f"Tree structuring failed for {local_id}: {tree_error}")
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
@@ -371,7 +425,13 @@ def _ingest_single_paper(
         f"title={parsed.title[:60]} year={parsed.year}"
     )
     echo(f"  Ingested: {local_id} ({_t_total:.1f}s)")
-    return {"ok": True, "local_id": local_id, "report": {"local_id": local_id}}
+    result_status = "complete" if tree_status == "ready" else "partial"
+    return {
+        "ok": True,
+        "status": result_status,
+        "local_id": local_id,
+        "report": {"local_id": local_id, "status": result_status, "tree_error": tree_error},
+    }
 
 
 def _check_and_merge_duplicates(
@@ -458,14 +518,20 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
 
     Layout:
         data/papers/<local_id>/
-            source.pdf   — original PDF (copied from inbox)
+            source.pdf   — original PDF (copied from inbox), or source.<ext>
             raw.md       — MinerU markdown output
             images/      — extracted images
     """
-    # Move source PDF from inbox to paper directory
-    dst_pdf = source_pdf_path(paper_dir)
-    if not dst_pdf.exists():
-        shutil.copy2(source_pdf, dst_pdf)
+    # Move the original source into the paper directory while retaining its
+    # format.  Non-PDF materials must never be disguised as ``source.pdf``.
+    suffix = source_pdf.suffix.lower()
+    destination = (
+        source_pdf_path(paper_dir)
+        if suffix in ("", ".pdf")
+        else writable_artifact_path(paper_dir, f"source{suffix}")
+    )
+    if not destination.exists():
+        shutil.copy2(source_pdf, destination)
         try:
             source_pdf.unlink()
         except OSError:

@@ -23,8 +23,8 @@ which drbrain
 
 ### Config not found
 
-`drbrain setup` generates `config.local.yaml` from `config.example.yaml`.
-If you skipped setup:
+`drbrain setup` writes `config.local.yaml` through its interactive wizard.
+If you skipped setup, start from the template:
 
 ```bash
 cp config.example.yaml config.yaml

@@ -136,6 +136,7 @@ def _annotate_node(node, sources: list[str], contributions: dict) -> Any:
     metadata["source"] = sources[0] if len(sources) == 1 else ",".join(sources)
     metadata["sources"] = list(sources)
     metadata["contributions"] = contributions
+    metadata["score_kind"] = "rrf"
     return node.model_copy(update={"metadata": metadata})
 
 
@@ -208,7 +209,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 status = RetrievalStatus.OK
                 try:
                     nodes = retriever.retrieve(query_bundle)
-                except RetrievalError:
+                except (RetrievalError, PermissionError):
                     # A nested fusion already declared a total outage; propagate
                     # it rather than degrading it into a per-leg empty result.
                     raise
@@ -260,7 +261,9 @@ if _LLAMA_INDEX_AVAILABLE:
             self._last_trace = {
                 "legs": leg_trace,
                 "fusion": {
-                    "status": RetrievalStatus.OK.value
+                    "status": RetrievalStatus.DEGRADED.value
+                    if failures
+                    else RetrievalStatus.OK.value
                     if result
                     else RetrievalStatus.NO_RESULTS.value,
                     "fused": len(fused),

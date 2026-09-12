@@ -19,7 +19,7 @@ from rich.table import Table
 from drbrain.cli._common import open_db, runtime_data_path
 from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
-rag_app = typer.Typer(help="LlamaIndex RAG layer operations")
+rag_app = typer.Typer(help="RAG index publication, readiness and evaluation")
 
 console = Console()
 
@@ -35,11 +35,11 @@ def rag_index_cmd(
     ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
-    """Build (or incrementally update) the LlamaIndex vector + BM25 indexes.
+    """Publish the configured RAG backend under llamaindex.storage_dir.
 
-    Reads each paper's tree.json/raw.md into LlamaIndex nodes, embeds only
-    changed nodes, and persists everything under ``llamaindex.storage_dir``.
-    Re-run to pick up changed papers; ``--force`` rebuilds from scratch.
+    SQL snapshots the existing corpus database without running embeddings.
+    LlamaIndex builds nodes and embeddings from paper assets; --paper and
+    --force control incremental indexing on that backend.
     """
     cfg = ctx.obj["config"]
 
@@ -49,8 +49,9 @@ def rag_index_cmd(
         from drbrain.rag.config import get_llamaindex_config
         from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
 
-        available, build = _LLAMA_INDEX_AVAILABLE, build_index
-        max_node_tokens = get_llamaindex_config(cfg).max_node_tokens
+        li = get_llamaindex_config(cfg)
+        available, build = _LLAMA_INDEX_AVAILABLE or li.rag_engine == "sql", build_index
+        max_node_tokens = None if li.rag_engine == "sql" else li.max_node_tokens
     except ImportError:  # pragma: no cover - defensive
         available, build, max_node_tokens = False, None, None
 
@@ -61,20 +62,24 @@ def rag_index_cmd(
         )
         raise typer.Exit(1)
 
-    with open_db(cfg) as db:
-        stats = build(
-            cfg,
-            db,
-            paper_ids=paper or None,
-            force=force,
-            max_node_tokens=max_node_tokens,
-        )
+    try:
+        with open_db(cfg) as db:
+            stats = build(
+                cfg,
+                db,
+                paper_ids=paper or None,
+                force=force,
+                max_node_tokens=max_node_tokens,
+            )
+    except ValueError as exc:
+        # SQL snapshots are whole-corpus artifacts and reject --paper.
+        raise typer.BadParameter(str(exc), param_hint="--paper") from exc
 
     if json_output:
         typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
         return
 
-    table = Table(title="LlamaIndex RAG Index")
+    table = Table(title="RAG Index")
     table.add_column("Metric", style="cyan")
     table.add_column("Count", justify="right", style="green")
     for key, label in (
@@ -88,9 +93,61 @@ def rag_index_cmd(
     ):
         table.add_row(label, str(stats.get(key, 0)))
     table.add_row("Storage dir", str(stats.get("storage_dir", "")))
+    if stats.get("generation"):
+        table.add_row("Published generation", str(stats["generation"]))
     if max_node_tokens:
         table.add_row("Max node tokens", str(max_node_tokens))
     console.print(table)
+
+
+@rag_app.command("prepare")
+def rag_prepare_cmd(
+    ctx: typer.Context,
+    force: bool = typer.Option(False, "--force", "-f", help="Force a full rebuild"),
+    paper: list[str] = typer.Option(
+        None, "--paper", help="Restrict to paper local_id (repeatable)"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Prepare and publish the configured RAG backend in one operation.
+
+    SQL mode rebuilds the derived text/vector database and publishes an
+    immutable generation.  LlamaIndex mode delegates to the normal index
+    builder, preserving its incremental cache semantics.
+    """
+    cfg = ctx.obj["config"]
+    from drbrain.rag.config import get_llamaindex_config
+
+    li = get_llamaindex_config(cfg)
+    if li.rag_engine == "sql":
+        from drbrain.rag.preparation import prepare_sql_rag
+
+        try:
+            stats = prepare_sql_rag(cfg, paper_ids=paper or None, publish=True)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--paper") from exc
+    else:
+        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
+
+        if not _LLAMA_INDEX_AVAILABLE:
+            typer.echo(
+                "llama-index is not installed. Run: uv add llama-index-core llama-index-retrievers-bm25",
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        with open_db(cfg) as db:
+            stats = build_index(
+                cfg,
+                db,
+                paper_ids=paper or None,
+                force=force,
+                max_node_tokens=li.max_node_tokens,
+            )
+    if json_output:
+        typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo("RAG prepared: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
 
 
 @rag_app.command("health")
