@@ -25,6 +25,16 @@ Results and jobs may additionally report :class:`Artifact` entries
 byte-for-byte instead of trusting the transcript.
 """
 
+from drbrain.capabilities import (
+    APIAdapter,
+    CapabilityAdapter,
+    CapabilityCatalog,
+    CapabilityDescriptor,
+    CLIAdapter,
+    InvocationResult,
+    InvocationStatus,
+    ModelAdapter,
+)
 from drbrain.plugins.backends import load_joblib, run_subprocess, run_subprocess_json
 from drbrain.plugins.protocol import (
     HOST_ABI_VERSION,
@@ -61,4 +71,12 @@ __all__ = [
     "make_evidence",
     "run_subprocess",
     "run_subprocess_json",
+    "CapabilityDescriptor",
+    "CapabilityAdapter",
+    "CapabilityCatalog",
+    "InvocationResult",
+    "InvocationStatus",
+    "APIAdapter",
+    "CLIAdapter",
+    "ModelAdapter",
 ]

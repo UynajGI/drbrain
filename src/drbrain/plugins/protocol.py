@@ -37,6 +37,19 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
+from drbrain.capabilities import (
+    CapabilityAnnotations,
+    CapabilityDescriptor,
+    CapabilityExecution,
+    CapabilityProvenance,
+    InvocationResult,
+    InvocationStatus,
+    dependency_lock_digest,
+    file_digest,
+    input_digest,
+    runtime_fingerprint,
+)
+
 # Coarse capability category. Concrete implementation details (e.g. ``gbdt`` vs
 # ``gnn``) belong in :attr:`Plugin.metadata`, not in this strict type.
 PluginType = Literal["model", "software", "data", "formula", "other"]
@@ -167,6 +180,62 @@ class Plugin:
     # outside ``SUPPORTED_ABI_VERSIONS`` fails registration).
     abi_version: int = 1
 
+    @property
+    def capability_id(self) -> str:
+        """Stable ID used when this descriptor crosses an adapter boundary."""
+        return f"plugin:{self.name}"
+
+    def to_capability_descriptor(self) -> CapabilityDescriptor:
+        """Translate the legacy plugin descriptor into the neutral contract."""
+        read_only: bool | None = None
+        destructive: bool | None = None
+        if self.side_effect == "pure":
+            read_only, destructive = True, False
+        elif self.side_effect == "read":
+            read_only, destructive = True, False
+        elif self.side_effect == "write":
+            read_only, destructive = False, False
+        elif self.side_effect == "irreversible":
+            read_only, destructive = False, True
+        metadata = dict(self.metadata)
+        metadata.setdefault("plugin_type", self.plugin_type)
+        if self.resource:
+            metadata.setdefault("resource", self.resource)
+        resource_scope = dict(self.resource_scope)
+        if self.resource:
+            resource_scope.setdefault("resource", self.resource)
+        return CapabilityDescriptor(
+            id=self.capability_id,
+            name=self.name,
+            description=self.description,
+            kind="plugin",
+            version=self.version,
+            input_schema=dict(self.input_schema),
+            output_schema=dict(self.output_schema) if self.output_schema else None,
+            annotations=CapabilityAnnotations(
+                read_only=read_only,
+                destructive=destructive,
+                idempotent=self.supports_idempotency,
+            ),
+            execution=CapabilityExecution(
+                timeout_seconds=self.timeout_s,
+                supports_cancel=self.supports_cancel,
+                supports_idempotency=self.supports_idempotency,
+                supports_reconcile=self.supports_reconcile,
+            ),
+            permissions=tuple(self.required_capabilities),
+            metadata=metadata,
+            provenance=CapabilityProvenance(
+                source="plugin",
+                version=self.version,
+                code_digest=self.code_digest,
+                resource_digests=(digest,) if (digest := file_digest(self.resource or "")) else (),
+                runtime=runtime_fingerprint(),
+                dependency_digest=dependency_lock_digest(),
+            ),
+            resource_scope=resource_scope,
+        )
+
 
 def _job_method_not_implemented(*_args: Any) -> Any:
     """Protocol default for any job method the plugin did not register."""
@@ -237,6 +306,32 @@ class PluginResult:
     def ok(self) -> bool:
         return self.status is ResultStatus.OK
 
+    @property
+    def completed(self) -> bool:
+        """Whether the call completed without an infrastructure/plugin failure."""
+        return self.status in {ResultStatus.OK, ResultStatus.NO_RESULT}
+
+    def to_invocation_result(self) -> InvocationResult:
+        """Expose a plugin result through the shared capability envelope."""
+        status_map = {
+            ResultStatus.OK: InvocationStatus.OK,
+            ResultStatus.NO_RESULT: InvocationStatus.NO_RESULT,
+            ResultStatus.INVALID_INPUT: InvocationStatus.INVALID_INPUT,
+            ResultStatus.TIMEOUT: InvocationStatus.TIMEOUT,
+            ResultStatus.MODEL_UNAVAILABLE: InvocationStatus.UNAVAILABLE,
+            ResultStatus.PLUGIN_ERROR: InvocationStatus.ERROR,
+        }
+        return InvocationResult(
+            status=status_map[self.status],
+            data=self.data,
+            structured_content=self.data,
+            error=self.error,
+            evidence=self.evidence,
+            job_id=self.job_id,
+            artifacts=tuple({"path": item.path, "sha256": item.sha256} for item in self.artifacts),
+            truncated=self.truncated,
+        )
+
     def to_llm_message(self, plugin: Plugin | None = None) -> str:
         """Render the result for the LLM: raw JSON + key-field summary.
 
@@ -271,5 +366,9 @@ def make_evidence(plugin: Plugin, arguments: dict[str, Any]) -> dict[str, Any]:
         "plugin_type": plugin.plugin_type,
         "version": plugin.version,
         "input": arguments,
+        "input_digest": input_digest(arguments),
+        "capability_id": plugin.capability_id,
+        "runtime": runtime_fingerprint(),
+        "code_digest": plugin.code_digest,
         "timestamp": time.time(),
     }

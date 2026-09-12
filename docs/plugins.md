@@ -100,7 +100,7 @@ JOB_METHODS = SimpleNamespace(submit=..., poll=..., cancel=...)  # 可选
 
 ## 5. 插件作者符合性清单
 
-- [ ] `register(registry)` 幂等（重复调用不产生副作用堆积）
+- [ ] `register(registry)` 只注册一次；确需替换时显式使用 `replace=True`
 - [ ] `input_schema` 是合法 JSON Schema（宿主据此生成 LLM 工具签名）
 - [ ] 长作业：`submit` 只入队快速返回；结果写 `jobs/<job_id>.json` + `.log`；`Artifact` 带 sha256
 - [ ] `side_effect` 如实声明（研究回路的门按此分级）
@@ -118,7 +118,7 @@ JOB_METHODS = SimpleNamespace(submit=..., poll=..., cancel=...)  # 可选
 
 ## 7. 符合性自检（插件作者可自跑）
 
-交付前对插件目录跑一遍静态符合性检查（**绝不执行 handler**）：
+交付前对插件目录跑一遍符合性检查（**绝不执行 handler**）：
 
 ```bash
 python -m drbrain.plugins.conformance <plugin_dir>
@@ -141,3 +141,53 @@ python -m drbrain.plugins.conformance <plugin_dir>
 inline 风格模块的 `register()` 会在一次性临时 registry 上执行一次（注册本身
 是文档化契约的一部分，handler 永不执行），使描述符级检查对两种风格统一生效。
 
+## 8. 统一能力入口（Plugin / MCP / Skill / API / CLI / Model）
+
+`drbrain.capabilities` 提供与执行技术无关的两个对象：
+
+- `CapabilityDescriptor`：稳定的 `id`、显示名、JSON Schema 2020-12 输入/输出、
+  安全 annotations、权限、执行/作业能力和 provenance。
+- `InvocationResult`：保留结构化内容、content blocks、`isError`、job、产物和
+  截断标记的统一结果信封。旧的 `PluginResult` 仍可通过
+  `to_invocation_result()` 适配，`ok` 语义保持兼容；`completed` 表示包括
+  `NO_RESULT` 在内的正常完成。
+
+能力 kind 目前包括 `plugin`、`mcp_tool`、`skill`、`api`、`cli`、`model`，但协议
+故意接受任意非空 kind；新工具协议只需实现 `CapabilityAdapter`，无需修改 Agent
+核心。长作业统一走 catalog 的 `submit_job` / `poll_job` / `cancel_job`，job ID
+限制为路径安全 token；提供 `state_dir` 时，幂等键和状态以原子 JSON 文件保存。
+
+Python 插件可通过 `PluginRegistry.list_capabilities()` 获取中立描述符。注册时会
+校验 handler、schema、超时、side effect 和重复 ID；重复注册必须显式传
+`replace=True`。直接 `PluginRegistry.call()` 会在 handler 运行前执行 JSON Schema
+校验，错误以 `INVALID_INPUT` 返回。
+
+`CapabilityCatalog` 是 Agent 侧的统一入口：`register_plugin_registry()`、
+`register_mcp_servers()` 和 `register_skills()` 接入现有来源；
+`register_adapter()` 接入任何实现 `CapabilityAdapter`（`descriptor()` +
+`invoke()`）的新协议。内置 `APIAdapter`、`CLIAdapter`、`ModelAdapter` 分别覆盖
+固定 HTTP API、固定 argv 的本地命令和已训练/托管模型 callable。Agent 只需要对
+catalog 做 `recommend(query)` 和 `invoke(capability_id, arguments)`，不需要知道
+能力来自哪个协议；所有调用都经过同一层输入校验、状态归一化和 input digest。
+需要接入 LlamaIndex 时调用 `catalog.to_llamaindex_tools()`，canonical capability ID
+会直接作为工具名，避免多来源同名覆盖。
+
+MCP 工具的 canonical ID 是 `mcp:<server_id>:<tool_name>`，发现结果保留
+`outputSchema`、`annotations`、`_meta` 和分页 cursor；`call_mcp_tool_result()`
+保留结构化输出与 `isError`，`call_mcp_tool()` 继续提供旧的文本结果。服务器可
+选择 `stdio` 或 `streamable_http` transport，二者共用相同的信任、allowlist 和超时
+策略。
+
+Skill 只作为指令/资源包发现：`discover_skills()` 解析 `SKILL.md` frontmatter、
+校验名称与描述约束并列出资源，绝不 import 或执行 Skill 目录中的脚本。Skill 的
+执行仍由宿主决定，避免把说明文档误当成可调用 handler。
+
+符合性检查分为两步：
+
+```bash
+python -m drbrain.plugins.conformance --mode lint <plugin_dir>   # AST-only, safe for untrusted source
+python -m drbrain.plugins.conformance --mode probe <plugin_dir>  # controlled discovery-style registration
+```
+
+`lint` 不会 import 模块或运行 `register()`；`probe` 保留现有发现语义，便于在受控
+环境中验证实际注册结果。

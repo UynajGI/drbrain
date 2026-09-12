@@ -32,6 +32,7 @@ without a trace.
 from __future__ import annotations
 
 import argparse
+import ast
 import dataclasses
 import hashlib
 import importlib.util
@@ -88,7 +89,7 @@ class ConformanceReport:
 
 
 def run_conformance(target: str | Path) -> ConformanceReport:
-    """Run the static conformance suite over a plugin directory.
+    """Run the isolated probe conformance suite over a plugin directory.
 
     Never executes plugin handlers; import and inline-style ``register()``
     run exactly once per module, mirroring discovery.
@@ -106,6 +107,110 @@ def run_conformance(target: str | Path) -> ConformanceReport:
     for path in modules:
         checks.extend(_module_checks(path))
     return ConformanceReport(checks=checks, passed=all(check.passed for check in checks))
+
+
+def run_probe_conformance(target: str | Path) -> ConformanceReport:
+    """Explicit name for the legacy import-and-register probe suite."""
+    return run_conformance(target)
+
+
+def run_lint_conformance(target: str | Path) -> ConformanceReport:
+    """Perform AST-only checks without importing or executing plugin code.
+
+    Lint is safe to run in CI on untrusted plugin source.  Inline descriptors
+    are intentionally deferred to the isolated probe because their values are
+    produced by ``register()``; the lint result still checks syntax, entrypoint
+    shape, and source-level secrets.
+    """
+    directory = Path(target)
+    checks: list[CheckResult] = []
+    if not directory.is_dir():
+        return ConformanceReport(
+            checks=[CheckResult("directory", False, f"not a directory: {directory}")],
+            passed=False,
+        )
+    checks.append(CheckResult("directory", True, str(directory)))
+    modules = sorted(p for p in directory.glob("*.py") if not p.name.startswith("_"))
+    if not modules:
+        checks.append(CheckResult("modules", False, "no plugin modules (*.py) found"))
+        return ConformanceReport(checks=checks, passed=False)
+    for path in modules:
+        checks.extend(_lint_module_checks(path))
+    return ConformanceReport(checks=checks, passed=all(check.passed for check in checks))
+
+
+def _lint_module_checks(path: Path) -> list[CheckResult]:
+    stem = path.stem
+    source = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return [CheckResult(f"{stem}.syntax", False, str(exc))]
+    checks = [CheckResult(f"{stem}.syntax", True, "parsed without importing")]
+    checks.append(_secrets_check(f"{stem}.secrets", path))
+    assignments = {
+        node.targets[0].id: node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    }
+    has_manifest_node = MANIFEST_KEY in assignments
+    has_register = any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "register"
+        for node in tree.body
+    )
+    if has_manifest_node:
+        checks.append(CheckResult(f"{stem}.entrypoint", True, f"declares {MANIFEST_KEY}"))
+        try:
+            manifest = ast.literal_eval(assignments[MANIFEST_KEY])
+        except (ValueError, TypeError, SyntaxError):
+            manifest = None
+            checks.append(
+                CheckResult(f"{stem}.manifest", False, f"{MANIFEST_KEY} must be a literal dict")
+            )
+        if manifest is not None:
+            checks.append(_manifest_shape_check(stem, manifest))
+            checks.append(_manifest_fields_check(stem, manifest))
+            if all(check.passed for check in checks[-2:]):
+                checks.append(_schema_check(f"{stem}.input_schema", manifest["input_schema"]))
+                try:
+                    plugin = Plugin(**manifest)
+                except Exception as exc:  # malformed literal descriptor
+                    checks.append(CheckResult(f"{stem}.descriptor", False, str(exc)))
+                else:
+                    checks.extend(_descriptor_checks(stem, plugin, path))
+        handler_ok = HANDLER_KEY in assignments or any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == HANDLER_KEY
+            for node in tree.body
+        )
+        checks.append(
+            CheckResult(
+                f"{stem}.handler",
+                handler_ok,
+                "module-level HANDLER declaration found"
+                if handler_ok
+                else f"missing module-level {HANDLER_KEY}",
+            )
+        )
+    elif has_register:
+        checks.append(CheckResult(f"{stem}.entrypoint", True, "declares register()"))
+        checks.append(
+            CheckResult(
+                f"{stem}.probe",
+                True,
+                "descriptor checks deferred to isolated probe; register() was not executed",
+            )
+        )
+    else:
+        checks.append(
+            CheckResult(
+                f"{stem}.entrypoint",
+                False,
+                f"declares neither {MANIFEST_KEY} nor register()",
+            )
+        )
+    return checks
 
 
 def _load_module(path: Path) -> tuple[Any, str | None]:
@@ -358,8 +463,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("plugin_dir", help="directory containing plugin *.py modules")
+    parser.add_argument(
+        "--mode",
+        choices=("lint", "probe"),
+        default="probe",
+        help="lint uses AST only; probe imports modules and calls register() in-process",
+    )
     args = parser.parse_args(argv)
-    report = run_conformance(args.plugin_dir)
+    report = (
+        run_lint_conformance(args.plugin_dir)
+        if args.mode == "lint"
+        else run_probe_conformance(args.plugin_dir)
+    )
     for check in report.checks:
         mark = "PASS" if check.passed else "FAIL"
         detail = f" — {check.detail}" if check.detail else ""
