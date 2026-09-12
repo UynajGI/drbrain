@@ -21,7 +21,9 @@ from drbrain.cli._helpers.enrich import (
     _enrich_doi_from_openalex,
 )
 from drbrain.dedup.resolver import DedupEngine, PaperIDs
+from drbrain.parser.material import TEXT_SUFFIXES, extract_material
 from drbrain.parser.mineru_parser import extract_pdf
+from drbrain.security import configured_secret_values, safe_error
 from drbrain.services.fetch import fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
@@ -75,22 +77,22 @@ def _ingest_single_paper(
     from loguru import logger as _ingest_log
 
     _t0 = _time.monotonic()
+    secrets = configured_secret_values(cfg)
 
     # Stage 1: Parse
     echo(f"Parsing: {pdf_path}")
     _ingest_log.info(f"[ingest] Stage 1/4 parse: {pdf_path.name}")
     try:
-        if pdf_path.suffix.lower() in {".md", ".markdown", ".txt", ".tex", ".text"}:
-            from drbrain.parser.material import extract_material
-
+        if pdf_path.suffix.lower() in TEXT_SUFFIXES:
             parsed = extract_material(pdf_path, cfg)
         else:
             parsed = extract_pdf(pdf_path, cfg)
     except Exception as e:
-        _ingest_log.error(f"Parse failed for {pdf_path}: {e}")
-        echo(f"Error parsing PDF: {e}")
-        _move_to_pending(pdf_path, cfg, f"PDF parse error: {e}")
-        return {"ok": False, "local_id": None, "error": str(e)}
+        message = safe_error(e, secrets=secrets)
+        _ingest_log.error(f"Parse failed for {pdf_path}: {message}")
+        echo(f"Error parsing PDF: {message}")
+        _move_to_pending(pdf_path, cfg, f"PDF parse error: {message}")
+        return {"ok": False, "local_id": None, "error": message}
 
     # Override parsed metadata with values from fetch_paper (e.g. arXiv API)
     if override_metadata:
@@ -303,7 +305,7 @@ def _ingest_single_paper(
                 break
     except Exception as e:
         tree_status = "degraded"
-        tree_error = str(e)
+        tree_error = safe_error(e, secrets=secrets)
         db.upsert_paper_artifact(  # type: ignore[arg-type]
             local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
             "tree",
@@ -311,8 +313,8 @@ def _ingest_single_paper(
             error=tree_error,
         )
         db.commit()
-        echo(f"  [yellow]Warning: tree structuring failed: {e}[/yellow]")
-        _log_error(cfg, f"Tree structuring failed for {local_id}: {e}")
+        echo(f"  [yellow]Warning: tree structuring failed: {tree_error}[/yellow]")
+        _log_error(cfg, f"Tree structuring failed for {local_id}: {tree_error}")
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt

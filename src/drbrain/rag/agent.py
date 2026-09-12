@@ -145,12 +145,6 @@ def _coerce_cfg(cfg: Config | dict[str, Any]) -> Config:
     return coerce_config(cfg)
 
 
-def _llamaindex_from_dict(raw: dict) -> Any:
-    from drbrain.config import LlamaIndexConfig
-
-    return LlamaIndexConfig.from_dict(raw)
-
-
 def _cfg_models(cfg: Any) -> list[dict]:
     """Return the LLM fallback-chain model list from a Config or dict."""
     if isinstance(cfg, dict):

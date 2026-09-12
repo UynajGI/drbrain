@@ -832,11 +832,7 @@ async def build_paper_tree_vectors(
                 cache=cache,
                 paper_id=paper_id,
             )
-            if (
-                raptor_count
-                and any(row.get("type") == "summary" for row in staged)
-                and any(row.get("type") == "vector" for row in staged)
-            ):
+            if raptor_count and any(row.get("type") == "summary" for row in staged):
                 if sink is not None:
                     sink.extend(staged)
                 else:

@@ -398,7 +398,7 @@ def _build_retrieval_tool(
             for row in rows:
                 item = json.dumps(row, ensure_ascii=False, default=str)
                 extra = len(item) + (1 if encoded else 0)
-                if encoded and size + extra > 12000:
+                if size + extra > 12000:
                     break
                 encoded.append(item)
                 size += extra

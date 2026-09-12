@@ -598,7 +598,7 @@ def retrieve_documents_sql(
                 rerank_status = "ok"
             except Exception:
                 rerank_status = "degraded"
-        elif li.rerank:
+        elif candidates and reranker is None and li.rerank:
             rerank_status = "unavailable"
         capabilities["rerank_status"] = rerank_status
         primary = _diverse_head(candidates, top_k)

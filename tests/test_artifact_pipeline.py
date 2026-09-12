@@ -148,7 +148,7 @@ def test_raptor_artifact_cleanup_prevents_duplicate_layers(tmp_path):
         db.close()
 
 
-def test_raptor_replacement_keeps_old_layer_until_valid_stage(tmp_path):
+def test_raptor_replacement_accepts_summary_only_stage(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     try:
         db.insert_paper("p1", "Paper", 2024, "uploaded")
@@ -174,8 +174,10 @@ def test_raptor_replacement_keeps_old_layer_until_valid_stage(tmp_path):
                     "tree_layer": 1,
                 }
             ],
-        ) == {"summaries": 0, "vectors": 0}
-        assert db.conn.execute("SELECT COUNT(*) FROM tree_summaries").fetchone()[0] == 1
+        ) == {"summaries": 1, "vectors": 0}
+        assert db.conn.execute("SELECT node_id FROM tree_summaries").fetchone()[0] == (
+            "raptor_p1_L1_new"
+        )
 
         result = db.replace_raptor_artifacts(
             "p1",

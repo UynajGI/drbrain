@@ -66,7 +66,10 @@ async def test_sql_agent_tool_keeps_valid_json_and_pinned_generation(sql_corpus,
     tool = agent_tools._build_retrieval_tool(cfg, None, None, rag_generation=generation)
     assert tool is not None
     output = await tool.acall(query="reference")
-    assert json.loads(output.content) == rows
+    # Oversized observations are dropped at the row boundary so the tool
+    # always returns a bounded, valid JSON payload.
+    assert json.loads(output.content) == []
+    assert len(output.content) <= 12000
     assert calls[0]["generation"] == generation
 
 

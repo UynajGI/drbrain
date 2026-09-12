@@ -1792,7 +1792,7 @@ class Database:
                     )
                 )
 
-        if not summaries or not vectors:
+        if not summaries:
             return {"summaries": 0, "vectors": 0}
 
         with self._write_scope():
@@ -1803,12 +1803,13 @@ class Database:
                 "VALUES (?, ?, ?, ?, ?)",
                 summaries,
             )
-            self.conn.executemany(
-                "INSERT OR REPLACE INTO tree_vectors "
-                "(node_id, paper_id, embedding, content_hash, tree_layer) "
-                "VALUES (?, ?, ?, ?, ?)",
-                vectors,
-            )
+            if vectors:
+                self.conn.executemany(
+                    "INSERT OR REPLACE INTO tree_vectors "
+                    "(node_id, paper_id, embedding, content_hash, tree_layer) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    vectors,
+                )
         return {"summaries": len(summaries), "vectors": len(vectors)}
 
     def merge_papers(self, keep_id: str, merge_id: str) -> dict:
