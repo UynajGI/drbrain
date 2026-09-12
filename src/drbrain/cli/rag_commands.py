@@ -127,7 +127,14 @@ def rag_prepare_cmd(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--paper") from exc
     else:
-        from drbrain.rag.indexer import build_index
+        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
+
+        if not _LLAMA_INDEX_AVAILABLE:
+            typer.echo(
+                "llama-index is not installed. Run: uv add llama-index-core llama-index-retrievers-bm25",
+                err=True,
+            )
+            raise typer.Exit(1)
 
         with open_db(cfg) as db:
             stats = build_index(

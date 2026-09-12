@@ -165,6 +165,8 @@ class EmbedConfig(_ConfigBase):
         api_base: OpenAI-compatible API base URL (``/v1`` prefix).
         api_key: API key for cloud embedding.
         batch_size: Batch size for embedding requests.
+        dim: Expected embedding dimension when the provider exposes one.
+        max_seq_length: Maximum sequence length accepted by the embedding model.
     """
 
     provider: str = "local"
@@ -178,6 +180,8 @@ class EmbedConfig(_ConfigBase):
     api_base: str = ""
     api_key: str = ""
     batch_size: int = 64
+    dim: int = 1024
+    max_seq_length: int = 512
 
 
 @dataclass

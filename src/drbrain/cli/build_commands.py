@@ -14,8 +14,7 @@ from drbrain.cli._common import open_db
 from drbrain.graph.engine import GraphEngine
 from drbrain.security import configured_secret_values, safe_error
 from drbrain.storage.database import Database
-from drbrain.storage.paths import paper_dir as resolve_paper_dir
-from drbrain.storage.paths import raw_md_path, tree_json_path
+from drbrain.storage.paths import paper_id_from_dir, raw_md_path, resolve_paper_dir, tree_json_path
 
 
 def translate_cmd(
@@ -527,11 +526,28 @@ def embed_cmd(
                 return specs
             # Old shard databases may not contain papers rows yet.  Keep the
             # directory scan as a read-only compatibility fallback.
-            return [
-                (path.name, path)
-                for path in sorted(papers_dir.iterdir())
-                if path.is_dir() and (paper_filter is None or path.name in paper_filter)
-            ]
+            try:
+                candidates = sorted(papers_dir.iterdir())
+            except OSError as exc:
+                _build_log.warning("[embed] papers directory unavailable: {}", exc)
+                return []
+            fallback_specs: list[tuple[str, Path]] = []
+            for path in candidates:
+                if not path.is_dir():
+                    continue
+                try:
+                    pid = paper_id_from_dir(path, papers_root=papers_dir)
+                except (OSError, ValueError) as exc:
+                    _build_log.warning("[embed] ignoring invalid paper directory {}: {}", path, exc)
+                    continue
+                if (
+                    paper_filter is not None
+                    and pid not in paper_filter
+                    and path.name not in paper_filter
+                ):
+                    continue
+                fallback_specs.append((pid, path))
+            return fallback_specs
 
         if getattr(embed_cfg, "provider", "local") == "none":
             typer.echo("embed.provider=none; tree vector generation is disabled")

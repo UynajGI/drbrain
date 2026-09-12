@@ -107,6 +107,18 @@ def test_sql_publish_keeps_previous_content_and_pins_configuration(sql_corpus):
         retrieve_documents(cfg, None, None, "reference", generation="missing-generation")
 
 
+def test_embedding_identity_tracks_dimension_and_sequence_limit():
+    from drbrain.rag.sql_snapshot import embedding_identity
+
+    cfg = Config(embed=EmbedConfig(dim=768, max_seq_length=256))
+    identity = embedding_identity(cfg)
+    assert identity["dim"] == 768
+    assert identity["max_seq_length"] == 256
+
+    changed = Config(embed=EmbedConfig(dim=1024, max_seq_length=256))
+    assert embedding_identity(changed) != identity
+
+
 def test_sql_pinned_requests_reject_live_sources(sql_corpus):
     from drbrain.rag.agent import retrieve_documents
     from drbrain.rag.indexer import build_index

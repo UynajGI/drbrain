@@ -1736,14 +1736,22 @@ class Database:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tree_vectors_vec'"
             ).fetchone()
             if exists:
-                placeholders = ",".join("?" * len(node_ids))
-                try:
-                    self.conn.execute(
-                        f"DELETE FROM tree_vectors_vec WHERE node_id IN ({placeholders})",
-                        tuple(node_ids),
-                    )
-                except sqlite3.Error as exc:
-                    logger.debug("[db] failed to clear tree_vectors_vec for {}: {}", paper_id, exc)
+                # vec0 virtual tables reject some bulk ``IN`` deletes.  Match
+                # the per-node cleanup used by ``vec_upsert`` so stale ANN
+                # shadow rows cannot survive an artifact replacement.
+                for node_id in node_ids:
+                    try:
+                        self.conn.execute(
+                            "DELETE FROM tree_vectors_vec WHERE node_id = ?",
+                            (node_id,),
+                        )
+                    except sqlite3.Error as exc:
+                        logger.debug(
+                            "[db] failed to clear tree_vectors_vec node {} for {}: {}",
+                            node_id,
+                            paper_id,
+                            exc,
+                        )
         self.conn.execute(
             "DELETE FROM tree_vectors WHERE paper_id = ? AND tree_layer LIKE 'raptor_%'",
             (paper_id,),

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 # ── Module-level caches ──────────────────────────────────────────────────────
 
-_model_cache: dict = {}  # key: (model_name, cache_dir, device) -> SentenceTransformer
+_model_cache: dict = {}  # key: (model_name, cache_dir, device, max_seq_length) -> model
 _GPU_PROFILE_FILE = Path("~/.cache/drbrain/gpu_profile.json").expanduser()
 
 
@@ -234,7 +234,8 @@ def _load_model(cfg: EmbedConfig | None = None):
     """Load SentenceTransformer with module-level cache.
 
     Resolves model path via ModelScope first, falls back to HuggingFace.
-    Cached by (model_name, cache_dir, device) to avoid reloading.
+    Cached by (model_name, cache_dir, device, max_seq_length) to avoid reloading
+    a model with a stale tokenizer limit.
     """
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -244,12 +245,14 @@ def _load_model(cfg: EmbedConfig | None = None):
         device_cfg = cfg.device
         source = cfg.source
         hf_endpoint = (cfg.hf_endpoint or "").strip()
+        max_seq_length = cfg.max_seq_length
     else:
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         cache_dir = os.path.expanduser("~/.cache/modelscope/hub/models")
         device_cfg = "auto"
         source = "modelscope"
         hf_endpoint = ""
+        max_seq_length = None
 
     if source == "modelscope":
         os.environ["MODELSCOPE_CACHE"] = cache_dir
@@ -268,7 +271,7 @@ def _load_model(cfg: EmbedConfig | None = None):
     else:
         device = device_cfg
 
-    cache_key = (model_name, cache_dir, device)
+    cache_key = (model_name, cache_dir, device, max_seq_length)
     if cache_key in _model_cache:
         return _model_cache[cache_key]
 
@@ -280,6 +283,9 @@ def _load_model(cfg: EmbedConfig | None = None):
     else:
         logger.info("[embed] loading model %s (downloading if needed)", model_name)
         model = SentenceTransformer(model_name, device=device)
+
+    if max_seq_length is not None and max_seq_length > 0:
+        model.max_seq_length = max_seq_length
 
     logger.info(
         "[embed] model loaded: %s device=%s dim=%d",
