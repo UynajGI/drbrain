@@ -817,23 +817,35 @@ async def build_paper_tree_vectors(
                 ).fetchone()
             )
             raptor_needs_rebuild = raptor_needs_rebuild or not raptor_exists
-            if raptor_needs_rebuild:
-                raptor_db.clear_raptor_artifacts(resolved_paper_id)
-                raptor_db.commit()
         finally:
             raptor_db.close()
         if not raptor_needs_rebuild:
             return pageindex_count
+        staged: list[dict] = []
         try:
             raptor_count = await build_raptor_tree(
                 paper_dir,
                 db_path,
                 embed_cfg,
                 llm_models,
-                sink=sink,
+                sink=staged,
                 cache=cache,
                 paper_id=paper_id,
             )
+            if (
+                raptor_count
+                and any(row.get("type") == "summary" for row in staged)
+                and any(row.get("type") == "vector" for row in staged)
+            ):
+                if sink is not None:
+                    sink.extend(staged)
+                else:
+                    replace_db = Database(db_path)
+                    try:
+                        replaced = replace_db.replace_raptor_artifacts(resolved_paper_id, staged)
+                        raptor_count = replaced["summaries"]
+                    finally:
+                        replace_db.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "RAPTOR tree build failed for {} ({}), PageIndex vectors still created",

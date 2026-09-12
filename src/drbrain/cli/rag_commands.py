@@ -62,14 +62,17 @@ def rag_index_cmd(
         )
         raise typer.Exit(1)
 
-    with open_db(cfg) as db:
-        stats = build(
-            cfg,
-            db,
-            paper_ids=paper or None,
-            force=force,
-            max_node_tokens=max_node_tokens,
-        )
+    try:
+        with open_db(cfg) as db:
+            stats = build(
+                cfg,
+                db,
+                paper_ids=paper or None,
+                force=force,
+                max_node_tokens=max_node_tokens,
+            )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--paper") from exc
 
     if json_output:
         typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))

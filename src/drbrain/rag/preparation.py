@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,7 @@ def prepare_sql_rag(
             ),
             tuple(sorted(eligible)),
         ).fetchall()
+        node_counts = Counter(row[1] for row in node_rows)
         if not eligible:
             # Never replace a previously usable snapshot with an empty one
             # merely because every current paper is waiting for PageIndex.
@@ -134,7 +136,7 @@ def prepare_sql_rag(
                 pid,
                 "rag_text",
                 "ready",
-                metadata_json=json.dumps({"nodes": sum(1 for row in node_rows if row[1] == pid)}),
+                metadata_json=json.dumps({"nodes": node_counts.get(pid, 0)}),
             )
         db.commit()
     finally:

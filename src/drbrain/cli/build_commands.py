@@ -8,9 +8,11 @@ import json
 from pathlib import Path
 
 import typer
+from loguru import logger as _build_log
 
 from drbrain.cli._common import open_db
 from drbrain.graph.engine import GraphEngine
+from drbrain.security import configured_secret_values, safe_error
 from drbrain.storage.database import Database
 from drbrain.storage.paths import paper_dir as resolve_paper_dir
 from drbrain.storage.paths import raw_md_path, tree_json_path
@@ -37,7 +39,11 @@ def translate_cmd(
         raise typer.Exit(1)
 
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
-    paper_dir = resolve_paper_dir(papers_dir, local_id)
+    try:
+        paper_dir = resolve_paper_dir(papers_dir, local_id)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Cannot resolve paper storage for {local_id}: {safe_error(exc)}", err=True)
+        raise typer.Exit(1) from exc
 
     if not raw_md_path(paper_dir).exists():
         typer.echo(f"No raw.md found for {local_id}. Run 'drbrain ingest' first.", err=True)
@@ -162,8 +168,6 @@ def build_cmd(
     """Build knowledge graph from ingested papers using 5-stage LLM extraction."""
     import time as _time
 
-    from loguru import logger as _build_log
-
     from drbrain.extractor.cache import ApiCache
     from drbrain.extractor.concept import build_graph_from_tree
 
@@ -171,8 +175,6 @@ def build_cmd(
     db = Database(cfg["db"]["path"])
 
     # LLM response cache (deduplicate retries across stages)
-    from drbrain.security import configured_secret_values, safe_error
-
     secrets = configured_secret_values(cfg)
     cache = ApiCache("data/spool/llm_cache", secrets=secrets)
 
@@ -486,9 +488,13 @@ def embed_cmd(
             """Resolve paper IDs from the DB, retaining a legacy dir fallback."""
             try:
                 rows = db.get_all_papers()
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                _build_log.warning(
+                    "[embed] get_all_papers failed; falling back to dir scan: {}", exc
+                )
                 rows = []
             specs: list[tuple[str, Path]] = []
+            resolution_errors = False
             for row in rows or []:
                 pid = row.get("local_id") if isinstance(row, dict) else None
                 if not pid:
@@ -496,7 +502,17 @@ def embed_cmd(
                 pid = str(pid)
                 if paper_filter is not None and pid not in paper_filter:
                     continue
-                specs.append((pid, resolve_paper_dir(papers_dir, pid)))
+                try:
+                    specs.append((pid, resolve_paper_dir(papers_dir, pid)))
+                except (OSError, ValueError) as exc:
+                    resolution_errors = True
+                    _build_log.warning("[embed] cannot resolve {}: {}", pid, exc)
+                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=safe_error(exc))
+                    db.upsert_paper_artifact(
+                        pid, "raptor", "skipped", error="paper path unavailable"
+                    )
+            if resolution_errors:
+                db.commit()
             if specs:
                 return specs
             # Old shard databases may not contain papers rows yet.  Keep the

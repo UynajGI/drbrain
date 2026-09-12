@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+from collections import OrderedDict
 from typing import Any
 
 from rank_bm25 import BM25Okapi
@@ -97,7 +98,8 @@ class BM25Search:
         return results[:limit]
 
 
-_bm25_cache: dict[tuple, BM25Search] = {}
+_BM25_CACHE_MAX = 8
+_bm25_cache: OrderedDict[tuple, BM25Search] = OrderedDict()
 
 
 def build_bm25_index(
@@ -128,6 +130,7 @@ def build_bm25_index(
     # cached index and a changed k1/b/scope is honoured.
     cache_key = (db_path, k1, b, scope_key, os.path.getmtime(db_path)) if cacheable else None
     if cache_key is not None and cache_key in _bm25_cache:
+        _bm25_cache.move_to_end(cache_key)
         return _bm25_cache[cache_key]
 
     index = BM25Search()
@@ -179,4 +182,7 @@ def build_bm25_index(
     index.build(k1=k1, b=b)
     if cache_key is not None:
         _bm25_cache[cache_key] = index
+        _bm25_cache.move_to_end(cache_key)
+        while len(_bm25_cache) > _BM25_CACHE_MAX:
+            _bm25_cache.popitem(last=False)
     return index

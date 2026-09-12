@@ -87,19 +87,36 @@ def collect_tree_node_records(
         line_end: int | None = None
 
         start, end = node.get("line_start"), node.get("line_end")
+        used_raw_range = False
         if start is not None and end is not None and raw_lines is not None:
-            line_start, line_end = int(start), int(end)
-            body = "\n".join(raw_lines[line_start:line_end])
-        elif node.get("line_num") is not None and raw_lines is not None:
-            line_start = int(node["line_num"]) - 1
-            line_end = len(raw_lines)
-            for following in flat[index + 1 :]:
-                if following.get("line_num") is not None:
-                    line_end = int(following["line_num"]) - 1
-                    break
-            line_end = max(line_start, line_end)
-            body = "\n".join(raw_lines[line_start:line_end])
-        else:
+            try:
+                candidate_start, candidate_end = int(start), int(end)
+            except (TypeError, ValueError):
+                candidate_start, candidate_end = -1, -1
+            if 0 <= candidate_start <= candidate_end:
+                line_start, line_end = candidate_start, candidate_end
+                body = "\n".join(raw_lines[line_start:line_end])
+                used_raw_range = True
+        if not used_raw_range and node.get("line_num") is not None and raw_lines is not None:
+            try:
+                header_line = int(str(node["line_num"]))
+            except (TypeError, ValueError):
+                header_line = 0
+            if header_line > 0:
+                line_start = header_line - 1
+                line_end = len(raw_lines)
+                for following in flat[index + 1 :]:
+                    try:
+                        following_line = int(str(following.get("line_num")))
+                    except (TypeError, ValueError):
+                        continue
+                    if following_line > 0:
+                        line_end = following_line - 1
+                        break
+                line_end = max(line_start, line_end)
+                body = "\n".join(raw_lines[line_start:line_end])
+                used_raw_range = True
+        if not used_raw_range:
             for key in ("text", "content", "summary", "prefix_summary"):
                 value = node.get(key)
                 if value:

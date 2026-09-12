@@ -106,6 +106,8 @@ _ENGINE_UNAVAILABLE_MSG = (
 _RETRIEVAL_FAILURE_MSG = "检索失败,无法回答"
 #: Abstention message when retrieval succeeded but matched nothing.
 _NO_RESULTS_MSG = "当前知识库中没有找到相关信息"
+#: Abstention message when some retrieval legs are unavailable.
+_DEGRADED_MSG = "部分检索路径不可用，当前证据不足"
 #: Stable refusal text when result nodes cannot be tied to auditable evidence.
 _INSUFFICIENT_EVIDENCE_MSG = INSUFFICIENT_EVIDENCE_MESSAGE
 
@@ -435,7 +437,7 @@ def ask_llamaindex(
         return _abstain_answer(
             question,
             RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
-            "部分检索路径不可用，当前证据不足" if degraded else _NO_RESULTS_MSG,
+            _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
             telemetry=telemetry,
         )
     if not _evidence_ids_from_sources(sources):

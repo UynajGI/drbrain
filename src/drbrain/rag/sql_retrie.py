@@ -94,7 +94,11 @@ def _open(cfg: Any, generation: str | None = None) -> sqlite3.Connection:
         raise RetrievalUnavailableError("SQL corpus is unavailable")
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     # All legs see one read transaction, including the mutable working-copy mode.
-    conn.execute("BEGIN")
+    try:
+        conn.execute("BEGIN")
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 

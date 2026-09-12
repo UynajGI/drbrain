@@ -171,7 +171,6 @@ def _make_graph_tool(
     tool_broker: Any = None,
     tool_policy: Any = None,
     workflow_step: str | None = None,
-    rag_generation: str | None = None,
 ) -> Any | None:
     """Build one ``FunctionTool`` backed by ``agent_tools.execute_tool``.
 
@@ -391,7 +390,19 @@ def _build_retrieval_tool(
                     top_k=10,
                     generation=resolved_generation,
                 )
-            return json.dumps(rows, ensure_ascii=False, default=str)
+            # Keep tool observations bounded so a broad fused result cannot
+            # consume the agent context window.  Truncate at row boundaries
+            # to preserve valid JSON for the model.
+            encoded: list[str] = []
+            size = 2
+            for row in rows:
+                item = json.dumps(row, ensure_ascii=False, default=str)
+                extra = len(item) + (1 if encoded else 0)
+                if encoded and size + extra > 12000:
+                    break
+                encoded.append(item)
+                size += extra
+            return "[" + ",".join(encoded) + "]"
 
         try:
             from llama_index.core.tools import FunctionTool

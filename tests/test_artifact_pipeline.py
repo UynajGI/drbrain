@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -39,7 +40,7 @@ def test_shared_projection_handles_line_num_and_inline_fallback(tmp_path):
                 "structure": [
                     {"node_id": "1", "title": "Intro", "line_num": 1},
                     {"node_id": "2", "title": "Method", "line_num": 3},
-                    {"node_id": "3", "title": "Inline", "text": "Fallback"},
+                    {"node_id": "3", "title": "Inline", "line_num": 0, "text": "Fallback"},
                 ]
             }
         ),
@@ -137,5 +138,64 @@ def test_raptor_artifact_cleanup_prevents_duplicate_layers(tmp_path):
         assert removed == 1
         assert db.conn.execute("SELECT COUNT(*) FROM tree_vectors").fetchone()[0] == 0
         assert db.conn.execute("SELECT COUNT(*) FROM tree_summaries").fetchone()[0] == 0
+    finally:
+        db.close()
+
+
+def test_raptor_replacement_keeps_old_layer_until_valid_stage(tmp_path):
+    db = Database(tmp_path / "db.sqlite")
+    try:
+        db.insert_paper("p1", "Paper", 2024, "uploaded")
+        db.conn.execute(
+            "INSERT INTO tree_vectors(node_id, paper_id, embedding, tree_layer) "
+            "VALUES (?, ?, ?, ?)",
+            ("raptor_p1_L1_old", "p1", b"old", "raptor_L1"),
+        )
+        db.conn.execute(
+            "INSERT INTO tree_summaries(node_id, paper_id, summary_text, tree_layer) "
+            "VALUES (?, ?, ?, ?)",
+            ("raptor_p1_L1_old", "p1", "old summary", 1),
+        )
+        assert db.replace_raptor_artifacts(
+            "p1",
+            [
+                {
+                    "type": "summary",
+                    "node_id": "raptor_p1_L1_new",
+                    "paper_id": "p1",
+                    "summary_text": "new summary",
+                    "source_node_ids": ["p1:1"],
+                    "tree_layer": 1,
+                }
+            ],
+        ) == {"summaries": 0, "vectors": 0}
+        assert db.conn.execute("SELECT COUNT(*) FROM tree_summaries").fetchone()[0] == 1
+
+        result = db.replace_raptor_artifacts(
+            "p1",
+            [
+                {
+                    "type": "summary",
+                    "node_id": "raptor_p1_L1_new",
+                    "paper_id": "p1",
+                    "summary_text": "new summary",
+                    "source_node_ids": ["p1:1"],
+                    "tree_layer": 1,
+                },
+                {
+                    "type": "vector",
+                    "node_id": "raptor_p1_L1_new",
+                    "paper_id": "p1",
+                    "embedding_blob_b64": base64.b64encode(b"new").decode("ascii"),
+                    "content_hash": "hash",
+                    "tree_layer": "raptor_L1",
+                },
+            ],
+        )
+        db.commit()
+        assert result == {"summaries": 1, "vectors": 1}
+        assert db.conn.execute("SELECT node_id FROM tree_summaries").fetchone()[0] == (
+            "raptor_p1_L1_new"
+        )
     finally:
         db.close()

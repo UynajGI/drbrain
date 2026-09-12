@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,12 @@ def rebuild_rag_database(
     temp = Path(temp_name)
     counts = {"nodes": 0, "vectors": 0, "summaries": 0, "categories": 0}
     try:
-        conn = sqlite3.connect(str(temp))
-        # The file is private until publication, so use a durable journal
-        # rather than trading crash safety for a marginal build speedup.
-        conn.execute("PRAGMA synchronous=FULL")
-        conn.executescript(
-            """
+        with closing(sqlite3.connect(str(temp))) as conn:
+            # The file is private until publication, so use a durable journal
+            # rather than trading crash safety for a marginal build speedup.
+            conn.execute("PRAGMA synchronous=FULL")
+            conn.executescript(
+                """
             CREATE TABLE node_texts (
                 node_key TEXT PRIMARY KEY,
                 paper_id TEXT NOT NULL,
@@ -70,33 +71,34 @@ def rebuild_rag_database(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-            """
-        )
-        node_batch = list(node_rows)
-        if node_batch:
-            conn.executemany("INSERT INTO node_texts VALUES (?,?,?,?,?)", node_batch)
-            counts["nodes"] = len(node_batch)
-        vector_batch = list(vector_rows)
-        if vector_batch:
-            conn.executemany("INSERT INTO tree_vectors VALUES (?,?,?,?,?)", vector_batch)
-            counts["vectors"] = len(vector_batch)
-        summary_batch = list(summary_rows)
-        if summary_batch:
-            conn.executemany("INSERT INTO tree_summaries VALUES (?,?,?,?,?)", summary_batch)
-            counts["summaries"] = len(summary_batch)
-        category_batch = list(category_rows)
-        if category_batch:
-            conn.executemany("INSERT INTO paper_categories VALUES (?,?)", category_batch)
-            counts["categories"] = len(category_batch)
-        conn.execute(
-            "CREATE VIRTUAL TABLE node_texts_fts USING fts5("
-            "text, content='node_texts', content_rowid='rowid', tokenize='porter unicode61')"
-        )
-        conn.execute("INSERT INTO node_texts_fts(node_texts_fts) VALUES('rebuild')")
-        for key, value in (metadata or {}).items():
-            conn.execute("INSERT INTO rag_metadata(key, value) VALUES (?, ?)", (key, str(value)))
-        conn.commit()
-        conn.close()
+                """
+            )
+            node_batch = list(node_rows)
+            if node_batch:
+                conn.executemany("INSERT INTO node_texts VALUES (?,?,?,?,?)", node_batch)
+                counts["nodes"] = len(node_batch)
+            vector_batch = list(vector_rows)
+            if vector_batch:
+                conn.executemany("INSERT INTO tree_vectors VALUES (?,?,?,?,?)", vector_batch)
+                counts["vectors"] = len(vector_batch)
+            summary_batch = list(summary_rows)
+            if summary_batch:
+                conn.executemany("INSERT INTO tree_summaries VALUES (?,?,?,?,?)", summary_batch)
+                counts["summaries"] = len(summary_batch)
+            category_batch = list(category_rows)
+            if category_batch:
+                conn.executemany("INSERT INTO paper_categories VALUES (?,?)", category_batch)
+                counts["categories"] = len(category_batch)
+            conn.execute(
+                "CREATE VIRTUAL TABLE node_texts_fts USING fts5("
+                "text, content='node_texts', content_rowid='rowid', tokenize='porter unicode61')"
+            )
+            conn.execute("INSERT INTO node_texts_fts(node_texts_fts) VALUES('rebuild')")
+            for key, value in (metadata or {}).items():
+                conn.execute(
+                    "INSERT INTO rag_metadata(key, value) VALUES (?, ?)", (key, str(value))
+                )
+            conn.commit()
         with temp.open("rb") as handle:
             os.fsync(handle.fileno())
         os.replace(temp, target)

@@ -43,6 +43,7 @@ Rank-comparison helpers (:func:`top_k_overlap`, :func:`mean_rank_displacement`,
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -388,8 +389,6 @@ if _LLAMA_INDEX_AVAILABLE:
             passages = [_passage_text(nws.node) for nws in top]
             try:
                 scores = reranker.rerank(query, passages)
-                import math
-
                 if scores is None or len(scores) != len(top):
                     raise ValueError(
                         f"rerank returned {len(scores or [])} scores for {len(top)} passages"

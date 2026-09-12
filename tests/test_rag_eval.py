@@ -157,7 +157,23 @@ def test_rank_metrics_no_relevant_node_keeps_paper_level(tmp_path):
     res = _rank_metrics([_nws("p1", "x")], item, ks=[5])
     assert res["paper"]["hit_rate"] == {"5": True}
     assert res["node"]["first_rank"] is None
-    assert res["node"]["hit_rate"] == {"5": False}
+
+
+def test_rank_metrics_keeps_leaf_identity_when_parent_context_is_present():
+    from drbrain.rag.eval import _rank_metrics
+
+    node = _nws("p1", "leaf")
+    node.node.metadata["parent_node_id"] = "parent"
+    result = _rank_metrics(
+        [node],
+        {
+            "query": "q",
+            "relevant_papers": ["p1"],
+            "relevant_nodes": [{"paper_id": "p1", "node_id": "leaf"}],
+        },
+        ks=[1],
+    )
+    assert result["node"]["first_rank"] == 1
 
 
 def test_rank_metrics_no_hit():

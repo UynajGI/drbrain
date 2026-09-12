@@ -848,6 +848,15 @@ def _identify(cleaned: dict, db: Database, dedup: DedupEngine, *, persist: bool 
     return local_id
 
 
+def _file_sha256(path: Path) -> str:
+    """Hash a material in bounded memory for artifact fingerprints."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _write_db(
     rec: dict,
     db: Database,
@@ -880,14 +889,13 @@ def _write_db(
     if rec.get("paper_type"):
         db.set_paper_type(local_id, rec["paper_type"])
     db.set_paper_status(local_id, "uploaded")
-    if raw_path.is_file():
-        db.upsert_paper_artifact(
-            local_id,
-            "raw",
-            "ready",
-            fingerprint=hashlib.sha256(raw_path.read_bytes()).hexdigest(),
-            metadata_json=json.dumps({"source": "scibase"}),
-        )
+    db.upsert_paper_artifact(
+        local_id,
+        "raw",
+        "ready",
+        fingerprint=_file_sha256(raw_path),
+        metadata_json=json.dumps({"source": "scibase"}),
+    )
     if tree_path.is_file():
         db.upsert_paper_artifact(
             local_id,

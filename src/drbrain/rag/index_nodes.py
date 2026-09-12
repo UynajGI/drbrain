@@ -83,6 +83,7 @@ def _chunk_document(doc: Document, max_node_tokens: int) -> list[Document]:
                 end = boundary + 2
         spans.append((start, end))
         start = end
+    parent_checksum = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
     out = []
     for i, (start, end) in enumerate(spans):
         md = dict(doc.metadata)
@@ -91,7 +92,7 @@ def _chunk_document(doc: Document, max_node_tokens: int) -> list[Document]:
             {
                 "parent_node_id": parent,
                 "parent_document_id": doc.id_,
-                "parent_checksum": hashlib.sha256(doc.text.encode("utf-8")).hexdigest(),
+                "parent_checksum": parent_checksum,
                 "node_id": f"{parent}#{i}",
                 "char_start": start,
                 "char_end": end,

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -1753,6 +1755,66 @@ class Database:
         )
         self.conn.execute("DELETE FROM tree_summaries WHERE paper_id = ?", (paper_id,))
         return len(node_ids)
+
+    def replace_raptor_artifacts(
+        self, paper_id: str, records: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Atomically replace one paper's RAPTOR rows from staged records.
+
+        Callers build the replacement outside the database first.  This keeps
+        the previous layer available when summarization or embedding fails and
+        makes the final swap a single database write scope.
+        """
+        self._validate_local_id(paper_id)
+        summaries: list[tuple[str, str, str, str, int]] = []
+        vectors: list[tuple[str, str, bytes, str, str]] = []
+        for record in records:
+            if str(record.get("paper_id") or paper_id) != paper_id:
+                raise ValueError("RAPTOR record paper_id does not match replacement paper")
+            node_id = str(record.get("node_id") or "")
+            if not node_id:
+                continue
+            if record.get("type") == "summary":
+                source_ids = record.get("source_node_ids") or []
+                summaries.append(
+                    (
+                        node_id,
+                        paper_id,
+                        str(record.get("summary_text") or ""),
+                        json.dumps(source_ids),
+                        int(record.get("tree_layer") or 0),
+                    )
+                )
+            elif record.get("type") == "vector":
+                blob = base64.b64decode(str(record.get("embedding_blob_b64") or ""))
+                vectors.append(
+                    (
+                        node_id,
+                        paper_id,
+                        blob,
+                        str(record.get("content_hash") or ""),
+                        str(record.get("tree_layer") or ""),
+                    )
+                )
+
+        if not summaries or not vectors:
+            return {"summaries": 0, "vectors": 0}
+
+        with self._write_scope():
+            self.clear_raptor_artifacts(paper_id)
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO tree_summaries "
+                "(node_id, paper_id, summary_text, source_node_ids, tree_layer) "
+                "VALUES (?, ?, ?, ?, ?)",
+                summaries,
+            )
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO tree_vectors "
+                "(node_id, paper_id, embedding, content_hash, tree_layer) "
+                "VALUES (?, ?, ?, ?, ?)",
+                vectors,
+            )
+        return {"summaries": len(summaries), "vectors": len(vectors)}
 
     def merge_papers(self, keep_id: str, merge_id: str) -> dict:
         """Merge two paper records atomically, keeping ``keep_id``.
