@@ -15,6 +15,7 @@ from drbrain.capabilities.protocol import (
     CapabilityJobMethods,
     InvocationResult,
     InvocationStatus,
+    function_tool_name,
     input_digest,
     runtime_fingerprint,
     valid_job_id,
@@ -387,6 +388,7 @@ class CapabilityCatalog:
             return []
         allowed = set(kinds) if kinds is not None else None
         tools: list[Any] = []
+        used_names: set[str] = set()
         for entry in self._entries.values():
             descriptor = entry.descriptor
             if allowed is not None and descriptor.kind not in allowed:
@@ -408,7 +410,7 @@ class CapabilityCatalog:
             tools.append(
                 FunctionTool.from_defaults(
                     fn=_make_fn(descriptor.id),
-                    name=descriptor.id,
+                    name=function_tool_name(descriptor.id, used_names),
                     description=descriptor.description,
                     fn_schema=model,
                 )

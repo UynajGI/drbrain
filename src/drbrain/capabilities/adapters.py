@@ -118,15 +118,22 @@ class CLIAdapter:
         environment = os.environ.copy()
         if self.env is not None:
             environment.update(self.env)
-        completed = subprocess.run(
-            list(self.command),
-            input=json.dumps(arguments, ensure_ascii=False),
-            text=True,
-            capture_output=True,
-            timeout=self.timeout_seconds,
-            check=False,
-            env=environment,
-        )
+        try:
+            completed = subprocess.run(
+                list(self.command),
+                input=json.dumps(arguments, ensure_ascii=False),
+                text=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+                check=False,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired:
+            return InvocationResult(
+                InvocationStatus.TIMEOUT,
+                error=f"CLI command timed out after {self.timeout_seconds}s",
+                evidence={"argv": list(self.command), "timeout": self.timeout_seconds},
+            )
         output = completed.stdout.strip()
         try:
             payload: Any = json.loads(output) if output else None

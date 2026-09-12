@@ -9,6 +9,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -241,6 +242,12 @@ class CapabilityDescriptor:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> CapabilityDescriptor:
+        if not isinstance(value, dict):
+            raise TypeError("capability descriptor must be a mapping")
+        missing = [key for key in ("id", "name") if key not in value]
+        if missing:
+            fields = ", ".join(missing)
+            raise ValueError(f"capability descriptor missing required field(s): {fields}")
         return cls(
             id=str(value["id"]),
             name=str(value["name"]),
@@ -344,6 +351,31 @@ def descriptor_id(source: str, name: str) -> str:
     return f"{source}:{name}" if source else name
 
 
+def function_tool_name(capability_id: str, used: set[str] | None = None) -> str:
+    """Return a provider-safe function name while retaining the canonical ID elsewhere.
+
+    Function-calling providers commonly allow only letters, digits, underscores,
+    and hyphens, with a 64-character limit.  ``used`` makes sanitization
+    collision-safe for a single tool surface (for example ``a:b`` and
+    ``a_b``).
+    """
+    raw = str(capability_id)
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", raw).strip("_") or "capability"
+    if not name[0].isalpha():
+        name = f"cap_{name}"
+    name = name[:64]
+    candidate = name
+    if used is not None:
+        counter = 2
+        while candidate in used:
+            suffix = f"_{counter}"
+            candidate = f"{name[: 64 - len(suffix)]}{suffix}"
+            counter += 1
+        used.add(candidate)
+    return candidate
+
+
+@lru_cache(maxsize=1)
 def runtime_fingerprint() -> str:
     """Return a compact runtime marker suitable for provenance records."""
     implementation = getattr(sys.implementation, "cache_tag", "unknown")
@@ -362,6 +394,7 @@ def file_digest(path: str | Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+@lru_cache(maxsize=32)
 def dependency_lock_digest(base: str | Path | None = None) -> str:
     """Hash the nearest dependency lock so results can be reproduced later."""
     directory = Path(base or Path.cwd()).resolve()

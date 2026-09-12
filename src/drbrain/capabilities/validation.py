@@ -32,7 +32,9 @@ def validate_instance(schema: Any, instance: Any) -> tuple[str, ...]:
 
         errors = sorted(
             Draft202012Validator(schema).iter_errors(instance),
-            key=lambda error: list(error.absolute_path),
+            key=lambda error: [
+                (0, part) if isinstance(part, int) else (1, part) for part in error.absolute_path
+            ],
         )
     except ImportError:
         return ("jsonschema is required for capability validation",)

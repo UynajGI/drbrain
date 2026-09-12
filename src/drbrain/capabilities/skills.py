@@ -35,7 +35,10 @@ def _frontmatter(text: str) -> dict[str, Any]:
         end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
     except StopIteration as exc:
         raise SkillFormatError("SKILL.md frontmatter is not terminated") from exc
-    value = yaml.safe_load("\n".join(lines[1:end]))
+    try:
+        value = yaml.safe_load("\n".join(lines[1:end]))
+    except yaml.YAMLError as exc:
+        raise SkillFormatError(f"SKILL.md frontmatter is not valid YAML: {exc}") from exc
     if not isinstance(value, dict):
         raise SkillFormatError("SKILL.md frontmatter must be a mapping")
     return value

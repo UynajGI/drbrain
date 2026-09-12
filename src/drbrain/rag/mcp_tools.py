@@ -24,6 +24,7 @@ from drbrain.capabilities import (
     InvocationResult,
     InvocationStatus,
     descriptor_id,
+    function_tool_name,
     runtime_fingerprint,
 )
 
@@ -244,48 +245,59 @@ def _jsonable(value: Any) -> Any:
 
 
 async def _discover(policy: MCPServerPolicy, *, namespace: bool = False) -> list[dict[str, Any]]:
+    try:
+        async with asyncio.timeout(policy.timeout_seconds):
+            return await _discover_unbounded(policy, namespace=namespace)
+    except MCPTimeoutError:
+        raise
+    except TimeoutError as exc:
+        raise MCPTimeoutError(f"MCP discovery timed out for {policy.server_id!r}") from exc
+
+
+async def _discover_unbounded(
+    policy: MCPServerPolicy, *, namespace: bool = False
+) -> list[dict[str, Any]]:
     from mcp import types
 
     descriptors: list[dict[str, Any]] = []
     cursor: str | None = None
-    async with asyncio.timeout(policy.timeout_seconds):
-        async with _session(policy) as session:
-            while True:
-                params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
-                result = await session.list_tools(params=params)
-                for tool in result.tools:
-                    if policy.allowed_tools is not None and tool.name not in policy.allowed_tools:
-                        log.info(
-                            "[mcp] tool %s from %s excluded by allowlist",
-                            tool.name,
-                            policy.server_id,
-                        )
-                        continue
-                    canonical_name = descriptor_id(f"mcp:{policy.server_id}", str(tool.name))
-                    descriptor = {
-                        "id": canonical_name,
-                        "canonicalName": canonical_name if namespace else str(tool.name),
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "inputSchema": _jsonable(
-                            getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", {})
-                        ),
-                    }
-                    output_schema = getattr(tool, "outputSchema", None) or getattr(
-                        tool, "output_schema", None
+    async with _session(policy) as session:
+        while True:
+            params = types.PaginatedRequestParams(cursor=cursor) if cursor else None
+            result = await session.list_tools(params=params)
+            for tool in result.tools:
+                if policy.allowed_tools is not None and tool.name not in policy.allowed_tools:
+                    log.info(
+                        "[mcp] tool %s from %s excluded by allowlist",
+                        tool.name,
+                        policy.server_id,
                     )
-                    annotations = getattr(tool, "annotations", None)
-                    meta = getattr(tool, "meta", None) or getattr(tool, "_meta", None)
-                    if output_schema is not None:
-                        descriptor["outputSchema"] = _jsonable(output_schema)
-                    if annotations is not None:
-                        descriptor["annotations"] = _jsonable(annotations)
-                    if meta is not None:
-                        descriptor["_meta"] = _jsonable(meta)
-                    descriptors.append(descriptor)
-                cursor = getattr(result, "nextCursor", None) or getattr(result, "next_cursor", None)
-                if not cursor:
-                    break
+                    continue
+                canonical_name = descriptor_id(f"mcp:{policy.server_id}", str(tool.name))
+                descriptor = {
+                    "id": canonical_name,
+                    "canonicalName": canonical_name if namespace else str(tool.name),
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "inputSchema": _jsonable(
+                        getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", {})
+                    ),
+                }
+                output_schema = getattr(tool, "outputSchema", None) or getattr(
+                    tool, "output_schema", None
+                )
+                annotations = getattr(tool, "annotations", None)
+                meta = getattr(tool, "meta", None) or getattr(tool, "_meta", None)
+                if output_schema is not None:
+                    descriptor["outputSchema"] = _jsonable(output_schema)
+                if annotations is not None:
+                    descriptor["annotations"] = _jsonable(annotations)
+                if meta is not None:
+                    descriptor["_meta"] = _jsonable(meta)
+                descriptors.append(descriptor)
+            cursor = getattr(result, "nextCursor", None) or getattr(result, "next_cursor", None)
+            if not cursor:
+                break
     return descriptors
 
 
@@ -295,9 +307,9 @@ def _call_result_from_mcp(result: Any, policy: MCPServerPolicy, tool_name: str) 
         for item in (_jsonable(getattr(result, "content", None) or []) or [])
     )
     content = tuple(item if isinstance(item, dict) else {"value": item} for item in content)
-    structured = getattr(result, "structuredContent", None) or getattr(
-        result, "structured_content", None
-    )
+    structured = getattr(result, "structuredContent", None)
+    if structured is None:
+        structured = getattr(result, "structured_content", None)
     is_error = getattr(result, "isError", None)
     if is_error is None:
         is_error = getattr(result, "is_error", False)
@@ -344,7 +356,11 @@ def call_mcp_tool(
     policy = _policy_from_server(server, require_trusted=require_trusted)
     _require_allowed_tool(policy, tool_name)
     result = _run_coro(_call(policy, tool_name, arguments))
-    if result.status is InvocationStatus.ERROR:
+    if (
+        result.status is InvocationStatus.ERROR
+        and not result.content
+        and result.structured_content is None
+    ):
         return result.error or "MCP tool failed"
     parts = []
     for item in result.content:
@@ -415,6 +431,7 @@ def load_mcp_tools(
 
     tools: list = []
     seen_names: set[str] = set()
+    used_function_names: set[str] = set()
     for server in servers:
         try:
             descriptors = discover_mcp_tools(
@@ -445,6 +462,7 @@ def load_mcp_tools(
                     FunctionTool,
                     require_trusted,
                     call_override=call_override,
+                    used_function_names=used_function_names,
                 )
             )
     return tools
@@ -458,6 +476,7 @@ def _to_function_tool(
     *,
     call_override: Callable[[dict[str, Any], dict[str, Any], dict[str, Any], bool], Any]
     | None = None,
+    used_function_names: set[str] | None = None,
 ) -> Any:
     schema = descriptor.get("inputSchema") or {}
     model = _schema_to_model(descriptor["name"], schema)
@@ -484,7 +503,10 @@ def _to_function_tool(
 
     return function_tool_cls.from_defaults(
         fn=fn,
-        name=str(descriptor.get("canonicalName") or descriptor["name"]),
+        name=function_tool_name(
+            str(descriptor.get("canonicalName") or descriptor["name"]),
+            used_function_names,
+        ),
         description=descriptor.get("description") or "",
         fn_schema=model,
     )

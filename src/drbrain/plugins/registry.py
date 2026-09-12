@@ -43,7 +43,13 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
-from drbrain.capabilities import CapabilityDescriptor, validate_instance, validate_schema
+from drbrain.capabilities import (
+    CapabilityCatalog,
+    CapabilityDescriptor,
+    function_tool_name,
+    validate_instance,
+    validate_schema,
+)
 from drbrain.plugins.manifest import build_from_manifest, has_manifest
 from drbrain.plugins.protocol import (
     SUPPORTED_ABI_VERSIONS,
@@ -660,10 +666,8 @@ class PluginRegistry:
         """Return neutral descriptors for policy, audit, and discovery clients."""
         return [plugin.to_capability_descriptor() for plugin in self._plugins.values()]
 
-    def capability_catalog(self) -> Any:
+    def capability_catalog(self) -> CapabilityCatalog:
         """Build the shared catalog view while keeping this registry API intact."""
-        from drbrain.capabilities import CapabilityCatalog
-
         catalog = CapabilityCatalog()
         catalog.register_plugin_registry(self)
         return catalog
@@ -816,6 +820,7 @@ class PluginRegistry:
             return []
 
         tools = []
+        used_function_names: set[str] = set()
         for plugin in self._plugins.values():
             if include is not None and not include(plugin):
                 continue
@@ -840,7 +845,7 @@ class PluginRegistry:
             tools.append(
                 FunctionTool.from_defaults(
                     fn=_make_fn(plugin),
-                    name=plugin.name,
+                    name=function_tool_name(plugin.name, used_function_names),
                     description=plugin.description,
                     fn_schema=_input_schema_to_model(plugin),
                 )

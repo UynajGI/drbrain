@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,11 +18,13 @@ from drbrain.capabilities import (
     InvocationStatus,
     ModelAdapter,
     discover_skills,
+    function_tool_name,
     input_digest,
     parse_skill,
     validate_instance,
 )
 from drbrain.plugins import Plugin, PluginRegistry, PluginResult, ResultStatus
+from drbrain.rag import mcp_tools
 from drbrain.rag.mcp_tools import mcp_descriptor_to_capability
 
 
@@ -47,6 +52,34 @@ def test_descriptor_round_trip_and_stable_input_digest():
         kind="future_protocol",
     )
     assert future.kind == "future_protocol"
+
+
+def test_descriptor_deserialization_reports_missing_identity_fields():
+    with pytest.raises(ValueError, match="missing required field.*name"):
+        CapabilityDescriptor.from_dict({"id": "plugin:demo"})
+
+
+def test_schema_validation_sorts_mixed_object_and_array_paths():
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {
+                "type": "object",
+                "properties": {"x": {"type": "integer"}},
+                "additionalProperties": {"type": "integer"},
+            }
+        },
+    }
+    errors = validate_instance(schema, {"a": {0: "bad", "x": "bad"}})
+    assert len(errors) == 2
+    assert any("a[0]" in error for error in errors)
+    assert any("a.x" in error for error in errors)
+
+
+def test_function_tool_names_are_provider_safe_and_collision_safe():
+    used = {"mcp_server_search"}
+    assert function_tool_name("mcp:server:search", used) == "mcp_server_search_2"
+    assert function_tool_name("model:bandgap", used) == "model_bandgap"
 
 
 def test_plugin_registration_and_call_use_shared_contract():
@@ -111,6 +144,54 @@ def test_skill_adapter_validates_and_never_executes_files(tmp_path):
     assert descriptor.id == "skill:demo-skill"
     assert descriptor.metadata["resources"] == ["run.py"]
     assert discover_skills(tmp_path) == [descriptor]
+
+
+def test_skill_discovery_skips_malformed_yaml_by_default(tmp_path):
+    skill_dir = tmp_path / "broken-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: [broken\ndescription: invalid\n---\n",
+        encoding="utf-8",
+    )
+
+    assert discover_skills(tmp_path) == []
+    with pytest.raises(ValueError, match="not valid YAML"):
+        discover_skills(tmp_path, strict=True)
+
+
+def test_mcp_result_preserves_empty_structured_content_and_error_text(monkeypatch):
+    raw = SimpleNamespace(
+        content=[{"type": "text", "text": "server detail"}],
+        structuredContent={},
+        isError=True,
+    )
+    policy = SimpleNamespace(server_id="paper-server", transport="stdio")
+    result = mcp_tools._call_result_from_mcp(raw, policy, "search")
+    assert result.status is InvocationStatus.ERROR
+    assert result.structured_content == {}
+    monkeypatch.setattr(mcp_tools, "_call", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(mcp_tools, "_run_coro", lambda value: value)
+    assert mcp_tools.call_mcp_tool({"command": "echo"}, "search", {}) == "server detail"
+
+
+def test_mcp_discovery_timeout_uses_specific_error(monkeypatch):
+    async def timeout(*_args, **_kwargs):
+        raise TimeoutError("deadline")
+
+    monkeypatch.setattr(mcp_tools, "_discover_unbounded", timeout)
+    policy = SimpleNamespace(server_id="paper-server", timeout_seconds=1)
+    with pytest.raises(mcp_tools.MCPTimeoutError):
+        asyncio.run(mcp_tools._discover(policy))
+
+
+def test_cli_timeout_returns_timeout_result(monkeypatch):
+    def raise_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="demo", timeout=0.1)
+
+    monkeypatch.setattr(subprocess, "run", raise_timeout)
+    adapter = CLIAdapter(name="demo", description="demo", command=("demo",), timeout_seconds=0.1)
+    result = adapter.invoke({})
+    assert result.status is InvocationStatus.TIMEOUT
 
 
 def test_invocation_result_is_json_serializable():
