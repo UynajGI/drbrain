@@ -302,11 +302,10 @@ async def _discover_unbounded(
 
 
 def _call_result_from_mcp(result: Any, policy: MCPServerPolicy, tool_name: str) -> InvocationResult:
-    content = tuple(
-        item if isinstance(item, dict) else _jsonable(item)
-        for item in (_jsonable(getattr(result, "content", None) or []) or [])
-    )
-    content = tuple(item if isinstance(item, dict) else {"value": item} for item in content)
+    raw_content = _jsonable(getattr(result, "content", None) or [])
+    if not isinstance(raw_content, (list, tuple)):
+        raw_content = [raw_content]
+    content = tuple(item if isinstance(item, dict) else {"value": item} for item in raw_content)
     structured = getattr(result, "structuredContent", None)
     if structured is None:
         structured = getattr(result, "structured_content", None)
@@ -516,7 +515,16 @@ def mcp_descriptor_to_capability(
     server: Mapping[str, Any], descriptor: Mapping[str, Any]
 ) -> CapabilityDescriptor:
     """Translate a discovered MCP tool into the neutral capability model."""
-    server_id = mcp_server_id(server)
+    policy_server = dict(server)
+    # Descriptor translation is also used by legacy callers that only retain
+    # an ID and transport.  Give that metadata-only shape a harmless command
+    # placeholder while still deriving valid configurations from the policy.
+    if not policy_server.get("command") and not policy_server.get("url"):
+        policy_server["command"] = str(
+            policy_server.get("id") or policy_server.get("name") or "mcp"
+        )
+    policy = _policy_from_server(policy_server, require_trusted=False)
+    server_id = policy.server_id
     name = str(descriptor.get("name") or "").strip()
     canonical_name = str(descriptor.get("id") or descriptor_id(f"mcp:{server_id}", name))
     raw_annotations = descriptor.get("annotations")
@@ -535,10 +543,7 @@ def mcp_descriptor_to_capability(
         ),
         annotations=annotations,
         execution=CapabilityExecution(
-            timeout_seconds=float(server["timeout_seconds"])
-            if isinstance(server.get("timeout_seconds"), (int, float))
-            and not isinstance(server.get("timeout_seconds"), bool)
-            else None,
+            timeout_seconds=policy.timeout_seconds,
             supports_cancel=server.get("supports_cancel") is True,
             supports_idempotency=server.get("supports_idempotency") is True,
             supports_reconcile=server.get("supports_reconcile") is True,
@@ -557,7 +562,7 @@ def mcp_descriptor_to_capability(
         ),
         resource_scope={
             "server_id": server_id,
-            "transport": str(server.get("transport") or "stdio"),
+            "transport": policy.transport,
         },
     )
 

@@ -54,7 +54,11 @@ def parse_skill(skill_dir: str | Path) -> CapabilityDescriptor:
     document = directory / "SKILL.md"
     if not document.is_file():
         raise SkillFormatError(f"missing SKILL.md in {directory}")
-    fields = _frontmatter(document.read_text(encoding="utf-8"))
+    document_text = document.read_text(encoding="utf-8")
+    fields = _frontmatter(document_text)
+    lines = document_text.splitlines()
+    end = next(index for index, line in enumerate(lines[1:], 1) if line.strip() == "---")
+    body = "\n".join(lines[end + 1 :]).strip()
     name = fields.get("name")
     description = fields.get("description")
     if (
@@ -90,7 +94,9 @@ def parse_skill(skill_dir: str | Path) -> CapabilityDescriptor:
         for key, value in fields.items()
         if key not in {"name", "description", "allowed-tools", "allowed_tools"}
     }
-    metadata.update({"allowed_tools": list(allowed_tools), "resources": list(resources)})
+    metadata.update(
+        {"allowed_tools": list(allowed_tools), "resources": list(resources), "body": body}
+    )
     return CapabilityDescriptor(
         id=descriptor_id("skill", name),
         name=name,

@@ -155,7 +155,8 @@ inline 风格模块的 `register()` 会在一次性临时 registry 上执行一�
 能力 kind 目前包括 `plugin`、`mcp_tool`、`skill`、`api`、`cli`、`model`，但协议
 故意接受任意非空 kind；新工具协议只需实现 `CapabilityAdapter`，无需修改 Agent
 核心。长作业统一走 catalog 的 `submit_job` / `poll_job` / `cancel_job`，job ID
-限制为路径安全 token；提供 `state_dir` 时，幂等键和状态以原子 JSON 文件保存。
+限制为路径安全 token；提供 `state_dir` 时，幂等键和状态以原子 JSON 文件保存；状态会保留
+活动作业和近期终态，过期终态及超出上限的旧记录会自动清理，避免长时间运行的宿主无限增长。
 
 Python 插件可通过 `PluginRegistry.list_capabilities()` 获取中立描述符。注册时会
 校验 handler、schema、超时、side effect 和重复 ID；重复注册必须显式传
@@ -169,8 +170,12 @@ Python 插件可通过 `PluginRegistry.list_capabilities()` 获取中立描述�
 固定 HTTP API、固定 argv 的本地命令和已训练/托管模型 callable。Agent 只需要对
 catalog 做 `recommend(query)` 和 `invoke(capability_id, arguments)`，不需要知道
 能力来自哪个协议；所有调用都经过同一层输入校验、状态归一化和 input digest。
-需要接入 LlamaIndex 时调用 `catalog.to_llamaindex_tools()`，canonical capability ID
-会直接作为工具名，避免多来源同名覆盖。
+需要接入 LlamaIndex 时调用 `catalog.to_llamaindex_tools()`。canonical capability ID
+仍由闭包保留并用于调用，暴露给函数调用供应商的名称会转换为合法且同一工具面内不冲突的
+函数名。
+
+同步代码可调用 `catalog.invoke(...)`；异步代码应调用 `await catalog.ainvoke(...)`，避免
+同步兼容桥在事件循环线程上等待线程结果。
 
 MCP 工具的 canonical ID 是 `mcp:<server_id>:<tool_name>`，发现结果保留
 `outputSchema`、`annotations`、`_meta` 和分页 cursor；`call_mcp_tool_result()`

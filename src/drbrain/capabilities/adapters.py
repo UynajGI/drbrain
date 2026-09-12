@@ -108,6 +108,7 @@ class CLIAdapter:
             provenance=CapabilityProvenance(
                 source=f"cli:{self.command[0] if self.command else ''}",
                 version=self.version,
+                runtime=runtime_fingerprint(),
                 dependency_digest=dependency_lock_digest(),
             ),
         )

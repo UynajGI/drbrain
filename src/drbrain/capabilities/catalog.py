@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from collections.abc import Callable
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, replace
@@ -24,6 +25,10 @@ from drbrain.capabilities.validation import validate_instance, validate_schema
 
 DescriptorList = list[CapabilityDescriptor]
 AnyList = list[Any]
+
+MAX_JOB_RECORDS = 4096
+JOB_RECORD_TTL_SECONDS = 7 * 24 * 60 * 60
+_TERMINAL_JOB_STATUSES = frozenset({"ok", "error", "cancelled", "no_result"})
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,7 @@ class CapabilityCatalog:
         if path is None:
             return
         try:
+            self._prune_job_records()
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "idempotency": [
@@ -86,6 +92,47 @@ class CapabilityCatalog:
             temporary.replace(path)
         except OSError:
             return
+
+    def _prune_job_records(self) -> None:
+        """Bound durable job state while retaining active and recent jobs."""
+        now = time.time()
+        removable: list[tuple[tuple[str, str], float]] = []
+
+        def updated_at(record: dict[str, Any]) -> float:
+            try:
+                value = record.get("updated_at", now)
+                if isinstance(value, bool):
+                    raise TypeError
+                return float(value)
+            except (TypeError, ValueError):
+                return now
+
+        for key, record in self._job_records.items():
+            status = str(record.get("status") or "").lower()
+            if status not in _TERMINAL_JOB_STATUSES:
+                continue
+            timestamp = updated_at(record)
+            if now - timestamp >= JOB_RECORD_TTL_SECONDS:
+                removable.append((key, timestamp))
+        for key, _timestamp in removable:
+            self._job_records.pop(key, None)
+
+        terminal = sorted(
+            (
+                (key, updated_at(record))
+                for key, record in self._job_records.items()
+                if str(record.get("status") or "").lower() in _TERMINAL_JOB_STATUSES
+            ),
+            key=lambda item: item[1],
+        )
+        overflow = max(0, len(self._job_records) - MAX_JOB_RECORDS)
+        for key, _updated_at in terminal[:overflow]:
+            self._job_records.pop(key, None)
+
+        retained_jobs = set(self._job_records)
+        for key, job_id in list(self._idempotency.items()):
+            if (key[0], job_id) not in retained_jobs:
+                self._idempotency.pop(key, None)
 
     def register(
         self,
@@ -232,6 +279,7 @@ class CapabilityCatalog:
             "job_id": job_id,
             "status": "pending",
             "idempotency_key": idempotency_key,
+            "updated_at": time.time(),
         }
         self._persist_state()
         return job_id
@@ -256,6 +304,7 @@ class CapabilityCatalog:
                 "status": payload.status.value
                 if isinstance(payload.status, InvocationStatus)
                 else str(payload.status),
+                "updated_at": time.time(),
             }
             self._persist_state()
             return replace(payload, job_id=job_id)
@@ -278,6 +327,7 @@ class CapabilityCatalog:
             "capability_id": capability_id,
             "job_id": job_id,
             "status": status.value,
+            "updated_at": time.time(),
         }
         self._persist_state()
         return InvocationResult(
@@ -298,6 +348,7 @@ class CapabilityCatalog:
                 "capability_id": capability_id,
                 "job_id": job_id,
                 "status": InvocationStatus.CANCELLED.value,
+                "updated_at": time.time(),
             }
             self._persist_state()
         return accepted
@@ -328,7 +379,18 @@ class CapabilityCatalog:
     def invoke(
         self, capability_id: str, arguments: dict[str, Any] | None = None
     ) -> InvocationResult:
-        """Validate, invoke, and normalize any registered capability."""
+        """Synchronously invoke a capability.
+
+        This method is a blocking compatibility bridge.  Async callers should
+        use :meth:`ainvoke` so the current event loop can await the adapter
+        directly instead of waiting on a worker future.
+        """
+        return _run_awaitable(self.ainvoke(capability_id, arguments))
+
+    async def ainvoke(
+        self, capability_id: str, arguments: dict[str, Any] | None = None
+    ) -> InvocationResult:
+        """Asynchronously invoke a capability without blocking the event loop."""
         entry = self._entries.get(capability_id)
         if entry is None:
             return InvocationResult(
@@ -354,7 +416,7 @@ class CapabilityCatalog:
         try:
             result = entry.invoke(payload)
             if inspect.isawaitable(result):
-                result = _run_awaitable(result)
+                result = await result
         except TimeoutError as exc:
             return InvocationResult(
                 InvocationStatus.TIMEOUT, error=str(exc), evidence=host_evidence
@@ -368,10 +430,10 @@ class CapabilityCatalog:
                 evidence=host_evidence,
             )
         if isinstance(result, InvocationResult):
-            return replace(result, evidence={**host_evidence, **result.evidence})
+            return replace(result, evidence={**result.evidence, **host_evidence})
         if hasattr(result, "to_invocation_result"):
             normalized = result.to_invocation_result()
-            return replace(normalized, evidence={**host_evidence, **normalized.evidence})
+            return replace(normalized, evidence={**normalized.evidence, **host_evidence})
         status = InvocationStatus.NO_RESULT if result is None else InvocationStatus.OK
         return InvocationResult(
             status,
@@ -419,7 +481,12 @@ class CapabilityCatalog:
 
 
 def _run_awaitable(awaitable: Any) -> Any:
-    """Run an adapter coroutine from both sync and already-async callers."""
+    """Run an adapter coroutine for synchronous callers.
+
+    Calls made from an active event loop are bridged through a worker thread
+    and therefore block that loop; use :meth:`CapabilityCatalog.ainvoke` from
+    async code instead.
+    """
     try:
         import asyncio
 

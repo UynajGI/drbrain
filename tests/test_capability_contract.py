@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -115,7 +116,7 @@ def test_no_result_is_completed_but_legacy_ok_stays_false():
 
 def test_mcp_descriptor_keeps_namespace_and_rich_metadata():
     descriptor = mcp_descriptor_to_capability(
-        {"id": "paper-server", "transport": "stdio"},
+        {"id": "paper-server", "transport": "stdio", "command": "echo"},
         {
             "id": "mcp:paper-server:search",
             "name": "search",
@@ -143,6 +144,7 @@ def test_skill_adapter_validates_and_never_executes_files(tmp_path):
     descriptor = parse_skill(skill_dir)
     assert descriptor.id == "skill:demo-skill"
     assert descriptor.metadata["resources"] == ["run.py"]
+    assert descriptor.metadata["body"] == "Instructions."
     assert discover_skills(tmp_path) == [descriptor]
 
 
@@ -194,6 +196,41 @@ def test_cli_timeout_returns_timeout_result(monkeypatch):
     assert result.status is InvocationStatus.TIMEOUT
 
 
+def test_catalog_async_invoke_and_host_evidence_precedence():
+    catalog = CapabilityCatalog()
+
+    async def invoke(_arguments):
+        return InvocationResult(
+            InvocationStatus.OK,
+            data={"ok": True},
+            evidence={"capability_id": "spoofed", "runtime": "spoofed"},
+        )
+
+    catalog.register(
+        CapabilityDescriptor(
+            id="model:async",
+            name="async",
+            description="async capability",
+            kind="model",
+        ),
+        invoke,
+    )
+    result = asyncio.run(catalog.ainvoke("model:async", {}))
+    assert result.data == {"ok": True}
+    assert result.evidence["capability_id"] == "model:async"
+    assert result.evidence["runtime"]
+
+
+def test_mcp_url_only_descriptor_uses_validated_policy_metadata():
+    descriptor = mcp_descriptor_to_capability(
+        {"url": "https://example.test/mcp"},
+        {"name": "search", "inputSchema": {"type": "object"}},
+    )
+    assert descriptor.id == "mcp:https://example.test/mcp:search"
+    assert descriptor.metadata["server_id"] == "https://example.test/mcp"
+    assert descriptor.resource_scope["transport"] == "streamable_http"
+
+
 def test_invocation_result_is_json_serializable():
     result = InvocationResult(
         InvocationStatus.OK,
@@ -219,7 +256,7 @@ def test_catalog_unifies_model_api_cli_and_recommendation():
         CLIAdapter(
             name="local-parser",
             description="parse a local document",
-            command=("python", "-c", "import sys,json; print(json.dumps({'ok': True}))"),
+            command=(sys.executable, "-c", "import json; print(json.dumps({'ok': True}))"),
         )
     )
     catalog.register_adapter(

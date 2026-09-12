@@ -382,6 +382,7 @@ def runtime_fingerprint() -> str:
     return f"python={platform.python_version()};implementation={implementation};platform={platform.platform()}"
 
 
+@lru_cache(maxsize=128)
 def file_digest(path: str | Path) -> str:
     """Hash a resource when it exists; callers can leave missing resources blank."""
     candidate = Path(path)

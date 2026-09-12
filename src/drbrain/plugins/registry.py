@@ -462,6 +462,7 @@ class PluginRegistry:
         # P-E2: 默认每调用一个独立子进程，超时可 SIGKILL 真正回收；
         # 不可 pickle 的 handler 自动回退共享线程路径（旧行为）。
         self._process_isolation = process_isolation
+        self._discovery_depth = 0
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the shared executor, created lazily and reused across calls."""
@@ -517,7 +518,7 @@ class PluginRegistry:
             "unspecified",
         }:
             raise ValueError(f"plugin {plugin.name!r} has an unknown side_effect")
-        if plugin.name in self._plugins and not replace:
+        if plugin.name in self._plugins and not replace and self._discovery_depth == 0:
             raise ValueError(f"plugin {plugin.name!r} is already registered; pass replace=True")
         if jobs is not None and not all(
             callable(getattr(jobs, method, None)) for method in ("submit", "poll", "cancel")
@@ -633,7 +634,7 @@ class PluginRegistry:
             if has_manifest(module):
                 try:
                     plugin, handler, jobs = build_from_manifest(module)
-                    self.register(plugin, handler, jobs=jobs)
+                    self.register(plugin, handler, jobs=jobs, replace=True)
                 except Exception as exc:  # noqa: BLE001 — bad manifest skips only itself
                     logger.warning("plugin module %s manifest failed: %s", path, exc)
                 else:
@@ -646,11 +647,15 @@ class PluginRegistry:
             register = getattr(module, "register", None)
             if not callable(register):
                 continue
+            self._discovery_depth += 1
             try:
-                register(self)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("plugin module %s register() failed: %s", path, exc)
-                continue
+                try:
+                    register(self)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("plugin module %s register() failed: %s", path, exc)
+                    continue
+            finally:
+                self._discovery_depth -= 1
 
         return len(self._plugins) - before
 
