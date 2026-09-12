@@ -42,7 +42,7 @@ def extract_material(path: str | Path, config: dict) -> ParsedPaper:
         year=int(year_match.group(1)) if year_match else None,
         doi=doi_match.group(0).rstrip(".,;)]*") if doi_match else None,
         arxiv=arxiv_match.group(1) if arxiv_match else None,
-        text_blocks=blocks or [raw_md],
+        text_blocks=blocks or ([raw_md] if raw_md.strip() else []),
         raw_md=raw_md,
     )
 

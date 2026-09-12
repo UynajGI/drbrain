@@ -524,10 +524,11 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
     """
     # Move the original source into the paper directory while retaining its
     # format.  Non-PDF materials must never be disguised as ``source.pdf``.
+    suffix = source_pdf.suffix.lower()
     destination = (
         source_pdf_path(paper_dir)
-        if source_pdf.suffix.lower() == ".pdf"
-        else writable_artifact_path(paper_dir, f"source{source_pdf.suffix.lower()}")
+        if suffix in ("", ".pdf")
+        else writable_artifact_path(paper_dir, f"source{suffix}")
     )
     if not destination.exists():
         shutil.copy2(source_pdf, destination)

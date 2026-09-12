@@ -290,7 +290,9 @@ def build_cmd(
                 db.commit()
                 typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
             except Exception as e:
-                db.upsert_paper_artifact(pid, "tree", "degraded", error=str(e))
+                db.upsert_paper_artifact(
+                    pid, "tree", "degraded", error=safe_error(e, secrets=secrets)
+                )
                 db.upsert_paper_artifact(pid, "kg", "skipped", error="tree unavailable")
                 db.commit()
                 typer.echo(f"  Tree regeneration failed: {safe_error(e, secrets=secrets)}")

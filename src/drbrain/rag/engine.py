@@ -710,18 +710,19 @@ if _LLAMA_INDEX_AVAILABLE:
 def _effective_similarity(nws: Any) -> float | None:
     """Resolve the score space before applying a configured threshold.
 
-    RRF ranks cannot be thresholded as similarity; rerank scores supersede
-    coarse contributions. Untagged nodes keep the legacy behavior for callers
-    that supplied their own retriever metadata.
+    RRF ranks themselves cannot be thresholded as similarity, so fused nodes
+    use the best comparable score from their leg contributions. Rerank scores
+    supersede those coarse contributions. Untagged nodes keep the legacy
+    behavior for callers that supplied their own retriever metadata.
     """
     score = getattr(nws, "score", None)
     node = getattr(nws, "node", None)
     meta = dict(getattr(node, "metadata", None) or {}) if node is not None else {}
-    if meta.get("score_kind") == "rrf":
+    contributions = meta.get("contributions")
+    if meta.get("score_kind") == "rrf" and not isinstance(contributions, dict):
         return None  # rank contributions are not a calibrated similarity scale
     if meta.get("score_kind") == "rerank":
         return float(score) if score is not None else None
-    contributions = meta.get("contributions")
     if isinstance(contributions, dict) and contributions:
         best: float | None = None
         for info in contributions.values():
