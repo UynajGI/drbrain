@@ -43,6 +43,13 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Literal
 
+from drbrain.capabilities import (
+    CapabilityCatalog,
+    CapabilityDescriptor,
+    function_tool_name,
+    validate_instance,
+    validate_schema,
+)
 from drbrain.plugins.manifest import build_from_manifest, has_manifest
 from drbrain.plugins.protocol import (
     SUPPORTED_ABI_VERSIONS,
@@ -455,6 +462,7 @@ class PluginRegistry:
         # P-E2: 默认每调用一个独立子进程，超时可 SIGKILL 真正回收；
         # 不可 pickle 的 handler 自动回退共享线程路径（旧行为）。
         self._process_isolation = process_isolation
+        self._discovery_depth = 0
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the shared executor, created lazily and reused across calls."""
@@ -467,10 +475,55 @@ class PluginRegistry:
         plugin: Plugin,
         handler: Callable[[dict[str, Any]], Any],
         jobs: JobMethods | None = None,
+        *,
+        replace: bool = False,
     ) -> None:
-        """Register a plugin, its handler and optional job methods (idempotent: re-register replaces)."""
-        if not plugin.name:
+        """Register a plugin after validating its runtime contract.
+
+        Registration is deliberately fail-closed.  A duplicate name is an
+        ambiguity in an agent tool surface and is rejected unless the caller
+        explicitly opts into ``replace=True``.
+        """
+        if not isinstance(plugin.name, str) or not plugin.name.strip():
             raise ValueError("plugin name must be non-empty")
+        if not isinstance(plugin.description, str) or not plugin.description.strip():
+            raise ValueError(f"plugin {plugin.name!r} description must be non-empty")
+        if not callable(handler):
+            raise TypeError(f"plugin {plugin.name!r} handler must be callable")
+        schema_errors = validate_schema(plugin.input_schema)
+        if schema_errors:
+            raise ValueError(f"plugin {plugin.name!r} input_schema: {'; '.join(schema_errors)}")
+        if plugin.output_schema is not None:
+            output_errors = validate_schema(plugin.output_schema)
+            if output_errors:
+                raise ValueError(
+                    f"plugin {plugin.name!r} output_schema: {'; '.join(output_errors)}"
+                )
+        if (
+            isinstance(plugin.timeout_s, bool)
+            or not isinstance(plugin.timeout_s, (int, float))
+            or plugin.timeout_s <= 0
+        ):
+            raise ValueError(f"plugin {plugin.name!r} timeout_s must be > 0")
+        if plugin.max_output_bytes is not None and (
+            isinstance(plugin.max_output_bytes, bool)
+            or not isinstance(plugin.max_output_bytes, int)
+        ):
+            raise ValueError(f"plugin {plugin.name!r} max_output_bytes must be an integer")
+        if not isinstance(plugin.side_effect, str) or plugin.side_effect not in {
+            "pure",
+            "read",
+            "write",
+            "irreversible",
+            "unspecified",
+        }:
+            raise ValueError(f"plugin {plugin.name!r} has an unknown side_effect")
+        if plugin.name in self._plugins and not replace and self._discovery_depth == 0:
+            raise ValueError(f"plugin {plugin.name!r} is already registered; pass replace=True")
+        if jobs is not None and not all(
+            callable(getattr(jobs, method, None)) for method in ("submit", "poll", "cancel")
+        ):
+            raise TypeError("job methods submit/poll/cancel must be callable")
         # Strict integer check (bool excluded, 1.0 rejected via strict type):
         # mirrors conformance._descriptor_checks so validator and enforcer agree.
         abi_ok = (
@@ -506,7 +559,10 @@ class PluginRegistry:
         jobs = self._jobs.get(name)
         if jobs is None:
             raise NotImplementedError(f"plugin {name!r} 未注册异步作业方法(submit/poll/cancel)")
-        return str(jobs.submit(arguments))
+        job_id = str(jobs.submit(arguments)).strip()
+        if not job_id:
+            raise ValueError("job submit must return a non-empty job_id")
+        return job_id
 
     def poll_job(self, name: str, job_id: str) -> dict[str, Any]:
         """Poll one job: ``{"status": JobStatus | str, "result"?: Any, "error"?: str}``.
@@ -578,7 +634,7 @@ class PluginRegistry:
             if has_manifest(module):
                 try:
                     plugin, handler, jobs = build_from_manifest(module)
-                    self.register(plugin, handler, jobs=jobs)
+                    self.register(plugin, handler, jobs=jobs, replace=True)
                 except Exception as exc:  # noqa: BLE001 — bad manifest skips only itself
                     logger.warning("plugin module %s manifest failed: %s", path, exc)
                 else:
@@ -591,11 +647,15 @@ class PluginRegistry:
             register = getattr(module, "register", None)
             if not callable(register):
                 continue
+            self._discovery_depth += 1
             try:
-                register(self)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("plugin module %s register() failed: %s", path, exc)
-                continue
+                try:
+                    register(self)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("plugin module %s register() failed: %s", path, exc)
+                    continue
+            finally:
+                self._discovery_depth -= 1
 
         return len(self._plugins) - before
 
@@ -606,6 +666,16 @@ class PluginRegistry:
     def list_plugins(self) -> list[Plugin]:
         """Return all registered plugin descriptors (registration order)."""
         return list(self._plugins.values())
+
+    def list_capabilities(self) -> list[CapabilityDescriptor]:
+        """Return neutral descriptors for policy, audit, and discovery clients."""
+        return [plugin.to_capability_descriptor() for plugin in self._plugins.values()]
+
+    def capability_catalog(self) -> CapabilityCatalog:
+        """Build the shared catalog view while keeping this registry API intact."""
+        catalog = CapabilityCatalog()
+        catalog.register_plugin_registry(self)
+        return catalog
 
     def call(
         self,
@@ -637,6 +707,18 @@ class PluginRegistry:
             return PluginResult(
                 ResultStatus.INVALID_INPUT,
                 error=f"unknown plugin: {name!r}",
+            )
+        if not isinstance(arguments, dict):
+            return PluginResult(
+                ResultStatus.INVALID_INPUT,
+                error="plugin arguments must be a JSON object",
+            )
+        schema_errors = validate_instance(plugin.input_schema, arguments)
+        if schema_errors:
+            return PluginResult(
+                ResultStatus.INVALID_INPUT,
+                evidence=make_evidence(plugin, arguments),
+                error="输入不符合 schema: " + "; ".join(schema_errors),
             )
         evidence = make_evidence(plugin, arguments)
 
@@ -743,6 +825,7 @@ class PluginRegistry:
             return []
 
         tools = []
+        used_function_names: set[str] = set()
         for plugin in self._plugins.values():
             if include is not None and not include(plugin):
                 continue
@@ -767,7 +850,7 @@ class PluginRegistry:
             tools.append(
                 FunctionTool.from_defaults(
                     fn=_make_fn(plugin),
-                    name=plugin.name,
+                    name=function_tool_name(plugin.name, used_function_names),
                     description=plugin.description,
                     fn_schema=_input_schema_to_model(plugin),
                 )

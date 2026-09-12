@@ -14,7 +14,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from drbrain.plugins.conformance import CheckResult, ConformanceReport, run_conformance
+from drbrain.plugins.conformance import (
+    CheckResult,
+    ConformanceReport,
+    run_conformance,
+    run_lint_conformance,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "plugins"
 
@@ -54,6 +59,18 @@ def test_report_shape():
     assert report.checks and all(isinstance(check, CheckResult) for check in report.checks)
     assert all(check.name for check in report.checks)
     assert report.passed is all(check.passed for check in report.checks)
+
+
+def test_lint_mode_does_not_import_or_execute_module(tmp_path):
+    marker = tmp_path / "imported.txt"
+    source = (
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed')\n"
+        "def register(registry):\n    pass\n"
+    )
+    report = run_lint_conformance(_write(tmp_path, {"unsafe.py": source}))
+    assert report.passed
+    assert not marker.exists()
 
 
 def test_clean_fixture_plugins_pass():

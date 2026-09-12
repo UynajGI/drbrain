@@ -198,6 +198,9 @@ def test_discover_loads_plugins(tmp_path):
     assert reg.discover(tmp_path) == 1
     assert [p.name for p in reg.list_plugins()] == ["foo"]
     assert reg.call("foo", {}) is not None and reg.call("foo", {}).data == {"ok": True}
+    # Discovery is idempotent while direct register() calls still reject
+    # ambiguous duplicate names unless replace=True is explicit.
+    assert reg.discover(tmp_path) == 0
 
 
 def test_discover_skips_broken_module(tmp_path):

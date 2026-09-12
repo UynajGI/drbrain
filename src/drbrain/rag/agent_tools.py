@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -563,13 +564,14 @@ def _mcp_tool_definition(server: dict[str, Any], descriptor: dict[str, Any]) -> 
     """Map a trusted MCP descriptor onto the same durable tool contract."""
     from drbrain.rag.mcp_tools import mcp_server_id
 
-    tool_name = str(descriptor.get("name") or "").strip()
+    raw_tool_name = str(descriptor.get("name") or "").strip()
+    tool_name = str(descriptor.get("id") or f"mcp:{mcp_server_id(server)}:{raw_tool_name}").strip()
     server_id = mcp_server_id(server)
     raw_schema = descriptor.get("inputSchema")
     schema = dict(raw_schema) if isinstance(raw_schema, dict) else {}
     capabilities = _string_tuple(server.get("required_capabilities"))
     if not capabilities:
-        capabilities = (f"mcp:{server_id}:{tool_name}",)
+        capabilities = (f"mcp:{server_id}:{raw_tool_name}",)
     raw_timeout = server.get("timeout_seconds")
     try:
         timeout_s = (
@@ -659,3 +661,8 @@ def _load_mcp_tools(
         call_override=_brokered_call,
         include=_include,
     )
+
+
+def load_capability_tools(catalog: Any, *, kinds: Iterable[str] | None = None) -> list:
+    """Bridge a unified :class:`CapabilityCatalog` into the Agent tool surface."""
+    return catalog.to_llamaindex_tools(kinds=kinds)
