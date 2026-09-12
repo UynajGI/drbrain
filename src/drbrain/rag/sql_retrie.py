@@ -595,7 +595,9 @@ def retrieve_documents_sql(
                 for row, score in zip(head, scores):
                     row["score"] = float(score)
                     row["score_kind"] = "rerank"
-                candidates = sorted(head, key=lambda row: row["score"], reverse=True)
+                candidates = (
+                    sorted(head, key=lambda row: row["score"], reverse=True) + candidates[count:]
+                )
                 rerank_status = "ok"
             except Exception:
                 rerank_status = "degraded"

@@ -483,7 +483,7 @@ def _ask_llamaindex_stream(
         yield _abstain_answer(
             question,
             RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
-            "部分检索路径不可用，当前证据不足" if degraded else _NO_RESULTS_MSG,
+            _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
             telemetry=telemetry,
         )
         return

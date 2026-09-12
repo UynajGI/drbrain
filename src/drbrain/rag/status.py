@@ -65,10 +65,10 @@ class RetrievalUnavailableError(RuntimeError):
 def classify_failure(exc: BaseException) -> RetrievalStatus:
     """Map a leg exception to a failure status.
 
-    ``TimeoutError`` (and ``asyncio.TimeoutError``, aliased since 3.11) →
-    ``TIMEOUT``; everything else → ``RETRIEVAL_FAILURE``. ``PERMISSION_DENIED``
-    and ``SOURCE_UNAVAILABLE`` are reserved for callers that can detect them
-    more specifically than a bare exception type allows.
+    ``TimeoutError`` (and ``asyncio.TimeoutError``, aliased since 3.11) maps to
+    ``TIMEOUT``; ``PermissionError`` maps to ``PERMISSION_DENIED``; missing
+    files and ``RetrievalUnavailableError`` map to ``SOURCE_UNAVAILABLE``; all
+    other exceptions map to ``RETRIEVAL_FAILURE``.
     """
     if isinstance(exc, TimeoutError):
         return RetrievalStatus.TIMEOUT

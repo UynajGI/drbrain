@@ -509,7 +509,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("[rag] tree navigation failed for %s: %s", paper_dir, exc)
-                raise
+                return []
 
     class DrbrainRAPTORRetriever(BaseRetriever):
         """RAPTOR two-stage tree traversal wrapped as a LlamaIndex retriever.

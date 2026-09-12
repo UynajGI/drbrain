@@ -1702,24 +1702,19 @@ class Database:
     def list_paper_artifacts(self, paper_id: str | None = None) -> list[dict]:
         """List artifact states, optionally restricted to one paper."""
         if paper_id is None:
-            rows = self.conn.execute(
+            cursor = self.conn.execute(
                 "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
                 "FROM paper_artifacts ORDER BY paper_id, stage"
-            ).fetchall()
+            )
         else:
             self._validate_local_id(paper_id)
-            rows = self.conn.execute(
+            cursor = self.conn.execute(
                 "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
                 "FROM paper_artifacts WHERE paper_id = ? ORDER BY stage",
                 (paper_id,),
-            ).fetchall()
-        columns = [
-            item[0]
-            for item in self.conn.execute(
-                "SELECT paper_id, stage, status, fingerprint, error, metadata_json, attempts, updated_at "
-                "FROM paper_artifacts WHERE 0"
-            ).description
-        ]
+            )
+        rows = cursor.fetchall()
+        columns = [item[0] for item in cursor.description or ()]
         return [dict(zip(columns, row, strict=False)) for row in rows]
 
     def clear_raptor_artifacts(self, paper_id: str) -> int:
@@ -1747,8 +1742,8 @@ class Database:
                         f"DELETE FROM tree_vectors_vec WHERE node_id IN ({placeholders})",
                         tuple(node_ids),
                     )
-                except sqlite3.Error:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.debug("[db] failed to clear tree_vectors_vec for {}: {}", paper_id, exc)
         self.conn.execute(
             "DELETE FROM tree_vectors WHERE paper_id = ? AND tree_layer LIKE 'raptor_%'",
             (paper_id,),

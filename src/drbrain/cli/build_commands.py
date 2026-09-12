@@ -526,8 +526,11 @@ def embed_cmd(
         if getattr(embed_cfg, "provider", "local") == "none":
             typer.echo("embed.provider=none; tree vector generation is disabled")
             for pid, _paper_path in paper_specs():
-                db.upsert_paper_artifact(pid, "pageindex", "skipped", error="embedding disabled")
-                db.upsert_paper_artifact(pid, "raptor", "skipped", error="embedding disabled")
+                if db.get_paper(pid) is not None:
+                    db.upsert_paper_artifact(
+                        pid, "pageindex", "skipped", error="embedding disabled"
+                    )
+                    db.upsert_paper_artifact(pid, "raptor", "skipped", error="embedding disabled")
             db.commit()
             db.close()
             return
@@ -544,9 +547,11 @@ def embed_cmd(
         total = 0
         failed = 0
         for pid, paper_path in paper_specs():
-            db.upsert_paper_artifact(pid, "pageindex", "running")
-            db.upsert_paper_artifact(pid, "raptor", "pending")
-            db.commit()
+            track_artifacts = db.get_paper(pid) is not None
+            if track_artifacts:
+                db.upsert_paper_artifact(pid, "pageindex", "running")
+                db.upsert_paper_artifact(pid, "raptor", "pending")
+                db.commit()
             try:
                 count = asyncio.run(
                     bridge_mod.build_paper_tree_vectors(paper_path, db.path, embed_cfg, llm_models)
@@ -565,36 +570,38 @@ def embed_cmd(
                     ).fetchone()[0]
                 )
                 page_status = "ready" if node_count and pageindex_count else "degraded"
-                db.upsert_paper_artifact(
-                    pid,
-                    "pageindex",
-                    page_status,
-                    metadata_json=json.dumps({"nodes": node_count, "vectors": pageindex_count}),
-                    error="no vectors created" if page_status == "degraded" else "",
-                )
-                if not llm_models:
-                    db.upsert_paper_artifact(pid, "raptor", "skipped", error="no LLM models")
-                elif not node_count:
-                    db.upsert_paper_artifact(
-                        pid, "raptor", "skipped", error="PageIndex unavailable"
-                    )
-                elif raptor_count:
+                if track_artifacts:
                     db.upsert_paper_artifact(
                         pid,
-                        "raptor",
-                        "ready",
-                        metadata_json=json.dumps({"summaries": raptor_count}),
+                        "pageindex",
+                        page_status,
+                        metadata_json=json.dumps({"nodes": node_count, "vectors": pageindex_count}),
+                        error="no vectors created" if page_status == "degraded" else "",
                     )
-                else:
-                    db.upsert_paper_artifact(
-                        pid, "raptor", "degraded", error="insufficient nodes or no summaries"
-                    )
-                db.commit()
+                    if not llm_models:
+                        db.upsert_paper_artifact(pid, "raptor", "skipped", error="no LLM models")
+                    elif not node_count:
+                        db.upsert_paper_artifact(
+                            pid, "raptor", "skipped", error="PageIndex unavailable"
+                        )
+                    elif raptor_count:
+                        db.upsert_paper_artifact(
+                            pid,
+                            "raptor",
+                            "ready",
+                            metadata_json=json.dumps({"summaries": raptor_count}),
+                        )
+                    else:
+                        db.upsert_paper_artifact(
+                            pid, "raptor", "degraded", error="insufficient nodes or no summaries"
+                        )
+                    db.commit()
             except Exception as exc:
                 failed += 1
-                db.upsert_paper_artifact(pid, "pageindex", "failed", error=str(exc))
-                db.upsert_paper_artifact(pid, "raptor", "skipped", error="PageIndex failed")
-                db.commit()
+                if track_artifacts:
+                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=str(exc))
+                    db.upsert_paper_artifact(pid, "raptor", "skipped", error="PageIndex failed")
+                    db.commit()
                 typer.echo(f"  {pid}: embedding failed: {exc}", err=True)
                 continue
             if count:

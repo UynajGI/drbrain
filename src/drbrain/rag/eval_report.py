@@ -73,6 +73,3 @@ def format_eval_report(
         lines.append("")
 
     return "\n".join(lines) + "\n"
-
-
-# ── Semantic similarity eval (zero-LLM, embedding cosine) ────────────────────
