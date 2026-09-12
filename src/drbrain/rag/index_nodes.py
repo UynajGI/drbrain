@@ -94,9 +94,10 @@ def collect_tree_nodes(
 
     When ``max_node_tokens`` is given, oversized nodes become physical
     fragments with unique ids, exact parent-text character offsets, and
-    ``parent_line_start``/``parent_line_end`` section locators. Their text
-    reconstructs the parent without repeating its title. The character cap is
-    a token estimate, not a tokenizer guarantee. Without the parameter the
+    ``parent_line_start``/``parent_line_end`` section locators. Their text is
+    an exact slice of the title-inclusive parent text; fragments are not
+    re-prefixed with a separate title. The character cap is a token estimate,
+    not a tokenizer guarantee. Without the parameter the
     node-to-Document mapping remains 1:1.
 
     Body resolution order (mirrors ``services.embedding._collect_tree_nodes``

@@ -72,6 +72,7 @@ def rag_index_cmd(
                 max_node_tokens=max_node_tokens,
             )
     except ValueError as exc:
+        # SQL snapshots are whole-corpus artifacts and reject --paper.
         raise typer.BadParameter(str(exc), param_hint="--paper") from exc
 
     if json_output:

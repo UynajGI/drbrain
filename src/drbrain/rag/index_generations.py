@@ -249,11 +249,7 @@ def retain_index_generation(cfg: Config, generation: str | None, run_id: str) ->
     if not resolved_generation or resolved_generation == LEGACY_INDEX_GENERATION:
         return False
     storage_root = Path(get_llamaindex_config(cfg).storage_dir)
-    if (
-        not resolved_generation
-        or resolved_generation in {".", ".."}
-        or Path(resolved_generation).name != resolved_generation
-    ):
+    if resolved_generation in {".", ".."} or Path(resolved_generation).name != resolved_generation:
         raise ValueError("invalid index generation")
     generation_root = storage_root / GENERATIONS_DIR_NAME / resolved_generation
     if not generation_root.is_dir():

@@ -8,7 +8,19 @@ from typing import TYPE_CHECKING, Any
 
 from drbrain.config import Config
 from drbrain.rag.agent_defaults import AGENT_MAX_TOKENS, AGENT_TEMPERATURE, CANONICAL_TOOL_SPECS
-from drbrain.rag.llm import DrbrainLLM
+
+try:
+    from drbrain.rag.llm import DrbrainLLM as _DrbrainLLMBase
+except ImportError:  # pragma: no cover - optional llama-index dependency
+
+    class _UnavailableDrbrainLLM:
+        """Import-safe placeholder when LlamaIndex is not installed."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise ImportError("llama-index is required for the RAG agent adapter")
+
+    _DrbrainLLMBase = _UnavailableDrbrainLLM  # type: ignore[assignment,misc]
+
 
 try:
     from llama_index.core.base.llms.types import ChatMessage, ChatResponse, MessageRole
@@ -21,7 +33,7 @@ except ImportError:
         FunctionCallingLLM = object
 
 
-class AgentFunctionLLM(DrbrainLLM, FunctionCallingLLM):
+class AgentFunctionLLM(_DrbrainLLMBase, FunctionCallingLLM):
     """``FunctionCallingLLM`` adapter over ``DrbrainLLM`` for the agent loop.
 
     ``DrbrainLLM`` (rag/llm.py) is T2-owned and deliberately not touched: it

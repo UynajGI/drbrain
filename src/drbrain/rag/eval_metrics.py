@@ -13,9 +13,7 @@ def _node_identity(nws: Any) -> tuple[str, str]:
     pid = str(meta.get("paper_id") or "")
     # Relevance labels point at the retrieved leaf.  Parent expansion is
     # contextual metadata and must not replace that identity in metrics.
-    nid = str(
-        meta.get("node_id") or meta.get("parent_node_id") or getattr(node, "node_id", None) or ""
-    )
+    nid = str(meta.get("node_id") or getattr(node, "node_id", None) or "")
     return pid, nid
 
 

@@ -1351,6 +1351,8 @@ def pipeline_cmd(
     """
     from drbrain.services.pipeline import list_steps_info, resolve_steps
 
+    # Direct Python callers receive Typer's OptionInfo default; normalize it
+    # while preserving the bool Typer passes during normal CLI invocation.
     if isinstance(continue_on_error, typer.models.OptionInfo):
         continue_on_error = bool(continue_on_error.default)
 

@@ -559,11 +559,8 @@ def retrieve_documents_sql(
                     )
                 )
                 legs.append((name, entries))
-            except PermissionError:
-                raise
             except Exception as exc:
                 traces.append(failure_leg(name, exc, (time.perf_counter() - started) * 1000))
-        finish_retrieval([], generation=resolved, legs=traces, capabilities=capabilities)
         rich = {
             entry["key"]: entry
             for name, entries in legs

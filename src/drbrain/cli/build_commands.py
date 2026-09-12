@@ -562,7 +562,9 @@ def embed_cmd(
                 db.commit()
             try:
                 count = asyncio.run(
-                    bridge_mod.build_paper_tree_vectors(paper_path, db.path, embed_cfg, llm_models)
+                    bridge_mod.build_paper_tree_vectors(
+                        paper_path, db.path, embed_cfg, llm_models, paper_id=pid
+                    )
                 )
                 node_count = len(collect_tree_node_records(paper_path, paper_id=pid))
                 pageindex_count = int(
