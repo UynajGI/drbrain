@@ -31,7 +31,11 @@ def extract_material(path: str | Path, config: dict) -> ParsedPaper:
         title = next((line.strip() for line in raw_md.splitlines() if line.strip()), source.stem)
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", raw_md[:4000])
     doi_match = re.search(r"10\.\d{4,9}/[^\s<>]+", raw_md, re.IGNORECASE)
-    arxiv_match = re.search(r"\b(?:arXiv:\s*)?(\d{4}\.\d{4,5})(?:v\d+)?\b", raw_md)
+    arxiv_match = re.search(
+        r"\b(?:arXiv:\s*|arxiv\.org/(?:abs|pdf)/)(\d{4}\.\d{4,5})(?:v\d+)?\b",
+        raw_md,
+        re.IGNORECASE,
+    )
     blocks = [block.strip() for block in re.split(r"\n(?=#+\s)", raw_md) if block.strip()]
     return ParsedPaper(
         title=title,

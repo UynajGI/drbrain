@@ -30,6 +30,9 @@ from drbrain.rag.index_embeddings import (
     _embed_model_path as _embed_model_path,
 )
 from drbrain.rag.index_embeddings import (
+    _init_embed_worker as _init_embed_worker,
+)
+from drbrain.rag.index_embeddings import (
     _load_old_embeddings as _load_old_embeddings,
 )
 from drbrain.rag.index_embeddings import (
@@ -119,9 +122,6 @@ from drbrain.rag.index_nodes import (
 )
 from drbrain.rag.index_nodes import (
     _node_key as _node_key,
-)
-from drbrain.rag.index_nodes import (
-    _paragraph_chunks as _paragraph_chunks,
 )
 from drbrain.rag.index_nodes import (
     collect_tree_nodes as collect_tree_nodes,
@@ -411,8 +411,11 @@ def build_index(
                 for i, c in enumerate(_chunks)
             ]
             _ctx = _mp.get_context("spawn")
+            _worker_counter = _ctx.Value("i", 0)
             logger.info("[rag] parallel embedding on GPUs {}", _devices)
-            with _ctx.Pool(len(_devices)) as _pool:
+            with _ctx.Pool(
+                len(_devices), initializer=_init_embed_worker, initargs=(_devices, _worker_counter)
+            ) as _pool:
                 for _arr in _pool.imap(_embed_chunk_worker, _jobs, chunksize=2):
                     vectors.extend(_arr.tolist() if hasattr(_arr, "tolist") else _arr)
         else:

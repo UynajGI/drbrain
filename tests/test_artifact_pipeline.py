@@ -92,6 +92,12 @@ def test_text_materials_use_native_adapter_and_inbox_filter(tmp_path):
     assert parsed.doi == "10.1234/example"
     assert parsed.raw_md.startswith("# A useful note")
 
+    source.write_text(
+        "# Note\nA date-like value 2024.12345\narXiv:2401.12345v2\n", encoding="utf-8"
+    )
+    arxiv = extract_material(source, {})
+    assert arxiv.arxiv == "2401.12345"
+
 
 def test_sql_prepare_rejects_partial_snapshot(tmp_path):
     with pytest.raises(ValueError, match="corpus-wide"):

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from collections import OrderedDict
 from typing import Any
 
@@ -100,6 +101,7 @@ class BM25Search:
 
 _BM25_CACHE_MAX = 8
 _bm25_cache: OrderedDict[tuple, BM25Search] = OrderedDict()
+_bm25_cache_lock = threading.RLock()
 
 
 def build_bm25_index(
@@ -129,9 +131,12 @@ def build_bm25_index(
     # Key on path + ranking params + scope + db mtime so writes invalidate the
     # cached index and a changed k1/b/scope is honoured.
     cache_key = (db_path, k1, b, scope_key, os.path.getmtime(db_path)) if cacheable else None
-    if cache_key is not None and cache_key in _bm25_cache:
-        _bm25_cache.move_to_end(cache_key)
-        return _bm25_cache[cache_key]
+    if cache_key is not None:
+        with _bm25_cache_lock:
+            cached = _bm25_cache.get(cache_key)
+            if cached is not None:
+                _bm25_cache.move_to_end(cache_key)
+                return cached
 
     index = BM25Search()
     allowed = set(paper_ids) if paper_ids is not None else None
@@ -181,8 +186,9 @@ def build_bm25_index(
 
     index.build(k1=k1, b=b)
     if cache_key is not None:
-        _bm25_cache[cache_key] = index
-        _bm25_cache.move_to_end(cache_key)
-        while len(_bm25_cache) > _BM25_CACHE_MAX:
-            _bm25_cache.popitem(last=False)
+        with _bm25_cache_lock:
+            _bm25_cache[cache_key] = index
+            _bm25_cache.move_to_end(cache_key)
+            while len(_bm25_cache) > _BM25_CACHE_MAX:
+                _bm25_cache.popitem(last=False)
     return index

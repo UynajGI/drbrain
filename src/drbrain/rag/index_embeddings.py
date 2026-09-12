@@ -119,14 +119,28 @@ def _embed_model_path(cfg: Config) -> str:
 
 
 _WORKER_MODEL: Any = None
+_WORKER_GPU: int | None = None
+
+
+def _init_embed_worker(devices: list[int], counter: Any) -> None:
+    """Bind each spawned worker to one GPU for its entire lifetime."""
+    global _WORKER_GPU
+    with counter.get_lock():
+        _WORKER_GPU = devices[counter.value % len(devices)]
+        counter.value += 1
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(_WORKER_GPU)
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 def _embed_chunk_worker(args: tuple[Any, int, list[str], int, int]) -> Any:
     """Spawn-pool worker: pin one GPU, embed a chunk, return vectors."""
     model_path, gpu, texts, ci, total = args
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    global _WORKER_MODEL, _WORKER_GPU
+    if _WORKER_GPU is None:
+        _WORKER_GPU = gpu
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
+    gpu = _WORKER_GPU
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    global _WORKER_MODEL
     if _WORKER_MODEL is None:
         from sentence_transformers import SentenceTransformer
 

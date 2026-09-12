@@ -32,38 +32,6 @@ def _node_key(paper_id: str, node_id: str) -> str:
     return f"{paper_id}:{node_id}"
 
 
-def _paragraph_chunks(text: str, max_chars: int) -> list[str]:
-    """Split ``text`` into paragraph-boundary chunks of at most ``max_chars``.
-
-    Greedy accumulation over ``\n\n``-separated paragraphs, preserving the
-    original text verbatim (only boundaries are chosen). A single paragraph
-    longer than the cap is hard-sliced at the cap, so the worst case stays
-    bounded even for ``\n``-only bodies.
-    """
-    if len(text) <= max_chars:
-        return [text]
-    paras = text.split("\n\n")
-    chunks: list[str] = []
-    cur = ""
-    for p in paras:
-        while len(p) > max_chars:
-            if cur:
-                chunks.append(cur)
-                cur = ""
-            chunks.append(p[:max_chars])
-            p = p[max_chars:]
-        if not p:
-            continue
-        if cur and len(cur) + len(p) + 2 > max_chars:
-            chunks.append(cur)
-            cur = p
-        else:
-            cur = f"{cur}\n\n{p}" if cur else p
-    if cur:
-        chunks.append(cur)
-    return chunks or [text]
-
-
 def _chunk_document(doc: Document, max_node_tokens: int) -> list[Document]:
     """Bound physical index fragments while retaining exact parent-text offsets.
 
@@ -170,6 +138,3 @@ def collect_tree_nodes(
             out.extend(_chunk_document(doc, int(max_node_tokens)))
         return out
     return docs
-
-
-# ── Persistence helpers ──────────────────────────────────────────────────────

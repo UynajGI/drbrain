@@ -41,6 +41,8 @@ def translate_cmd(
     papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     try:
         paper_dir = resolve_paper_dir(papers_dir, local_id)
+        if paper_dir is None:
+            raise FileNotFoundError("paper directory unavailable")
     except (OSError, ValueError) as exc:
         typer.echo(f"Cannot resolve paper storage for {local_id}: {safe_error(exc)}", err=True)
         raise typer.Exit(1) from exc
@@ -231,6 +233,8 @@ def build_cmd(
 
         try:
             paper_path = resolve_paper_dir(papers_dir, pid)
+            if paper_path is None:
+                raise FileNotFoundError("paper directory unavailable")
         except (OSError, ValueError) as exc:
             message = safe_error(exc, secrets=secrets)
             db.upsert_paper_artifact(pid, "kg", "failed", error=message)
@@ -470,6 +474,7 @@ def embed_cmd(
     """Train TransE graph embeddings. Use --tree for text embeddings."""
     cfg = ctx.obj["config"]
     db = Database(db_path or cfg["db"]["path"])
+    embed_secrets = configured_secret_values(cfg)
 
     # --tree mode: text embeddings for tree nodes (Layer 2)
     if tree:
@@ -503,7 +508,10 @@ def embed_cmd(
                 if paper_filter is not None and pid not in paper_filter:
                     continue
                 try:
-                    specs.append((pid, resolve_paper_dir(papers_dir, pid)))
+                    resolved_path = resolve_paper_dir(papers_dir, pid)
+                    if resolved_path is None:
+                        raise FileNotFoundError("paper directory unavailable")
+                    specs.append((pid, resolved_path))
                 except (OSError, ValueError) as exc:
                     resolution_errors = True
                     _build_log.warning("[embed] cannot resolve {}: {}", pid, exc)
@@ -598,11 +606,12 @@ def embed_cmd(
                     db.commit()
             except Exception as exc:
                 failed += 1
+                message = safe_error(exc, secrets=embed_secrets)
                 if track_artifacts:
-                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=str(exc))
+                    db.upsert_paper_artifact(pid, "pageindex", "failed", error=message)
                     db.upsert_paper_artifact(pid, "raptor", "skipped", error="PageIndex failed")
                     db.commit()
-                typer.echo(f"  {pid}: embedding failed: {exc}", err=True)
+                typer.echo(f"  {pid}: embedding failed: {message}", err=True)
                 continue
             if count:
                 typer.echo(f"  {paper_path.name}: {count} vectors+summaries")
