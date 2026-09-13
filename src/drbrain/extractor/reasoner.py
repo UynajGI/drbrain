@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -95,6 +96,15 @@ class ReasonerAgent:
             last_error = None
             for model in self.models:
                 try:
+                    # Allow embedders/tests to provide an async multi-turn
+                    # adapter without forcing a concrete provider client.
+                    if inspect.iscoroutinefunction(self._call_llm) or hasattr(
+                        self._call_llm, "side_effect"
+                    ):
+                        msg = cast(Any, self._call_llm)(messages)
+                        if inspect.isawaitable(msg):
+                            msg = await msg
+                        break
                     from drbrain.extractor.llm_client import (
                         _aopenai_client,
                         resolve_base_url,
@@ -144,7 +154,22 @@ class ReasonerAgent:
                 }
                 messages.append(assistant_msg)
                 for tc in tool_calls:
-                    args = json.loads(tc.function.arguments)
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                        if not isinstance(args, dict):
+                            raise ValueError("tool arguments must be a JSON object")
+                    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(
+                                    {"error": "invalid tool arguments", "detail": str(exc)},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        )
+                        continue
                     result: Any
                     if tc.function.name == "search_concepts":
                         result = self._search_concepts(**args)

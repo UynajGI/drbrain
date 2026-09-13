@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
 import os as _os
 import shlex as _shlex
+import shutil as _shutil
+import sqlite3 as _sqlite3
 import subprocess as _subprocess
 import tarfile
 import tempfile as _tempfile
@@ -57,17 +61,51 @@ def create_backup(
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = backup_dir / _backup_filename()
-
-    with tarfile.open(out_path, "w:gz") as tar:
-        if papers_dir.exists():
-            tar.add(str(papers_dir), arcname="papers")
-        if db_path.exists():
-            tar.add(str(db_path), arcname="db/drbrain.db")
-        if workspace_dir and workspace_dir.exists():
-            for item in workspace_dir.iterdir():
-                tar.add(str(item), arcname=f"workspace/{item.name}")
-        if reports_dir and reports_dir.exists():
-            tar.add(str(reports_dir), arcname="reports")
+    manifest: dict[str, object] = {
+        "format": "drbrain-backup-v1",
+        "runtime_root": _os.environ.get("DRBRAIN_ROOT")
+        or _os.environ.get("DRBRAIN_RUNTIME_ROOT")
+        or "",
+        "schema_version": None,
+        "files": {},
+    }
+    if db_path.exists():
+        try:
+            with _sqlite3.connect(str(db_path)) as conn:
+                row = conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()
+                manifest["schema_version"] = row[0] if row and row[0] is not None else None
+        except _sqlite3.Error:
+            pass
+        manifest["files"] = {
+            "db/drbrain.db": {
+                "bytes": db_path.stat().st_size,
+                "sha256": _hashlib.sha256(db_path.read_bytes()).hexdigest(),
+            }
+        }
+    manifest_path = backup_dir / f".{out_path.name}.manifest.json"
+    manifest_path.write_text(
+        _json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    try:
+        with tarfile.open(out_path, "w:gz") as tar:
+            if papers_dir.exists():
+                tar.add(str(papers_dir), arcname="papers")
+            if db_path.exists():
+                tar.add(str(db_path), arcname="db/drbrain.db")
+            if workspace_dir and workspace_dir.exists():
+                for item in workspace_dir.iterdir():
+                    tar.add(str(item), arcname=f"workspace/{item.name}")
+            if reports_dir and reports_dir.exists():
+                tar.add(str(reports_dir), arcname="reports")
+            if (
+                manifest["files"]
+                or papers_dir.exists()
+                or (workspace_dir and workspace_dir.exists())
+                or (reports_dir and reports_dir.exists())
+            ):
+                tar.add(str(manifest_path), arcname="manifest.json")
+    finally:
+        manifest_path.unlink(missing_ok=True)
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     logger.info("[backup] created %s (%.1f MB)", out_path.name, size_mb)
@@ -298,6 +336,29 @@ def _restore_tarball(
     with tarfile.open(archive, "r:gz") as tar:
         members = tar.getmembers()
 
+        # Validate the embedded manifest before touching the destination.
+        manifest_member = next((m for m in members if m.name == "manifest.json"), None)
+        if manifest_member is not None:
+            try:
+                file_obj = tar.extractfile(manifest_member)
+                if file_obj is None:
+                    raise ValueError("manifest.json is unreadable")
+                manifest = _json.load(file_obj)
+                if manifest.get("format") != "drbrain-backup-v1":
+                    raise ValueError("unsupported backup manifest format")
+                for name, expected in (manifest.get("files") or {}).items():
+                    member = next((m for m in members if m.name == name and m.isfile()), None)
+                    if member is None:
+                        raise ValueError(f"backup manifest is missing {name}")
+                    file_obj = tar.extractfile(member)
+                    if file_obj is None:
+                        raise ValueError(f"backup member is unreadable: {name}")
+                    digest = _hashlib.sha256(file_obj.read()).hexdigest()
+                    if digest != expected.get("sha256"):
+                        raise ValueError(f"backup checksum mismatch: {name}")
+            except (OSError, TypeError, ValueError, AttributeError) as exc:
+                raise ValueError(f"invalid backup manifest: {exc}") from exc
+
         # Safety check: refuse to overwrite newer files unless --force
         if not force:
             for member in members:
@@ -309,13 +370,29 @@ def _restore_tarball(
                         f"File is newer than backup: {member.name}. Use --force to overwrite."
                     )
 
-        # Extract
-        target.mkdir(parents=True, exist_ok=True)
-        tar.extractall(path=str(target), filter="data")  # noqa: S202
-
-        # Return top-level entries
-        top_level = {m.name.split("/")[0] for m in members}
-        return sorted(top_level)
+        # Extract into a sibling staging directory, then commit each top-level
+        # entry. An interrupted tar operation therefore cannot leave a partial
+        # tree in the live restore directory.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with _tempfile.TemporaryDirectory(
+            prefix=f".{target.name}.restore-", dir=target.parent
+        ) as staging:
+            tar.extractall(path=staging, filter="data")  # noqa: S202
+            top_level = sorted({m.name.split("/")[0] for m in members})
+            target.mkdir(parents=True, exist_ok=True)
+            for name in top_level:
+                staged = Path(staging) / name
+                dest = target / name
+                if not staged.exists():
+                    continue
+                if dest.exists() and force:
+                    if dest.is_dir() and not dest.is_symlink():
+                        _shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                if not dest.exists():
+                    staged.replace(dest)
+        return top_level
 
 
 def _restore_directory(

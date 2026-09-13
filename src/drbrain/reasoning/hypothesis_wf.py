@@ -103,9 +103,18 @@ class _AnalogizeStep(WorkflowStep):
             max_tokens=2048,
         )
 
-        if data and "hypotheses" in data:
-            return data["hypotheses"][:10]
-        return []
+        raw = data.get("hypotheses") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return []
+        # Keep only structurally usable hypotheses; malformed model items must
+        # not abort later KG validation/scoring steps.
+        return [
+            item
+            for item in raw
+            if isinstance(item, dict)
+            and isinstance(item.get("description"), str)
+            and item["description"].strip()
+        ][:10]
 
 
 class _ValidateStep(WorkflowStep):
