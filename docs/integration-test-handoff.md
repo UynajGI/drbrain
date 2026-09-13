@@ -23,6 +23,19 @@ uv run ruff check src/ tests/
 uv run mypy src/drbrain
 ```
 
+Install the local commit hooks once. Lefthook is the repository entry point;
+it runs the tracked pre-commit hygiene checks and a staged-file Gitleaks scan.
+
+```bash
+# Install Lefthook with your package manager, then from the repository root:
+lefthook install
+uv run pre-commit install
+```
+
+The CI `secrets` job scans the complete checked-out Git history. A local
+pre-commit scan is staged-file-only and therefore does not inspect unrelated
+uncommitted files.
+
 The fast test suite excludes external integrations:
 
 ```bash
