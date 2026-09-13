@@ -194,7 +194,7 @@ Quick start for contributors:
 ```bash
 git clone https://github.com/UynajGI/DrBrain.git && cd DrBrain
 uv sync && uv pip install -e .
-pre-commit install                      # optional: auto-lint on commit
+uv run pre-commit install                # install auto-lint/format hooks before commits
 uv run pytest -m "not integration"      # fast tests
 ```
 
