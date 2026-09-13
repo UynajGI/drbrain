@@ -172,3 +172,24 @@ class TestRestoreCommand:
 
         data = json.loads(result.output)
         assert "restored" in data
+
+
+def test_restore_rejects_manifest_checksum_mismatch(tmp_path):
+    archive = _make_backup(tmp_path)
+    import io
+    import tarfile
+
+    broken = tmp_path / "broken.tar.gz"
+    with tarfile.open(archive, "r:gz") as src, tarfile.open(broken, "w:gz") as dst:
+        for member in src.getmembers():
+            data = src.extractfile(member).read() if member.isfile() else None
+            if member.name == "manifest.json":
+                import json
+
+                manifest = json.loads(data)
+                manifest["files"]["db/drbrain.db"]["sha256"] = "0" * 64
+                data = json.dumps(manifest).encode()
+                member.size = len(data)
+            dst.addfile(member, io.BytesIO(data) if data is not None else None)
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        restore_backup(broken, tmp_path / "target")

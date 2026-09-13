@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib as _hashlib
+import json as _json
 import os as _os
 import shlex as _shlex
+import shutil as _shutil
+import sqlite3 as _sqlite3
 import subprocess as _subprocess
 import tarfile
 import tempfile as _tempfile
@@ -16,6 +20,15 @@ from loguru import logger
 from drbrain.config import BackupTargetConfig
 
 BACKUP_DIR = "data/backups"
+
+
+def _sha256_file(path: Path) -> str:
+    """Hash a file with bounded memory usage."""
+    digest = _hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _default_backup_dir() -> Path:
@@ -57,17 +70,67 @@ def create_backup(
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     out_path = backup_dir / _backup_filename()
-
-    with tarfile.open(out_path, "w:gz") as tar:
-        if papers_dir.exists():
-            tar.add(str(papers_dir), arcname="papers")
-        if db_path.exists():
-            tar.add(str(db_path), arcname="db/drbrain.db")
-        if workspace_dir and workspace_dir.exists():
-            for item in workspace_dir.iterdir():
-                tar.add(str(item), arcname=f"workspace/{item.name}")
-        if reports_dir and reports_dir.exists():
-            tar.add(str(reports_dir), arcname="reports")
+    manifest: dict[str, object] = {
+        "format": "drbrain-backup-v1",
+        "runtime_root": _os.environ.get("DRBRAIN_ROOT")
+        or _os.environ.get("DRBRAIN_RUNTIME_ROOT")
+        or "",
+        "schema_version": None,
+        "files": {},
+    }
+    snapshot_dir = _tempfile.TemporaryDirectory(prefix="drbrain-backup-")
+    snapshot_path = Path(snapshot_dir.name) / "drbrain.db"
+    archive_db = db_path
+    if db_path.exists():
+        try:
+            with (
+                _sqlite3.connect(str(db_path)) as source,
+                _sqlite3.connect(str(snapshot_path)) as dest,
+            ):
+                source.backup(dest)
+            archive_db = snapshot_path
+        except _sqlite3.DatabaseError:
+            # Keep compatibility with callers that pass a placeholder/non-SQLite
+            # artifact; real SQLite files still receive a consistent snapshot.
+            _shutil.copy2(db_path, snapshot_path)
+            archive_db = snapshot_path
+        try:
+            with _sqlite3.connect(str(snapshot_path)) as conn:
+                row = conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()
+                manifest["schema_version"] = row[0] if row and row[0] is not None else None
+        except _sqlite3.Error:
+            pass
+        manifest["files"] = {
+            "db/drbrain.db": {
+                "bytes": snapshot_path.stat().st_size,
+                "sha256": _sha256_file(snapshot_path),
+            }
+        }
+    manifest_path = backup_dir / f".{out_path.name}.manifest.json"
+    manifest_path.write_text(
+        _json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    try:
+        with tarfile.open(out_path, "w:gz") as tar:
+            if papers_dir.exists():
+                tar.add(str(papers_dir), arcname="papers")
+            if db_path.exists():
+                tar.add(str(archive_db), arcname="db/drbrain.db")
+            if workspace_dir and workspace_dir.exists():
+                for item in workspace_dir.iterdir():
+                    tar.add(str(item), arcname=f"workspace/{item.name}")
+            if reports_dir and reports_dir.exists():
+                tar.add(str(reports_dir), arcname="reports")
+            if (
+                manifest["files"]
+                or papers_dir.exists()
+                or (workspace_dir and workspace_dir.exists())
+                or (reports_dir and reports_dir.exists())
+            ):
+                tar.add(str(manifest_path), arcname="manifest.json")
+    finally:
+        manifest_path.unlink(missing_ok=True)
+        snapshot_dir.cleanup()
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     logger.info("[backup] created %s (%.1f MB)", out_path.name, size_mb)
@@ -258,6 +321,7 @@ def restore_backup(
     target_dir: Path | None = None,
     *,
     force: bool = False,
+    allow_legacy: bool = False,
 ) -> list[str]:
     """Restore a tar.gz backup or copy a directory backup to *target_dir*.
 
@@ -278,7 +342,7 @@ def restore_backup(
         raise FileNotFoundError(f"Backup not found: {backup_path}")
 
     if backup_path.is_file() and backup_path.suffix == ".gz":
-        return _restore_tarball(backup_path, target_dir, force=force)
+        return _restore_tarball(backup_path, target_dir, force=force, allow_legacy=allow_legacy)
     if backup_path.is_dir():
         return _restore_directory(backup_path, target_dir, force=force)
 
@@ -290,6 +354,7 @@ def _restore_tarball(
     target_dir: Path | None,
     *,
     force: bool = False,
+    allow_legacy: bool = False,
 ) -> list[str]:
     """Extract a tar.gz backup into *target_dir*."""
 
@@ -297,6 +362,35 @@ def _restore_tarball(
 
     with tarfile.open(archive, "r:gz") as tar:
         members = tar.getmembers()
+
+        # Validate the embedded manifest before touching the destination.
+        manifest_member = next((m for m in members if m.name == "manifest.json"), None)
+        if manifest_member is None and not allow_legacy:
+            raise ValueError(
+                "backup manifest is missing; pass allow_legacy=True for legacy archives"
+            )
+        if manifest_member is not None:
+            try:
+                file_obj = tar.extractfile(manifest_member)
+                if file_obj is None:
+                    raise ValueError("manifest.json is unreadable")
+                manifest = _json.load(file_obj)
+                if manifest.get("format") != "drbrain-backup-v1":
+                    raise ValueError("unsupported backup manifest format")
+                for name, expected in (manifest.get("files") or {}).items():
+                    member = next((m for m in members if m.name == name and m.isfile()), None)
+                    if member is None:
+                        raise ValueError(f"backup manifest is missing {name}")
+                    file_obj = tar.extractfile(member)
+                    if file_obj is None:
+                        raise ValueError(f"backup member is unreadable: {name}")
+                    digest = _hashlib.sha256()
+                    for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    if digest.hexdigest() != expected.get("sha256"):
+                        raise ValueError(f"backup checksum mismatch: {name}")
+            except (OSError, TypeError, ValueError, AttributeError) as exc:
+                raise ValueError(f"invalid backup manifest: {exc}") from exc
 
         # Safety check: refuse to overwrite newer files unless --force
         if not force:
@@ -309,13 +403,42 @@ def _restore_tarball(
                         f"File is newer than backup: {member.name}. Use --force to overwrite."
                     )
 
-        # Extract
-        target.mkdir(parents=True, exist_ok=True)
-        tar.extractall(path=str(target), filter="data")  # noqa: S202
-
-        # Return top-level entries
-        top_level = {m.name.split("/")[0] for m in members}
-        return sorted(top_level)
+        # Extract into a sibling staging directory, then commit each top-level
+        # entry. An interrupted tar operation therefore cannot leave a partial
+        # tree in the live restore directory.
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with _tempfile.TemporaryDirectory(
+            prefix=f".{target.name}.restore-", dir=target.parent
+        ) as staging:
+            tar.extractall(path=staging, filter="data")  # noqa: S202
+            top_level = sorted({m.name.split("/")[0] for m in members if m.name != "manifest.json"})
+            target.mkdir(parents=True, exist_ok=True)
+            for name in top_level:
+                staged = Path(staging) / name
+                dest = target / name
+                if not staged.exists():
+                    continue
+                for source_path in sorted(staged.rglob("*")):
+                    relative = source_path.relative_to(staging)
+                    destination = target / relative
+                    if source_path.is_dir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not source_path.is_file():
+                        continue
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if destination.exists():
+                        if destination.is_dir():
+                            raise IsADirectoryError(f"restore path is a directory: {relative}")
+                        destination.unlink()
+                    source_path.replace(destination)
+                if staged.is_file():
+                    if dest.exists() and dest.is_dir():
+                        raise IsADirectoryError(f"restore path is a directory: {name}")
+                    if dest.exists():
+                        dest.unlink()
+                    staged.replace(dest)
+        return top_level
 
 
 def _restore_directory(

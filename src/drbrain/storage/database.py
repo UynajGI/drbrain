@@ -583,6 +583,14 @@ class Database:
                 raise
             self.conn.commit()
 
+    @contextmanager
+    def transaction(self):
+        """Public composable transaction boundary for multi-write operations."""
+        with self._write_scope():
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            yield self.conn
+
     def _migrate(self) -> None:
         """Apply pending schema migrations in order."""
         applied = {
@@ -1438,6 +1446,14 @@ class Database:
         return cur.lastrowid or 0
 
     # -- Concept graph layer write helpers (v9) -------------------------
+
+    def clear_concept_cooccurrence(self) -> None:
+        """Remove all derived co-occurrence edges through the database write API."""
+        self.conn.execute("DELETE FROM concept_cooccurrence")
+
+    def clear_concept_nodes(self) -> None:
+        """Remove all derived concept nodes through the database write API."""
+        self.conn.execute("DELETE FROM concept_nodes")
 
     def upsert_concept_node(
         self,

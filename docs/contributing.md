@@ -495,5 +495,5 @@ Skills are organized by function:
 Install pre-commit hooks for automated linting and formatting:
 
 ```bash
-pre-commit install
+uv run pre-commit install
 ```

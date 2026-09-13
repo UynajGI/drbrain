@@ -1399,9 +1399,15 @@ async def acall_with_messages(
     timeout: int = 60,
     *,
     _cache: ApiCache | None = None,
+    return_error: bool = False,
 ) -> dict | None:
-    """Async version of call_with_messages."""
+    """Async version of call_with_messages.
+
+    ``return_error`` exposes a safe error classification to orchestration
+    callers while preserving the historic ``None`` failure contract by default.
+    """
     logger.info("[llm] acall_with_messages — %d models, %d messages", len(models), len(messages))
+    last_error = ""
 
     # Cache lookup
     key: str | None = None
@@ -1471,6 +1477,7 @@ async def acall_with_messages(
                         _cache.set(key, result)
                     return result
                 except Exception as e:
+                    last_error = _safe_error(e, secrets=(api_key,))
                     if _is_rate_limit(e):
                         # 只把失败的 key 打入冷却，继续尝试池里下一个 key。
                         wait = _RATE_LIMIT_SM.on_rate_limit(model_cfg, api_key or "")
@@ -1513,7 +1520,16 @@ async def acall_with_messages(
         n_messages=len(messages),
         error="all models exhausted",
     )
-    return None
+    return (
+        {
+            "text": "",
+            "tool_calls": None,
+            "usage": {"in": 0, "out": 0, "cached": 0},
+            "error": last_error,
+        }
+        if return_error
+        else None
+    )
 
 
 def _extract_tool_calls(msg) -> list[dict] | None:

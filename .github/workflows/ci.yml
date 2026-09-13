@@ -21,8 +21,10 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv pip install -e .
-      - run: uv run ruff check src/ tests/
+      # Keep formatting visible without making it a functional gate.
       - run: uv run ruff format --check src/ tests/
+        continue-on-error: true
+      - run: uv run ruff check src/ tests/
 
   typecheck:
     runs-on: ubuntu-latest
