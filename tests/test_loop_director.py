@@ -398,6 +398,19 @@ def test_build_prior_context_includes_bounded_critic_flaws():
     assert "上一轮批评要点" not in ResearchDirector._build_prior_context(_default_state("t"))
 
 
+def test_build_prior_context_bounds_pending_and_tolerates_corrupt_entries():
+    state = _default_state("t")
+    state["champion"] = [{"cycle": 1}, {"statement": "valid"}]
+    state["pending"] = ["pending-" + str(i) for i in range(100)]
+    prior = ResearchDirector._build_prior_context(state)
+    assert "valid" in prior
+    assert "pending-99" in prior
+    assert "pending-0" not in prior
+    telemetry = state["prior_context_telemetry"]
+    assert telemetry["chars"] <= ResearchDirector.PRIOR_CONTEXT_CHAR_BUDGET
+    assert "pending" in telemetry["sections"]
+
+
 def test_absorb_critic_flaws_dedupes_by_round_and_bounds():
     d = ResearchDirector(cfg=_cfg())
     state = _default_state("t")
