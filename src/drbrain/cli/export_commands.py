@@ -712,6 +712,9 @@ def restore_cmd(
     force: bool = typer.Option(
         False, "--force", "-f", help="Overwrite existing files even if newer"
     ),
+    allow_legacy: bool = typer.Option(
+        False, "--allow-legacy", help="Allow archives without a v1 manifest"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Restore a tar.gz backup or copy a directory backup to a target location."""
@@ -721,7 +724,7 @@ def restore_cmd(
     dest = Path(target) if target else None
 
     try:
-        entries = restore_backup(source, dest, force=force)
+        entries = restore_backup(source, dest, force=force, allow_legacy=allow_legacy)
     except FileNotFoundError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)

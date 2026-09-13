@@ -22,6 +22,15 @@ from drbrain.config import BackupTargetConfig
 BACKUP_DIR = "data/backups"
 
 
+def _sha256_file(path: Path) -> str:
+    """Hash a file with bounded memory usage."""
+    digest = _hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _default_backup_dir() -> Path:
     """Resolve implicit local backups beneath the active runtime root."""
     if "DRBRAIN_ROOT" in _os.environ or "DRBRAIN_RUNTIME_ROOT" in _os.environ:
@@ -94,7 +103,7 @@ def create_backup(
         manifest["files"] = {
             "db/drbrain.db": {
                 "bytes": snapshot_path.stat().st_size,
-                "sha256": _hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
+                "sha256": _sha256_file(snapshot_path),
             }
         }
     manifest_path = backup_dir / f".{out_path.name}.manifest.json"
@@ -312,6 +321,7 @@ def restore_backup(
     target_dir: Path | None = None,
     *,
     force: bool = False,
+    allow_legacy: bool = False,
 ) -> list[str]:
     """Restore a tar.gz backup or copy a directory backup to *target_dir*.
 
@@ -332,7 +342,7 @@ def restore_backup(
         raise FileNotFoundError(f"Backup not found: {backup_path}")
 
     if backup_path.is_file() and backup_path.suffix == ".gz":
-        return _restore_tarball(backup_path, target_dir, force=force)
+        return _restore_tarball(backup_path, target_dir, force=force, allow_legacy=allow_legacy)
     if backup_path.is_dir():
         return _restore_directory(backup_path, target_dir, force=force)
 
@@ -344,6 +354,7 @@ def _restore_tarball(
     target_dir: Path | None,
     *,
     force: bool = False,
+    allow_legacy: bool = False,
 ) -> list[str]:
     """Extract a tar.gz backup into *target_dir*."""
 
@@ -354,6 +365,8 @@ def _restore_tarball(
 
         # Validate the embedded manifest before touching the destination.
         manifest_member = next((m for m in members if m.name == "manifest.json"), None)
+        if manifest_member is None and not allow_legacy:
+            raise ValueError("backup manifest is missing; pass allow_legacy=True for legacy archives")
         if manifest_member is not None:
             try:
                 file_obj = tar.extractfile(manifest_member)
@@ -369,8 +382,10 @@ def _restore_tarball(
                     file_obj = tar.extractfile(member)
                     if file_obj is None:
                         raise ValueError(f"backup member is unreadable: {name}")
-                    digest = _hashlib.sha256(file_obj.read()).hexdigest()
-                    if digest != expected.get("sha256"):
+                    digest = _hashlib.sha256()
+                    for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    if digest.hexdigest() != expected.get("sha256"):
                         raise ValueError(f"backup checksum mismatch: {name}")
             except (OSError, TypeError, ValueError, AttributeError) as exc:
                 raise ValueError(f"invalid backup manifest: {exc}") from exc
@@ -402,10 +417,13 @@ def _restore_tarball(
                 if not staged.exists():
                     continue
                 for source_path in sorted(staged.rglob("*")):
-                    if not source_path.is_file():
-                        continue
                     relative = source_path.relative_to(staging)
                     destination = target / relative
+                    if source_path.is_dir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                        continue
+                    if not source_path.is_file():
+                        continue
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     if destination.exists():
                         if destination.is_dir():
