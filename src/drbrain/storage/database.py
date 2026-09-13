@@ -587,6 +587,8 @@ class Database:
     def transaction(self):
         """Public composable transaction boundary for multi-write operations."""
         with self._write_scope():
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
             yield self.conn
 
     def _migrate(self) -> None:

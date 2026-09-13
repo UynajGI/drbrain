@@ -1520,7 +1520,16 @@ async def acall_with_messages(
         n_messages=len(messages),
         error="all models exhausted",
     )
-    return {"text": "", "tool_calls": None, "error": last_error} if return_error else None
+    return (
+        {
+            "text": "",
+            "tool_calls": None,
+            "usage": {"in": 0, "out": 0, "cached": 0},
+            "error": last_error,
+        }
+        if return_error
+        else None
+    )
 
 
 def _extract_tool_calls(msg) -> list[dict] | None:

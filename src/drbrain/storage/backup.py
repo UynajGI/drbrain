@@ -69,17 +69,32 @@ def create_backup(
         "schema_version": None,
         "files": {},
     }
+    snapshot_dir = _tempfile.TemporaryDirectory(prefix="drbrain-backup-")
+    snapshot_path = Path(snapshot_dir.name) / "drbrain.db"
+    archive_db = db_path
     if db_path.exists():
         try:
-            with _sqlite3.connect(str(db_path)) as conn:
+            with (
+                _sqlite3.connect(str(db_path)) as source,
+                _sqlite3.connect(str(snapshot_path)) as dest,
+            ):
+                source.backup(dest)
+            archive_db = snapshot_path
+        except _sqlite3.DatabaseError:
+            # Keep compatibility with callers that pass a placeholder/non-SQLite
+            # artifact; real SQLite files still receive a consistent snapshot.
+            _shutil.copy2(db_path, snapshot_path)
+            archive_db = snapshot_path
+        try:
+            with _sqlite3.connect(str(snapshot_path)) as conn:
                 row = conn.execute("SELECT MAX(version) FROM schema_versions").fetchone()
                 manifest["schema_version"] = row[0] if row and row[0] is not None else None
         except _sqlite3.Error:
             pass
         manifest["files"] = {
             "db/drbrain.db": {
-                "bytes": db_path.stat().st_size,
-                "sha256": _hashlib.sha256(db_path.read_bytes()).hexdigest(),
+                "bytes": snapshot_path.stat().st_size,
+                "sha256": _hashlib.sha256(snapshot_path.read_bytes()).hexdigest(),
             }
         }
     manifest_path = backup_dir / f".{out_path.name}.manifest.json"
@@ -91,7 +106,7 @@ def create_backup(
             if papers_dir.exists():
                 tar.add(str(papers_dir), arcname="papers")
             if db_path.exists():
-                tar.add(str(db_path), arcname="db/drbrain.db")
+                tar.add(str(archive_db), arcname="db/drbrain.db")
             if workspace_dir and workspace_dir.exists():
                 for item in workspace_dir.iterdir():
                     tar.add(str(item), arcname=f"workspace/{item.name}")
@@ -106,6 +121,7 @@ def create_backup(
                 tar.add(str(manifest_path), arcname="manifest.json")
     finally:
         manifest_path.unlink(missing_ok=True)
+        snapshot_dir.cleanup()
 
     size_mb = out_path.stat().st_size / (1024 * 1024)
     logger.info("[backup] created %s (%.1f MB)", out_path.name, size_mb)
@@ -378,19 +394,29 @@ def _restore_tarball(
             prefix=f".{target.name}.restore-", dir=target.parent
         ) as staging:
             tar.extractall(path=staging, filter="data")  # noqa: S202
-            top_level = sorted({m.name.split("/")[0] for m in members})
+            top_level = sorted({m.name.split("/")[0] for m in members if m.name != "manifest.json"})
             target.mkdir(parents=True, exist_ok=True)
             for name in top_level:
                 staged = Path(staging) / name
                 dest = target / name
                 if not staged.exists():
                     continue
-                if dest.exists() and force:
-                    if dest.is_dir() and not dest.is_symlink():
-                        _shutil.rmtree(dest)
-                    else:
+                for source_path in sorted(staged.rglob("*")):
+                    if not source_path.is_file():
+                        continue
+                    relative = source_path.relative_to(staging)
+                    destination = target / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if destination.exists():
+                        if destination.is_dir():
+                            raise IsADirectoryError(f"restore path is a directory: {relative}")
+                        destination.unlink()
+                    source_path.replace(destination)
+                if staged.is_file():
+                    if dest.exists() and dest.is_dir():
+                        raise IsADirectoryError(f"restore path is a directory: {name}")
+                    if dest.exists():
                         dest.unlink()
-                if not dest.exists():
                     staged.replace(dest)
         return top_level
 
