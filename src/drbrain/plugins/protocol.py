@@ -199,6 +199,7 @@ class Plugin:
             read_only, destructive = False, True
         metadata = dict(self.metadata)
         metadata.setdefault("plugin_type", self.plugin_type)
+        metadata.setdefault("side_effect", self.side_effect)
         if self.resource:
             metadata.setdefault("resource", self.resource)
         resource_scope = dict(self.resource_scope)

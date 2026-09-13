@@ -548,11 +548,22 @@ def mcp_descriptor_to_capability(
             supports_idempotency=server.get("supports_idempotency") is True,
             supports_reconcile=server.get("supports_reconcile") is True,
         ),
-        permissions=tuple(normalize_mcp_strings(server.get("required_capabilities"))),
+        permissions=(
+            tuple(normalize_mcp_strings(server.get("required_capabilities")))
+            or (f"mcp:{server_id}:{name}",)
+        ),
         metadata={
             "server_id": server_id,
             "annotations": _jsonable(raw_annotations),
             "_meta": _jsonable(descriptor.get("_meta")),
+            "side_effect": str(server.get("side_effect") or "unspecified"),
+            "trusted": server.get("trusted") is True,
+            "allowed_tools": list(policy.allowed_tools or ()),
+            "secret_refs": list(normalize_mcp_strings(server.get("secret_refs"))),
+            "max_output_bytes": server.get("max_output_bytes"),
+            "cost_hint": server.get("cost_hint"),
+            "sandbox_profile": str(server.get("sandbox_profile") or ""),
+            "approval_policy": str(server.get("approval_policy") or "default"),
         },
         provenance=CapabilityProvenance(
             source=f"mcp:{server_id}",

@@ -20,7 +20,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -279,6 +279,10 @@ class ResearchDirector:
         graph: Any = None,
         plugins_dir: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        capability_catalog: Any = None,
+        skills_root: str | None = None,
+        capability_adapters: Iterable[Any] | None = None,
+        require_trusted_mcp: bool = False,
         run_dir: str | Path = "workspace/autoresearch",
         n_critics: int = 3,
         single_agent: bool = False,
@@ -296,6 +300,10 @@ class ResearchDirector:
         self._graph = graph
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
+        self._capability_catalog = capability_catalog
+        self._skills_root = skills_root
+        self._capability_adapters = tuple(capability_adapters or ())
+        self._require_trusted_mcp = bool(require_trusted_mcp)
         self._run_dir = Path(run_dir)
         self._single_agent = bool(single_agent)
         self._n_critics = 1 if self._single_agent else max(1, int(n_critics))
@@ -408,6 +416,36 @@ class ResearchDirector:
             if not isinstance(server, dict):
                 continue
             servers.append(_mcp_contract(server))
+        capability_descriptors: list[dict[str, Any]] = []
+        manifest_catalog = self._capability_catalog
+        if manifest_catalog is None and (self._skills_root or self._capability_adapters):
+            # Adapter/Skill descriptors are pure metadata and can be captured
+            # without eagerly connecting to MCP or importing plugin modules.
+            # Keep the live workflow's lazy discovery semantics unchanged.
+            try:
+                from drbrain.loop.tool_space import LoopToolSpace
+
+                manifest_catalog = LoopToolSpace.discover_catalog(
+                    skills_root=self._skills_root,
+                    adapters=self._capability_adapters,
+                )
+            except Exception:  # noqa: BLE001 - optional catalog must not block resume
+                manifest_catalog = None
+        if manifest_catalog is not None:
+            try:
+                for descriptor in manifest_catalog.list():
+                    # Keep the checkpoint contract stable and secret-free. The
+                    # full descriptor remains in the live catalog; recovery
+                    # only needs identity, schema, policy and provenance.
+                    payload = descriptor.to_dict()
+                    payload["metadata"] = {
+                        key: redact(value)
+                        for key, value in payload.get("metadata", {}).items()
+                        if key not in {"body", "headers", "env", "secret_refs", "authorization"}
+                    }
+                    capability_descriptors.append(payload)
+            except Exception:  # noqa: BLE001 - optional catalog must not block resume
+                capability_descriptors = []
         tool_manifest = redact(
             {
                 "plugins_dir": str(Path(self._plugins_dir).resolve())
@@ -415,6 +453,13 @@ class ResearchDirector:
                 else None,
                 "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
                 "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
+                "capability_descriptors": sorted(
+                    capability_descriptors, key=lambda item: str(item.get("id", ""))
+                ),
+                "skills_root": str(Path(self._skills_root).resolve())
+                if self._skills_root
+                else None,
+                "require_trusted_mcp": self._require_trusted_mcp,
                 "tool_policy": self._tool_policy.to_manifest()
                 if self._tool_policy is not None
                 else None,
@@ -1258,6 +1303,10 @@ class ResearchDirector:
             graph=self._graph,
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
+            capability_catalog=self._capability_catalog,
+            skills_root=self._skills_root,
+            capability_adapters=self._capability_adapters,
+            require_trusted_mcp=self._require_trusted_mcp,
             n_critics=self._n_critics,
             timeout=self._step_timeout_seconds,
             # Per-run job dir (not process-global env): concurrent directors on
