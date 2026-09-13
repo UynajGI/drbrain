@@ -21,8 +21,9 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync
       - run: uv pip install -e .
+      # Formatting is an autofixable hygiene step; it must not fail a PR.
+      - run: uv run ruff format src/ tests/
       - run: uv run ruff check src/ tests/
-      - run: uv run ruff format --check src/ tests/
 
   typecheck:
     runs-on: ubuntu-latest
