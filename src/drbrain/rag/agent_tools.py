@@ -172,7 +172,16 @@ def _tool_is_visible(
 ) -> bool:
     """Apply one shared loop tool-space decision when one is attached."""
     if tool_space is not None:
-        return bool(tool_space.is_visible(definition))
+        if not tool_space.is_visible(definition):
+            return False
+        space_policy = getattr(tool_space, "policy", None)
+        effective_policy = space_policy or tool_policy
+        if effective_policy is not None:
+            return bool(
+                effective_policy.is_visible(node_name=workflow_step or "", definition=definition)
+            )
+        return True
+
     return tool_policy is not None and tool_policy.is_visible(
         node_name=workflow_step or "", definition=definition
     )

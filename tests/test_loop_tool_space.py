@@ -130,6 +130,28 @@ def test_role_matrix_is_enforced_across_external_capability_kinds():
     }
 
 
+def test_verifier_is_read_only_without_policy():
+    write = ToolDefinition(
+        name="publish", source="api", input_schema={"type": "object"}, side_effect="write"
+    )
+    pure = ToolDefinition(
+        name="score", source="model", input_schema={"type": "object"}, side_effect="pure"
+    )
+    verifier = LoopToolSpace(step_name="verify", role="verifier")
+    assert not verifier.is_visible(write)
+    assert verifier.is_visible(pure)
+
+
+def test_mcp_permission_fallback_keeps_server_namespace():
+    from drbrain.rag.mcp_tools import mcp_descriptor_to_capability
+
+    descriptor = mcp_descriptor_to_capability(
+        {"id": "papers", "command": "mcp-papers"},
+        {"name": "search", "inputSchema": {"type": "object"}},
+    )
+    assert descriptor.permissions == ("mcp:papers:search",)
+
+
 def test_director_checkpoint_records_supplied_capability_contract(tmp_path):
     adapter = ModelAdapter(name="local-model", description="A local model", predict=lambda _args: 1)
     manifest = ResearchDirector(

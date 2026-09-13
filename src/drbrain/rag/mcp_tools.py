@@ -548,7 +548,10 @@ def mcp_descriptor_to_capability(
             supports_idempotency=server.get("supports_idempotency") is True,
             supports_reconcile=server.get("supports_reconcile") is True,
         ),
-        permissions=tuple(normalize_mcp_strings(server.get("required_capabilities"))),
+        permissions=(
+            tuple(normalize_mcp_strings(server.get("required_capabilities")))
+            or (f"mcp:{server_id}:{name}",)
+        ),
         metadata={
             "server_id": server_id,
             "annotations": _jsonable(raw_annotations),

@@ -1224,7 +1224,8 @@ class ResearchLoopWorkflow(Workflow):
             if prompt:
                 # FunctionAgent reads system_prompt at call time (workflow step),
                 # so mutating it after build_agent is sufficient for the role swap.
-                agent.system_prompt = prompt
+                existing_prompt = str(getattr(agent, "system_prompt", "") or "")
+                agent.system_prompt = prompt + ("\n\n" + existing_prompt if existing_prompt else "")
         return agent
 
     def _has_compute_tools(self, agent: Any | None = None) -> bool:

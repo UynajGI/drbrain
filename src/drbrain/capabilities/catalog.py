@@ -11,6 +11,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from drbrain.capabilities.protocol import (
     CapabilityDescriptor,
     CapabilityJobMethods,
@@ -208,7 +210,8 @@ class CapabilityCatalog:
                 descriptors = discover_mcp_tools(
                     server, require_trusted=require_trusted, namespace=True
                 )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - one MCP server must not block others
+                logger.warning("[capabilities] MCP discovery failed for {}: {}", server, exc)
                 continue
             for raw in descriptors:
                 descriptor = mcp_descriptor_to_capability(server, raw)
@@ -358,7 +361,7 @@ class CapabilityCatalog:
         return [item for item in values if kind is None or item.kind == kind]
 
     def recommend(
-        self, query: str, *, kinds: IterableABC[str] | None = None, limit: int = 10
+        self, query: str, *, kinds: IterableABC[str] | None = None, limit: int | None = 10
     ) -> DescriptorList:
         """Return deterministic lexical recommendations for an Agent planner."""
         terms = {term.lower() for term in query.split() if term.strip()}
@@ -374,6 +377,8 @@ class CapabilityCatalog:
             if score:
                 ranked.append((score, descriptor.id, descriptor))
         ranked.sort(key=lambda item: (-item[0], item[1]))
+        if limit is None:
+            return [item[2] for item in ranked]
         return [item[2] for item in ranked[: max(0, limit)]]
 
     def invoke(
@@ -475,12 +480,14 @@ class CapabilityCatalog:
                 from drbrain.plugins.registry import json_schema_to_model
 
                 model = json_schema_to_model(descriptor.name, descriptor.input_schema)
-            except Exception:  # noqa: BLE001 - schema bridge is optional per tool
+            except Exception as exc:  # noqa: BLE001 - schema bridge is optional per tool
                 # JSON Schema validation remains authoritative in ``ainvoke``;
                 # a provider-specific model projection may be unavailable for
                 # an otherwise valid 2020-12 schema. Expose the tool without
                 # the projection rather than dropping the whole tool space.
-                pass
+                logger.debug(
+                    "[capabilities] schema projection unavailable for {}: {}", descriptor.id, exc
+                )
 
             def _make_fn(
                 capability_id: str,

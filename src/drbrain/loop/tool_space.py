@@ -14,6 +14,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from loguru import logger
+
 from drbrain.capabilities import CapabilityCatalog, CapabilityDescriptor
 from drbrain.loop.policy import ToolDefinition, ToolPolicy
 
@@ -82,10 +84,10 @@ class LoopToolSpace:
                 registry = PluginRegistry()
                 registry.discover(plugins_dir)
                 result.register_plugin_registry(registry, replace=True)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - optional source isolation
                 # Optional external sources are isolated; the caller keeps the
                 # catalog entries that were already supplied explicitly.
-                pass
+                logger.warning("[loop] plugin capability source unavailable: {}", exc)
         if mcp_servers:
             try:
                 result.register_mcp_servers(
@@ -93,18 +95,18 @@ class LoopToolSpace:
                     require_trusted=require_trusted_mcp,
                     replace=True,
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - optional source isolation
+                logger.warning("[loop] MCP capability source unavailable: {}", exc)
         if skills_root:
             try:
                 result.register_skills(str(skills_root), replace=True)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - optional source isolation
+                logger.warning("[loop] Skill capability source unavailable: {}", exc)
         for adapter in adapters or ():
             try:
                 result.register_adapter(adapter, replace=True)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - optional source isolation
+                logger.warning("[loop] capability adapter unavailable: {}", exc)
         return result
 
     def child(self, *, step_name: str, role: str | None = None) -> LoopToolSpace:
@@ -194,6 +196,8 @@ class LoopToolSpace:
             and definition.source in _ROLE_DENIED_SOURCES[self.role]
         ):
             return False
+        if self.role == "verifier" and definition.side_effect not in {"pure", "read"}:
+            return False
         if self.policy is None:
             return True
         return self.policy.is_visible(node_name=self.step_name, definition=definition)
@@ -214,11 +218,7 @@ class LoopToolSpace:
         # Rank the complete candidate set before filtering. A large number of
         # denied capabilities must not crowd a usable one out of the top-N
         # merely because it shared more query terms.
-        candidates = self.catalog.recommend(
-            query,
-            kinds=kinds,
-            limit=max(len(self.catalog.list()), max(0, limit)),
-        )
+        candidates = self.catalog.recommend(query, kinds=kinds, limit=None)
         return [item for item in candidates if self.descriptor_is_visible(item)][: max(0, limit)]
 
     def skill_context(self, *, max_chars: int = 12000) -> str:
@@ -248,6 +248,8 @@ class LoopToolSpace:
     ) -> str:
         if self.catalog is None:
             return "能力目录不可用"
+        if not self.descriptor_is_visible(descriptor):
+            return "能力不可用：当前节点无权调用该能力"
         if self.broker is None:
             return (await self.catalog.ainvoke(descriptor.id, arguments)).to_llm_message()
         observation = await self.broker.execute(
