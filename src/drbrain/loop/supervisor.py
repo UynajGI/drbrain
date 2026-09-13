@@ -326,6 +326,11 @@ class ResearchSupervisor:
             raise KeyError(f"unknown branch {branch_id!r}")
         self.frontier.transition(branch_id, BranchStatus.SCREENED)
         branch.metadata["approval"] = {"actor": actor, "reason": reason}
+        branch.metadata["human_decision"] = {
+            "actor": actor,
+            "decision": "approved",
+            "reason": reason,
+        }
         self._append(
             "human_decision",
             {"branch_id": branch_id, "decision": "approved", "actor": actor, "reason": reason},
@@ -382,6 +387,8 @@ class ResearchSupervisor:
 
     async def run(self, branches: list[BranchSpec] | None = None) -> SupervisorResult:
         """Run until the done contract, frontier exhaustion, or budget limit."""
+        if self.worker is None:
+            raise SupervisorError("a BranchWorker is required")
         if branches:
             self.seed(branches)
         self._append(
@@ -477,7 +484,7 @@ class ResearchSupervisor:
             )
             for branch, outcome in zip(runnable, outcomes, strict=True):
                 if isinstance(outcome, BaseException):
-                    if isinstance(outcome, SupervisorError):
+                    if isinstance(outcome, WorkerContractError):
                         raise outcome
                     outcome = BranchOutcome(
                         branch_id=branch.branch_id,
@@ -524,6 +531,8 @@ class ResearchSupervisor:
                     for item in outcome.evidence
                     if item.relation == "supports" and item.evidence_id
                 ]
+                branch.metadata["verification"] = dict(outcome.verification)
+                branch.metadata["claims"] = list(outcome.claims)
                 admitted = self.frontier.apply_outcome(outcome)
                 self._append(
                     "branch_completed",
@@ -568,10 +577,55 @@ class ResearchSupervisor:
         )
         retained = [b for b in self.frontier.branches.values() if b.status == BranchStatus.RETAINED]
         experiments = sum(1 for b in retained if b.experiment is not None)
-        return (
+        if not (
             supported >= self.done_contract.min_supported_evidence
             and experiments >= self.done_contract.required_experiments
-        )
+        ):
+            return False
+        for branch in retained:
+            verification = branch.metadata.get("verification", {})
+            if not isinstance(verification, Mapping):
+                verification = {}
+            if self.done_contract.require_replication:
+                repetitions = branch.experiment.repetitions if branch.experiment else 2
+                job_ids = verification.get("job_ids", ())
+                replicated = bool(verification.get("replicated"))
+                if isinstance(job_ids, str):
+                    job_ids = [job_ids]
+                if not replicated and len(set(job_ids or ())) < repetitions:
+                    return False
+            if (
+                self.done_contract.require_counter_evidence_search
+                and (
+                    branch.experiment is not None
+                    or any(
+                        key in verification
+                        for key in (
+                            "counter_evidence_searched",
+                            "job_ids",
+                            "replicated",
+                            "confidence",
+                            "stop_conditions",
+                        )
+                    )
+                )
+                and not bool(verification.get("counter_evidence_searched", False))
+            ):
+                return False
+            if (
+                float(verification.get("confidence", branch.metadata.get("confidence", 0.0)) or 0.0)
+                < self.done_contract.min_confidence
+            ):
+                return False
+            if self.done_contract.human_review and not branch.metadata.get("human_decision"):
+                return False
+            required_stops = self.done_contract.stop_conditions
+            if required_stops:
+                observed = set(verification.get("stop_conditions", ()) or ())
+                observed.update(branch.metadata.get("stop_conditions", ()) or ())
+                if not set(required_stops).issubset(observed):
+                    return False
+        return True
 
 
 __all__ = [

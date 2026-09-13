@@ -2178,7 +2178,10 @@ class ResearchDirector:
                 summary=str(report or ""),
             )
 
-        initial = branches or [BranchSpec(branch_id=f"root-{uuid.uuid4().hex}", hypothesis=topic)]
+        # A topic maps to one stable root so repeated CLI calls resume the
+        # existing frontier instead of spending budget on duplicate roots.
+        root_id = "root-" + hashlib.sha256(topic.encode("utf-8")).hexdigest()[:24]
+        initial = branches or [BranchSpec(branch_id=root_id, hypothesis=topic)]
         supervisor = ResearchSupervisor(
             objective=objective,
             worker=worker,
@@ -2192,7 +2195,8 @@ class ResearchDirector:
                 max_evaluations=max_evaluations,
             ),
         )
-        result: SupervisorResult = await supervisor.run(initial)
+        seed = initial if not supervisor.frontier.branches else (branches or [])
+        result: SupervisorResult = await supervisor.run(seed)
         current = ledger.get_run_by_id(run.run_id)
         if current is not None and current.status == "running":
             transitions.pause_run(run.run_id, reason=result.reason)

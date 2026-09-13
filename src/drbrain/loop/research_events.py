@@ -438,8 +438,16 @@ class InMemorySnapshotStore:
 
     def save(self, snapshot: EventSnapshot) -> None:
         prior = self._snapshots.get(snapshot.run_id)
-        if prior is not None and snapshot.seq < prior.seq:
-            raise SequenceConflictError("snapshot sequence cannot move backwards")
+        if prior is not None:
+            if snapshot.seq < prior.seq:
+                raise SequenceConflictError("snapshot sequence cannot move backwards")
+            if snapshot.seq == prior.seq:
+                if (
+                    snapshot.reducer_version == prior.reducer_version
+                    and snapshot.state == prior.state
+                ):
+                    return
+                raise SequenceConflictError("snapshot at the same sequence differs")
         self._snapshots[snapshot.run_id] = copy.deepcopy(snapshot)
 
     def latest(self, run_id: str) -> EventSnapshot | None:
