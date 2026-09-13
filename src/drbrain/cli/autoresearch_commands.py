@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, NoReturn
@@ -10,7 +11,17 @@ import typer
 
 from drbrain.cli._common import open_db
 from drbrain.config import AutoresearchConfig
-from drbrain.loop import ResearchDirector, RunGovernance
+from drbrain.loop import (
+    BranchOutcome,
+    BranchSpec,
+    BranchStatus,
+    DoneContract,
+    EvidenceRef,
+    ResearchDirector,
+    ResearchObjective,
+    RunGovernance,
+    run_frontier_benchmark,
+)
 from drbrain.loop.policy import ToolPolicy
 from drbrain.loop.preflight import preflight_mcp_servers
 from drbrain.loop.store import RunLedger
@@ -176,6 +187,140 @@ def run_cmd(
         f"workspace={safe_summary['workspace']}; "
         f"budget={safe_summary['budget']}"
     )
+
+
+@autoresearch_app.command("adaptive-run")
+def adaptive_run_cmd(
+    ctx: typer.Context,
+    topic: str = typer.Argument(..., help="Research objective for frontier orchestration"),
+    max_evaluations: int = typer.Option(10, "--max-evaluations", min=1),
+    max_parallel_branches: int = typer.Option(2, "--max-parallel-branches", min=1),
+    json_output: bool = typer.Option(False, "--json", help="Emit the frontier result as JSON"),
+) -> None:
+    """Run the adaptive Supervisor while keeping ``autoresearch run`` unchanged."""
+    cfg = ctx.obj["config"]
+    try:
+        settings = _settings(cfg)
+        if not settings.enabled:
+            raise ValueError("autoresearch is disabled")
+        tool_policy = (
+            ToolPolicy(step_capabilities=settings.step_capabilities)
+            if settings.plugins_dir or settings.mcp_servers
+            else None
+        )
+        with open_db(cfg) as db:
+            director = ResearchDirector(
+                cfg,
+                db=db,
+                plugins_dir=settings.plugins_dir or None,
+                mcp_servers=settings.mcp_servers,
+                run_dir=settings.run_dir,
+                n_critics=settings.n_critics,
+                lease_seconds=settings.lease_seconds,
+                tool_policy=tool_policy,
+                require_rag_evidence=settings.require_rag_evidence,
+                require_compute_tools=settings.require_compute_tools,
+                compute_tool_names=list(settings.compute_tool_names) or None,
+                step_timeout_seconds=settings.step_timeout_seconds,
+            )
+            result = asyncio.run(
+                director.run_adaptive(
+                    topic,
+                    max_evaluations=max_evaluations,
+                    max_parallel_branches=max_parallel_branches,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - CLI reports durable-run failures consistently
+        _operator_error(exc, cfg)
+    payload = {
+        "run_id": result.run_id,
+        "topic": result.objective.question,
+        "completed": result.completed,
+        "reason": result.reason,
+        "branches": {
+            branch_id: branch.to_dict() for branch_id, branch in result.frontier.branches.items()
+        },
+        "event_count": len(result.events),
+    }
+    safe_payload = redact_sensitive(payload)
+    if json_output:
+        typer.echo(json.dumps(safe_payload, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(
+            f"Adaptive autoresearch: run_id={result.run_id}; completed={result.completed}; "
+            f"reason={result.reason}; branches={len(result.frontier.branches)}"
+        )
+
+
+@autoresearch_app.command("adaptive-benchmark")
+def adaptive_benchmark_cmd(
+    topic: str = typer.Argument("synthetic frontier", help="Label used for benchmark branches"),
+    branches: int = typer.Option(8, "--branches", min=1, help="Number of deterministic branches"),
+    max_evaluations: int | None = typer.Option(
+        None, "--max-evaluations", min=1, help="Evaluation budget (defaults to --branches)"
+    ),
+    max_parallel_branches: int = typer.Option(2, "--max-parallel-branches", min=1),
+    json_output: bool = typer.Option(False, "--json", help="Emit benchmark metrics as JSON"),
+) -> None:
+    """Measure adaptive frontier scheduling with a deterministic synthetic worker.
+
+    This command is intentionally independent of the LLM, database and MCP
+    servers.  It provides a reproducible scheduler baseline for migration and
+    regression checks; use ``adaptive-run`` for a real research objective.
+    """
+    if branches < 1:
+        raise typer.BadParameter("branches must be positive")
+
+    specs = [
+        BranchSpec(
+            branch_id=f"benchmark-{index:04d}",
+            hypothesis=f"{topic}: branch {index}",
+            rationale="deterministic scheduler benchmark",
+            information_gain=1.0 - (index % 5) * 0.1,
+            uncertainty_reduction=0.5 + (index % 3) * 0.1,
+            novelty=(index % 7) / 7,
+            feasibility=0.8,
+            cost=0.1,
+        )
+        for index in range(branches)
+    ]
+
+    async def worker(
+        branch: BranchSpec, _objective: ResearchObjective, _done: DoneContract
+    ) -> BranchOutcome:
+        index = int(branch.branch_id.rsplit("-", 1)[-1])
+        retained = index % 2 == 0
+        evidence = (
+            [EvidenceRef(evidence_id=f"{branch.branch_id}:evidence", relation="supports")]
+            if retained
+            else []
+        )
+        return BranchOutcome(
+            branch_id=branch.branch_id,
+            status=BranchStatus.RETAINED if retained else BranchStatus.PRUNED,
+            evidence=evidence,
+            summary="synthetic retained branch" if retained else "synthetic pruned branch",
+        )
+
+    try:
+        metrics = asyncio.run(
+            run_frontier_benchmark(
+                specs,
+                worker,
+                max_evaluations=max_evaluations,
+                max_parallel_branches=max_parallel_branches,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - CLI reports benchmark failures consistently
+        _operator_error(exc)
+    if json_output:
+        typer.echo(json.dumps(metrics, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(
+            f"Adaptive benchmark: evaluations={metrics['evaluations']}; "
+            f"retained={metrics['retained']}; pruned={metrics['pruned']}; "
+            f"parallel={max_parallel_branches}; reason={metrics['reason']}"
+        )
 
 
 @autoresearch_app.command("status")

@@ -96,6 +96,29 @@ def test_preflight_reports_mcp_tools_that_would_be_hidden(tmp_path):
     assert payload["servers"][0]["issues"] == ["side_effect must be classified for durable use"]
 
 
+def test_adaptive_benchmark_is_reproducible_and_does_not_require_config():
+    result = runner.invoke(
+        autoresearch_app,
+        [
+            "adaptive-benchmark",
+            "toy topic",
+            "--branches",
+            "4",
+            "--max-parallel-branches",
+            "2",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["evaluations"] == 4
+    assert payload["retained"] == 2
+    assert payload["pruned"] == 2
+    assert payload["reason"] == "evaluation_budget_exhausted"
+    assert payload["event_count"] >= 6
+
+
 def test_pause_and_cancel_commands_change_the_existing_run(tmp_path):
     cfg, run_id, _ = _manual_review_run(tmp_path)
 

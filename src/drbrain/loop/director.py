@@ -35,9 +35,18 @@ from drbrain.loop.checkpointing import (
 from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.events import ResearchState
 from drbrain.loop.front_half import DurableFrontHalf
+from drbrain.loop.frontier import (
+    BranchOutcome,
+    BranchSpec,
+    BranchStatus,
+    DoneContract,
+    ResearchObjective,
+)
 from drbrain.loop.governance import RunGovernance
 from drbrain.loop.policy import ToolPolicy
+from drbrain.loop.research_events import RunLedgerEventLog
 from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
+from drbrain.loop.supervisor import ResearchSupervisor, SupervisorConfig
 from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
@@ -2005,3 +2014,186 @@ class ResearchDirector:
     def run_sync(self, topic: str, **kwargs: Any) -> dict[str, Any]:
         """Convenience sync wrapper (``asyncio.run``)."""
         return asyncio.run(self.run(topic, **kwargs))
+
+    async def run_adaptive(
+        self,
+        topic: str,
+        *,
+        branches: list[BranchSpec] | None = None,
+        max_evaluations: int = 10,
+        max_parallel_branches: int = 2,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str = "",
+    ) -> Any:
+        """Run the frontier Supervisor against the existing workflow kernel.
+
+        This is an additive entry point.  The legacy cycle loop remains the
+        default; adaptive runs use the same ledger/governance budget and lease
+        boundaries while exposing branch lineage and deterministic selection.
+        """
+        from drbrain.loop.supervisor import SupervisorResult
+
+        if max_evaluations < 1:
+            raise ValueError("max_evaluations must be positive")
+        ledger = self._ledger()
+        run = ledger.get_or_create_run(
+            topic,
+            config={"adaptive": True, "max_parallel_branches": max_parallel_branches},
+            budget={"max_evaluations": max_evaluations},
+            project_id=project_id,
+            session_id=session_id,
+        )
+        transitions = TransitionService(ledger)
+        transitions.start_run(run.run_id)
+        governance = RunGovernance(ledger)
+        objective = ResearchObjective(
+            objective_id=f"objective-{run.run_id}",
+            question=topic,
+            budget={"max_evaluations": max_evaluations},
+        )
+
+        async def worker(
+            branch: BranchSpec, _objective: ResearchObjective, _done: DoneContract
+        ) -> BranchOutcome:
+            # Branch workers are isolated workflow instances.  Governance
+            # accounting is injected at the model/RAG boundaries; the
+            # supervisor owns the enclosing lease and cycle lifecycle.
+            checkpoint = None
+            tool_broker = None
+            durable_execution = None
+            durable_front_half = None
+            evidence_recorder = None
+            step_id = str(branch.metadata.get("_step_id", ""))
+            attempt_id = str(branch.metadata.get("_attempt_id", ""))
+            if step_id and attempt_id:
+                checkpoint = WorkflowCheckpointService(
+                    ledger=ledger,
+                    run_id=run.run_id,
+                    step_id=step_id,
+                    attempt_id=attempt_id,
+                    worker_id=self._worker_id,
+                    manifest=self._checkpoint_manifest(),
+                    lease_seconds=self._lease_seconds,
+                )
+                durable_front_half = DurableFrontHalf(TransitionService(ledger), run.run_id)
+                await asyncio.to_thread(durable_front_half.ensure_node_contracts)
+
+                def evidence_recorder(bundle: Mapping[str, Any]) -> None:
+                    ledger.record_evidence_bundle(
+                        run_id=run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        bundle=redact(dict(bundle)),
+                    )
+
+                if self._tool_policy is not None:
+                    tool_broker = ToolBroker(
+                        ledger=ledger,
+                        run_id=run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                        policy=self._tool_policy,
+                    )
+                    durable_execution = DurableExecution(
+                        TransitionService(ledger),
+                        run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        noise_band=self._noise_band,
+                        required_repeats=(
+                            branch.experiment.repetitions
+                            if branch.experiment is not None
+                            else self._required_repeats
+                        ),
+                    )
+                    await asyncio.to_thread(durable_execution.ensure_node_contracts)
+
+            wf = ResearchLoopWorkflow(
+                cfg=self._cfg,
+                db=self._db,
+                graph=self._graph,
+                plugins_dir=self._plugins_dir,
+                mcp_servers=self._mcp_servers,
+                capability_catalog=self._capability_catalog,
+                skills_root=self._skills_root,
+                capability_adapters=self._capability_adapters,
+                require_trusted_mcp=self._require_trusted_mcp,
+                n_critics=self._n_critics,
+                timeout=self._step_timeout_seconds,
+                jobs_dir=str(self._topic_dir(topic) / "jobs" / f"branch-{branch.branch_id}"),
+                tool_broker=tool_broker,
+                tool_policy=self._tool_policy,
+                rag_generation=self._rag_generation,
+                require_rag_evidence=self._require_rag_evidence,
+                require_compute_tools=self._require_compute_tools,
+                compute_tool_names=list(self._compute_tool_names),
+                experiment_spec=branch.experiment,
+                evidence_recorder=evidence_recorder,
+                durable_front_half=durable_front_half,
+                durable_execution=durable_execution,
+                run_id=run.run_id,
+                cycle=branch.depth + 1,
+                budget_reserver=lambda amounts: governance.reserve(run.run_id, amounts),
+                budget_consumer=lambda amounts: governance.consume_observed(run.run_id, amounts),
+            )
+            handler = wf.run(
+                task=branch.hypothesis or topic,
+                prior_context=branch.rationale,
+                prior_champion=[],
+                prior_rejected=[],
+            )
+            if checkpoint is not None and hasattr(handler, "stream_events"):
+                async for event in handler.stream_events(expose_internal=True):
+                    captured = checkpoint.capture_if_safe(ctx=handler.ctx, workflow=wf, event=event)
+                    if captured is not None:
+                        branch.metadata["_checkpoint_id"] = captured.checkpoint_id
+            report = await handler
+            state = await handler.ctx.store.get("research_state", default=None)
+            verified = list(getattr(state, "verified", []) or [])
+            falsified = list(getattr(state, "falsified", []) or [])
+            evidence = []
+            for item in list(getattr(state, "evidence", []) or []):
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                if evidence_id:
+                    from drbrain.loop.frontier import EvidenceRef
+
+                    evidence.append(EvidenceRef(evidence_id=evidence_id, relation="supports"))
+            status = (
+                BranchStatus.RETAINED
+                if verified
+                else BranchStatus.PRUNED
+                if falsified
+                else BranchStatus.VERIFYING
+            )
+            return BranchOutcome(
+                branch_id=branch.branch_id,
+                status=status,
+                claims=verified or falsified,
+                evidence=evidence,
+                verification={"verified": verified, "falsified": falsified},
+                summary=str(report or ""),
+            )
+
+        initial = branches or [BranchSpec(branch_id=f"root-{uuid.uuid4().hex}", hypothesis=topic)]
+        supervisor = ResearchSupervisor(
+            objective=objective,
+            worker=worker,
+            event_log=RunLedgerEventLog(ledger),
+            governance=governance,
+            run_id=run.run_id,
+            worker_id=self._worker_id,
+            lease_seconds=self._lease_seconds,
+            config=SupervisorConfig(
+                max_parallel_branches=max_parallel_branches,
+                max_evaluations=max_evaluations,
+            ),
+        )
+        result: SupervisorResult = await supervisor.run(initial)
+        current = ledger.get_run_by_id(run.run_id)
+        if current is not None and current.status == "running":
+            transitions.pause_run(run.run_id, reason=result.reason)
+        return result

@@ -110,6 +110,8 @@ class Verification(BaseModel):
     value: float | None = None  # 结构化数值（可选，摘要用）
     unit: str = ""  # 数值单位（可选）
     job_id: str = ""  # T4: compute 节点 run_python(mode=async) 返回的后台作业 id（证据是落盘文件）
+    job_ids: list[str] = Field(default_factory=list)  # 独立重复作业（含主 job_id）
+    counter_evidence_searched: bool = False  # 是否主动检索了最可能的反证
     status: str = "prediction"  # code-derived: verified | falsified | prediction
 
 
@@ -143,6 +145,8 @@ class ResearchState(BaseModel):
     # "novel" | "known" | "reproduction" | "contradiction" | "unknown"。
     novelty_labels: dict[str, str] = Field(default_factory=dict)
     report: str = ""
+    # Optional immutable preregistration injected by the adaptive supervisor.
+    experiment_spec: dict[str, Any] | None = None
 
 
 # ── node transition events ────────────────────────────────────────────────────
@@ -209,6 +213,7 @@ class Computed(Event):
     job_ids: dict[str, str] = Field(default_factory=dict)  # statement → run_python(async) job_id
     summaries: dict[str, str] = Field(default_factory=dict)  # statement → 实算摘要（可选）
     experiment_ids: dict[str, str] = Field(default_factory=dict)  # statement → durable experiment
+    replication_job_ids: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class Verified(Event):

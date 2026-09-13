@@ -79,6 +79,90 @@ def test_evidence_and_hypothesis_schema():
     assert h.conditions == {"T": 300}
 
 
+def test_preregistered_verification_requires_replications_and_counter_search(tmp_path, monkeypatch):
+    """Adaptive branches stay predictions until every contract gate is met."""
+    from types import SimpleNamespace
+
+    from drbrain.loop.events import Computed, Evidence, EvidenceBundle
+    from drbrain.loop.frontier import ExperimentSpec
+
+    spec = ExperimentSpec(
+        metric="accuracy",
+        baseline="0.5",
+        null_hypothesis="no improvement",
+        alternative_hypothesis="improvement",
+        seeds=[1, 2],
+        repetitions=2,
+        stopping_rule="fixed",
+        falsification_criteria=["accuracy <= baseline"],
+    )
+    hypothesis = Hypothesis(claim_id="cl-1", statement="claim", status="critiqued")
+    evidence = Evidence(evidence_id="ev-1")
+    state = ResearchState(
+        evidence=[evidence],
+        evidence_bundles=[EvidenceBundle(bundle_id="bundle", records=[evidence])],
+        experiment_spec=spec.to_dict(),
+    )
+
+    class Store:
+        async def get(self, key, default=None):
+            return state if key == "research_state" else default
+
+        async def set(self, _key, _value):
+            return None
+
+    for job_id, value in (("rep-1", 0.7), ("rep-2", 0.8)):
+        (tmp_path / f"{job_id}.log").write_text(
+            json.dumps({"quantity": "accuracy", "value": value, "unit": ""}),
+            encoding="utf-8",
+        )
+    workflow = ResearchLoopWorkflow(jobs_dir=str(tmp_path), experiment_spec=spec)
+    monkeypatch.setattr(workflow, "build_node_agent", lambda **_kwargs: object())
+    monkeypatch.setattr(workflow, "_has_compute_tools", lambda _agent: False)
+
+    async def verifier_result(*_args, **_kwargs):
+        return {
+            "verifications": [
+                {
+                    "claim_id": "cl-1",
+                    "evidence_ids": ["ev-1"],
+                    "supports": 1,
+                    "refutes": 0,
+                    "counter_evidence_searched": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(workflow, "run_agent_json", verifier_result)
+    result = asyncio.run(
+        workflow.verify(
+            SimpleNamespace(store=Store()),
+            Computed(
+                hypotheses=[hypothesis],
+                job_ids={"claim": "rep-1"},
+                replication_job_ids={"claim": ["rep-1", "rep-2"]},
+            ),
+        )
+    )
+    assert result.predictions == ["claim"]
+    assert result.verifications[0].status == "prediction"
+
+    # The same evidence is terminal once the verifier reports active
+    # disconfirmation and the hypothesis has a score above the strong-evidence bar.
+    hypothesis.score = 0.8
+    result = asyncio.run(
+        workflow.verify(
+            SimpleNamespace(store=Store()),
+            Computed(
+                hypotheses=[hypothesis],
+                job_ids={"claim": "rep-1"},
+                replication_job_ids={"claim": ["rep-1", "rep-2"]},
+            ),
+        )
+    )
+    assert result.verified == ["claim"]
+
+
 def test_critique_rebuilds_the_compute_gate_from_durable_reviews(tmp_path, monkeypatch):
     class _Store:
         def __init__(self):
