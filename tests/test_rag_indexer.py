@@ -29,6 +29,7 @@ from drbrain.rag.indexer import (
     collect_tree_nodes,
     load_index,
 )
+from drbrain.storage.paths import paper_dir
 
 _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 
@@ -97,7 +98,10 @@ class _PaperDB:
 def _make_cfg(tmp_path: Path, papers_dir: Path) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
-            enabled=True, vector_store="memory", storage_dir=str(tmp_path / "li")
+            enabled=True,
+            rag_engine="llamaindex",
+            vector_store="memory",
+            storage_dir=str(tmp_path / "li"),
         ),
         dirs=DirsConfig(papers=str(papers_dir)),
         embed=EmbedConfig(provider="none", model="fake-embed", top_k=5),
@@ -204,6 +208,26 @@ def test_collect_tree_nodes_real_paper(tmp_path):
     # ids unique across the paper
     ids = [d.id_ for d in docs]
     assert len(set(ids)) == len(ids)
+
+
+def test_collect_tree_nodes_preserves_doi_local_id_for_encoded_directory(tmp_path):
+    """The document key uses the DB DOI, not its percent-encoded basename."""
+    papers_dir = tmp_path / "papers"
+    doi = "10.1234/a"
+    paper_path = paper_dir(papers_dir, doi)
+    paper_path.mkdir(parents=True)
+    (paper_path / "raw.md").write_text("# Intro\nDOI body\n", encoding="utf-8")
+    (paper_path / "tree.json").write_text(
+        json.dumps(
+            {"structure": [{"title": "Intro", "node_id": "0000", "line_num": 1, "nodes": []}]}
+        ),
+        encoding="utf-8",
+    )
+
+    docs = collect_tree_nodes(paper_path)
+    assert len(docs) == 1
+    assert docs[0].metadata["paper_id"] == doi
+    assert docs[0].id_ == f"{doi}:0000"
 
 
 def test_collect_tree_nodes_from_dict_with_line_ranges(tmp_path):
@@ -347,7 +371,7 @@ def test_build_index_chunk_metadata_and_sizes(tmp_path):
         (
             n
             for n in index.docstore.docs.values()
-            if n.metadata["paper_id"] == PAPER_B and n.metadata["node_id"] == "0000"
+            if n.metadata["paper_id"] == PAPER_B and n.metadata.get("parent_node_id") == "0000"
         ),
         key=lambda n: n.metadata["chunk_index"],
     )
@@ -355,15 +379,13 @@ def test_build_index_chunk_metadata_and_sizes(tmp_path):
     assert [n.metadata["chunk_index"] for n in chunks] == [0, 1, 2]
     assert all(n.metadata["chunk_count"] == 3 for n in chunks)
     assert all(n.metadata["title"] == chunks[0].metadata["title"] for n in chunks)
-    assert all(n.metadata["line_start"] == chunks[0].metadata["line_start"] for n in chunks)
+    assert all("line_start" not in n.metadata for n in chunks)
     assert chunks[0].node_id == f"{PAPER_B}:0000#0"
     assert chunks[2].node_id == f"{PAPER_B}:0000#2"
-    # chunk text re-prefixes the section title
-    assert chunks[2].text.startswith(chunks[2].metadata["title"])
-    # concatenation of chunk bodies reconstructs the parent content (minus
-    # hard-sliced overlong paragraphs, if any)
-    joined = "\n\n".join(n.text[len(n.metadata["title"]) + 1 :].strip() for n in chunks)
-    assert joined
+    parent = next(
+        doc for doc in collect_tree_nodes(papers_dir / PAPER_B) if doc.metadata["node_id"] == "0000"
+    )
+    assert "".join(n.text for n in chunks) == parent.text
 
 
 def test_collect_tree_nodes_max_node_tokens_splits(tmp_path):
@@ -584,6 +606,8 @@ def test_generation_pruning_keeps_a_durably_referenced_snapshot(tmp_path):
 
 
 def test_retain_index_generation_writes_an_isolated_run_reference(tmp_path, monkeypatch):
+    from drbrain.rag import index_generations as rag_indexer
+
     root = tmp_path / "li"
     (root / "generations" / "g-1").mkdir(parents=True)
     monkeypatch.setattr(
@@ -737,6 +761,21 @@ def test_build_index_missing_paper_dir_skips(tmp_path):
     )
     assert stats["papers"] == 1  # missing dir skipped
     assert stats["nodes"] == 3
+
+
+def test_build_index_reads_legacy_nested_doi_directory(tmp_path):
+    """Existing DOI nested assets remain indexable after key migration."""
+    papers_dir = tmp_path / "papers"
+    doi = "10.1234/a"
+    _write_structured_paper(papers_dir / "10.1234", "a", _PAPER_A_SECTIONS)
+    # The helper above creates <papers>/10.1234/a and labels the tree with the
+    # suffix; build_index must still use the DB DOI for document metadata.
+    cfg = _make_cfg(tmp_path, papers_dir)
+    db = _PaperDB([doi])
+    stats = build_index(cfg, db, paper_ids=[doi], embed_model=_CountingEmbed())
+    assert stats["papers"] == 1
+    manifest = json.loads((tmp_path / "li" / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert any(key.startswith(f"{doi}:") for key in manifest["papers"][doi])
 
 
 @pytest.mark.integration

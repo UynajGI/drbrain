@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}研究运行 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>研究运行</h1>
+    <p class="muted">{{ project.name }} · 每次 autoresearch 运行都有持久 run_id 与可回放事件。</p>
+  </div>
+</header>
+
+<section class="card" aria-labelledby="run-start-title">
+  <h2 id="run-start-title">发起新运行</h2>
+  <form method="post" action="/runs" class="form-row-inline">
+    {{ m.csrf_field(csrf_token) }}
+    <input type="hidden" name="project_id" value="{{ project.project_id }}">
+    <input type="hidden" name="client_request_id" value="{{ client_request_id }}">
+    <div class="search-field grow">
+      <label class="field-label" for="topic">研究目标</label>
+      <input class="input" type="text" id="topic" name="topic" required placeholder="用一句话描述要研究的问题">
+    </div>
+    <div class="search-field">
+      <label class="field-label" for="session_id">绑定会话</label>
+      <select class="input" id="session_id" name="session_id">
+        <option value="">不绑定（独立运行）</option>
+        {% for session in sessions %}
+        <option value="{{ session.session_id }}">{{ session.title or session.session_id | short }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="search-field compact">
+      <label class="field-label" for="max_cycles">轮数</label>
+      <input class="input" type="number" id="max_cycles" name="max_cycles" min="1" max="100" placeholder="默认">
+    </div>
+    <button type="submit" class="btn btn-primary" data-submit-once>启动</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="run-list-title">
+  <div class="card-head">
+    <h2 id="run-list-title">运行记录</h2>
+    <span class="muted small">{{ items | length }} 条</span>
+  </div>
+  {% if items %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th scope="col">目标</th>
+          <th scope="col">状态</th>
+          <th scope="col">会话</th>
+          <th scope="col" class="num">事件</th>
+          <th scope="col" class="num">裁决</th>
+          <th scope="col">更新时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for run in items %}
+        <tr>
+          <td><a class="link strong" href="/runs/{{ run.run_id }}?project_id={{ project.project_id }}">{{ run.topic }}</a></td>
+          <td>{{ m.status_badge(run.display_status or run.status) }}</td>
+          <td class="cell-sub">{% if run.session_id %}<a class="link" href="/sessions/{{ run.session_id }}?project_id={{ project.project_id }}">{{ run.session_id | short(16) }}</a>{% else %}<span class="muted">{{ unbound_session_label }}</span>{% endif %}</td>
+          <td class="num">{{ run.events }}</td>
+          <td class="num">{{ run.verified }}/{{ run.settlements }}</td>
+          <td class="cell-sub">{{ run.updated_at | ts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  {{ m.empty_state('还没有研究运行', '在上面的表单中发起一次，或从会话页启动。') }}
+  {% endif %}
+</section>
+{% endblock %}

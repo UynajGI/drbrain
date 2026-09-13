@@ -321,6 +321,62 @@ def test_report_cmd_displays_report():
         report_cmd(ctx, "p1")  # Should not raise
 
 
+def test_report_cmd_reads_legacy_nested_doi_report(capsys):
+    """Reports written before canonical IDs remain readable."""
+    from drbrain.cli.commands import report_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        reports_dir = Path(td) / "reports"
+        legacy = reports_dir / "10.1234" / "foo" / "bar.json"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(
+            json.dumps({"paper": {"local_id": "10.1234/foo/bar", "title": "Legacy"}}),
+            encoding="utf-8",
+        )
+        cfg = _make_minimal_config("/tmp/x.db", str(reports_dir))
+        ctx = _make_ctx(cfg)
+        report_cmd(ctx, "10.1234/foo/bar", json_output=True)
+        assert json.loads(capsys.readouterr().out)["paper"]["title"] == "Legacy"
+
+
+def test_proceedings_and_explore_commands_use_runtime_root(tmp_path, monkeypatch):
+    """Fixed stores must follow the selected runtime, not the caller CWD."""
+    from drbrain.cli.ingest_commands import explore_cmd, proceedings_cmd
+    from drbrain.runtime import RuntimeContext
+
+    runtime_root = tmp_path / "runtime"
+    caller_cwd = tmp_path / "caller"
+    runtime_root.mkdir()
+    caller_cwd.mkdir()
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+    monkeypatch.chdir(caller_cwd)
+    ctx = _make_ctx(_make_minimal_config(":memory:", str(runtime_root / "reports")))
+    ctx.obj["runtime"] = RuntimeContext.create(runtime_root, run_id="cli-test")
+
+    proceedings_cmd(
+        ctx,
+        list_flag=False,
+        create="NeurIPS 2026",
+        show=None,
+        add=(None, None),
+        json_output=False,
+    )
+    explore_cmd(
+        ctx,
+        list_flag=False,
+        create="topic",
+        delete=None,
+        name=None,
+        search=None,
+        show=False,
+        json_output=False,
+    )
+
+    assert (runtime_root / "data" / "proceedings.json").exists()
+    assert (runtime_root / "data" / "explore" / "topic" / "silo.json").exists()
+    assert not (caller_cwd / "data").exists()
+
+
 # -- closure_cmd --
 
 
@@ -905,6 +961,32 @@ def test_clean_cmd_empty_dirs():
         }
         with mock.patch("drbrain.cli.check_commands.load_config", return_value=cfg):
             clean_cmd(force=True, config_path="config.yaml")
+
+
+def test_clean_cmd_scopes_relative_targets_to_runtime_root(tmp_path, monkeypatch):
+    """A root-scoped clean must never remove same-named CWD data."""
+    from drbrain.cli.commands import clean_cmd
+
+    runtime_root = tmp_path / "runtime"
+    caller_cwd = tmp_path / "caller"
+    runtime_root.mkdir()
+    caller_cwd.mkdir()
+    (runtime_root / "config.yaml").write_text(
+        "db:\n  path: data/drbrain.db\ndirs:\n  cache: data/cache\n  logs: data/logs\n  papers: data/papers\n  reports: data/reports\n",
+        encoding="utf-8",
+    )
+    (runtime_root / "data" / "papers").mkdir(parents=True)
+    (runtime_root / "data" / "papers" / "owned.txt").write_text("remove", encoding="utf-8")
+    (caller_cwd / "data" / "papers").mkdir(parents=True)
+    sentinel = caller_cwd / "data" / "papers" / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+    monkeypatch.chdir(caller_cwd)
+    clean_cmd(force=True, config_path="config.yaml")
+
+    assert not (runtime_root / "data" / "papers" / "owned.txt").exists()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
 # -- query_cmd no results message --

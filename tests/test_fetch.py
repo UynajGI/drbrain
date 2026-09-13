@@ -336,6 +336,13 @@ class TestDownloadPdf:
         assert out.name == "source.pdf"
         assert dest_dir.is_dir()
 
+    def test_does_not_duplicate_buffered_pdf_header(self, tmp_path):
+        resp = _pdf_resp(prefix=b"%PDF-1.7 body")
+        with patch("drbrain.services.fetch.requests.get", return_value=resp):
+            out = download_pdf("https://x/p.pdf", tmp_path / "papers" / "p1")
+        assert out is not None
+        assert out.read_bytes() == b"%PDF-1.7 body"
+
     def test_returns_none_when_not_pdf(self, tmp_path):
         # content-type not pdf, url has no .pdf suffix, peek magic not %PDF-
         raw = MagicMock()
@@ -389,8 +396,8 @@ class TestResolveMetadata:
     def test_from_doi_via_openalex(self):
         with patch("drbrain.extractor.openalex.get_work_by_doi") as gw:
             gw.return_value = {"title": "T", "publication_year": 2023}
-            result = _resolve_metadata(doi="10.1/x")
-        assert result["doi"] == "10.1/x"
+            result = _resolve_metadata(doi="10.1234/x")
+        assert result["doi"] == "10.1234/x"
         assert result["title"] == "T"
         assert result["year"] == 2023
         assert result["arxiv"] is None
@@ -399,8 +406,8 @@ class TestResolveMetadata:
     def test_from_arxiv_id(self):
         with patch("drbrain.parser.mineru_parser._fetch_arxiv_metadata") as fm:
             fm.return_value = ("Arxiv Title", 2020)
-            result = _resolve_metadata(arxiv_id="2301.001")
-        assert result["arxiv"] == "2301.001"
+            result = _resolve_metadata(arxiv_id="2301.00001")
+        assert result["arxiv"] == "2301.00001"
         assert result["title"] == "Arxiv Title"
         assert result["doi"] is None
 
@@ -409,10 +416,10 @@ class TestResolveMetadata:
             patch("drbrain.extractor.openalex.get_work_by_doi", side_effect=Exception("x")),
             patch("drbrain.extractor.openalex.search_work_by_title") as st,
         ):
-            st.return_value = {"title": "FT", "publication_year": 2019, "doi": "10.1/z"}
+            st.return_value = {"title": "FT", "publication_year": 2019, "doi": "10.1234/z"}
             result = _resolve_metadata(title="anything")
         assert result["title"] == "FT"
-        assert result["doi"] == "10.1/z"
+        assert result["doi"] == "10.1234/z"
 
     def test_returns_none_when_all_fail(self):
         with (
@@ -458,6 +465,32 @@ class TestFetchPaper:
         assert result["doi"] == "10.1/x"
         assert result["local_id"] == "pabc"
         dl.assert_called_once()
+
+    def test_explicit_papers_root_controls_download_location(self, tmp_path):
+        selected_root = tmp_path / "isolated" / "papers"
+        with (
+            patch.object(fetch, "resolve_pdf_url", return_value="https://x/p.pdf"),
+            patch.object(fetch, "_proxy_url", side_effect=lambda u, c: u),
+            patch.object(
+                fetch,
+                "_resolve_metadata",
+                return_value={"local_id": "10.1/x", "title": "T", "year": 2023},
+            ),
+            patch.object(
+                fetch,
+                "download_pdf",
+                return_value=selected_root / "unused.pdf",
+            ) as download,
+        ):
+            fetch_paper(
+                doi="10.1/x",
+                fetch_config={"papers_root": str(tmp_path / "wrong")},
+                papers_root=selected_root,
+            )
+
+        destination = download.call_args.args[1]
+        assert destination.parent == selected_root
+        assert destination.resolve().is_relative_to(selected_root.resolve())
 
     def test_returns_none_when_no_pdf_url(self):
         with patch.object(fetch, "resolve_pdf_url", return_value=None):

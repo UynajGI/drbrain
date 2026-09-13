@@ -6,6 +6,7 @@ from pathlib import Path
 from drbrain.dedup.resolver import (
     DedupEngine,
     PaperIDs,
+    canonical_paper_id,
     normalize_arxiv,
     normalize_doi,
     title_hash,
@@ -28,6 +29,47 @@ def test_normalize_doi_url():
 
 def test_normalize_doi_prefix():
     assert normalize_doi("DOI: 10.5678/xyz") == "10.5678/xyz"
+
+
+def test_canonical_paper_id_is_stable_and_normalizes_doi_forms():
+    first = canonical_paper_id(PaperIDs(doi="DOI: https://doi.org/10.1234/ABC"))
+    second = canonical_paper_id(PaperIDs(doi="10.1234/abc"))
+    assert first == second
+    assert first.startswith("p")
+    assert len(first) == 33  # p + 128-bit digest
+
+
+def test_canonical_paper_id_uses_the_strongest_available_identity():
+    assert canonical_paper_id(
+        PaperIDs(doi="10.1234/p", arxiv="2401.00001"), title="A", year=2024
+    ) == canonical_paper_id(PaperIDs(doi="10.1234/p"))
+    assert canonical_paper_id(PaperIDs(arxiv="2401.00001v2")) == canonical_paper_id(
+        PaperIDs(arxiv="2401.00001")
+    )
+
+
+def test_canonical_paper_id_requires_an_identity():
+    import pytest
+
+    with pytest.raises(ValueError, match="identity"):
+        canonical_paper_id(PaperIDs())
+
+
+def test_canonical_paper_id_source_key_disambiguates_same_title_year():
+    first = canonical_paper_id(title="Same title", year=2024, source_key="sha256:a")
+    second = canonical_paper_id(title="Same title", year=2024, source_key="sha256:b")
+    assert first != second
+
+
+def test_paper_ids_normalized_view():
+    ids = PaperIDs(
+        doi="https://doi.org/10.1234/ABC",
+        arxiv="2401.00001v2",
+        openalex_id="https://openalex.org/W123",
+    ).normalized()
+    assert ids.doi == "10.1234/abc"
+    assert ids.arxiv == "2401.00001"
+    assert ids.openalex_id == "W123"
 
 
 # -- normalize_arxiv --

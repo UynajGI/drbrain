@@ -97,3 +97,11 @@ def test_boundary_alert():
     )
     alert = report.boundary_alert
     assert alert["missing_core_refs"] is True
+
+
+def test_default_report_output_follows_runtime_root(tmp_path, monkeypatch):
+    """Implicit report saves stay inside the selected worktree."""
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+    report = PaperReport(local_id="p1", title="Test", year=2026)
+    path = report.save()
+    assert path == tmp_path / "data" / "reports" / "p1.json"

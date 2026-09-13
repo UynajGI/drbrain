@@ -2,6 +2,7 @@
 
 Presets:
     full    = ingest → build → embed → closure
+    full-rag = ingest → build → embed → rag → closure
     quick   = build → embed → closure
     embed   = embed → closure
 """
@@ -24,7 +25,7 @@ STEPS = {
     "ingest": StepDef(
         name="ingest",
         scope="inbox",
-        desc="Parse PDFs from inbox, identify, tree-structure, register",
+        desc="Parse source materials from inbox, identify, tree-structure, register",
     ),
     "build": StepDef(
         name="build",
@@ -41,12 +42,18 @@ STEPS = {
         scope="global",
         desc="Rule-based inference (8 symbolic + 4 embedding rules)",
     ),
+    "rag": StepDef(
+        name="rag",
+        scope="global",
+        desc="Materialize and publish the configured SQL/LlamaIndex RAG backend",
+    ),
 }
 
 PRESETS = {
     "full": ["ingest", "build", "embed", "closure"],
     "quick": ["build", "embed", "closure"],
     "embed": ["embed", "closure"],
+    "full-rag": ["ingest", "build", "embed", "rag", "closure"],
 }
 
 
@@ -75,6 +82,8 @@ def resolve_steps(
 
     if steps_str:
         names = [s.strip() for s in steps_str.split(",") if s.strip()]
+        if not names:
+            raise ValueError("At least one pipeline step is required")
         seen: set[str] = set()
         result: list[str] = []
         for name in names:

@@ -12,36 +12,87 @@ import asyncio
 import hashlib
 import itertools
 import json
+import os
 import threading
 import time
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-import litellm
 from loguru import logger
 from openai import AsyncOpenAI
 from openai import OpenAI as SyncOpenAI
 
+from drbrain.runtime import RuntimeContext
+from drbrain.security import configured_secret_values, redact_sensitive_text, safe_error
+
 if TYPE_CHECKING:
     from drbrain.extractor.cache import ApiCache
-
-# OpenAI SDK 客户端缓存(base_url+api_key 复用连接,序列化稳定使 provider 前缀缓存可命中)
+# OpenAI SDK clients cached per (base_url, api_key): reuse connection pools.
+# Clients cache connections, never responses - every call hits the wire.
 _openai_clients: dict[str, SyncOpenAI] = {}
 _aopenai_clients: dict[str, AsyncOpenAI] = {}
 
+# provider -> default OpenAI-compatible base_url. "openai" uses the SDK
+# default (api.openai.com/v1). An explicit "base_url" in the model config
+# always wins; a provider without a mapping and without base_url fails closed
+# (ValueError) instead of being silently routed somewhere wrong.
+_PROVIDER_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com/v1",
+    "ollama": "http://localhost:11434/v1",
+}
+_OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def resolve_base_url(model_cfg: dict) -> str:
+    """OpenAI-compatible base_url for one model config entry.
+
+    Resolution order: explicit ``base_url`` > provider default (``deepseek``,
+    ``ollama``) > the OpenAI default for ``openai``. Unknown providers without
+    an explicit base_url raise ``ValueError`` naming the provider (fail-closed,
+    never silently misrouted).
+    """
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    provider = str(model_cfg.get("provider", "") or "").strip().lower()
+    if base_url:
+        # Setup ships bare Ollama hosts (http://localhost:11434); the OpenAI-
+        # compatible endpoint lives under /v1 — append it unless already present.
+        if provider == "ollama" and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+        return base_url
+    if provider == "openai":
+        return _OPENAI_DEFAULT_BASE_URL
+    if provider in _PROVIDER_BASE_URLS:
+        return _PROVIDER_BASE_URLS[provider]
+    raise ValueError(
+        f"provider {provider or '<missing>'!r} has no OpenAI-compatible default "
+        "base_url - set an explicit `base_url` in the model config "
+        f"(providers with defaults: openai, {', '.join(sorted(_PROVIDER_BASE_URLS))})"
+    )
+
 
 def _openai_client(api_key: str, base_url: str) -> SyncOpenAI:
+    """Cached sync OpenAI client per (base_url, api_key) - connection-pool reuse.
+
+    ``max_retries=0``: retry/cooldown policy is owned by drbrain's fallback
+    chain + rate-limit state machine; a hidden SDK retry layer would double-
+    retry and bypass drbrain's per-key cooldown bookkeeping. Clients cache
+    connections, never responses - every call hits the wire.
+    """
+    api_key = api_key or "EMPTY"  # local servers (ollama/vLLM) ignore the key
     ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _openai_clients:
-        _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url)
+        _openai_clients[ck] = SyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
     return _openai_clients[ck]
 
 
 def _aopenai_client(api_key: str, base_url: str) -> AsyncOpenAI:
+    """:func:`_openai_client` for async traffic (AsyncOpenAI pool reuse)."""
+    api_key = api_key or "EMPTY"  # local servers (ollama/vLLM) ignore the key
     ck = f"{base_url}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
     if ck not in _aopenai_clients:
-        _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        _aopenai_clients[ck] = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=0)
     return _aopenai_clients[ck]
 
 
@@ -483,16 +534,20 @@ def _thinking_extra_body(model_cfg: dict) -> dict:
     return {"thinking": {"type": "disabled"}}
 
 
-def _build_litellm_kwargs(
+def _build_chat_kwargs(
     model_cfg: dict,
     prompt: str,
     system_prompt: str,
     max_tokens: int,
     *,
     disable_thinking: bool = False,
-    api_key: str | None = None,
 ) -> dict:
-    name = f"{model_cfg['provider']}/{model_cfg['model']}"
+    """OpenAI chat-completions kwargs for one JSON call.
+
+    The wire ``model`` is the bare model name; provider routing happens via
+    ``base_url`` (explicit config > provider default > api.openai.com). The
+    api_key/base_url travel on the cached client, not in the request kwargs.
+    """
     messages = []
     # Anthropic prompt caching: mark long system prompts as ephemeral cache
     # points. Anthropic bills cached input tokens at ~10% of normal rate,
@@ -514,7 +569,7 @@ def _build_litellm_kwargs(
     messages.append({"role": "user", "content": prompt})
 
     kwargs = {
-        "model": name,
+        "model": model_cfg["model"],
         "messages": messages,
         "response_format": {"type": "json_object"},
         "temperature": 0.1,
@@ -532,12 +587,6 @@ def _build_litellm_kwargs(
         kwargs["extra_body"] = {"enable_thinking": False}
     else:
         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
-    if api_key is None:
-        api_key = _resolve_api_key(model_cfg)
-    if api_key:
-        kwargs["api_key"] = api_key
-    if model_cfg.get("base_url"):
-        kwargs["api_base"] = model_cfg["base_url"]
     return kwargs
 
 
@@ -647,15 +696,15 @@ def _responses_output_to_chat(resp) -> tuple[str, list | None, SimpleNamespace]:
     return "".join(text_parts), (tool_calls or None), usage_ns
 
 
-def _responses_kwargs(model_cfg: dict, kwargs: dict, api_key: str | None) -> dict:
-    """由 chat completions kwargs 构造 ``litellm.responses`` kwargs。
+def _responses_kwargs(model_cfg: dict, kwargs: dict) -> dict:
+    """由 chat completions kwargs 构造 OpenAI Responses API kwargs。
 
     gpt-5 系不接受 temperature / response_format，确定性靠 prompt 纪律
     （drbrain 各 prompt 均明写"只返回 JSON"）。
     """
     instructions, input_items = _messages_to_responses_input(kwargs.get("messages") or [])
     rk: dict = dict(
-        model=f"openai/{model_cfg['model']}",
+        model=model_cfg["model"],
         input=input_items,
         max_output_tokens=_to_int(kwargs.get("max_tokens")) or 4096,
         timeout=kwargs.get("timeout", 60),
@@ -665,32 +714,19 @@ def _responses_kwargs(model_cfg: dict, kwargs: dict, api_key: str | None) -> dic
     tools = _responses_tools(kwargs.get("tools"))
     if tools:
         rk["tools"] = tools
-    if api_key:
-        rk["api_key"] = api_key
-    if kwargs.get("api_base"):
-        rk["api_base"] = kwargs["api_base"]
     return rk
 
 
 def _responses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
-    """OpenAI SDK 直连 Responses API——跳过 litellm 序列化层,前缀缓存可命中。"""
-    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
-    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
-    rk.pop("api_key", None)
-    # 剥 litellm 的 openai/ 前缀
-    if "model" in rk and rk["model"].startswith("openai/"):
-        rk["model"] = rk["model"][7:]
+    """OpenAI SDK 直连 Responses API（wire_api=responses；连接池按 base_url+key 复用）。"""
+    base_url = resolve_base_url(model_cfg)
     client = _openai_client(api_key or "", base_url)
     return client.responses.create(**rk)
 
 
 async def _aresponses_call_openai(rk: dict, model_cfg: dict, api_key: str | None):
     """:func:`_responses_call_openai` 的 async 版。"""
-    base_url = model_cfg.get("base_url") or rk.pop("api_base", None) or "https://api.openai.com/v1"
-    rk.pop("api_base", None)  # 无条件移除 litellm 专有字段
-    rk.pop("api_key", None)
-    if "model" in rk and rk["model"].startswith("openai/"):
-        rk["model"] = rk["model"][7:]
+    base_url = resolve_base_url(model_cfg)
     client = _aopenai_client(api_key or "", base_url)
     return await client.responses.create(**rk)
 
@@ -708,20 +744,22 @@ def _invoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
           wire_api: responses
     """
     if model_cfg.get("wire_api") != "responses":
-        resp = litellm.completion(**kwargs)
+        client = _openai_client(api_key or "", resolve_base_url(model_cfg))
+        resp = client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content, resp
-    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    rk = _responses_kwargs(model_cfg, kwargs)
     resp = _responses_call_openai(rk, model_cfg, api_key)
     content, tool_calls, usage = _responses_output_to_chat(resp)
     return content, _ChatShim(content, tool_calls, usage)
 
 
 async def _ainvoke_llm(model_cfg: dict, kwargs: dict, api_key: str | None):
-    """:func:`_invoke_llm` 的 async 版（``litellm.aresponses``）。"""
+    """:func:`_invoke_llm` 的 async 版。"""
     if model_cfg.get("wire_api") != "responses":
-        resp = await litellm.acompletion(**kwargs)
+        client = _aopenai_client(api_key or "", resolve_base_url(model_cfg))
+        resp = await client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content, resp
-    rk = _responses_kwargs(model_cfg, kwargs, api_key)
+    rk = _responses_kwargs(model_cfg, kwargs)
     resp = await _aresponses_call_openai(rk, model_cfg, api_key)
     content, tool_calls, usage = _responses_output_to_chat(resp)
     return content, _ChatShim(content, tool_calls, usage)
@@ -765,6 +803,29 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+def _safe_error(value: Any, limit: int = 200, *, secrets: tuple[str | None, ...] = ()) -> str:
+    """Bound and redact provider errors before they reach durable logs."""
+    rendered = str(value)
+    # Provider exceptions do not always label a credential as ``api_key`` or
+    # ``Authorization``.  Scrub the exact key used for this attempt before the
+    # pattern-based fallback handles headers, assignments, and query strings.
+    for secret in secrets:
+        if secret:
+            rendered = rendered.replace(secret, "[REDACTED]")
+    rendered = redact_sensitive_text(rendered) or ""
+    return rendered[:limit]
+
+
+def _llm_trace_path() -> Path:
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        runtime = RuntimeContext.create()
+        return runtime.assert_within_root("data/logs/llm_calls.jsonl", label="LLM call trace")
+    path = Path("data/logs/llm_calls.jsonl")
+    if path.is_symlink():
+        raise ValueError(f"LLM call trace must not be a symlink: {path}")
+    return path
+
+
 def _cached_tokens(usage: Any) -> int:
     """Provider-reported prefix-cache hits; 0 unless the field is a real number."""
     value = getattr(usage, "cached_tokens", None) if usage is not None else None
@@ -783,6 +844,7 @@ def _log_llm_call(
     cached_tokens: int = 0,
     duration_ms: int = 0,
     error: str = "",
+    secrets: tuple[str, ...] = (),
 ) -> None:
     """Append one LLM call trace line to ``data/logs/llm_calls.jsonl``.
 
@@ -790,27 +852,41 @@ def _log_llm_call(
     content (only a hash + counts). Logging must never affect the call path.
     """
     try:
-        from pathlib import Path
-
         from drbrain.log import get_session_id
 
-        path = Path("data/logs/llm_calls.jsonl")
+        path = _llm_trace_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Revalidate after creating parents so a symlink swap does not silently
+        # redirect a trace into another worktree.
+        path = _llm_trace_path()
         entry = {
             "ts": time.time(),
             "session_id": get_session_id(),
-            "model": model,
-            "provider": provider,
-            "status": status,
+            "model": redact_sensitive_text(str(model)) or "",
+            "provider": redact_sensitive_text(str(provider)) or "",
+            "status": redact_sensitive_text(str(status)) or "",
             "prompt_hash": prompt_hash,
             "n_messages": _to_int(n_messages),
             "tokens_in": _to_int(tokens_in),
             "tokens_out": _to_int(tokens_out),
             "cached_tokens": _to_int(cached_tokens),
             "duration_ms": _to_int(duration_ms),
-            "error": str(error)[:200],
+            # Durable traces retain only a bounded, credential-free error
+            # classification.  Raw provider text is not an audit field.
+            "error": (
+                safe_error(error, secrets=(*configured_secret_values(os.environ), *secrets))
+                if isinstance(error, BaseException)
+                else ("provider_error" if error else "")
+            ),
         }
-        with open(path, "a", encoding="utf-8") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            f = os.fdopen(fd, "a", encoding="utf-8")
+        except Exception:
+            os.close(fd)
+            raise
+        with f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001 — logging must never break the call path
         pass
@@ -851,13 +927,12 @@ def call_with_fallback(
                     break
                 start = time.monotonic()
                 try:
-                    kwargs = _build_litellm_kwargs(
+                    kwargs = _build_chat_kwargs(
                         model_cfg,
                         prompt,
                         system_prompt,
                         max_tokens,
                         disable_thinking=disable_thinking,
-                        api_key=api_key,
                     )
                     content, response = _invoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
@@ -895,17 +970,21 @@ def call_with_fallback(
                             prompt_hash=_prompt_hash(prompt),
                             n_messages=1,
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     if _is_retryable(e) and attempt < _max_attempts(model_cfg) - 1:
                         logger.warning(
-                            f"[llm] {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: {e}"
+                            f"[llm] {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: "
+                            f"{_safe_error(e, secrets=(api_key,))}"
                         )
                         time.sleep(2**attempt)
                         continue
                     elapsed = int((time.monotonic() - start) * 1000)
-                    logger.warning(f"[llm] {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"[llm] {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     _log_llm_call(
                         model=model_cfg["model"],
                         provider=model_cfg.get("provider", ""),
@@ -913,7 +992,7 @@ def call_with_fallback(
                         prompt_hash=_prompt_hash(prompt),
                         n_messages=1,
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] all {len(models)} models exhausted")
@@ -962,13 +1041,12 @@ async def acall_with_fallback(
                     break
                 start = time.monotonic()
                 try:
-                    kwargs = _build_litellm_kwargs(
+                    kwargs = _build_chat_kwargs(
                         model_cfg,
                         prompt,
                         system_prompt,
                         max_tokens,
                         disable_thinking=disable_thinking,
-                        api_key=api_key,
                     )
                     content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
@@ -1007,18 +1085,20 @@ async def acall_with_fallback(
                             prompt_hash=_prompt_hash(prompt),
                             n_messages=1,
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     if _is_retryable(e) and attempt < _max_attempts(model_cfg) - 1:
                         logger.warning(
-                            f"[llm] async {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: {e}"
+                            f"[llm] async {name} retry {attempt + 1}/{_max_attempts(model_cfg)}: "
+                            f"{_safe_error(e, secrets=(api_key,))}"
                         )
                         await asyncio.sleep(2**attempt)
                         continue
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] async {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1027,7 +1107,7 @@ async def acall_with_fallback(
                         prompt_hash=_prompt_hash(prompt),
                         n_messages=1,
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] async all {len(models)} models exhausted")
@@ -1066,17 +1146,13 @@ def call_text_with_fallback(
                         messages.append({"role": "system", "content": system_prompt})
                     messages.append({"role": "user", "content": prompt})
                     kwargs = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": 0.1,
                         "max_tokens": max_tokens,
                         "timeout": 60,
                         "extra_body": _thinking_extra_body(model_cfg),
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     content, _resp = _invoke_llm(model_cfg, kwargs, api_key)
                     if api_key:
                         _RATE_LIMIT_SM.on_success(model_cfg, api_key)
@@ -1092,7 +1168,10 @@ def call_text_with_fallback(
                             f"trying next key"
                         )
                         continue  # 换下一个 key 重试
-                    logger.warning(f"Text model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"Text model {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     break
     logger.error(f"All {len(models)} models failed for text call")
     return None
@@ -1136,7 +1215,7 @@ async def acall_text_with_fallback(
                         messages.append({"role": "system", "content": system_prompt})
                     messages.append({"role": "user", "content": prompt})
                     kwargs = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": 0,
                         "max_tokens": max_tokens,
@@ -1146,10 +1225,6 @@ async def acall_text_with_fallback(
                         # ox-alpha-free 等强制 thinking 的模型配置 disable_thinking: false 跳过。
                         "extra_body": _thinking_extra_body(model_cfg),
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     content, response = await _ainvoke_llm(model_cfg, kwargs, api_key)
                     _record_llm(model_cfg["model"], model_cfg.get("provider", ""), response, start)
                     logger.debug(
@@ -1171,7 +1246,10 @@ async def acall_text_with_fallback(
                             f"Model {name} key rate-limited — cooldown {wait:.0f}s, trying next key"
                         )
                         continue  # 换下一个 key 重试
-                    logger.warning(f"Model {name} failed (attempt {i + 1}/{len(models)}): {e}")
+                    logger.warning(
+                        f"Model {name} failed (attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
+                    )
                     break
     logger.error(f"All {len(models)} models failed")
     return None
@@ -1223,16 +1301,12 @@ def call_with_messages(
                 start = time.monotonic()
                 try:
                     kwargs: dict = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                         "timeout": timeout,
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     if tools:
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
@@ -1285,12 +1359,14 @@ def call_with_messages(
                             prompt_hash=_messages_prompt_hash(messages),
                             n_messages=len(messages),
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] call_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] call_with_messages {name} failed "
+                        f"(attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1299,7 +1375,7 @@ def call_with_messages(
                         prompt_hash=_messages_prompt_hash(messages),
                         n_messages=len(messages),
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] call_with_messages all {len(models)} models exhausted")
@@ -1323,9 +1399,15 @@ async def acall_with_messages(
     timeout: int = 60,
     *,
     _cache: ApiCache | None = None,
+    return_error: bool = False,
 ) -> dict | None:
-    """Async version of call_with_messages."""
+    """Async version of call_with_messages.
+
+    ``return_error`` exposes a safe error classification to orchestration
+    callers while preserving the historic ``None`` failure contract by default.
+    """
     logger.info("[llm] acall_with_messages — %d models, %d messages", len(models), len(messages))
+    last_error = ""
 
     # Cache lookup
     key: str | None = None
@@ -1351,16 +1433,12 @@ async def acall_with_messages(
                 start = time.monotonic()
                 try:
                     kwargs: dict = {
-                        "model": name,
+                        "model": model_cfg["model"],
                         "messages": messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                         "timeout": timeout,
                     }
-                    if api_key:
-                        kwargs["api_key"] = api_key
-                    if model_cfg.get("base_url"):
-                        kwargs["api_base"] = model_cfg["base_url"]
                     if tools:
                         kwargs["tools"] = tools
                         kwargs["extra_body"] = _thinking_extra_body(model_cfg)
@@ -1399,6 +1477,7 @@ async def acall_with_messages(
                         _cache.set(key, result)
                     return result
                 except Exception as e:
+                    last_error = _safe_error(e, secrets=(api_key,))
                     if _is_rate_limit(e):
                         # 只把失败的 key 打入冷却，继续尝试池里下一个 key。
                         wait = _RATE_LIMIT_SM.on_rate_limit(model_cfg, api_key or "")
@@ -1413,12 +1492,14 @@ async def acall_with_messages(
                             prompt_hash=_messages_prompt_hash(messages),
                             n_messages=len(messages),
                             duration_ms=int((time.monotonic() - start) * 1000),
-                            error=str(e)[:200],
+                            error=_safe_error(e, secrets=(api_key,)),
                         )
                         continue  # 换下一个 key 重试
                     elapsed = int((time.monotonic() - start) * 1000)
                     logger.warning(
-                        f"[llm] acall_with_messages {name} failed (attempt {i + 1}/{len(models)}): {e}"
+                        f"[llm] acall_with_messages {name} failed "
+                        f"(attempt {i + 1}/{len(models)}): "
+                        f"{_safe_error(e, secrets=(api_key,))}"
                     )
                     _log_llm_call(
                         model=model_cfg["model"],
@@ -1427,7 +1508,7 @@ async def acall_with_messages(
                         prompt_hash=_messages_prompt_hash(messages),
                         n_messages=len(messages),
                         duration_ms=elapsed,
-                        error=str(e)[:200],
+                        error=_safe_error(e, secrets=(api_key,)),
                     )
                     break
     logger.error(f"[llm] acall_with_messages all {len(models)} models exhausted")
@@ -1439,11 +1520,20 @@ async def acall_with_messages(
         n_messages=len(messages),
         error="all models exhausted",
     )
-    return None
+    return (
+        {
+            "text": "",
+            "tool_calls": None,
+            "usage": {"in": 0, "out": 0, "cached": 0},
+            "error": last_error,
+        }
+        if return_error
+        else None
+    )
 
 
 def _extract_tool_calls(msg) -> list[dict] | None:
-    """Extract tool calls from a litellm message into a serializable list."""
+    """Extract tool calls from an OpenAI chat message into a serializable list."""
     raw = getattr(msg, "tool_calls", None)
     if not raw:
         return None

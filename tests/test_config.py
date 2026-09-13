@@ -4,6 +4,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from drbrain.config import (
     ApiConfig,
     AutoresearchConfig,
@@ -294,6 +296,120 @@ db:
         assert c["db"]["path"] == "/custom/path.db"
 
 
+def test_from_yaml_loads_admin_and_default_local_relative_to_base(tmp_path, monkeypatch):
+    """The default local overlay is next to the base file and admin survives typing."""
+    base = tmp_path / "config.yaml"
+    local = tmp_path / "config.local.yaml"
+    base.write_text(
+        """
+db:
+  path: base.db
+admin:
+  password_hash: base-hash
+""",
+        encoding="utf-8",
+    )
+    local.write_text(
+        """
+db:
+  path: local.db
+admin:
+  password_hash: local-hash
+""",
+        encoding="utf-8",
+    )
+
+    # A loader must not accidentally consult the caller's working directory.
+    monkeypatch.chdir(tmp_path.parent)
+    cfg = Config.from_yaml(base)
+
+    assert cfg.db.path == "local.db"
+    assert cfg.admin == {"password_hash": "local-hash"}
+
+
+def test_from_yaml_explicit_overlay_is_applied_after_default_local(tmp_path):
+    """An explicit overlay has highest precedence over base and config.local."""
+    base = tmp_path / "config.yaml"
+    local = tmp_path / "config.local.yaml"
+    overlay = tmp_path / "config.embed.yaml"
+    base.write_text("db:\n  path: base.db\napi:\n  cache_ttl: 10\n", encoding="utf-8")
+    local.write_text(
+        "db:\n  path: local.db\napi:\n  deepxiv_token: local-token\n", encoding="utf-8"
+    )
+    overlay.write_text("db:\n  path: overlay.db\n", encoding="utf-8")
+
+    cfg = Config.from_yaml(base, overlay_path=overlay)
+
+    assert cfg.db.path == "overlay.db"
+    assert cfg.api.deepxiv_token == "local-token"
+    assert cfg.api.cache_ttl == 10
+
+
+@pytest.mark.parametrize(
+    "section",
+    [
+        "llm",
+        "mineru",
+        "api",
+        "dirs",
+        "db",
+        "extract",
+        "bm25",
+        "queue",
+        "fetch",
+        "embed",
+        "llamaindex",
+        "backup",
+        "autoresearch",
+        "admin",
+    ],
+)
+def test_from_yaml_rejects_non_mapping_sections(tmp_path, section):
+    """Malformed sections fail closed with a useful ValueError."""
+    base = tmp_path / "config.yaml"
+    base.write_text(f"{section}: [invalid]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=section):
+        Config.from_yaml(base, local_path=tmp_path / "missing.yaml")
+
+
+@pytest.mark.parametrize("value", ["null", "[]", "''", "0"])
+def test_from_yaml_rejects_falsey_non_mapping_sections(tmp_path, value):
+    """Explicit falsey sections must not silently become defaults."""
+    base = tmp_path / "config.yaml"
+    base.write_text(f"dirs: {value}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="dirs"):
+        Config.from_yaml(base, local_path=tmp_path / "missing.yaml")
+
+
+def test_from_yaml_rejects_null_nested_mapping_sections(tmp_path):
+    base = tmp_path / "config.yaml"
+    base.write_text(
+        "llamaindex:\n  eval: null\nbackup:\n  targets: null\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="llamaindex.eval|backup.targets"):
+        Config.from_yaml(base, local_path=tmp_path / "missing.yaml")
+
+
+def test_from_yaml_rejects_malformed_backup_targets(tmp_path):
+    base = tmp_path / "config.yaml"
+    base.write_text("backup:\n  targets:\n    remote: [invalid]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="backup target"):
+        Config.from_yaml(base, local_path=tmp_path / "missing.yaml")
+
+
+def test_from_yaml_rejects_invalid_yaml(tmp_path):
+    base = tmp_path / "config.yaml"
+    base.write_text("db: [\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid YAML"):
+        Config.from_yaml(base, local_path=tmp_path / "missing.yaml")
+
+
 # ── Env var resolution tests ──
 
 
@@ -557,3 +673,39 @@ def test_dirs_config_new_fields_in_values():
     vals = list(c.values())
     assert "data/backups" in vals
     assert "data/citation_styles" in vals
+
+
+def test_config_loader_rejects_ancestor_symlink_without_runtime_root(tmp_path, monkeypatch):
+    """A config file below a symlinked parent must not be opened."""
+    monkeypatch.delenv("DRBRAIN_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yaml").write_text("db:\n  path: data/db.sqlite\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        Config.from_yaml(alias / "config.yaml")
+
+
+def test_config_loader_scopes_layers_and_paths_to_active_runtime(tmp_path, monkeypatch):
+    """Direct Config.from_yaml callers receive the same root boundary as CLI."""
+    root = tmp_path / "runtime"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    base = root / "config.yaml"
+    base.write_text("db:\n  path: data/db.sqlite\n", encoding="utf-8")
+    external = outside / "config.yaml"
+    external.write_text("db:\n  path: data/foreign.sqlite\n", encoding="utf-8")
+    monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_TEMP_ROOT", raising=False)
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        Config.from_yaml(external)
+
+    base.write_text(f"db:\n  path: {outside / 'foreign.sqlite'}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        Config.from_yaml(Path("./config.yaml"))

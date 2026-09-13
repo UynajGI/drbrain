@@ -31,6 +31,8 @@ from typing import Any
 
 from loguru import logger
 
+from drbrain.storage.paths import paper_fs_key
+
 # Relation vocabulary → human-readable prose verb. Unknown relations fall
 # back to "related to". Keys cover the TBOX concept-level relations plus the
 # closure-derived and citation-level ones.
@@ -202,7 +204,15 @@ def _render_concept_md(
 
 def _render_paper_md(paper: dict, concept_labels: list[str]) -> str:
     """Render a paper as an OKF markdown document."""
-    fm = ["---", "type: Paper", f"title: {paper.get('title', '')!r}"]
+    local_id = str(paper.get("local_id") or "")
+    # Keep the DB identity in frontmatter; the bundle filename uses the
+    # canonical filesystem key and therefore may differ for DOI IDs.
+    fm = [
+        "---",
+        "type: Paper",
+        f"local_id: {local_id!r}",
+        f"title: {paper.get('title', '')!r}",
+    ]
     if paper.get("year"):
         fm.append(f"description: {paper.get('title', '')} ({paper['year']})")
     if paper.get("doi"):
@@ -341,7 +351,8 @@ def export_okf(
         clabels = [r[0] for r in crows]
         md = _render_paper_md(paper, clabels)
         papers_dir.mkdir(parents=True, exist_ok=True)
-        (papers_dir / f"{paper['local_id']}.md").write_text(md, encoding="utf-8")
+        paper_key = paper_fs_key(paper["local_id"])
+        (papers_dir / f"{paper_key}.md").write_text(md, encoding="utf-8")
         papers_written += 1
 
     # --- Root index.md ---
@@ -367,7 +378,8 @@ def export_okf(
     if papers_written:
         index_lines.append("## Papers\n")
         for paper in papers[:200]:
-            index_lines.append(f"- [{paper['title']}](/papers/{paper['local_id']}.md)")
+            paper_key = paper_fs_key(paper["local_id"])
+            index_lines.append(f"- [{paper['title']}](/papers/{paper_key}.md)")
         if len(papers) > 200:
             index_lines.append(f"- ... and {len(papers) - 200} more")
     (out / "index.md").write_text("\n".join(index_lines).rstrip() + "\n", encoding="utf-8")

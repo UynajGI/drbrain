@@ -1,0 +1,14 @@
+{# Swapped with hx-swap="beforeend" into the <ul id="messages"> list, so every
+   branch must produce <li> children. #}
+{% import "_macros.html" as m %}
+{% if error %}
+<li class="message message-system" role="alert">{{ error }}</li>
+{% endif %}
+{% if unavailable %}
+<li class="message message-system" role="alert">会话问答当前不可用：请先在配置中设置 llm.models。</li>
+{% endif %}
+{% for message in messages %}
+  {% if message.role != 'system' %}
+  {{ m.message_block(message) }}
+  {% endif %}
+{% endfor %}

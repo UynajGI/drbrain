@@ -64,6 +64,18 @@ def build_evidence_record(
     content_checksum = hashlib.sha256(text.encode("utf-8")).hexdigest()
     document_locator = {"paper_id": paper_id, "title": title}
     chunk_locator = {"node_id": node_id}
+    for key in (
+        "parent_node_id",
+        "parent_document_id",
+        "parent_checksum",
+        "char_start",
+        "char_end",
+        "offset_basis",
+        "parent_line_start",
+        "parent_line_end",
+    ):
+        if key in source:
+            chunk_locator[key] = source[key]
     identity = {
         "generation": resolved_generation,
         "document_locator": document_locator,

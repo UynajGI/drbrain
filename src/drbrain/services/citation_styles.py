@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -228,6 +229,15 @@ BUILTIN_DESCRIPTIONS: dict[str, str] = {
 DEFAULT_STYLES_DIR = Path("data/citation_styles")
 
 
+def default_styles_dir() -> Path:
+    """Return the implicit custom-style directory under the runtime root."""
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / DEFAULT_STYLES_DIR
+    return DEFAULT_STYLES_DIR
+
+
 # ── Public API ──────────────────────────────────────────────────────
 
 
@@ -240,7 +250,7 @@ def list_styles(styles_dir: Path | None = None) -> list[dict]:
     Returns:
         List of dicts with keys ``name``, ``source``, ``description``.
     """
-    d = Path(styles_dir) if styles_dir else DEFAULT_STYLES_DIR
+    d = Path(styles_dir) if styles_dir else default_styles_dir()
     results: list[dict] = []
     for name, desc in BUILTIN_DESCRIPTIONS.items():
         results.append({"name": name, "source": "built-in", "description": desc})
@@ -294,7 +304,7 @@ def get_formatter(name: str, styles_dir: Path | None = None) -> FormatterFn:
             "only letters, digits, hyphens, and underscores are allowed."
         )
 
-    d = Path(styles_dir) if styles_dir else DEFAULT_STYLES_DIR
+    d = Path(styles_dir) if styles_dir else default_styles_dir()
     style_file = (d / f"{name}.py").resolve()
     if not style_file.is_relative_to(d.resolve()):
         raise ValueError(f"Invalid citation style name '{name}': path traversal detected.")
@@ -355,7 +365,7 @@ def show_style(name: str, styles_dir: Path | None = None) -> str:
             "only letters, digits, hyphens, and underscores are allowed."
         )
 
-    d = Path(styles_dir) if styles_dir else DEFAULT_STYLES_DIR
+    d = Path(styles_dir) if styles_dir else default_styles_dir()
     style_file = (d / f"{name}.py").resolve()
     if not style_file.is_relative_to(d.resolve()):
         raise ValueError(f"Invalid citation style name '{name}': path traversal detected.")

@@ -21,7 +21,7 @@ _HAS_LLAMA_INDEX = importlib.util.find_spec("llama_index") is not None
 def test_llamaindex_config_defaults():
     c = LlamaIndexConfig()
     assert c.enabled is False
-    assert c.llm == "litellm"
+    assert c.llm == "openai"
     assert c.vector_store == "memory"
     assert c.storage_dir == "data/llamaindex"
     assert c.retrievers == ["bm25", "vector"]

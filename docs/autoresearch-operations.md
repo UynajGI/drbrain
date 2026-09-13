@@ -28,6 +28,22 @@ same topic resumes that run rather than creating a second ledger record. The
 CLI only adds this operator entry; existing `ResearchDirector` and workflow
 callers retain their previous defaults.
 
+## Adaptive frontier benchmark
+
+The adaptive supervisor has a deterministic scheduler benchmark that does not
+load the database, LLM or MCP servers. It is useful for migration checks and
+regression baselines before running a real objective:
+
+```bash
+drbrain autoresearch adaptive-benchmark "toy objective" \
+  --branches 16 --max-evaluations 16 --max-parallel-branches 4 --json
+```
+
+The JSON response reports evaluations, retained/pruned branches, event count,
+termination reason and elapsed time. The synthetic worker is intentionally not
+a quality evaluation; production experiments should use `adaptive-run` and
+their registered branch workers.
+
 ## External tools and RAG evidence mode
 
 When `plugins_dir` or `mcp_servers` is configured, the CLI creates the

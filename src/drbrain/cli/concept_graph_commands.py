@@ -11,7 +11,8 @@ import json
 import typer
 from loguru import logger
 
-from drbrain.cli._common import open_db
+from drbrain.cli._common import open_db, runtime_data_path
+from drbrain.security import safe_error
 
 cg_app = typer.Typer(help="Concept co-occurrence graph layer (build / embed / predict / recommend)")
 
@@ -41,7 +42,7 @@ def cg_ingest_cmd(
     try:
         src = get_source(source)
     except KeyError as exc:
-        typer.echo(str(exc), err=True)
+        typer.echo(safe_error(exc), err=True)
         raise typer.Exit(1) from exc
 
     if dry_run:
@@ -207,9 +208,14 @@ def cg_map_cmd(
     """Export an interactive UMAP concept map to HTML (density-shaded, community-colored)."""
     from drbrain.concept_graph.map import export_html
 
+    if isinstance(output, typer.models.OptionInfo):
+        output = output.default
+    output_path = runtime_data_path(ctx, output, label="concept map output")
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
-        path = export_html(db, output, top_communities=communities, density_bins=density_bins)
+        path = export_html(
+            db, str(output_path), top_communities=communities, density_bins=density_bins
+        )
     typer.echo(f"[cg.map] wrote {path}")
 
 
@@ -260,7 +266,12 @@ def cg_predict_cmd(
         typer.echo("Require --feat-cutoff <= --train-end < --test-end.", err=True)
         raise typer.Exit(1)
 
+    if isinstance(output_pairs, typer.models.OptionInfo):
+        output_pairs = output_pairs.default
     cfg = ctx.obj["config"]
+    output_pairs_path = (
+        runtime_data_path(ctx, output_pairs, label="prediction output") if output_pairs else None
+    )
     years = feature_years(feat_cutoff)
     with open_db(cfg) as db:
         # Restrict prediction to the filtered concept set reported by `cg build`
@@ -378,8 +389,7 @@ def cg_predict_cmd(
         }
 
         if output_pairs:
-            from pathlib import Path
-
+            assert output_pairs_path is not None
             order = np.argsort(-scores)
             rows = [
                 {
@@ -390,11 +400,11 @@ def cg_predict_cmd(
                 }
                 for i in order[: top_k * 2]
             ]
-            Path(output_pairs).write_text(
+            output_pairs_path.write_text(
                 json.dumps({"model": model, "pairs": rows}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            typer.echo(f"[cg.predict] wrote {output_pairs}")
+            typer.echo(f"[cg.predict] wrote {output_pairs_path}")
 
     if json_output:
         typer.echo(json.dumps(metrics, ensure_ascii=False))
@@ -422,6 +432,9 @@ def cg_recommend_cmd(
     """Recommend novel research-direction concept combinations for an author."""
     from drbrain.concept_graph.recommend import llm_curation, recommend_combinations
 
+    if isinstance(output, typer.models.OptionInfo):
+        output = output.default
+    output_path = runtime_data_path(ctx, output, label="recommendation output") if output else None
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
         result = recommend_combinations(
@@ -455,9 +468,8 @@ def cg_recommend_cmd(
         lines.append(curation)
     report = "\n".join(lines)
     if output:
-        from pathlib import Path
-
-        Path(output).write_text(report, encoding="utf-8")
-        typer.echo(f"[cg.recommend] wrote {output}")
+        assert output_path is not None
+        output_path.write_text(report, encoding="utf-8")
+        typer.echo(f"[cg.recommend] wrote {output_path}")
     else:
         typer.echo(report)

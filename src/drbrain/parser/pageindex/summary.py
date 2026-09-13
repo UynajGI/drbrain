@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-import litellm
-
 from drbrain.extractor.llm_client import acall_text_with_fallback
+from drbrain.services.tokens import count_tokens
 
 
 async def _generate_node_summary(node: dict, models: list[dict]) -> str:
@@ -47,7 +46,7 @@ async def _generate_summaries_for_structure_md(
 
     async def _get_summary(node: dict) -> str:
         node_text = node.get("text", "")
-        num_tokens = litellm.token_counter(model=model, text=node_text)
+        num_tokens = count_tokens(node_text)
         if num_tokens < summary_token_threshold:
             return node_text
         return await _generate_node_summary(node, models)

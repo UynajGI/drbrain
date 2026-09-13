@@ -18,15 +18,26 @@ BASE_TABLE = "tree_vectors"
 
 def load_vec(conn: sqlite3.Connection) -> bool:
     """Load sqlite-vec extension into *conn*. Returns False if unavailable."""
+    extension_enabled = False
     try:
         import sqlite_vec
 
         conn.enable_load_extension(True)
+        extension_enabled = True
         sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
         return True
     except Exception:  # noqa: BLE001 — extension optional everywhere
         return False
+    finally:
+        # ``sqlite_vec.load`` can fail after enabling extension loading (for
+        # example on a mismatched SQLite build).  Leaving the flag enabled
+        # turns a best-effort optional path into an arbitrary-extension loading
+        # capability for every later query on this connection.
+        if extension_enabled:
+            try:
+                conn.enable_load_extension(False)
+            except Exception:  # noqa: BLE001 - preserve the original result
+                pass
 
 
 def ensure_vec_table(conn: sqlite3.Connection, dim: int = 1024) -> bool:

@@ -14,6 +14,7 @@ from drbrain.cli._common import (
     _show_actor,
     open_db,
 )
+from drbrain.storage.paths import paper_dir as resolve_paper_dir
 
 console = Console()
 
@@ -288,7 +289,7 @@ def delete_cmd(
     if rm_files:
         _dvcfg = cfg if isinstance(cfg, dict) else {}
         papers_dir = Path(_dvcfg.get("dirs", {}).get("papers", "data/papers"))
-        paper_dir = papers_dir / local_id
+        paper_dir = resolve_paper_dir(papers_dir, local_id)
         if paper_dir.exists():
             _shutil.rmtree(paper_dir)
             file_deleted = True
@@ -457,12 +458,19 @@ def backup_cmd(
         return
 
     # Tar.gz mode (default)
-    _cfg = cfg if isinstance(cfg, dict) else {}
-    papers_dir = Path(_cfg.get("dirs", {}).get("papers", "data/papers"))
-    db_path = Path(_cfg.get("db", {}).get("path", "data/drbrain.db"))
-    backup_dir = Path(_cfg.get("dirs", {}).get("backups", "data/backups"))
-    workspace_dir = Path("workspace")
-    reports_dir = Path(_cfg.get("dirs", {}).get("reports", "data/reports"))
+    if cfg is not None and hasattr(cfg, "__getitem__"):
+        papers_dir = Path(cfg["dirs"]["papers"])
+        db_path = Path(cfg["db"]["path"])
+        backup_dir = Path(cfg["dirs"]["backups"])
+        workspace_dir = Path(cfg["dirs"].get("workspace", "workspace"))
+        reports_dir = Path(cfg["dirs"]["reports"])
+    else:
+        _cfg = cfg if isinstance(cfg, dict) else {}
+        papers_dir = Path(_cfg.get("dirs", {}).get("papers", "data/papers"))
+        db_path = Path(_cfg.get("db", {}).get("path", "data/drbrain.db"))
+        backup_dir = Path(_cfg.get("dirs", {}).get("backups", "data/backups"))
+        workspace_dir = Path("workspace")
+        reports_dir = Path(_cfg.get("dirs", {}).get("reports", "data/reports"))
 
     if output:
         path = create_backup(
@@ -645,6 +653,7 @@ def metrics_cmd(
     """Show user behavior analytics — top keywords, most-read papers, weekly trends."""
     from pathlib import Path as _Path
 
+    from drbrain.cli._helpers.runtime import runtime_data_path
     from drbrain.services.metrics_panel import (
         _ensure_metrics_db,
         get_most_read_papers,
@@ -652,7 +661,9 @@ def metrics_cmd(
         get_weekly_trend,
     )
 
-    db_path = _Path("data/metrics.db")
+    # Metrics writes must land in the selected runtime namespace, not the
+    # process CWD a caller happened to launch from.
+    db_path = _Path(runtime_data_path(ctx, "data/metrics.db", label="metrics database"))
     _ensure_metrics_db(db_path)
     trend = get_weekly_trend(db_path)
     keywords = get_top_keywords(db_path, limit=5)
@@ -701,6 +712,9 @@ def restore_cmd(
     force: bool = typer.Option(
         False, "--force", "-f", help="Overwrite existing files even if newer"
     ),
+    allow_legacy: bool = typer.Option(
+        False, "--allow-legacy", help="Allow archives without a v1 manifest"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
     """Restore a tar.gz backup or copy a directory backup to a target location."""
@@ -710,7 +724,7 @@ def restore_cmd(
     dest = Path(target) if target else None
 
     try:
-        entries = restore_backup(source, dest, force=force)
+        entries = restore_backup(source, dest, force=force, allow_legacy=allow_legacy)
     except FileNotFoundError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1)

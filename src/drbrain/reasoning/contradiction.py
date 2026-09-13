@@ -135,14 +135,25 @@ class _ClassifyContradictionsStep(WorkflowStep):
             max_tokens=1024,
         )
 
-        results = []
-        if data and "results" in data:
-            for item in data["results"]:
-                idx = item.get("pair", 0) - 1
-                if 0 <= idx < len(batch):
-                    batch[idx]["classification"] = item.get("type", "unknown")
-                    batch[idx]["reason"] = item.get("reason", "")
-                    results.append(batch[idx])
+        results: list[dict[str, Any]] = []
+        raw = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return results
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("pair", 0)) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(batch):
+                classification = item.get("type", "unknown")
+                reason = item.get("reason", "")
+                batch[idx]["classification"] = (
+                    classification if isinstance(classification, str) else "unknown"
+                )
+                batch[idx]["reason"] = reason if isinstance(reason, str) else ""
+                results.append(batch[idx])
 
         return results
 

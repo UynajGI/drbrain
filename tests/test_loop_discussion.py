@@ -94,6 +94,34 @@ def test_board_save_load_roundtrip(tmp_path):
     assert len(loaded.non_author_comments(pid, author="analyst")) == 1
 
 
+def test_board_save_redacts_credentials_and_rejects_symlink(tmp_path):
+    board = MessageBoard()
+    pid = board.post(
+        POST_PROPOSAL,
+        author="analyst",
+        content="Authorization: Bearer board-secret",
+    )
+    board.comment(pid, author="critic", content='{"api_key":"comment-secret"}')
+    path = tmp_path / "board.json"
+    board.save(path)
+
+    raw = path.read_text(encoding="utf-8")
+    assert "board-secret" not in raw
+    assert "comment-secret" not in raw
+
+    target = tmp_path / "outside.json"
+    target.write_text("original", encoding="utf-8")
+    link = tmp_path / "linked.json"
+    link.symlink_to(target)
+    try:
+        board.save(link)
+    except ValueError as exc:
+        assert "symlink" in str(exc)
+    else:  # pragma: no cover - defensive assertion
+        raise AssertionError("a symlinked board destination must be rejected")
+    assert target.read_text(encoding="utf-8") == "original"
+
+
 def test_queue_claim_skips_discussion_pending():
     """discussion_pending 的条目不可 claim（对齐 ROLE-GPU Step 3）。"""
     q = ResearchQueue()

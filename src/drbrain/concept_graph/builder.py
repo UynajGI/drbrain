@@ -242,7 +242,7 @@ def build_cliques(
     """
     if paper_ids is None:
         if rebuild:
-            db.conn.execute("DELETE FROM concept_cooccurrence")
+            db.clear_concept_cooccurrence()
         rows = db.conn.execute("SELECT local_id, year FROM papers").fetchall()
     else:
         placeholders = ",".join("?" * len(paper_ids))
@@ -352,7 +352,7 @@ def apply_filter(db: Database, *, min_freq: int = 3, min_words: int = 2) -> dict
 
     # Recompute the filtered node set from scratch so repeated `cg build` runs are
     # idempotent (stale nodes from a previous run are dropped).
-    db.conn.execute("DELETE FROM concept_nodes")
+    db.clear_concept_nodes()
     kept = 0
     for label, freq in doc_freq.items():
         word_count = len(label.split())

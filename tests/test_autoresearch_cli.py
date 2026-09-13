@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 from typer.testing import CliRunner
 
@@ -95,6 +96,29 @@ def test_preflight_reports_mcp_tools_that_would_be_hidden(tmp_path):
     assert payload["servers"][0]["issues"] == ["side_effect must be classified for durable use"]
 
 
+def test_adaptive_benchmark_is_reproducible_and_does_not_require_config():
+    result = runner.invoke(
+        autoresearch_app,
+        [
+            "adaptive-benchmark",
+            "toy topic",
+            "--branches",
+            "4",
+            "--max-parallel-branches",
+            "2",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["evaluations"] == 4
+    assert payload["retained"] == 2
+    assert payload["pruned"] == 2
+    assert payload["reason"] == "evaluation_budget_exhausted"
+    assert payload["event_count"] >= 6
+
+
 def test_pause_and_cancel_commands_change_the_existing_run(tmp_path):
     cfg, run_id, _ = _manual_review_run(tmp_path)
 
@@ -134,3 +158,60 @@ def test_resolve_manual_review_is_explicit_and_auditable(tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["manual_review_steps"] == []
+
+
+def test_operator_errors_redact_configured_credentials(monkeypatch, tmp_path):
+    secret = "sk-autoresearch-cli-secret"
+    cfg = {
+        "autoresearch": {
+            "run_dir": str(tmp_path / "autoresearch"),
+        },
+        "llm": {"models": [{"api_key": secret}]},
+    }
+
+    def fail(_cfg):
+        raise RuntimeError(f"provider rejected api_key={secret}")
+
+    monkeypatch.setattr("drbrain.cli.autoresearch_commands._control", fail)
+    result = runner.invoke(autoresearch_app, ["status", "topic"], obj={"config": cfg})
+
+    assert result.exit_code == 1
+    assert secret not in result.output
+    assert "[REDACTED]" in result.output
+
+
+def test_run_summary_redacts_secret_bearing_budget(monkeypatch, tmp_path):
+    secret = "sk-autoresearch-budget-secret"
+    cfg = {
+        "autoresearch": {
+            "enabled": True,
+            "run_dir": str(tmp_path / "autoresearch"),
+            "budget": {"api_key": secret, "max_tokens": 4},
+        },
+        "llm": {"models": [{"api_key": secret}]},
+    }
+
+    class DummyDirector:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def run_sync(self, topic, **_kwargs):
+            return {
+                "topic": topic,
+                "cycles": 1,
+                "champion": [],
+                "rejected": [],
+            }
+
+    db = MagicMock()
+    db_context = MagicMock()
+    db_context.__enter__.return_value = db
+    db_context.__exit__.return_value = False
+    monkeypatch.setattr("drbrain.cli.autoresearch_commands.ResearchDirector", DummyDirector)
+    monkeypatch.setattr("drbrain.cli.autoresearch_commands.open_db", lambda _cfg: db_context)
+
+    result = runner.invoke(autoresearch_app, ["run", "topic", "--json"], obj={"config": cfg})
+
+    assert result.exit_code == 0, result.output
+    assert secret not in result.output
+    assert "[REDACTED]" in result.output

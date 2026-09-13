@@ -12,6 +12,8 @@
 
 **[English](README.md)** · [简体中文](README.zh-CN.md)
 
+[Documentation index](docs/README.md) · [CLI reference](docs/cli-reference.md) · [Architecture](docs/architecture.md)
+
 </div>
 
 ---
@@ -70,6 +72,8 @@ drbrain ask "What gaps remain in deep learning?"
 
 # Or chain everything at once
 drbrain pipeline --preset full
+# Include SQL/LlamaIndex RAG materialization and publication
+drbrain pipeline --preset full-rag
 ```
 
 > `pipx install drbrain` and `uv tool install drbrain` are coming in beta.
@@ -83,12 +87,13 @@ drbrain pipeline --preset full
 | **Ingest** | PDF → structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
 | **Build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
 | **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
-| **RAG Retrieval** | LlamaIndex hybrid engine | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag index/eval` |
+| **RAG Retrieval** | Hybrid RAG engine (SQL snapshots / LlamaIndex) | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag prepare/index/eval` |
 | **Knowledge Graph** | Rule-based closure *(incremental)* | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
 | **Concept Graph** | Corpus-scale co-occurrence map | `drbrain cg` — concept graph build/embed/neighbors, UMAP map export, leakage-free trend prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm |
 | **Sessions** | Persistent reasoning context | DB-backed multi-turn sessions, build context injection, cross-invocation continuity |
+| **WebUI** | Local research workbench | `drbrain webui` — FastAPI + htmx, single-user token auth; overview / literature / sessions / runs (live SSE events, claims + evidence, report download) / plugins / settings, scoped by project |
 | **Analyze** | Knowledge frontier reports | Research seeds, debate zones, technology cliffs, LLM executive summary |
 | **Citations** | Multi-source expansion | Forward/backward citations, shared-reference analysis, citation verification |
 | **Export** | BibTeX, RIS, Markdown + **OKF** | 4 citation styles (APA, Vancouver, Chicago, MLA) + OKF v0.1 markdown bundle |
@@ -137,7 +142,7 @@ Copilot, and other AI coding tools.
 `drbrain setup` walks you through the basics interactively (bilingual
 EN / 中文):
 
-- LLM API key (any litellm provider: OpenAI, Anthropic, Ollama, DeepSeek, …)
+- LLM API key (any OpenAI-compatible provider: OpenAI, DeepSeek, Ollama, vLLM, …)
 - MinerU token (optional; PyMuPDF fallback for PDF parsing)
 - Semantic Scholar / CrossRef / OpenAlex API keys (optional; higher rate
   limits)
@@ -160,6 +165,7 @@ EN / 中文):
 | [Embedding](docs/embedding.md) | Local, openai-compat, and none providers |
 | [Concept Graph Handover](docs/concept-graph-handover.md) | Corpus-scale concept graph design and status |
 | [RAG Current State](docs/drbrain-rag-current-state.md) | LlamaIndex retrieval layer baseline and status |
+| [RAG Layer Completion](docs/rag-layer-completion.md) | RAG layer contracts, SQL snapshots, fragment locators, acceptance record |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
 | [Skills Reference](docs/skills.md) | 27 agent skills and their CLI commands |
 | [Contributing](docs/contributing.md) | How to add commands, modules, and skills |
@@ -190,7 +196,7 @@ Quick start for contributors:
 ```bash
 git clone https://github.com/UynajGI/DrBrain.git && cd DrBrain
 uv sync && uv pip install -e .
-pre-commit install                      # optional: auto-lint on commit
+uv run pre-commit install                # install auto-lint/format hooks before commits
 uv run pytest -m "not integration"      # fast tests
 ```
 

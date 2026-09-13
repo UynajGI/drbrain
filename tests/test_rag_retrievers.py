@@ -161,7 +161,10 @@ def _mk_node(
 def _make_cfg(tmp_path, papers_dir=None) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
-            enabled=True, vector_store="memory", storage_dir=str(tmp_path / "li")
+            enabled=True,
+            rag_engine="llamaindex",
+            vector_store="memory",
+            storage_dir=str(tmp_path / "li"),
         ),
         dirs=DirsConfig(papers=str(papers_dir or REAL_PAPERS)),
         embed=EmbedConfig(provider="local", model="fake-embed", top_k=5),
@@ -465,6 +468,27 @@ def test_parent_section_helper(tmp_path):
 
     # _full_section_body mirrors the parent slice directly from raw.md.
     assert _full_section_body(papers_dir / "pa" / "raw.md", parent) == pbody
+
+
+def test_retriever_helpers_resolve_encoded_doi_directory(tmp_path):
+    """Tree body lookups use the DB DOI while assets use its safe key."""
+    from drbrain.storage.paths import paper_dir
+
+    papers_dir = tmp_path / "papers"
+    doi = "10.1234/a"
+    paper_path = paper_dir(papers_dir, doi)
+    paper_path.mkdir(parents=True)
+    (paper_path / "raw.md").write_text("# Intro\nDOI body\n", encoding="utf-8")
+    (paper_path / "tree.json").write_text(
+        json.dumps(
+            {"structure": [{"title": "Intro", "node_id": "0000", "line_num": 1, "nodes": []}]}
+        ),
+        encoding="utf-8",
+    )
+
+    title, body, node = _pageindex_section(papers_dir, doi, "0000")
+    assert (title, body) == ("Intro", "# Intro\nDOI body")
+    assert node is not None and node["node_id"] == "0000"
 
 
 async def _pick_leaf_acall(prompt, models, system_prompt=None, max_tokens=1024, _cache=None):

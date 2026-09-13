@@ -1,7 +1,11 @@
 """Tests for setup.py config generation."""
 
+import os
+import stat
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from drbrain.cli.setup import generate_local_config
 
@@ -156,3 +160,51 @@ def test_generate_local_config_writes_and_contains_keys(tmp_path):
     assert "api" in data
     assert "embed" in data
     assert data["embed"]["provider"] == "local"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_generate_local_config_restricts_file_permissions(tmp_path):
+    """Generated config.local.yaml must not be readable by other users."""
+    out = generate_local_config(
+        output_path=tmp_path / "config.local.yaml",
+        llm_primary={"provider": "openai", "model": "gpt-4o", "api_key": "secret"},
+    )
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not portable on Windows")
+def test_private_yaml_writer_restricts_existing_file_permissions(tmp_path):
+    """Updating an existing local config also tightens an overly broad mode."""
+    from drbrain.cli.setup import _write_private_yaml
+
+    out = tmp_path / "config.local.yaml"
+    out.write_text("old: value\n", encoding="utf-8")
+    out.chmod(0o644)
+
+    _write_private_yaml(out, {"api": {"deepxiv_token": "secret"}})
+
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink behavior is not portable on Windows")
+def test_setup_paths_stay_inside_active_runtime_root(tmp_path, monkeypatch):
+    """Setup helpers cannot create dirs or secret files in another root."""
+    from drbrain.cli.setup import _ensure_directories, generate_local_config
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    outside = tmp_path / "outside"
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+    monkeypatch.delenv("DRBRAIN_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("DRBRAIN_TEMP_ROOT", raising=False)
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        _ensure_directories({"dirs": {"papers": str(outside / "papers")}})
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        generate_local_config(
+            output_path=outside / "config.local.yaml",
+            llm_primary={"provider": "openai", "model": "gpt-4", "api_key": "secret"},
+        )
+    assert not outside.exists()

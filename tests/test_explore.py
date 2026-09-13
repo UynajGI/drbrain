@@ -144,3 +144,26 @@ class TestExploreStore:
             create_explore_silo(tmp_path, "..")
         with pytest.raises(ValueError):
             create_explore_silo(tmp_path, "")
+
+    def test_rejects_symlinked_silo_root_and_silo(self, tmp_path):
+        from drbrain.storage.explore import (
+            create_explore_silo,
+            delete_explore_silo,
+        )
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        root_alias = tmp_path / "root-link"
+        silo_alias = tmp_path / "safe"
+        try:
+            root_alias.symlink_to(outside, target_is_directory=True)
+            silo_alias.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable")
+
+        with pytest.raises(ValueError, match="symlink"):
+            create_explore_silo(root_alias, "one")
+        with pytest.raises(ValueError, match="symlink"):
+            create_explore_silo(tmp_path, "safe")
+        with pytest.raises(ValueError, match="symlink"):
+            delete_explore_silo(tmp_path, "safe")

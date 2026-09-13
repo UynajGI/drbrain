@@ -1,0 +1,36 @@
+{% import "_macros.html" as m %}
+{% if data['items'] %}
+<p class="muted small">共 {{ data.total }} 条{% if data.query %}，匹配“{{ data.query }}”{% endif %}</p>
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col">标题</th>
+        <th scope="col">年份</th>
+        <th scope="col">状态</th>
+        <th scope="col">来源</th>
+        <th scope="col" class="num">引用</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for paper in data['items'] %}
+      <tr>
+        <td>
+          <a class="link strong" href="/papers/{{ paper.local_id | urlencode }}?project_id={{ project.project_id }}">{{ paper.title or paper.local_id }}</a>
+          {% if paper.authors %}<p class="muted small cell-sub">{{ paper.authors | short(90) }}</p>{% endif %}
+        </td>
+        <td>{{ paper.year or '—' }}</td>
+        <td>{{ m.status_badge(paper.status) }}</td>
+        <td class="cell-sub">{{ paper.journal or '—' }}</td>
+        <td class="num">{{ paper.citation_count or 0 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{{ m.cursor_pager('/papers', project.project_id, data.next_cursor, q=data.query, status=status, boost_target='#paper-rows') }}
+{% elif data.query %}
+{{ m.empty_state('没有匹配的文献', '换一个关键词，或清空筛选条件。') }}
+{% else %}
+{{ m.empty_state('文献库还是空的', '先在终端运行 drbrain ingest 导入 PDF，然后回到这里。') }}
+{% endif %}

@@ -188,6 +188,13 @@ def test_validate_name_accepts_valid():
     assert validate_workspace_name("test 123") is True
 
 
+def test_workspace_operations_reject_path_traversal(tmp_path):
+    with pytest.raises(WorkspaceError):
+        create_workspace("../outside", root=tmp_path)
+    with pytest.raises(WorkspaceError):
+        delete_workspace("../outside", root=tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # schema_version
 # ---------------------------------------------------------------------------

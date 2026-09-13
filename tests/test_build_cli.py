@@ -110,7 +110,7 @@ def test_build_no_llm_models_exits_1(mock_db_cls):
 
 @patch("drbrain.cli.build_commands.Database")
 def test_build_paper_missing_raw_md_skipped(mock_db_cls, tmp_path):
-    """build for a paper whose raw.md is missing → echoes skip message."""
+    """build reports a missing raw.md as a failed paper."""
     papers_dir = tmp_path / "papers"
     papers_dir.mkdir()
     # paper dir exists but no raw.md / tree.json
@@ -124,8 +124,44 @@ def test_build_paper_missing_raw_md_skipped(mock_db_cls, tmp_path):
 
     app = _make_app(_cfg(dirs={"papers": str(papers_dir)}))
     result = runner.invoke(app, ["build"])
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "No raw.md" in result.output
+
+
+@patch("drbrain.cli.build_commands.Database")
+def test_build_continues_after_single_paper_extraction_failure(mock_db_cls, tmp_path):
+    """A failed extraction does not hide later successes and exits non-zero."""
+    papers_dir = tmp_path / "papers"
+    for pid in ("p-ok", "p-fail"):
+        paper_path = papers_dir / pid
+        paper_path.mkdir(parents=True)
+        (paper_path / "raw.md").write_text("text", encoding="utf-8")
+        (paper_path / "tree.json").write_text(
+            '{"structure": [{"title": "Section", "node_id": "n1"}]}',
+            encoding="utf-8",
+        )
+
+    mock_db = MagicMock()
+    mock_db.get_all_papers.return_value = [
+        {"local_id": "p-ok", "title": "OK", "status": "uploaded"},
+        {"local_id": "p-fail", "title": "Fail", "status": "uploaded"},
+    ]
+    mock_db.get_last_run.return_value = None
+    mock_db_cls.return_value = mock_db
+
+    async def fake_build(md_path, structure, models, **kwargs):
+        if md_path.parent.name == "p-fail":
+            raise RuntimeError("simulated extraction failure")
+        return {"concepts": [], "relations": [], "merges": [], "corrections": []}
+
+    app = _make_app(_cfg(dirs={"papers": str(papers_dir)}))
+    with patch("drbrain.extractor.concept.build_graph_from_tree", new=fake_build):
+        result = runner.invoke(app, ["build"])
+
+    assert result.exit_code == 1, result.output
+    assert "simulated extraction failure" in result.output
+    assert "Build complete" in result.output
+    assert mock_db.set_paper_status.call_count == 1
 
 
 # ---------------------------------------------------------------------------

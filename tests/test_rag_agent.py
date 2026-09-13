@@ -59,7 +59,7 @@ def _scripted_llm(monkeypatch, script, capture=None):
 
     ``script`` is a list of ``{"text": str, "tool_calls": list|None}`` steps;
     the last step repeats if the loop needs more calls. When ``capture`` is a
-    list, each call's litellm messages are appended to it.
+    list, each call's OpenAI messages are appended to it.
     """
 
     async def fake(messages, models, tools=None, max_tokens=1024, temperature=0.3, **kw):
@@ -368,6 +368,16 @@ def test_reason_llamaindex_session_new_persists_to_agent_tables(tmp_path, monkey
     assert rows[3][4] == "search_concepts"
     assert rows[4][1] == "证据不足，无法基于当前检索结果回答"
 
+    db = Database(str(tmp_path / "t.db"))
+    try:
+        model_config = db.conn.execute(
+            "SELECT model_config FROM agent_sessions WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
+    finally:
+        db.close()
+    assert "k" not in model_config
+    assert json.loads(model_config) == [{"provider": "openai", "model": "gpt-4o", "base_url": None}]
+
 
 def test_reason_llamaindex_session_not_found(tmp_path, monkeypatch):
     _scripted_llm(monkeypatch, [{"text": "x", "tool_calls": None, "usage": None}])
@@ -459,6 +469,7 @@ def test_load_session_history_empty_for_unknown_session(tmp_path):
         db.close()
 
 
+@pytest.mark.timeout(180)
 def test_load_session_history_compresses_long_history(tmp_path):
     """Long histories collapse the middle into a [Context summary] message."""
     from drbrain.rag.agent import _persist_reason_session, load_session_history

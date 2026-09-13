@@ -87,6 +87,27 @@ class TestSlugify:
 
 
 class TestExportOkf:
+    def test_doi_paper_uses_safe_bundle_filename_and_keeps_local_id(
+        self, populated_graph, populated_db, tmp_path
+    ):
+        """A slash in a DB local_id must not create nested/ambiguous files."""
+        populated_db.conn.execute(
+            "INSERT INTO papers (local_id, title, status) VALUES (?, ?, 'extracted')",
+            ("10.1234/a", "DOI Paper"),
+        )
+        populated_db.commit()
+        export_okf(populated_graph, populated_db, tmp_path / "bundle")
+        from drbrain.storage.paths import paper_fs_key
+
+        paper_path = tmp_path / "bundle" / "papers" / f"{paper_fs_key('10.1234/a')}.md"
+        assert paper_path.exists()
+        assert not (tmp_path / "bundle" / "papers" / "10.1234" / "a.md").exists()
+        assert "local_id: '10.1234/a'" in paper_path.read_text()
+        assert (
+            f"papers/{paper_fs_key('10.1234/a')}.md"
+            in (tmp_path / "bundle" / "index.md").read_text()
+        )
+
     def test_concept_md_has_frontmatter_and_type(self, populated_graph, populated_db, tmp_path):
         """Each concept .md has parseable YAML frontmatter with a non-empty type."""
         export_okf(populated_graph, populated_db, tmp_path / "bundle")

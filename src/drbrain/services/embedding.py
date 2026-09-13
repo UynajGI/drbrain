@@ -22,12 +22,14 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from drbrain.storage.paths import paper_id_from_dir
+
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
 
 # ── Module-level caches ──────────────────────────────────────────────────────
 
-_model_cache: dict = {}  # key: (model_name, cache_dir, device) -> SentenceTransformer
+_model_cache: dict = {}  # key: (model_name, cache_dir, device, max_seq_length) -> model
 _GPU_PROFILE_FILE = Path("~/.cache/drbrain/gpu_profile.json").expanduser()
 
 
@@ -232,7 +234,8 @@ def _load_model(cfg: EmbedConfig | None = None):
     """Load SentenceTransformer with module-level cache.
 
     Resolves model path via ModelScope first, falls back to HuggingFace.
-    Cached by (model_name, cache_dir, device) to avoid reloading.
+    Cached by (model_name, cache_dir, device, max_seq_length) to avoid reloading
+    a model with a stale tokenizer limit.
     """
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -242,12 +245,14 @@ def _load_model(cfg: EmbedConfig | None = None):
         device_cfg = cfg.device
         source = cfg.source
         hf_endpoint = (cfg.hf_endpoint or "").strip()
+        max_seq_length = cfg.max_seq_length
     else:
         model_name = "Qwen/Qwen3-Embedding-0.6B"
         cache_dir = os.path.expanduser("~/.cache/modelscope/hub/models")
         device_cfg = "auto"
         source = "modelscope"
         hf_endpoint = ""
+        max_seq_length = None
 
     if source == "modelscope":
         os.environ["MODELSCOPE_CACHE"] = cache_dir
@@ -266,7 +271,7 @@ def _load_model(cfg: EmbedConfig | None = None):
     else:
         device = device_cfg
 
-    cache_key = (model_name, cache_dir, device)
+    cache_key = (model_name, cache_dir, device, max_seq_length)
     if cache_key in _model_cache:
         return _model_cache[cache_key]
 
@@ -278,6 +283,9 @@ def _load_model(cfg: EmbedConfig | None = None):
     else:
         logger.info("[embed] loading model %s (downloading if needed)", model_name)
         model = SentenceTransformer(model_name, device=device)
+
+    if max_seq_length is not None and max_seq_length > 0:
+        model.max_seq_length = max_seq_length
 
     logger.info(
         "[embed] model loaded: %s device=%s dim=%d",
@@ -655,62 +663,21 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
 
 
 def _collect_tree_nodes(paper_dir: Path) -> list[dict]:
-    """Collect all tree nodes from a paper's tree.json, with their text content."""
-    tree_path = paper_dir / "tree.json"
-    if not tree_path.exists():
-        return []
+    """Collect nodes through the shared PageIndex text projection."""
+    from drbrain.storage.node_projection import collect_tree_node_records
 
-    tree = json.loads(tree_path.read_text(encoding="utf-8"))
-    structure = tree.get("structure", [])
-
-    raw_md_path = paper_dir / "raw.md"
-    if raw_md_path.exists():
-        raw_text = raw_md_path.read_text(encoding="utf-8")
-    else:
-        raw_text = ""
-
-    def _walk(nodes: list[dict], path_prefix: str = "") -> list[dict]:
-        result = []
-        for node in nodes:
-            nid = node.get("node_id", "")
-            title = node.get("title", "")
-            text = f"{title}\n"
-
-            # Try to extract content from raw.md using line ranges
-            line_start = node.get("line_start")
-            line_end = node.get("line_end")
-            if line_start is not None and line_end is not None and raw_text:
-                text += "\n".join(raw_text.split("\n")[line_start:line_end])
-            elif node.get("content"):
-                text += str(node.get("content", ""))
-            elif node.get("summary"):
-                # scibase/oa 管线的 tree.json 只有 title+line_num+summary——
-                # summary 即节点文本（短节点存原文，长节点存 LLM 摘要）。
-                # 缺了这条回退，节点只会拿标题做嵌入（泛化标题 → 大量重复向量簇）
-                text += str(node.get("summary", ""))
-            elif node.get("prefix_summary"):
-                text += str(node.get("prefix_summary", ""))
-
-            result.append(
-                {
-                    "node_id": nid,
-                    "title": title,
-                    "text": text.strip(),
-                }
-            )
-
-            child_nodes = node.get("nodes", [])
-            if child_nodes:
-                result.extend(_walk(child_nodes, f"{path_prefix}{nid}/"))
-        return result
-
-    return _walk(structure)
+    return [
+        {"node_id": row["node_id"], "title": row["title"], "text": row["text"]}
+        for row in collect_tree_node_records(paper_dir)
+    ]
 
 
 def build_tree_vectors(
     db_path: Path,
     paper_dir: Path,
     cfg: EmbedConfig | None = None,
+    *,
+    paper_id: str | None = None,
 ) -> int:
     """Embed all tree nodes for a paper and store in tree_vectors.
 
@@ -737,7 +704,9 @@ def build_tree_vectors(
     conn = connect_wal(db_path)
     try:
         # 只查本篇节点的 hash（索引 IN 查询）——全表扫描 187 万行/篇是 O(N²) 瓶颈
-        paper_id = paper_dir.name
+        # ``paper_dir.name`` is a filesystem key, not necessarily the DB ID
+        # (canonical DOI keys are percent-encoded; legacy DOI dirs may nest).
+        paper_id = paper_id or paper_id_from_dir(paper_dir)
         all_node_keys = [
             (node["node_id"], _global_node_id(paper_id, node["node_id"])) for node in nodes
         ]
@@ -808,6 +777,8 @@ async def build_paper_tree_vectors(
     llm_models: list[dict] | None = None,
     sink: list[dict] | None = None,
     cache=None,
+    *,
+    paper_id: str | None = None,
 ) -> int:
     """Build PageIndex tree vectors + RAPTOR recursive summaries for a single paper.
 
@@ -830,17 +801,57 @@ async def build_paper_tree_vectors(
     """
     from drbrain.extractor.raptor import build_raptor_tree
 
-    pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg)
+    pageindex_count = build_tree_vectors(db_path, paper_dir, embed_cfg, paper_id=paper_id)
     raptor_count = 0
     if llm_models:
+        # PageIndex hashing tells us whether the leaf layer changed.  RAPTOR
+        # summaries carry random IDs, so rebuilding them on every unchanged
+        # run would duplicate evidence; clear the old layer only when a leaf
+        # changed or when no RAPTOR layer has ever been produced.
+        from drbrain.storage.database import Database
+
+        resolved_paper_id = paper_id or paper_id_from_dir(paper_dir)
+        raptor_exists = False
+        raptor_needs_rebuild = pageindex_count > 0
+        raptor_db = Database(db_path)
+        try:
+            raptor_exists = bool(
+                raptor_db.conn.execute(
+                    "SELECT 1 FROM tree_vectors WHERE paper_id = ? "
+                    "AND tree_layer LIKE 'raptor_%' LIMIT 1",
+                    (resolved_paper_id,),
+                ).fetchone()
+            )
+            raptor_needs_rebuild = raptor_needs_rebuild or not raptor_exists
+        finally:
+            raptor_db.close()
+        if not raptor_needs_rebuild:
+            return pageindex_count
+        staged: list[dict] = []
         try:
             raptor_count = await build_raptor_tree(
-                paper_dir, db_path, embed_cfg, llm_models, sink=sink, cache=cache
+                paper_dir,
+                db_path,
+                embed_cfg,
+                llm_models,
+                sink=staged,
+                cache=cache,
+                paper_id=paper_id,
             )
+            if raptor_count and any(row.get("type") == "summary" for row in staged):
+                if sink is not None:
+                    sink.extend(staged)
+                else:
+                    replace_db = Database(db_path)
+                    try:
+                        replaced = replace_db.replace_raptor_artifacts(resolved_paper_id, staged)
+                        raptor_count = replaced["summaries"]
+                    finally:
+                        replace_db.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "RAPTOR tree build failed for {} ({}), PageIndex vectors still created",
-                paper_dir.name,
+                paper_id_from_dir(paper_dir),
                 exc,
             )
 

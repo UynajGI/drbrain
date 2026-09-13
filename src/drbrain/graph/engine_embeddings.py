@@ -25,6 +25,32 @@ class EmbeddingsMixin:
     # on ClosureMixin to avoid a duplicate-definition conflict under MRO.
     graph: nx.MultiDiGraph
 
+    @staticmethod
+    def _db_embedding_revision(db) -> int | None:
+        """Read a DB model generation when the database exposes one.
+
+        A few callers (and older integrations) pass lightweight DB-like
+        objects.  Treat non-integer return values as an unavailable revision
+        instead of trusting a mock or an arbitrary object as a generation.
+        """
+        getter = getattr(db, "get_embedding_revision", None)
+        if not callable(getter):
+            return None
+        try:
+            revision = getter()
+        except Exception:
+            return None
+        if isinstance(revision, bool):
+            return None
+        if isinstance(revision, (int, np.integer)):
+            return int(revision)
+        return None
+
+    def _bind_embedding_cache(self, *, db=None, revision: int | None = None) -> None:
+        """Record which persisted model (if any) backs ``self._transE``."""
+        self._transE_source_db = db
+        self._transE_revision = revision if db is not None else None
+
     def learn_embeddings(
         self, dim: int = 128, epochs: int = 100, lr: float = 0.01, db=None
     ) -> None:
@@ -68,6 +94,10 @@ class EmbeddingsMixin:
             db.commit()
 
         self._transE = t
+        self._bind_embedding_cache(
+            db=db,
+            revision=self._db_embedding_revision(db) if db is not None else None,
+        )
 
     def entity_embedding(self, label: str, db=None) -> np.ndarray | None:
         """Return the TransE embedding vector for *label*.
@@ -83,6 +113,9 @@ class EmbeddingsMixin:
             Float32 numpy array of shape ``(dim,)``, or ``None`` if the
             entity is unknown.
         """
+        # ``entity_embedding`` is also a DB-backed read path; run the same
+        # generation check as prediction/similarity before consulting cache.
+        self._ensure_embeddings(db)
         if self._transE:
             emb = self._transE.entity_embedding(label)
             if emb is not None:
@@ -140,9 +173,24 @@ class EmbeddingsMixin:
         return []
 
     def _ensure_embeddings(self, db=None) -> None:
-        """Load embeddings from *db* into the cache when it is empty."""
-        if self._transE is not None:
-            return
+        """Load embeddings from *db* and reject stale/cross-DB caches."""
+        revision = self._db_embedding_revision(db) if db is not None else None
+        cached = self._transE is not None
+        if cached:
+            source_db = getattr(self, "_transE_source_db", None)
+            stale = False
+            if db is not None:
+                # An explicitly supplied database must never reuse a model
+                # trained from another database (or an unbound in-memory
+                # model), unless the legacy DB object has no generation API.
+                if revision is not None:
+                    stale = source_db is not db or self._transE_revision != revision
+                elif source_db is not None and source_db is not db:
+                    stale = True
+            if not stale:
+                return
+            self._transE = None  # type: ignore[assignment]
+            self._bind_embedding_cache()
         if db:
             from drbrain.graph.embedding import TransE
             from drbrain.graph.query_embeddings import RELATION_PREFIX
@@ -156,6 +204,7 @@ class EmbeddingsMixin:
                     else:
                         t.entities[key] = vec
                 self._transE = t
+            self._bind_embedding_cache(db=db, revision=revision)
 
     def invalidate_embeddings(self) -> None:
         """Clear the in-memory embedding cache.
@@ -164,3 +213,4 @@ class EmbeddingsMixin:
         subsequent operations reload fresh data.
         """
         self._transE = None  # type: ignore[assignment]  # Optional cache reset
+        self._bind_embedding_cache()

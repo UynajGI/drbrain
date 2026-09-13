@@ -22,6 +22,8 @@ from base64 import b64encode as _b64encode
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from drbrain.storage.paths import paper_id_from_dir
+
 if TYPE_CHECKING:
     from drbrain.config import EmbedConfig
 
@@ -188,6 +190,8 @@ async def build_raptor_tree(
     max_layers: int = _RAPTOR_MAX_LAYERS,
     sink: list[dict] | None = None,
     cache=None,
+    *,
+    paper_id: str | None = None,
 ) -> int:
     """Build RAPTOR recursive summary tree for a single paper.
 
@@ -223,7 +227,9 @@ async def build_raptor_tree(
     from drbrain.storage.connection import connect_wal
 
     _t0 = _time.monotonic()
-    paper_id = paper_dir.name
+    # ``paper_dir.name`` may be a percent-encoded key or only a DOI suffix in
+    # a legacy nested layout.  Persist the complete database local_id.
+    paper_id = paper_id or paper_id_from_dir(paper_dir)
     log.info("[raptor] building tree for %s (max_layers=%d)", paper_id, max_layers)
     total_summaries = 0
 

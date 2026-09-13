@@ -20,7 +20,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +35,18 @@ from drbrain.loop.checkpointing import (
 from drbrain.loop.durable_execution import DurableExecution
 from drbrain.loop.events import ResearchState
 from drbrain.loop.front_half import DurableFrontHalf
+from drbrain.loop.frontier import (
+    BranchOutcome,
+    BranchSpec,
+    BranchStatus,
+    DoneContract,
+    ResearchObjective,
+)
 from drbrain.loop.governance import RunGovernance
 from drbrain.loop.policy import ToolPolicy
+from drbrain.loop.research_events import RunLedgerEventLog
 from drbrain.loop.store import LedgerEvent, RunExecutionBlockedError, RunLedger
+from drbrain.loop.supervisor import ResearchSupervisor, SupervisorConfig
 from drbrain.loop.tool_broker import ToolBroker, redact
 from drbrain.loop.transitions import LeaseUnavailableError, TransitionService
 from drbrain.loop.workflow import (
@@ -46,10 +55,15 @@ from drbrain.loop.workflow import (
     ResearchLoopWorkflow,
     _job_log_has_number,
 )
+from drbrain.projects import DEFAULT_PROJECT_ID
+from drbrain.security import REDACTED, is_sensitive_key
 
 
 def _slug(topic: str) -> str:
     """Filesystem-safe slug for a topic (run dir name)."""
+    # Topics can be supplied by an external prompt or tool.  Redact before the
+    # value reaches a durable path as well as the file contents.
+    topic = str(redact(topic) or "")
     s = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff]+", "-", topic.strip()).strip("-")
     return (s or "research")[:80]
 
@@ -179,13 +193,36 @@ def _mcp_contract(server: dict[str, Any]) -> dict[str, Any]:
         if value is None:
             continue
         if isinstance(value, str | int | float | bool):
-            contract[field] = value
+            contract[field] = redact(value)
         elif isinstance(value, (list, tuple, set, frozenset)) and all(
             isinstance(item, str | int | float | bool) for item in value
         ):
             items = list(value)
             if field in _UNORDERED_MCP_FIELDS:
                 items.sort(key=lambda item: json.dumps(item, sort_keys=True))
+            if field == "args":
+                # argv keeps a flag and its value in separate list elements;
+                # redact each pair before serializing the manifest.
+                safe_items: list[Any] = []
+                redact_next = False
+                for item in items:
+                    if redact_next:
+                        if isinstance(item, str) and item.startswith("--"):
+                            redact_next = False
+                        else:
+                            safe_items.append(REDACTED)
+                            redact_next = False
+                            continue
+                    if isinstance(item, str) and item.startswith("--"):
+                        flag, separator, _value = item.partition("=")
+                        if is_sensitive_key(flag.lstrip("-")):
+                            safe_items.append(f"{flag}={REDACTED}" if separator else item)
+                            redact_next = not bool(separator)
+                            continue
+                    safe_items.append(redact(item))
+                items = safe_items
+            else:
+                items = redact(items)
             contract[field] = items
     env = server.get("env")
     if isinstance(env, dict):
@@ -251,6 +288,10 @@ class ResearchDirector:
         graph: Any = None,
         plugins_dir: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        capability_catalog: Any = None,
+        skills_root: str | None = None,
+        capability_adapters: Iterable[Any] | None = None,
+        require_trusted_mcp: bool = False,
         run_dir: str | Path = "workspace/autoresearch",
         n_critics: int = 3,
         single_agent: bool = False,
@@ -268,6 +309,10 @@ class ResearchDirector:
         self._graph = graph
         self._plugins_dir = plugins_dir
         self._mcp_servers = mcp_servers
+        self._capability_catalog = capability_catalog
+        self._skills_root = skills_root
+        self._capability_adapters = tuple(capability_adapters or ())
+        self._require_trusted_mcp = bool(require_trusted_mcp)
         self._run_dir = Path(run_dir)
         self._single_agent = bool(single_agent)
         self._n_critics = 1 if self._single_agent else max(1, int(n_critics))
@@ -329,7 +374,7 @@ class ResearchDirector:
             value = getattr(self._cfg, name, None)
             if isinstance(value, str | int | float | bool) or value is None:
                 if value is not None:
-                    model_manifest[name] = value
+                    model_manifest[name] = redact(value)
         # The normal CLI passes ``Config`` whose fallback chain lives at
         # ``cfg.llm.models``.  Keep the historical top-level ``models`` shape
         # for lightweight callers, and accept the equivalent dict form used by
@@ -369,7 +414,7 @@ class ResearchDirector:
                     if isinstance(item, dict):
                         value = item.get(name)
                     if isinstance(value, str | int | float | bool):
-                        fields[name] = value
+                        fields[name] = redact(value)
                 if fields:
                     public_models.append(fields)
             if public_models:
@@ -380,14 +425,55 @@ class ResearchDirector:
             if not isinstance(server, dict):
                 continue
             servers.append(_mcp_contract(server))
-        tool_manifest = {
-            "plugins_dir": str(Path(self._plugins_dir).resolve()) if self._plugins_dir else None,
-            "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
-            "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
-            "tool_policy": self._tool_policy.to_manifest()
-            if self._tool_policy is not None
-            else None,
-        }
+        capability_descriptors: list[dict[str, Any]] = []
+        manifest_catalog = self._capability_catalog
+        if manifest_catalog is None and (self._skills_root or self._capability_adapters):
+            # Adapter/Skill descriptors are pure metadata and can be captured
+            # without eagerly connecting to MCP or importing plugin modules.
+            # Keep the live workflow's lazy discovery semantics unchanged.
+            try:
+                from drbrain.loop.tool_space import LoopToolSpace
+
+                manifest_catalog = LoopToolSpace.discover_catalog(
+                    skills_root=self._skills_root,
+                    adapters=self._capability_adapters,
+                )
+            except Exception:  # noqa: BLE001 - optional catalog must not block resume
+                manifest_catalog = None
+        if manifest_catalog is not None:
+            try:
+                for descriptor in manifest_catalog.list():
+                    # Keep the checkpoint contract stable and secret-free. The
+                    # full descriptor remains in the live catalog; recovery
+                    # only needs identity, schema, policy and provenance.
+                    payload = descriptor.to_dict()
+                    payload["metadata"] = {
+                        key: redact(value)
+                        for key, value in payload.get("metadata", {}).items()
+                        if key not in {"body", "headers", "env", "secret_refs", "authorization"}
+                    }
+                    capability_descriptors.append(payload)
+            except Exception:  # noqa: BLE001 - optional catalog must not block resume
+                capability_descriptors = []
+        tool_manifest = redact(
+            {
+                "plugins_dir": str(Path(self._plugins_dir).resolve())
+                if self._plugins_dir
+                else None,
+                "plugin_source_contract": _plugin_source_contract(self._plugins_dir),
+                "mcp_servers": sorted(servers, key=lambda item: json.dumps(item, sort_keys=True)),
+                "capability_descriptors": sorted(
+                    capability_descriptors, key=lambda item: str(item.get("id", ""))
+                ),
+                "skills_root": str(Path(self._skills_root).resolve())
+                if self._skills_root
+                else None,
+                "require_trusted_mcp": self._require_trusted_mcp,
+                "tool_policy": self._tool_policy.to_manifest()
+                if self._tool_policy is not None
+                else None,
+            }
+        )
         return CheckpointManifest(
             workflow_version="research-loop-v1",
             model_manifest=model_manifest,
@@ -541,23 +627,28 @@ class ResearchDirector:
     def _save_state(self, topic: str, state: dict[str, Any]) -> None:
         """Persist the semantic state to its canonical files (single-writer)."""
         state["updated_at"] = time.time()
+        safe_state = redact(state)
+        if not isinstance(safe_state, dict):
+            safe_state = {}
+        safe_champion = safe_state.get("champion") or []
+        safe_rejected = safe_state.get("rejected") or []
 
         # task.md (bootstrap)
         task_path = self._topic_dir(topic) / "task.md"
         if not task_path.exists():
-            task_path.write_text(f"# 研究任务\n\n{state['topic']}\n", encoding="utf-8")
+            task_path.write_text(f"# 研究任务\n\n{safe_state.get('topic', '')}\n", encoding="utf-8")
 
         # champion.md
-        body = "\n".join(f"- [cycle {c['cycle']}] {c['statement']}" for c in state["champion"])
+        body = "\n".join(f"- [cycle {c['cycle']}] {c['statement']}" for c in safe_champion)
         self._champion_md(topic).write_text(
-            _render_frontmatter({"count": len(state["champion"])}, body or "（尚无）"),
+            _render_frontmatter({"count": len(safe_champion)}, body or "（尚无）"),
             encoding="utf-8",
         )
 
         # dead_ends.md
-        body = "\n".join(f"- {h}" for h in state["rejected"])
+        body = "\n".join(f"- {h}" for h in safe_rejected)
         self._dead_ends_md(topic).write_text(
-            _render_frontmatter({"count": len(state["rejected"])}, body or "（尚无）"),
+            _render_frontmatter({"count": len(safe_rejected)}, body or "（尚无）"),
             encoding="utf-8",
         )
 
@@ -567,44 +658,44 @@ class ResearchDirector:
         self._patterns_md(topic).parent.mkdir(parents=True, exist_ok=True)
         lines = ["# 知识 / 模式", ""]
         lines.append("## 已验证结论（winning patterns）")
-        champion_view = state["champion"][-_patterns_max:]
-        if state["champion"]:
-            if len(state["champion"]) > _patterns_max:
+        champion_view = safe_champion[-_patterns_max:]
+        if safe_champion:
+            if len(safe_champion) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['champion']) - _patterns_max} 条更早结论，见 champion.md）"
+                    f"- （另有 {len(safe_champion) - _patterns_max} 条更早结论，见 champion.md）"
                 )
             lines.extend(f"- {c['statement']}" for c in champion_view)
         else:
             lines.append("（尚无）")
         lines.append("\n## 已否定假设（dead ends）")
-        rejected_view = state["rejected"][-_patterns_max:]
-        if state["rejected"]:
-            if len(state["rejected"]) > _patterns_max:
+        rejected_view = safe_rejected[-_patterns_max:]
+        if safe_rejected:
+            if len(safe_rejected) > _patterns_max:
                 lines.append(
-                    f"- （另有 {len(state['rejected']) - _patterns_max} 条更早假设，见 dead_ends.md）"
+                    f"- （另有 {len(safe_rejected) - _patterns_max} 条更早假设，见 dead_ends.md）"
                 )
             lines.extend(f"- {h}" for h in rejected_view)
         else:
             lines.append("（尚无）")
         lines.append("\n## 已耗尽方向（exhausted axes）")
-        lines.append(f"- 连续无进展轮次：{state['consecutive_no_gain']}")
-        lines.append(f"- 已转向次数：{state.get('adaptations', 0)}")
+        lines.append(f"- 连续无进展轮次：{safe_state.get('consecutive_no_gain', 0)}")
+        lines.append(f"- 已转向次数：{safe_state.get('adaptations', 0)}")
         self._patterns_md(topic).write_text("\n".join(lines), encoding="utf-8")
 
         # runtime-only resume state
         self._run_json(topic).write_text(
             json.dumps(
                 {
-                    "cycles": state["cycles"],
-                    "consecutive_no_gain": state["consecutive_no_gain"],
-                    "adaptations": state.get("adaptations", 0),
-                    "pending": state.get("pending", []),
-                    "mode": state.get("mode", "execute"),
+                    "cycles": safe_state.get("cycles", 0),
+                    "consecutive_no_gain": safe_state.get("consecutive_no_gain", 0),
+                    "adaptations": safe_state.get("adaptations", 0),
+                    "pending": safe_state.get("pending", []),
+                    "mode": safe_state.get("mode", "execute"),
                     # L-I2: survive restarts so the next analyst still sees the
                     # previous round's criticisms after a resume.
-                    "critic_flaws": _sanitize_critic_flaws(state.get("critic_flaws", [])),
-                    "started_at": state["started_at"],
-                    "updated_at": state["updated_at"],
+                    "critic_flaws": _sanitize_critic_flaws(safe_state.get("critic_flaws", [])),
+                    "started_at": safe_state.get("started_at"),
+                    "updated_at": safe_state.get("updated_at"),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -614,14 +705,18 @@ class ResearchDirector:
 
     def _save_cycle_result(self, topic: str, result: dict[str, Any]) -> None:
         """Write one cycle's evidence to ``results/cycle-NNN.md`` (append-only)."""
-        path = self._result_md(topic, result["cycle"])
+        safe_result = redact(result)
+        if not isinstance(safe_result, dict):
+            safe_result = {}
+        path = self._result_md(topic, safe_result.get("cycle", result.get("cycle", 0)))
         path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [f"# 第 {result['cycle']} 轮", ""]
-        lines.append(f"- 验证结论（KEEP）：{result.get('verified') or '（无）'}")
-        lines.append(f"- 证伪假设（DISCARD）：{result.get('falsified') or '（无）'}")
-        lines.append(f"- 预测：{result.get('predictions') or '（无）'}")
-        lines.append(f"- 假设：{result.get('hypotheses') or '（无）'}")
-        verifs = result.get("verifications") or []
+        cycle = safe_result.get("cycle", 0)
+        lines = [f"# 第 {cycle} 轮", ""]
+        lines.append(f"- 验证结论（KEEP）：{safe_result.get('verified') or '（无）'}")
+        lines.append(f"- 证伪假设（DISCARD）：{safe_result.get('falsified') or '（无）'}")
+        lines.append(f"- 预测：{safe_result.get('predictions') or '（无）'}")
+        lines.append(f"- 假设：{safe_result.get('hypotheses') or '（无）'}")
+        verifs = safe_result.get("verifications") or []
         if verifs:
             lines.append("\n## 核验计数（Supports/Refutes/Orthogonal）\n")
             for v in verifs:
@@ -631,7 +726,7 @@ class ResearchDirector:
                     f"→ {v.get('status')}"
                     + (f"，实算={v.get('computed')}" if v.get("computed") else "")
                 )
-        rep = (result.get("report") or "").strip()
+        rep = (safe_result.get("report") or "").strip()
         if rep:
             lines.append("\n## 本轮报告\n")
             lines.append(rep)
@@ -653,6 +748,7 @@ class ResearchDirector:
             payload = rs.model_dump()
         except Exception:  # noqa: BLE001 — fall back to a minimal dict
             payload = {"task": getattr(rs, "task", None)}
+        payload = redact(payload)
         try:
             path.write_text(
                 json.dumps(payload, ensure_ascii=False, default=str, indent=2),
@@ -689,7 +785,9 @@ class ResearchDirector:
         for h in rs.hypotheses:
             verdict = "DISCARD" if h.status == "discarded" else "KEEP"
             critic_lines.append(
-                f"- [cycle {cycle_no}] {h.statement}（score={h.score:.2f}, verdict={verdict}）"
+                redact(
+                    f"- [cycle {cycle_no}] {h.statement}（score={h.score:.2f}, verdict={verdict}）"
+                )
             )
         if critic_lines:
             path = self._role_memory_md(topic, "critic")
@@ -702,8 +800,10 @@ class ResearchDirector:
         verifier_lines = []
         for v in rs.verifications:
             verifier_lines.append(
-                f"- [cycle {cycle_no}] {v.statement}：supports={v.supports}, "
-                f"refutes={v.refutes}, orthogonal={v.orthogonal} → {v.status}"
+                redact(
+                    f"- [cycle {cycle_no}] {v.statement}：supports={v.supports}, "
+                    f"refutes={v.refutes}, orthogonal={v.orthogonal} → {v.status}"
+                )
             )
         if verifier_lines:
             path = self._role_memory_md(topic, "verifier")
@@ -1212,6 +1312,10 @@ class ResearchDirector:
             graph=self._graph,
             plugins_dir=self._plugins_dir,
             mcp_servers=self._mcp_servers,
+            capability_catalog=self._capability_catalog,
+            skills_root=self._skills_root,
+            capability_adapters=self._capability_adapters,
+            require_trusted_mcp=self._require_trusted_mcp,
             n_critics=self._n_critics,
             timeout=self._step_timeout_seconds,
             # Per-run job dir (not process-global env): concurrent directors on
@@ -1394,6 +1498,8 @@ class ResearchDirector:
         stagnation_cycles: int = 3,
         max_adaptations: int = 2,
         budget: Mapping[str, int | float] | None = None,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Run research cycles until stagnation or ``max_cycles``; return the state.
 
@@ -1401,6 +1507,10 @@ class ResearchDirector:
         direction is recorded as a dead end and the no-gain counter resets so
         the loop *pivots* and keeps going — only after ``max_adaptations``
         pivots does it stop.
+
+        ``project_id``/``session_id`` scope the durable run identity (ledger
+        v9): the same topic text in another project or conversation is a
+        different run, and a session observes its own runs.
         """
         ledger = self._ledger()
         try:
@@ -1412,7 +1522,7 @@ class ResearchDirector:
                 "[director] cannot capture RAG generation; disabling RAG evidence: %s", exc
             )
             captured_generation = None
-        existing_run = ledger.get_run(topic)
+        existing_run = ledger.get_run(topic, project_id=project_id, session_id=session_id)
         if existing_run is not None:
             # A prior process may have committed a cycle before its Markdown / JSONL
             # projection finished. Replay that committed fact before deriving the
@@ -1492,6 +1602,8 @@ class ResearchDirector:
             config=config,
             budget=effective_budget,
             legacy_snapshot=state if legacy_projection else None,
+            project_id=project_id,
+            session_id=session_id,
         )
         stored_generation = run.config.get("rag_generation")
         stored_evidence_requirement = run.config.get("require_rag_evidence")
@@ -1862,25 +1974,28 @@ class ResearchDirector:
         projections: a write failure must never break the loop.
         """
         try:
+            safe_state = redact(state)
+            if not isinstance(safe_state, dict):
+                safe_state = {}
             lines = [
                 "# 研究终报",
                 "",
-                f"- 任务：{state.get('topic', '')}",
-                f"- 轮次：{state.get('cycles', 0)} | 停止原因：{stop_status}",
-                f"- 转向：{state.get('adaptations', 0)} 次 | 末期连续无进展：{state.get('consecutive_no_gain', 0)}",
+                f"- 任务：{safe_state.get('topic', '')}",
+                f"- 轮次：{safe_state.get('cycles', 0)} | 停止原因：{redact(stop_status)}",
+                f"- 转向：{safe_state.get('adaptations', 0)} 次 | 末期连续无进展：{safe_state.get('consecutive_no_gain', 0)}",
                 "",
                 "## 已验证结论（champion）",
                 "",
             ]
             lines.extend(
-                f"- [cycle {c['cycle']}] {c['statement']}" for c in state["champion"]
-            ) if state["champion"] else lines.append("（尚无）")
+                f"- [cycle {c['cycle']}] {c['statement']}"
+                for c in (safe_state.get("champion") or [])
+            ) if safe_state.get("champion") else lines.append("（尚无）")
             lines += ["", "## 已否定方向（dead ends）", ""]
-            lines.extend(f"- {h}" for h in state["rejected"][:20]) if state[
-                "rejected"
-            ] else lines.append("（无）")
+            rejected = safe_state.get("rejected") or []
+            lines.extend(f"- {h}" for h in rejected[:20]) if rejected else lines.append("（无）")
             lines += ["", "## 各轮摘要", ""]
-            for res in state.get("results", []):
+            for res in safe_state.get("results", []):
                 hyp = res.get("hypotheses") or []
                 ver = res.get("verified") or []
                 fal = res.get("falsified") or []
@@ -1899,3 +2014,190 @@ class ResearchDirector:
     def run_sync(self, topic: str, **kwargs: Any) -> dict[str, Any]:
         """Convenience sync wrapper (``asyncio.run``)."""
         return asyncio.run(self.run(topic, **kwargs))
+
+    async def run_adaptive(
+        self,
+        topic: str,
+        *,
+        branches: list[BranchSpec] | None = None,
+        max_evaluations: int = 10,
+        max_parallel_branches: int = 2,
+        project_id: str = DEFAULT_PROJECT_ID,
+        session_id: str = "",
+    ) -> Any:
+        """Run the frontier Supervisor against the existing workflow kernel.
+
+        This is an additive entry point.  The legacy cycle loop remains the
+        default; adaptive runs use the same ledger/governance budget and lease
+        boundaries while exposing branch lineage and deterministic selection.
+        """
+        from drbrain.loop.supervisor import SupervisorResult
+
+        if max_evaluations < 1:
+            raise ValueError("max_evaluations must be positive")
+        ledger = self._ledger()
+        run = ledger.get_or_create_run(
+            topic,
+            config={"adaptive": True, "max_parallel_branches": max_parallel_branches},
+            budget={"max_evaluations": max_evaluations},
+            project_id=project_id,
+            session_id=session_id,
+        )
+        transitions = TransitionService(ledger)
+        transitions.start_run(run.run_id)
+        governance = RunGovernance(ledger)
+        objective = ResearchObjective(
+            objective_id=f"objective-{run.run_id}",
+            question=topic,
+            budget={"max_evaluations": max_evaluations},
+        )
+
+        async def worker(
+            branch: BranchSpec, _objective: ResearchObjective, _done: DoneContract
+        ) -> BranchOutcome:
+            # Branch workers are isolated workflow instances.  Governance
+            # accounting is injected at the model/RAG boundaries; the
+            # supervisor owns the enclosing lease and cycle lifecycle.
+            checkpoint = None
+            tool_broker = None
+            durable_execution = None
+            durable_front_half = None
+            evidence_recorder = None
+            step_id = str(branch.metadata.get("_step_id", ""))
+            attempt_id = str(branch.metadata.get("_attempt_id", ""))
+            if step_id and attempt_id:
+                checkpoint = WorkflowCheckpointService(
+                    ledger=ledger,
+                    run_id=run.run_id,
+                    step_id=step_id,
+                    attempt_id=attempt_id,
+                    worker_id=self._worker_id,
+                    manifest=self._checkpoint_manifest(),
+                    lease_seconds=self._lease_seconds,
+                )
+                durable_front_half = DurableFrontHalf(TransitionService(ledger), run.run_id)
+                await asyncio.to_thread(durable_front_half.ensure_node_contracts)
+
+                def evidence_recorder(bundle: Mapping[str, Any]) -> None:
+                    ledger.record_evidence_bundle(
+                        run_id=run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        bundle=redact(dict(bundle)),
+                    )
+
+                if self._tool_policy is not None:
+                    tool_broker = ToolBroker(
+                        ledger=ledger,
+                        run_id=run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                        policy=self._tool_policy,
+                    )
+                    durable_execution = DurableExecution(
+                        TransitionService(ledger),
+                        run.run_id,
+                        step_id=step_id,
+                        attempt_id=attempt_id,
+                        worker_id=self._worker_id,
+                        noise_band=self._noise_band,
+                        required_repeats=(
+                            branch.experiment.repetitions
+                            if branch.experiment is not None
+                            else self._required_repeats
+                        ),
+                    )
+                    await asyncio.to_thread(durable_execution.ensure_node_contracts)
+
+            wf = ResearchLoopWorkflow(
+                cfg=self._cfg,
+                db=self._db,
+                graph=self._graph,
+                plugins_dir=self._plugins_dir,
+                mcp_servers=self._mcp_servers,
+                capability_catalog=self._capability_catalog,
+                skills_root=self._skills_root,
+                capability_adapters=self._capability_adapters,
+                require_trusted_mcp=self._require_trusted_mcp,
+                n_critics=self._n_critics,
+                timeout=self._step_timeout_seconds,
+                jobs_dir=str(self._topic_dir(topic) / "jobs" / f"branch-{branch.branch_id}"),
+                tool_broker=tool_broker,
+                tool_policy=self._tool_policy,
+                rag_generation=self._rag_generation,
+                require_rag_evidence=self._require_rag_evidence,
+                require_compute_tools=self._require_compute_tools,
+                compute_tool_names=list(self._compute_tool_names),
+                experiment_spec=branch.experiment,
+                evidence_recorder=evidence_recorder,
+                durable_front_half=durable_front_half,
+                durable_execution=durable_execution,
+                run_id=run.run_id,
+                cycle=branch.depth + 1,
+                budget_reserver=lambda amounts: governance.reserve(run.run_id, amounts),
+                budget_consumer=lambda amounts: governance.consume_observed(run.run_id, amounts),
+            )
+            handler = wf.run(
+                task=branch.hypothesis or topic,
+                prior_context=branch.rationale,
+                prior_champion=[],
+                prior_rejected=[],
+            )
+            if checkpoint is not None and hasattr(handler, "stream_events"):
+                async for event in handler.stream_events(expose_internal=True):
+                    captured = checkpoint.capture_if_safe(ctx=handler.ctx, workflow=wf, event=event)
+                    if captured is not None:
+                        branch.metadata["_checkpoint_id"] = captured.checkpoint_id
+            report = await handler
+            state = await handler.ctx.store.get("research_state", default=None)
+            verified = list(getattr(state, "verified", []) or [])
+            falsified = list(getattr(state, "falsified", []) or [])
+            evidence = []
+            for item in list(getattr(state, "evidence", []) or []):
+                evidence_id = str(getattr(item, "evidence_id", "") or "")
+                if evidence_id:
+                    from drbrain.loop.frontier import EvidenceRef
+
+                    evidence.append(EvidenceRef(evidence_id=evidence_id, relation="supports"))
+            status = (
+                BranchStatus.RETAINED
+                if verified
+                else BranchStatus.PRUNED
+                if falsified
+                else BranchStatus.VERIFYING
+            )
+            return BranchOutcome(
+                branch_id=branch.branch_id,
+                status=status,
+                claims=verified or falsified,
+                evidence=evidence,
+                verification={"verified": verified, "falsified": falsified},
+                summary=str(report or ""),
+            )
+
+        # A topic maps to one stable root so repeated CLI calls resume the
+        # existing frontier instead of spending budget on duplicate roots.
+        root_id = "root-" + hashlib.sha256(topic.encode("utf-8")).hexdigest()[:24]
+        initial = branches or [BranchSpec(branch_id=root_id, hypothesis=topic)]
+        supervisor = ResearchSupervisor(
+            objective=objective,
+            worker=worker,
+            event_log=RunLedgerEventLog(ledger),
+            governance=governance,
+            run_id=run.run_id,
+            worker_id=self._worker_id,
+            lease_seconds=self._lease_seconds,
+            config=SupervisorConfig(
+                max_parallel_branches=max_parallel_branches,
+                max_evaluations=max_evaluations,
+            ),
+        )
+        seed = initial if not supervisor.frontier.branches else (branches or [])
+        result: SupervisorResult = await supervisor.run(seed)
+        current = ledger.get_run_by_id(run.run_id)
+        if current is not None and current.status == "running":
+            transitions.pause_run(run.run_id, reason=result.reason)
+        return result

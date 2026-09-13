@@ -50,6 +50,14 @@ def test_create_backup_basic(tmp_path):
         assert any("drbrain.db" in n for n in names)
 
 
+def test_default_backup_output_follows_runtime_root(tmp_path, monkeypatch):
+    """Implicit local backups stay inside the selected worktree."""
+    from drbrain.storage.backup import _default_backup_dir
+
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+    assert _default_backup_dir() == tmp_path / "data" / "backups"
+
+
 def test_create_backup_excludes_cache(tmp_path):
     """Backup does not include cache or log directories."""
     papers_dir = tmp_path / "papers"

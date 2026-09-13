@@ -85,6 +85,22 @@ class TestRecordLLM:
         assert "session_id" in cols
         store.close()
 
+    def test_redacts_sensitive_text_before_persisting(self, tmp_path):
+        store = MetricsStore(tmp_path / "test.db")
+        store.record_llm(
+            model="model?token=model-secret",
+            provider="api_key=provider-secret",
+            source="Authorization: Bearer source-secret",
+        )
+        row = (
+            store._ensure_conn().execute("SELECT model, provider, source FROM llm_calls").fetchone()
+        )
+        rendered = " ".join(row)
+        assert "model-secret" not in rendered
+        assert "provider-secret" not in rendered
+        assert "source-secret" not in rendered
+        store.close()
+
 
 class TestTimerContextManager:
     """New timer() context manager."""
@@ -400,3 +416,46 @@ class TestSingleton:
         assert s1 is not s2
         s2.close()
         m._store = None
+
+    def test_default_store_is_scoped_to_runtime_root(self, tmp_path, monkeypatch):
+        """Implicit metrics writes follow DRBRAIN_ROOT, never the caller cwd."""
+        import drbrain.metrics as m
+
+        m._store = None
+        # RuntimeContext requires an existing namespace root.
+        monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+        store = get_metrics()
+        store.record_llm("scoped-model")
+        assert store.path == tmp_path / "data" / "metrics.db"
+        assert (tmp_path / "data" / "metrics.db").exists()
+        store.close()
+        m._store = None
+
+    def test_singleton_switches_when_runtime_root_changes(self, tmp_path, monkeypatch):
+        """Sequential embedded runs must not reuse a writable store from root A."""
+        import drbrain.metrics as m
+
+        m._store = None
+        root_a = tmp_path / "a"
+        root_b = tmp_path / "b"
+        root_a.mkdir()
+        root_b.mkdir()
+        monkeypatch.setenv("DRBRAIN_ROOT", str(root_a))
+        first = get_metrics()
+        first.record_llm("root-a")
+        monkeypatch.setenv("DRBRAIN_ROOT", str(root_b))
+        second = get_metrics()
+        assert second is not first
+        assert second.path == root_b / "data" / "metrics.db"
+        second.record_llm("root-b")
+        assert first._conn is None
+        second.close()
+        m._store = None
+
+    def test_store_rejects_external_path_under_runtime_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "runtime"
+        root.mkdir()
+        monkeypatch.setenv("DRBRAIN_ROOT", str(root))
+
+        with pytest.raises(ValueError, match="escapes runtime root"):
+            MetricsStore(tmp_path / "outside.db")

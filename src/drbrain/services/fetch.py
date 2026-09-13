@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
-import uuid
+import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 import requests
 from loguru import logger
 
+from drbrain.dedup.resolver import PaperIDs, canonical_paper_id
+from drbrain.storage.paths import writable_artifact_path
 from drbrain.utils.http_retry import http_retry
 
 
@@ -170,8 +174,34 @@ def _proxy_url(url: str, cfg: dict) -> str:
 def download_pdf(url: str, paper_dir: Path, fetch_config: dict | None = None) -> Path | None:
     """Download PDF to paper_dir/source.pdf. Returns path or None."""
     cfg = fetch_config or {}
-    paper_dir.mkdir(parents=True, exist_ok=True)
-    dest = paper_dir / "source.pdf"
+    paper_dir = Path(paper_dir).expanduser()
+    if "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        from drbrain.runtime import RuntimeContext
+
+        paper_dir = RuntimeContext.create().assert_within_root(
+            paper_dir, label="download paper directory"
+        )
+
+    # Validate every existing component before creating missing directories.
+    # ``mkdir(..., exist_ok=True)`` follows an intermediate symlink, which
+    # could otherwise redirect a downloaded PDF outside the selected runtime.
+    for ancestor in (paper_dir, *paper_dir.parents):
+        if ancestor.is_symlink():
+            raise ValueError(f"download directory contains a symlink: {ancestor}")
+
+    current = paper_dir
+    missing: list[Path] = []
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    if current.is_symlink() or not current.is_dir():
+        raise ValueError(f"download directory is not a real directory: {current}")
+    for directory in reversed(missing):
+        directory.mkdir()
+    dest = writable_artifact_path(paper_dir, "source.pdf")
 
     user_agent = cfg.get("user_agent", "DrBrain/0.1")
     timeout = cfg.get("timeout_per_fetch", 60)
@@ -181,15 +211,17 @@ def download_pdf(url: str, paper_dir: Path, fetch_config: dict | None = None) ->
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "")
 
-        # Detect PDF by reading first bytes (some servers serve incorrect content-type)
+        # Detect PDF from a buffered peek where available.  When no peek API is
+        # exposed, retain the first streaming chunk so detection never drops
+        # bytes from the artifact.  ``peek`` does not consume urllib3's buffer,
+        # so it must not also be written below (doing so duplicates the header).
+        stream = None
         peek = resp.raw.peek(5) if hasattr(resp.raw, "peek") else None
+        first_chunk = None
         if peek is None:
-            # Read first 5 bytes from iter_content
-            chunks = []
-            for chunk in resp.iter_content(chunk_size=5):
-                chunks.append(chunk)
-                break
-            peek = b"".join(chunks) if chunks else b""
+            stream = iter(resp.iter_content(chunk_size=8192))
+            first_chunk = next(stream, b"")
+            peek = first_chunk[:5] if first_chunk else b""
 
         is_pdf = False
         if peek and peek[:5] == b"%PDF-":
@@ -201,17 +233,31 @@ def download_pdf(url: str, paper_dir: Path, fetch_config: dict | None = None) ->
             logger.warning(f"Response is not a PDF: {url} (content-type: {content_type})")
             return None
 
-        # Write to disk
-        with open(dest, "wb") as f:
-            if peek and peek[:5] == b"%PDF-":
-                f.write(peek)
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+        # Write to a same-directory temporary file, then publish atomically.
+        # A failed/partial response must never replace a previously complete
+        # source.pdf.
+        fd, tmp_name = tempfile.mkstemp(prefix=".source.pdf.", dir=str(paper_dir))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                if first_chunk:
+                    f.write(first_chunk)
+                if stream is None:
+                    stream = iter(resp.iter_content(chunk_size=8192))
+                for chunk in stream:
+                    if chunk:
+                        f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
 
-        # Verify file written
-        if dest.stat().st_size == 0:
-            dest.unlink(missing_ok=True)
-            return None
+            if os.stat(tmp_name).st_size == 0:
+                os.unlink(tmp_name)
+                return None
+            os.replace(tmp_name, dest)
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
 
         return dest
     except Exception:
@@ -219,11 +265,50 @@ def download_pdf(url: str, paper_dir: Path, fetch_config: dict | None = None) ->
         return None
 
 
+def _resolve_papers_root(cfg: Mapping | dict, papers_root: str | Path | None) -> Path:
+    """Resolve and validate the destination namespace before any network call."""
+    configured_root = papers_root
+    if configured_root is None:
+        configured_root = cfg.get("papers_root")
+    if configured_root is None:
+        dirs = cfg.get("dirs") if hasattr(cfg, "get") else None  # type: ignore[union-attr]
+        if isinstance(dirs, Mapping) or hasattr(dirs, "get"):
+            configured_root = dirs.get("papers")  # type: ignore[union-attr]
+    if configured_root is None:
+        from drbrain.runtime import runtime_root
+
+        configured_root = runtime_root() / "data" / "papers"
+    if isinstance(configured_root, str) and (not configured_root or "\x00" in configured_root):
+        raise ValueError("fetch papers_root must be a non-empty local path")
+    try:
+        papers_root_path = Path(configured_root).expanduser()
+    except (TypeError, ValueError, OSError) as exc:
+        raise ValueError("fetch papers_root must be a valid local path") from exc
+
+    runtime_selector_present = "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ
+    configured_runtime_root = None
+    if "DRBRAIN_ROOT" in os.environ:
+        configured_runtime_root = os.environ["DRBRAIN_ROOT"]
+    elif "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        configured_runtime_root = os.environ["DRBRAIN_RUNTIME_ROOT"]
+    if runtime_selector_present or not papers_root_path.is_absolute():
+        from drbrain.runtime import RuntimeContext
+
+        # Passing ``None`` lets RuntimeContext inspect the inherited selector;
+        # an explicitly empty selector therefore raises before network I/O.
+        runtime = RuntimeContext.create(
+            None if configured_runtime_root == "" else configured_runtime_root
+        )
+        papers_root_path = runtime.assert_within_root(papers_root_path, label="fetch papers_root")
+    return papers_root_path
+
+
 def fetch_paper(
     doi: str | None = None,
     title: str | None = None,
     arxiv_id: str | None = None,
     fetch_config: dict | None = None,
+    papers_root: str | Path | None = None,
 ) -> dict | None:
     """Fetch a paper: find PDF -> download -> return metadata for ingest.
 
@@ -231,6 +316,11 @@ def fetch_paper(
     Returns None if PDF cannot be acquired.
     """
     cfg = fetch_config or {}
+
+    # Validate the write namespace first.  Invalid roots must fail without
+    # probing provider APIs, which may populate caches or leak credentials in
+    # request logs before the eventual path error is reported.
+    papers_root_path = _resolve_papers_root(cfg, papers_root)
 
     # Resolve PDF URL through fallback stages
     pdf_url = resolve_pdf_url(doi=doi, title=title, arxiv_id=arxiv_id, fetch_config=cfg)
@@ -250,8 +340,7 @@ def fetch_paper(
     # Download PDF to paper directory
     from drbrain.storage.paths import paper_dir
 
-    papers_root = Path(cfg.get("papers_root", "data/papers"))
-    pdir = paper_dir(papers_root, meta["local_id"])
+    pdir = paper_dir(papers_root_path, meta["local_id"])
 
     pdf_path = download_pdf(pdf_url, pdir, cfg)
     if not pdf_path:
@@ -278,7 +367,23 @@ def _resolve_metadata(
     The local_id assigned here is preliminary and will be replaced by
     the dedup engine during proper ingestion.
     """
-    local_id = f"p{uuid.uuid4().hex[:6]}"
+
+    def build_metadata(
+        *, title_value: str, year_value: int | None, doi_value: str | None, arxiv_value: str | None
+    ) -> dict:
+        ids = PaperIDs(doi=doi_value, arxiv=arxiv_value).normalized()
+        return {
+            "local_id": canonical_paper_id(
+                ids,
+                title=title_value,
+                year=year_value,
+                source_key=doi_value or arxiv_value or title_value or "metadata-input",
+            ),
+            "title": title_value,
+            "year": year_value,
+            "doi": ids.doi,
+            "arxiv": ids.arxiv,
+        }
 
     if doi:
         try:
@@ -286,13 +391,12 @@ def _resolve_metadata(
 
             data = get_work_by_doi(doi)
             if data:
-                return {
-                    "local_id": local_id,
-                    "title": data.get("title", ""),
-                    "year": data.get("publication_year"),
-                    "doi": doi,
-                    "arxiv": None,
-                }
+                return build_metadata(
+                    title_value=data.get("title", ""),
+                    year_value=data.get("publication_year"),
+                    doi_value=doi,
+                    arxiv_value=None,
+                )
         except Exception:
             pass
 
@@ -302,13 +406,12 @@ def _resolve_metadata(
 
             title_result, year = _fetch_arxiv_metadata(arxiv_id)
             if title_result:
-                return {
-                    "local_id": local_id,
-                    "title": title_result,
-                    "year": year,
-                    "doi": None,
-                    "arxiv": arxiv_id,
-                }
+                return build_metadata(
+                    title_value=title_result,
+                    year_value=year,
+                    doi_value=None,
+                    arxiv_value=arxiv_id,
+                )
         except Exception:
             pass
 
@@ -318,13 +421,12 @@ def _resolve_metadata(
 
             data = search_work_by_title(title)
             if data:
-                return {
-                    "local_id": local_id,
-                    "title": data.get("title", title),
-                    "year": data.get("publication_year"),
-                    "doi": data.get("doi"),
-                    "arxiv": None,
-                }
+                return build_metadata(
+                    title_value=data.get("title", title),
+                    year_value=data.get("publication_year"),
+                    doi_value=data.get("doi"),
+                    arxiv_value=None,
+                )
         except Exception:
             pass
 

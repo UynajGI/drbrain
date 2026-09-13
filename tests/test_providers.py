@@ -13,8 +13,10 @@ from drbrain.providers.webtools import (
     _get_webextract_timeout,
     _get_webextract_url,
     _slugify_title,
+    canonical_web_url,
     check_webextract_service,
     extract_web,
+    web_local_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -137,6 +139,17 @@ class TestSlugifyTitle:
     def test_strips_leading_trailing_dashes(self):
         slug = _slugify_title("  --hello--  ", "http://x.com")
         assert slug == "hello"
+
+    def test_canonical_web_url_ignores_cosmetic_variants(self):
+        assert canonical_web_url("HTTPS://Example.COM:443/paper/?b=2#section") == (
+            "https://example.com/paper?b=2"
+        )
+
+    def test_web_local_id_is_url_stable(self):
+        first = web_local_id("https://Example.COM/paper/")
+        second = web_local_id("https://example.com/paper")
+        assert first == second
+        assert first != web_local_id("https://example.com/other")
 
 
 # ===================================================================
@@ -290,6 +303,16 @@ class TestExtractWebErrors:
         # Empty body → json.loads("") → should be handled gracefully
         assert isinstance(result, dict)
         assert result["url"] == "https://example.com"
+
+    @mock.patch("drbrain.providers.webtools.urlopen")
+    def test_error_body_redacts_credential_fields(self, mock_open):
+        secret = "sk-webextract-secret"
+        mock_open.side_effect = _make_http_error(502, f'{{"api_key":"{secret}"}}')
+
+        result = extract_web("https://example.com")
+
+        assert secret not in result["error"]
+        assert "[REDACTED]" in result["error"]
 
     @mock.patch("drbrain.providers.webtools.urlopen")
     def test_error_with_title_preserves_title(self, mock_open):

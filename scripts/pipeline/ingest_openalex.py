@@ -146,7 +146,7 @@ def main() -> None:
             for i, task in enumerate(pending, 1):
                 rec = _worker(task)
                 if not args.no_db:
-                    _write_db(rec, db)
+                    _write_db(rec, db, cfg)
                 stats["ok" if rec["ok"] else "fail"] += 1
                 manifest_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 manifest_f.flush()
@@ -164,7 +164,7 @@ def main() -> None:
             with concurrent.futures.ProcessPoolExecutor(max_workers=concurrency) as ex:
                 for i, rec in enumerate(ex.map(_worker, pending), 1):
                     if not args.no_db:
-                        _write_db(rec, db)
+                        _write_db(rec, db, cfg)
                     stats["ok" if rec["ok"] else "fail"] += 1
                     manifest_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     manifest_f.flush()

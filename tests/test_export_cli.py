@@ -869,3 +869,23 @@ def test_metrics_text_output_no_data(tmp_path, monkeypatch):
     with mock.patch("typer.echo") as mock_echo:
         metrics_cmd(ctx, json_output=False)
         mock_echo.assert_any_call("\nNo metrics recorded yet. Search and read papers to populate.")
+
+
+def test_metrics_cmd_scopes_database_to_runtime_root(tmp_path, monkeypatch):
+    """Metrics writes must stay in the selected worktree namespace."""
+    from drbrain.cli.export_commands import metrics_cmd
+    from drbrain.runtime import RuntimeContext
+
+    runtime_root = tmp_path / "runtime"
+    caller_cwd = tmp_path / "caller"
+    runtime_root.mkdir()
+    caller_cwd.mkdir()
+    monkeypatch.setenv("DRBRAIN_ROOT", str(runtime_root))
+    monkeypatch.chdir(caller_cwd)
+    ctx = _make_ctx(_make_minimal_config(":memory:"))
+    ctx.obj["runtime"] = RuntimeContext.create(runtime_root, run_id="metrics-test")
+
+    metrics_cmd(ctx, json_output=True)
+
+    assert (runtime_root / "data" / "metrics.db").exists()
+    assert not (caller_cwd / "data" / "metrics.db").exists()

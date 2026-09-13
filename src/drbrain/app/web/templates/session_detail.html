@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set session = data.session %}
+{% block title %}{{ session.title or '会话' }} · DrBrain 工作台{% endblock %}
+{% block content %}
+<nav class="breadcrumbs" aria-label="面包屑">
+  <a class="link" href="/sessions?project_id={{ project.project_id }}">会话</a>
+  <span aria-hidden="true">/</span>
+  <span class="muted">{{ session.session_id | short(24) }}</span>
+</nav>
+
+<header class="page-head">
+  <div>
+    <h1>{{ session.title or session.session_id }}</h1>
+    <p class="muted small">创建 {{ session.created_at | ts }} · 最近更新 {{ session.updated_at | ts }} · {{ data.messages | length }} 条消息</p>
+  </div>
+</header>
+
+{% if synced == 'promoted' %}
+<div class="alert alert-ok" role="status">已提升为项目记忆。</div>
+{% endif %}
+
+<div class="session-layout">
+  <section class="card session-room" aria-labelledby="chat-title">
+    <h2 id="chat-title" class="sr-only">对话</h2>
+    <ul id="messages" class="messages">
+      {% for message in data.messages %}
+        {% if message.role == 'system' %}
+        <li class="message message-system message-collapsed" data-seq="{{ message.seq }}">
+          <details>
+            <summary>系统提示词</summary>
+            <div class="message-body">{{ message.content }}</div>
+          </details>
+        </li>
+        {% else %}
+        {{ m.message_block(message) }}
+        {% endif %}
+      {% endfor %}
+    </ul>
+    <div id="chat-alerts" aria-live="polite"></div>
+    <form id="chat-form" method="post" action="/sessions/{{ session.session_id }}/chat"
+          hx-post="/sessions/{{ session.session_id }}/chat" hx-target="#messages" hx-swap="beforeend">
+      {{ m.csrf_field(csrf_token) }}
+      <input type="hidden" name="project_id" value="{{ project.project_id }}">
+      <div class="form-row">
+        <label class="field-label" for="question">问题</label>
+        <textarea class="input" id="question" name="question" rows="3" required
+                  placeholder="例如：这些文献中平带形成的共同机制是什么？"></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" data-submit-once>发送</button>
+        <span class="muted small">回答写入会话记录，可跨刷新继续。</span>
+      </div>
+    </form>
+  </section>
+
+  <div class="session-side">
+    <section class="card" aria-labelledby="run-start-title">
+      <h2 id="run-start-title">发起研究运行</h2>
+      <form method="post" action="/sessions/{{ session.session_id }}/runs">
+        {{ m.csrf_field(csrf_token) }}
+        <input type="hidden" name="project_id" value="{{ project.project_id }}">
+        <input type="hidden" name="client_request_id" value="{{ client_request_id }}">
+        <div class="form-row">
+          <label class="field-label" for="topic">研究目标</label>
+          <input class="input" type="text" id="topic" name="topic" required placeholder="用一句话描述要研究的问题">
+        </div>
+        <div class="form-row">
+          <label class="field-label" for="max_cycles">最大轮数</label>
+          <input class="input" type="number" id="max_cycles" name="max_cycles" min="1" max="100" placeholder="使用配置默认值">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" data-submit-once>启动运行</button>
+        <p class="field-hint">同一会话中重复提交相同目标会恢复同一条持久运行（按 项目 + 会话 + 目标 去重）；刷新页面后再次提交同样如此。</p>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="memory-title">
+      <div class="card-head">
+        <h2 id="memory-title">记忆</h2>
+        <span class="muted small">按来源分层</span>
+      </div>
+      {% if data.memory.project %}
+      <h3 class="subhead">项目记忆（本会话继承）</h3>
+      <ul class="memory-list">
+        {% for entry in data.memory.project %}{{ m.memory_entry(entry, csrf_token, project.project_id) }}{% endfor %}
+      </ul>
+      {% endif %}
+      {% if data.memory.session %}
+      <h3 class="subhead">会话 / 运行记忆</h3>
+      <ul class="memory-list">
+        {% for entry in data.memory.session %}{{ m.memory_entry(entry, csrf_token, project.project_id, promotable=True) }}{% endfor %}
+      </ul>
+      {% endif %}
+      {% if not data.memory.project and not data.memory.session %}
+      <p class="muted">还没有记忆条目。运行落幕并同步后，裁决会带着 run_id 与证据写回这里。</p>
+      {% endif %}
+    </section>
+
+    <section class="card" aria-labelledby="session-runs-title">
+      <div class="card-head">
+        <h2 id="session-runs-title">本会话的运行</h2>
+        <span class="muted small">{{ data.runs | length }} 条</span>
+      </div>
+      {% if data.runs %}
+      <ul class="list">
+        {% for run in data.runs %}
+        <li class="list-row">
+          <div class="list-main">
+            <a class="link strong" href="/runs/{{ run.run_id }}?project_id={{ project.project_id }}">{{ run.topic }}</a>
+            <span class="muted small">{{ run.updated_at | ts }}</span>
+          </div>
+          {{ m.status_badge(run.display_status or run.status) }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">尚未发起运行。</p>
+      {% endif %}
+    </section>
+  </div>
+</div>
+{% endblock %}

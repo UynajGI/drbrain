@@ -1,0 +1,3 @@
+{% import "_macros.html" as m %}
+{% for event in events %}{{ m.event_row(event) }}{% endfor %}
+{% if not events %}<li class="muted small event-empty">没有更多事件。</li>{% endif %}

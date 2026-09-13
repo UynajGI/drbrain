@@ -445,6 +445,33 @@ class TestTranslatePaper:
         # No output file written
         assert not (paper_dir / "paper_zh.md").exists()
 
+    def test_rejects_symlinked_translation_workdir(self, tmp_path):
+        """A checkpoint directory alias must never be read or removed."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text("Hello world content.")
+        external = tmp_path / "external"
+        external.mkdir()
+        (external / "state.json").write_text("{}")
+        _translation_workdir(paper_dir, "zh").symlink_to(external, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="symlink"):
+            translate_paper(paper_dir, models=[], target_lang="zh")
+        assert (external / "state.json").read_text() == "{}"
+
+    def test_rejects_symlinked_translation_output(self, tmp_path):
+        """A stale output symlink cannot redirect an atomic publication."""
+        paper_dir = tmp_path / "papers" / "test"
+        paper_dir.mkdir(parents=True)
+        (paper_dir / "raw.md").write_text("Hello world content.")
+        external = tmp_path / "external.md"
+        external.write_text("keep")
+        (paper_dir / "paper_zh.md").symlink_to(external)
+
+        with pytest.raises(ValueError, match="symlink"):
+            translate_paper(paper_dir, models=[], target_lang="zh")
+        assert external.read_text() == "keep"
+
 
 # ---------------------------------------------------------------------------
 # detect_language tests

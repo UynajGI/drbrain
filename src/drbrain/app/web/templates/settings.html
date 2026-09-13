@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}设置 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>设置</h1>
+    <p class="muted">脱敏后的有效配置、登录态与审计。密钥只显示引用与状态，不回显明文。</p>
+  </div>
+</header>
+
+{% if new_token %}
+<section class="card token-card" aria-labelledby="token-title">
+  <h2 id="token-title">新的访问令牌（仅显示一次）</h2>
+  <p class="alert alert-warn">旧令牌与所有登录态已失效。请立即保存新令牌；离开本页后无法再次查看。</p>
+  <pre class="raw token-value" id="new-token">{{ new_token }}</pre>
+  <p class="muted small">它也已写入本机 <code>config/webui_token</code>（0600）。</p>
+  <a class="btn btn-primary" href="/login">重新登录</a>
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="avail-title">
+  <h2 id="avail-title">能力状态</h2>
+  {% set av = view.availability %}
+  <ul class="checklist">
+    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置' }}</li>
+    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用' }}</li>
+    <li class="{{ 'is-ok' if av.autoresearch else 'is-off' }}">Autoresearch：{{ '已启用' if av.autoresearch else '未启用' }}</li>
+    <li>文献：{{ av.papers }} 篇</li>
+  </ul>
+</section>
+
+<section class="card" aria-labelledby="sessions-title">
+  <h2 id="sessions-title">登录会话</h2>
+  {% if view.login_sessions %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th scope="col">会话</th><th scope="col">来源</th><th scope="col">最近活跃</th><th scope="col">过期时间</th></tr></thead>
+      <tbody>
+        {% for s in view.login_sessions %}
+        <tr>
+          <td><code>{{ s.session_id | short(20) }}</code></td>
+          <td>{{ s.remote_addr or '—' }}</td>
+          <td>{{ s.last_seen_at | ts }}</td>
+          <td>{{ s.expires_at | ts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted">没有活跃登录会话。</p>
+  {% endif %}
+</section>
+
+<section class="card" aria-labelledby="config-title">
+  <h2 id="config-title">有效配置（脱敏）</h2>
+  <div class="config-sections">
+    {% for key, value in view.config | dictsort %}
+    <details>
+      <summary>{{ key }}</summary>
+      <pre class="raw">{{ value | tojson(indent=2) }}</pre>
+    </details>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="card" aria-labelledby="audit-title">
+  <h2 id="audit-title">界面审计</h2>
+  {% if view.audit %}
+  <ul class="audit">
+    {% for entry in view.audit %}
+    <li><span class="muted small">{{ entry.created_at | ts }}</span> <code>{{ entry.event }}</code> {{ entry.detail }}{% if entry.remote_addr %} <span class="muted small">· {{ entry.remote_addr }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">暂无记录。</p>
+  {% endif %}
+</section>
+
+<section class="card danger-zone" aria-labelledby="rotate-title">
+  <h2 id="rotate-title">重置访问令牌</h2>
+  <p>重置会生成新令牌并撤销所有登录会话；已打开的事件流会停止并要求重新登录。</p>
+  <form method="post" action="/settings/token/rotate" data-confirm="重置后当前登录立即失效，确定继续？">
+    {{ m.csrf_field(csrf_token) }}
+    <label class="checkbox">
+      <input type="checkbox" name="confirm" value="yes" required>
+      我确认要让旧令牌与全部登录态失效
+    </label>
+    <button type="submit" class="btn btn-danger" data-submit-once>重置令牌</button>
+  </form>
+</section>
+{% endblock %}

@@ -3,10 +3,23 @@
 from __future__ import annotations
 
 import json
+from typing import NoReturn
 
 import typer
 
+from drbrain.security import safe_error
+
 ws_app = typer.Typer(help="Manage paper workspaces")
+
+
+def _workspace_error(exc: Exception, *, json_output: bool) -> NoReturn:
+    """Emit a bounded, redacted workspace error and stop the command."""
+    message = safe_error(exc)
+    if json_output:
+        typer.echo(json.dumps({"error": message}))
+    else:
+        typer.echo(message, err=True)
+    raise typer.Exit(1) from exc
 
 
 @ws_app.command("create")
@@ -25,11 +38,7 @@ def ws_create_cmd(
         else:
             typer.echo(f"Workspace created: {name}")
     except WorkspaceError as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
 
 
 @ws_app.command("add")
@@ -51,11 +60,7 @@ def ws_add_cmd(
                 f"Added {len(local_ids)} paper(s) to '{name}' ({(ws or {}).get('paper_count', 0)} total)"
             )
     except WorkspaceError as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
 
 
 @ws_app.command("remove")
@@ -67,8 +72,11 @@ def ws_remove_cmd(
     """Remove papers from a workspace."""
     from drbrain.storage.workspace import get_workspace, remove_papers
 
-    remove_papers(name, local_ids)
-    ws = get_workspace(name)
+    try:
+        remove_papers(name, local_ids)
+        ws = get_workspace(name)
+    except Exception as exc:  # noqa: BLE001 - keep CLI errors bounded
+        _workspace_error(exc, json_output=json_output)
     if json_output:
         typer.echo(json.dumps(ws, indent=2))
     else:
@@ -150,25 +158,48 @@ def ws_delete_cmd(
 
 @ws_app.command("rename")
 def ws_rename_cmd(
+    ctx: typer.Context,
     old_name: str = typer.Argument(..., help="Current workspace name"),
     new_name: str = typer.Argument(..., help="New workspace name"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ):
-    """Rename a workspace."""
+    """Rename a workspace (its project keeps its stable id)."""
+    from pathlib import Path
+
     from drbrain.storage.workspace import rename_workspace
 
     try:
         new_path = rename_workspace(old_name, new_name)
-        if json_output:
-            typer.echo(json.dumps({"renamed": old_name, "to": new_name, "path": str(new_path)}))
-        else:
-            typer.echo(f"Workspace renamed: {old_name} -> {new_name}")
     except (ValueError, FileNotFoundError, FileExistsError) as e:
-        if json_output:
-            typer.echo(json.dumps({"error": str(e)}))
-        else:
-            typer.echo(str(e), err=True)
-        raise typer.Exit(1)
+        _workspace_error(e, json_output=json_output)
+
+    # Best-effort: re-point the project row so the project id, its sessions and
+    # its runs survive the rename.  A missing/absent database is not an error.
+    project_id: str | None = None
+    obj = getattr(ctx, "obj", None)
+    cfg = obj.get("config") if isinstance(obj, dict) else None
+    if cfg is not None:
+        try:
+            from drbrain.storage.database import Database
+
+            db_path = cfg["db"]["path"]
+            if str(db_path) != ":memory:" and Path(db_path).is_file():
+                db = Database(db_path)
+                try:
+                    project_id = db.rename_workspace_project(old_name, new_name)
+                finally:
+                    db.close()
+        except Exception:  # noqa: BLE001 - the rename itself already succeeded
+            project_id = None
+
+    if json_output:
+        payload = {"renamed": old_name, "to": new_name, "path": str(new_path)}
+        if project_id:
+            payload["project_id"] = project_id
+        typer.echo(json.dumps(payload))
+    else:
+        suffix = f" (project {project_id} preserved)" if project_id else ""
+        typer.echo(f"Workspace renamed: {old_name} -> {new_name}{suffix}")
 
 
 # -- repair + import commands --

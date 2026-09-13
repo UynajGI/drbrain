@@ -6,13 +6,26 @@ from unittest import mock
 
 import pytest
 
+
+def _client(response=None, side_effect=None, error=None):
+    """Async OpenAI client mock wired to the reasoner's factory seam."""
+    client = mock.MagicMock()
+    if error is not None:
+        client.chat.completions.create = mock.AsyncMock(side_effect=error)
+    elif side_effect is not None:
+        client.chat.completions.create = mock.AsyncMock(side_effect=side_effect)
+    else:
+        client.chat.completions.create = mock.AsyncMock(return_value=response)
+    return client
+
+
 # ---------------------------------------------------------------------------
-# Helpers — build fake litellm response objects
+# Helpers — build fake OpenAI SDK response objects
 # ---------------------------------------------------------------------------
 
 
 def _make_response(content=None, tool_calls=None):
-    """Build a fake litellm ``ChatCompletion`` response.
+    """Build a fake OpenAI ``ChatCompletion`` response.
 
     *content* is the assistant's text reply (used when no tool calls).
     *tool_calls* is a list of dicts ``{"name": str, "arguments": str}``.
@@ -39,10 +52,10 @@ def _make_response(content=None, tool_calls=None):
     return resp
 
 
-# NOTE: litellm is imported *inside* the ``reason()`` method body (line 98 of
-# reasoner.py), so patching ``drbrain.extractor.reasoner.litellm`` would fail
-# because the module does not have a top-level ``litellm`` attribute.
-# Instead we patch ``litellm.acompletion`` directly at the package level.
+# NOTE: the OpenAI client factory is imported *inside* the ``reason()``
+# method body, so we patch the single factory seam
+# (``drbrain.extractor.llm_client._aopenai_client``) instead of any
+# reasoner-module attribute.
 
 
 # ---------------------------------------------------------------------------
@@ -77,13 +90,14 @@ async def test_reason_single_turn():
 
     with (
         mock.patch(
-            "litellm.acompletion", new_callable=mock.AsyncMock, return_value=fake_response
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(response=fake_response),
         ) as mock_acompletion,
     ):
         result = await agent.reason("What is attention?", max_turns=5)
 
     assert result == "Attention is a mechanism in neural networks."
-    mock_acompletion.assert_awaited_once()
+    mock_acompletion.return_value.chat.completions.create.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +122,8 @@ async def test_reason_multi_turn():
 
     with (
         mock.patch(
-            "litellm.acompletion",
-            new_callable=mock.AsyncMock,
-            side_effect=[tool_response, final_response],
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(side_effect=[tool_response, final_response]),
         ) as mock_acompletion,
         mock.patch.object(
             agent,
@@ -121,7 +134,7 @@ async def test_reason_multi_turn():
         result = await agent.reason("What is a transformer?", max_turns=5)
 
     assert result == "Transformers are a type of neural architecture."
-    assert mock_acompletion.await_count == 2
+    assert mock_acompletion.return_value.chat.completions.create.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -144,9 +157,8 @@ async def test_reason_max_turns():
 
     with (
         mock.patch(
-            "litellm.acompletion",
-            new_callable=mock.AsyncMock,
-            return_value=tool_response,
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(response=tool_response),
         ) as mock_acompletion,
         mock.patch.object(agent, "_get_neighbors", return_value=[]),
     ):
@@ -154,17 +166,17 @@ async def test_reason_max_turns():
 
     assert result == "Unable to answer after maximum reasoning turns."
     # With max_turns=2, acompletion is called exactly twice
-    assert mock_acompletion.await_count == 2
+    assert mock_acompletion.return_value.chat.completions.create.await_count == 2
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Exception in litellm → returns error string
+# Test 5: exception in the LLM call returns an error string
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_reason_litellm_error():
-    """Exceptions from litellm.acompletion are caught and returned as error."""
+async def test_reason_llm_error():
+    """Exceptions from the LLM call are caught and returned as error."""
     from drbrain.extractor.reasoner import ReasonerAgent
 
     models = [{"provider": "openai", "model": "gpt-4o"}]
@@ -172,9 +184,8 @@ async def test_reason_litellm_error():
 
     with (
         mock.patch(
-            "litellm.acompletion",
-            new_callable=mock.AsyncMock,
-            side_effect=RuntimeError("API down"),
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(error=RuntimeError("API down")),
         ),
     ):
         result = await agent.reason("Test question")
@@ -203,9 +214,8 @@ async def test_reason_unknown_tool():
 
     with (
         mock.patch(
-            "litellm.acompletion",
-            new_callable=mock.AsyncMock,
-            side_effect=[unknown_tool_response, final_response],
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(side_effect=[unknown_tool_response, final_response]),
         ),
     ):
         result = await agent.reason("Question", max_turns=5)
@@ -230,12 +240,13 @@ async def test_reason_closure_context_in_system_prompt():
 
     with (
         mock.patch(
-            "litellm.acompletion", new_callable=mock.AsyncMock, return_value=fake_response
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(response=fake_response),
         ) as mock_acompletion,
     ):
         await agent.reason("Test", max_turns=1)
 
-    call_kwargs = mock_acompletion.call_args[1]
+    call_kwargs = mock_acompletion.return_value.chat.completions.create.call_args[1]
     system_msg = call_kwargs["messages"][0]["content"]
     assert "inferred" in system_msg
     assert "A --[inferred: subsumes]--> B" in system_msg
@@ -264,9 +275,8 @@ async def test_reason_multiple_tools_single_turn():
 
     with (
         mock.patch(
-            "litellm.acompletion",
-            new_callable=mock.AsyncMock,
-            side_effect=[multi_tool_response, final_response],
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(side_effect=[multi_tool_response, final_response]),
         ) as mock_acompletion,
         mock.patch.object(
             agent,
@@ -284,17 +294,17 @@ async def test_reason_multiple_tools_single_turn():
         result = await agent.reason("What is a transformer?", max_turns=5)
 
     assert result == "Combined answer using both tools."
-    assert mock_acompletion.await_count == 2
+    assert mock_acompletion.return_value.chat.completions.create.await_count == 2
 
 
 # ---------------------------------------------------------------------------
-# Test 9: model config with api_key and base_url forwarded to litellm
+# Test 9: model config api_key and base_url forwarded to the OpenAI client factory
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_reason_model_config_forwarded():
-    """api_key and base_url from model config are passed to litellm.acompletion."""
+    """api_key and base_url from model config reach the OpenAI client factory."""
     from drbrain.extractor.reasoner import ReasonerAgent
 
     models = [
@@ -310,14 +320,14 @@ async def test_reason_model_config_forwarded():
     fake_response = _make_response(content="ok")
     with (
         mock.patch(
-            "litellm.acompletion", new_callable=mock.AsyncMock, return_value=fake_response
+            "drbrain.extractor.llm_client._aopenai_client",
+            return_value=_client(response=fake_response),
         ) as mock_acompletion,
     ):
         await agent.reason("Test", max_turns=1)
 
-    call_kwargs = mock_acompletion.call_args[1]
-    assert call_kwargs["api_key"] == "sk-test"
-    assert call_kwargs["api_base"] == "https://example.com/v1"
-    assert call_kwargs["model"] == "openai/gpt-4o"
+    mock_acompletion.assert_called_once_with("sk-test", "https://example.com/v1")
+    call_kwargs = mock_acompletion.return_value.chat.completions.create.call_args[1]
+    assert call_kwargs["model"] == "gpt-4o"  # bare wire name; routing via base_url
     assert call_kwargs["temperature"] == 0.3
     assert call_kwargs["max_tokens"] == 1024

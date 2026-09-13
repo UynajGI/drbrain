@@ -2,6 +2,7 @@
 
 > 追加式记录:每个工单完成后追加一节。设计文档:`llamaindex-integration-design.md`。
 > 分支:`feat/llamaindex-upgrade-research`(用户决策 2026-08-12:直接引入 LlamaIndex 依赖,替换同质实现,保留 drbrain 独有资产)。
+> 后续阶段(契约收敛、SQL 快照、片段定位):见 [rag-layer-completion.md](rag-layer-completion.md)(2026-09-12)。
 
 ---
 

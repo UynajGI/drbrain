@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,6 +12,41 @@ import yaml
 from loguru import logger
 
 from drbrain.cli._setup_i18n import t as _t
+
+
+def _write_private_yaml(path: Path, data: dict) -> Path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    os.chmod(path, 0o600)
+    return path
+
+
+def _config_local_path() -> Path:
+    """Resolve setup's writable config inside an explicitly selected root."""
+    if "DRBRAIN_ROOT" in __import__("os").environ:
+        from drbrain.runtime import runtime_root
+
+        return runtime_root() / "config.local.yaml"
+    return Path("config.local.yaml")
+
+
+def _ensure_base_config() -> Path:
+    """Bootstrap a minimal base config in a fresh runtime root.
+
+    Setup is the only command allowed to start without config.yaml, so it
+    must be able to seed the skeleton that ``load_config`` resolves paths
+    against; every other command fails closed on a missing base config.
+    """
+    if "DRBRAIN_ROOT" in os.environ:
+        from drbrain.runtime import runtime_root
+
+        base = runtime_root() / "config.yaml"
+    else:
+        base = Path("config.yaml")
+    if not base.exists():
+        base.write_text("db:\n  path: data/drbrain.db\n", encoding="utf-8")
+    return base
 
 
 def _check_python_package(module: str) -> bool:
@@ -85,10 +121,12 @@ def generate_local_config(
     config["embed"] = embed_cfg
 
     out = Path(output_path)
+    if "DRBRAIN_ROOT" in os.environ:
+        from drbrain.runtime import RuntimeContext
+
+        out = RuntimeContext.create().assert_within_root(out, label="config.local.yaml")
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-    return out
+    return _write_private_yaml(out, config)
 
 
 def _ensure_directories(cfg: dict) -> int:
@@ -110,6 +148,10 @@ def _ensure_directories(cfg: dict) -> int:
     created = 0
     for d in dir_paths:
         p = Path(d)
+        if "DRBRAIN_ROOT" in os.environ:
+            from drbrain.runtime import RuntimeContext
+
+            p = RuntimeContext.create().assert_within_root(p, label=f"setup directory {d!r}")
         if not p.exists():
             p.mkdir(parents=True, exist_ok=True)
             created += 1
@@ -127,11 +169,12 @@ def _brief_validation(cfg: dict) -> tuple[list[str], list[str]]:
     # Map Python module names to display names from install hints
     _module_to_hint_key: dict[str, str] = {
         "pymupdf": "pymupdf",
-        "litellm": "litellm",
+        "openai": "openai",
         "typer": "typer",
         "rich": "rich",
         "yaml": "pyyaml",
         "pydantic": "pydantic",
+        "tiktoken": "tiktoken",
         "pyalex": "pyalex",
         "arxiv": "arxiv",
         "pymupdf4llm": "pymupdf4llm",
@@ -235,22 +278,18 @@ def setup_cmd(
             typer.echo("Passwords don't match.", err=True)
             raise typer.Exit(1)
 
-        from pathlib import Path
-
-        import yaml
-
-        config_path = Path("config.local.yaml")
+        config_path = _config_local_path()
         if config_path.exists():
             local = yaml.safe_load(config_path.read_text()) or {}
         else:
             local = {}
         local.setdefault("admin", {})["password_hash"] = hash_password(new_pw)
-        config_path.write_text(yaml.dump(local, default_flow_style=False, allow_unicode=True))
+        _write_private_yaml(config_path, local)
         typer.echo("Admin password updated.")
         return
 
     # If config.local.yaml already exists, offer to re-run or validate only
-    if Path("config.local.yaml").exists() and not quick:
+    if _config_local_path().exists() and not quick:
         typer.echo("config.local.yaml already exists.\n")
         choice = typer.prompt(
             "  [r]e-run setup  [v]alidate environment only  [q]uit",
@@ -283,8 +322,6 @@ def setup_cmd(
 
     # ── Quick mode: skip prompts, read from env vars ──
     if quick:
-        import os
-
         llm_provider = os.getenv("DRBRAIN_LLM_PROVIDER", "openai")
         llm_model = os.getenv("DRBRAIN_LLM_MODEL", "")
         llm_key = os.getenv(
@@ -342,10 +379,10 @@ def setup_cmd(
         elif embed_provider == "local" and embed_model:
             config["embed"]["model"] = embed_model  # type: ignore[index]  # pre-existing: see mypy debt
 
-        out = Path("config.local.yaml")
+        _ensure_base_config()
+        out = _config_local_path()
         out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "w") as f:
-            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        _write_private_yaml(out, config)
         typer.echo(_t("quick_config_written", "en", path=str(out)))
 
         from drbrain.config import load_config
@@ -381,6 +418,14 @@ def setup_cmd(
     model = typer.prompt(f"  {_t('llm_model', lang)}", default="gpt-4o")
     api_key = typer.prompt(f"  {_t('llm_api_key', lang)}", default="", hide_input=True)
     base_url = typer.prompt(f"  {_t('llm_base_url', lang)}", default="", show_default=False)
+    # Only openai/deepseek/ollama have built-in OpenAI-compatible endpoints;
+    # anything else (e.g. anthropic) must come with an explicit base_url.
+    # Normalize like resolve_base_url does, so "OpenAI" routes without a URL.
+    while provider.strip().lower() not in ("openai", "deepseek", "ollama") and not base_url:
+        typer.echo(
+            f"  [!] {provider} has no built-in OpenAI-compatible endpoint — base_url is required"
+        )
+        base_url = typer.prompt(f"  {_t('llm_base_url', lang)}", default="", show_default=False)
     base_url = base_url if base_url else None
     models: list[dict] = [
         {
@@ -549,10 +594,10 @@ def setup_cmd(
         embed_cfg["model"] = embed_model
     config["embed"] = embed_cfg
 
-    out = Path("config.local.yaml")
+    _ensure_base_config()
+    out = _config_local_path()
     out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    _write_private_yaml(out, config)
     typer.echo(f"\n  {_t('review_config_written', lang)} {out}")
 
     # ── Initialize environment ──

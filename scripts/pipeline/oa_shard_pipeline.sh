@@ -3,11 +3,13 @@
 # 用法: bash scripts/pipeline/oa_shard_pipeline.sh <shard_id> <shard_db> <embed_config>
 # 每步幂等断点续传；崩溃重启本脚本即可续跑。失败不 touch DONE。
 set -u
+source "$(dirname "$0")/runtime.sh"
 SHARD_ID="$1"
 SHARD_DB="$2"
 EMBED_CFG="${3:-config.embed1.yaml}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+runtime_init_selected_root "$ROOT"
 
 mkdir -p data/shards
 INGEST_MANIFEST="data/shards/oa_shard${SHARD_ID}.ingest.jsonl"

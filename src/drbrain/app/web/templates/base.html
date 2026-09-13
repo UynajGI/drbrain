@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DrBrain 工作台{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:,">
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body hx-headers='{"X-CSRF-Token": "{{ csrf_token }}"}' hx-history="false"
+      data-login-url="/login"
+      {% if project %}data-project-id="{{ project.project_id }}"{% endif %}>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <div class="layout">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">DB</span>
+        <div>
+          <p class="brand-name">DrBrain</p>
+          <p class="brand-sub">科研工作台</p>
+        </div>
+      </div>
+
+      {% if projects %}
+      <div class="project-switcher">
+        <label class="field-label" for="project-select">项目</label>
+        <select id="project-select" data-project-switcher>
+          {% for p in projects %}
+          <option value="{{ p.project_id }}" {% if project and p.project_id == project.project_id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+        {% if project %}
+        <p class="muted small">
+          {{ project.project_id | short(18) }}
+          {% if project.workspace_name %}· 语料 {{ project.workspace_name }}{% else %}· 全部文献{% endif %}
+        </p>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <nav class="nav" aria-label="页面">
+        {% set pid = project.project_id if project else default_project_id %}
+        <a class="nav-item {% if nav == 'dashboard' %}is-active{% endif %}" href="/?project_id={{ pid }}" {% if nav == 'dashboard' %}aria-current="page"{% endif %}>概览</a>
+        <a class="nav-item {% if nav == 'papers' %}is-active{% endif %}" href="/papers?project_id={{ pid }}" {% if nav == 'papers' %}aria-current="page"{% endif %}>文献库</a>
+        <a class="nav-item {% if nav == 'sessions' %}is-active{% endif %}" href="/sessions?project_id={{ pid }}" {% if nav == 'sessions' %}aria-current="page"{% endif %}>会话</a>
+        <a class="nav-item {% if nav == 'runs' %}is-active{% endif %}" href="/runs?project_id={{ pid }}" {% if nav == 'runs' %}aria-current="page"{% endif %}>研究运行</a>
+        <a class="nav-item {% if nav == 'plugins' %}is-active{% endif %}" href="/plugins" {% if nav == 'plugins' %}aria-current="page"{% endif %}>插件</a>
+        <a class="nav-item {% if nav == 'settings' %}is-active{% endif %}" href="/settings" {% if nav == 'settings' %}aria-current="page"{% endif %}>设置</a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <form method="post" action="/logout">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="btn btn-ghost btn-block">退出登录</button>
+        </form>
+      </div>
+    </aside>
+
+    <div class="content-wrap">
+      <main id="main" class="content" tabindex="-1">
+        {% set redirect_error = error_text(request.query_params.get('error_code')) if request else '' %}
+        {% if redirect_error %}
+        <div class="alert alert-bad" role="alert">{{ redirect_error }}</div>
+        {% endif %}
+        {% if error %}<div class="alert alert-bad" role="alert">{{ error }}</div>{% endif %}
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="page-foot muted small">
+        DrBrain 本地工作台 · 数据保存在本机数据库与 ledger
+      </footer>
+    </div>
+  </div>
+</body>
+</html>

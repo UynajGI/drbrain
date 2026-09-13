@@ -1,0 +1,75 @@
+{# Shared bits; keep every macro free of business logic (routes pass models). #}
+{% macro csrf_field(token) -%}
+<input type="hidden" name="csrf_token" value="{{ token }}">
+{%- endmacro %}
+
+{% macro status_badge(value) -%}
+{% set s = value | status %}<span class="badge badge-{{ s.tone }}">{{ s.label }}</span>
+{%- endmacro %}
+
+{% macro cursor_pager(path, project_id, next_cursor, q='', status='', boost_target='') %}
+{% if next_cursor %}
+<nav class="pager" aria-label="分页导航"{% if boost_target %} hx-boost="true" hx-target="{{ boost_target }}" hx-select="{{ boost_target }}" hx-push-url="true"{% endif %}>
+  <a class="btn btn-ghost" rel="next" href="{{ path }}?project_id={{ project_id }}&cursor={{ next_cursor | urlencode }}{% if q %}&q={{ q | urlencode }}{% endif %}{% if status %}&status={{ status }}{% endif %}">下一页 →</a>
+  <span class="pager-info">按时间倒序，仅加载当前页</span>
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro empty_state(title, hint) %}
+<div class="empty">
+  <p class="empty-title">{{ title }}</p>
+  {% if hint %}<p class="empty-hint">{{ hint }}</p>{% endif %}
+</div>
+{% endmacro %}
+
+{% macro event_row(event) %}
+<li class="event" data-seq="{{ event.seq }}">
+  <div class="event-head">
+    <span class="event-seq">#{{ event.seq }}</span>
+    <span class="event-actor">{{ event.actor }}</span>
+    <span class="event-type">{{ event.type }}</span>
+    <time class="muted small">{{ event.created_at | ts }}</time>
+  </div>
+  {% if event.payload %}
+  <details class="event-payload">
+    <summary>payload</summary>
+    <pre>{{ event.payload | tojson(indent=2) }}</pre>
+  </details>
+  {% endif %}
+</li>
+{% endmacro %}
+
+{% macro message_block(message) %}
+<article class="message message-{{ message.role }}" data-seq="{{ message.seq }}">
+  <header class="message-head">
+    <span class="message-role">{{ role_labels.get(message.role, message.role) }}</span>
+    {% if message.tool_name %}<span class="muted small">via {{ message.tool_name }}</span>{% endif %}
+    <time class="muted small">{{ message.created_at | ts }}</time>
+  </header>
+  <div class="message-body">{{ message.content }}</div>
+</article>
+{% endmacro %}
+
+{% macro memory_entry(entry, csrf_token, project_id, promotable=False) %}
+<li class="memory" id="memory-{{ entry.memory_id }}">
+  <div class="memory-head">
+    <span class="layer layer-{{ entry.layer }}">{{ layer_labels.get(entry.layer, entry.layer) }}</span>
+    <span class="muted small">{{ entry.kind }}</span>
+    <time class="muted small">{{ entry.created_at | ts }}</time>
+  </div>
+  <p class="memory-content">{{ entry.content }}</p>
+  <p class="muted small">
+    {% if entry.run_id %}run <a href="/runs/{{ entry.run_id }}?project_id={{ project_id }}">{{ entry.run_id | short }}</a>{% endif %}
+    {% if entry.source_ref %}· 来源 {{ entry.source_ref }}{% endif %}
+  </p>
+  {% if promotable and entry.layer != 'project' %}
+  <form method="post" action="/sessions/{{ entry.session_id }}/memory/promote" class="inline-form">
+    {{ csrf_field(csrf_token) }}
+    <input type="hidden" name="memory_id" value="{{ entry.memory_id }}">
+    <input type="hidden" name="project_id" value="{{ project_id }}">
+    <button type="submit" class="btn btn-small">提升为项目记忆</button>
+  </form>
+  {% endif %}
+</li>
+{% endmacro %}

@@ -57,6 +57,7 @@ def _cfg(
 ) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
+            rag_engine="llamaindex",
             enabled=enabled,
             streaming=streaming,
             similarity_cutoff=cutoff,

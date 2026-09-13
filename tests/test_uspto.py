@@ -328,6 +328,23 @@ class TestUSPTOODPRequestJSON:
 
             _request_json("https://api.uspto.gov/test", api_key="k")
 
+    @mock.patch("drbrain.providers.uspto_odp.urllib.request.urlopen")
+    def test_http_error_redacts_api_key_from_provider_detail(self, mock_open):
+        from urllib.error import HTTPError
+
+        secret = "sk-odp-provider-secret"
+        err = HTTPError("url", 500, "error", {}, None)
+        err.read = mock.MagicMock(return_value=f"api_key={secret}".encode())
+        mock_open.side_effect = err
+
+        with pytest.raises(USPTOAPIError) as raised:
+            from drbrain.providers.uspto_odp import _request_json
+
+            _request_json("https://api.uspto.gov/test", api_key=secret)
+
+        assert secret not in str(raised.value)
+        assert "[REDACTED]" in str(raised.value)
+
 
 # ===================================================================
 # uspto_ppubs — PpubsPatent dataclass

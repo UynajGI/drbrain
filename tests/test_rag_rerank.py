@@ -62,6 +62,7 @@ def _cfg(
 ) -> Config:
     return Config(
         llamaindex=LlamaIndexConfig(
+            rag_engine="llamaindex",
             enabled=True,
             rerank=rerank,
             similarity_cutoff=cutoff,
@@ -254,8 +255,13 @@ def test_rerank_postprocessor_rescores_and_reorders():
     out = pp.postprocess_nodes(nodes, query_bundle=_qb())
     assert [n.node.node_id for n in out] == ["p1:n2", "p1:n3", "p1:n1"]
     assert [n.score for n in out] == pytest.approx([0.9, 0.5, 0.2])
-    # same node objects (metadata/source annotations survive)
-    assert {id(n.node) for n in out} == {id(n.node) for n in nodes}
+    # Preserve source annotations without changing the cached coarse nodes.
+    originals = {n.node.node_id: n.node for n in nodes}
+    for result in out:
+        original = originals[result.node.node_id]
+        assert result.node.text == original.text
+        assert result.node.metadata == {**original.metadata, "score_kind": "rerank"}
+        assert "score_kind" not in original.metadata
     # the reranker saw (query, passage) pairs in coarse order
     assert pp.reranker.calls[0][0] == "test query"
     assert pp.reranker.calls[0][1] == [n.node.text for n in nodes]
@@ -430,13 +436,13 @@ def test_rerank_false_keeps_caller_top_k(monkeypatch):
 
 
 def test_rerank_chain_executes_rerank_cutoff_dedup(monkeypatch):
-    """Offline end-to-end chain: rerank reorders → cutoff drops low-leg node → dedup collapses dup."""
+    """Cutoff uses the reranker score, then dedup keeps its highest-scoring copy."""
     nodes = [
         _fused_node("n1", vector_score=0.9),
         _fused_node("n2", vector_score=0.8),
         _fused_node("n3", vector_score=0.85),
-        _fused_node("n1", vector_score=0.9),  # duplicate of n1 (same node_id)
-        _fused_node("n4", vector_score=0.1),  # below cutoff on the original leg score
+        _fused_node("n2", vector_score=0.8),  # duplicate of n2 (same node_id)
+        _fused_node("n4", vector_score=0.1),  # reranker can rescue a weak vector match
     ]
     # reranker reverses the coarse order
     monkeypatch.setattr(
@@ -445,13 +451,13 @@ def test_rerank_chain_executes_rerank_cutoff_dedup(monkeypatch):
     )
     monkeypatch.setattr(
         "drbrain.rag.rerank.build_reranker",
-        lambda cfg: _FakeReranker(scores=[0.1, 0.9, 0.5, 0.2, 0.7]),
+        lambda cfg: _FakeReranker(scores=[0.1, 0.9, 0.5, 0.8, 0.7]),
     )
     engine = build_query_engine(_cfg(rerank=True, cutoff=0.7), db=None)
     out = engine._apply_node_postprocessors(nodes, _qb())
-    # n2 (0.9) → n3 (0.5) → n1dup (0.2); n4 dropped by cutoff, second n1 dropped by dedup
-    assert [n.node.node_id for n in out] == ["p1:n2", "p1:n3", "p1:n1"]
-    assert [n.score for n in out] == pytest.approx([0.9, 0.5, 0.2])
+    # n1/n3 fail the rerank cutoff; n2's weaker duplicate is removed.
+    assert [n.node.node_id for n in out] == ["p1:n2", "p1:n4"]
+    assert [n.score for n in out] == pytest.approx([0.9, 0.7])
 
 
 # ── rank-comparison statistics (A/B tool helpers) ───────────────────────────

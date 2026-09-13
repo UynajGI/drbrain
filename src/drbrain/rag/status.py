@@ -31,15 +31,15 @@ class RetrievalStatus(StrEnum):
     TIMEOUT = "timeout"
     SOURCE_UNAVAILABLE = "source_unavailable"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    DEGRADED = "degraded"
 
 
 class RetrievalError(Exception):
     """Every fusion leg failed; the caller must abstain, never hallucinate.
 
-    Raised by :class:`~drbrain.rag.fusion.FusionRetriever` only when *all*
-    legs raise (not when they all return empty — that is ``NO_RESULTS``). A
-    single failing leg is still degraded away silently inside the fusion
-    layer, so this error signals a systemic outage, not a sparse index.
+    Raised when all retrieval legs fail. Successful legs with no hits produce
+    an empty result; partial failures produce a degraded result whose trace
+    retains each leg's status. This error identifies a systemic outage.
     """
 
     def __init__(
@@ -65,11 +65,15 @@ class RetrievalUnavailableError(RuntimeError):
 def classify_failure(exc: BaseException) -> RetrievalStatus:
     """Map a leg exception to a failure status.
 
-    ``TimeoutError`` (and ``asyncio.TimeoutError``, aliased since 3.11) →
-    ``TIMEOUT``; everything else → ``RETRIEVAL_FAILURE``. ``PERMISSION_DENIED``
-    and ``SOURCE_UNAVAILABLE`` are reserved for callers that can detect them
-    more specifically than a bare exception type allows.
+    ``TimeoutError`` (and ``asyncio.TimeoutError``, aliased since 3.11) maps to
+    ``TIMEOUT``; ``PermissionError`` maps to ``PERMISSION_DENIED``; missing
+    files and ``RetrievalUnavailableError`` map to ``SOURCE_UNAVAILABLE``; all
+    other exceptions map to ``RETRIEVAL_FAILURE``.
     """
     if isinstance(exc, TimeoutError):
         return RetrievalStatus.TIMEOUT
+    if isinstance(exc, PermissionError):
+        return RetrievalStatus.PERMISSION_DENIED
+    if isinstance(exc, (FileNotFoundError, RetrievalUnavailableError)):
+        return RetrievalStatus.SOURCE_UNAVAILABLE
     return RetrievalStatus.RETRIEVAL_FAILURE

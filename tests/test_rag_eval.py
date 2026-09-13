@@ -157,7 +157,23 @@ def test_rank_metrics_no_relevant_node_keeps_paper_level(tmp_path):
     res = _rank_metrics([_nws("p1", "x")], item, ks=[5])
     assert res["paper"]["hit_rate"] == {"5": True}
     assert res["node"]["first_rank"] is None
-    assert res["node"]["hit_rate"] == {"5": False}
+
+
+def test_rank_metrics_keeps_leaf_identity_when_parent_context_is_present():
+    from drbrain.rag.eval import _rank_metrics
+
+    node = _nws("p1", "leaf")
+    node.node.metadata["parent_node_id"] = "parent"
+    result = _rank_metrics(
+        [node],
+        {
+            "query": "q",
+            "relevant_papers": ["p1"],
+            "relevant_nodes": [{"paper_id": "p1", "node_id": "leaf"}],
+        },
+        ks=[1],
+    )
+    assert result["node"]["first_rank"] == 1
 
 
 def test_rank_metrics_no_hit():
@@ -307,7 +323,7 @@ def test_build_golden_set_ok_and_idempotent(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [
             {"id": "q1", "q": "Question about perovskite stability?", "papers": ["p1"]},
             {"id": "q2", "q": "Question about zinc anodes?", "papers": ["p2"]},
@@ -343,7 +359,7 @@ def test_build_golden_set_missing_papers_skipped(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [{"id": "q1", "q": "Q?", "papers": ["p1", "p-ghost"]}],
     )
     papers = _fake_papers(tmp_path)
@@ -360,7 +376,7 @@ def test_build_golden_set_query_ids_subset(monkeypatch, tmp_path):
     from drbrain.rag.eval import build_golden_set
 
     monkeypatch.setattr(
-        "drbrain.rag.eval._GOLDEN_QUERIES",
+        "drbrain.rag.eval_data._GOLDEN_QUERIES",
         [
             {"id": "q1", "q": "Q1?", "papers": ["p1"]},
             {"id": "q2", "q": "Q2?", "papers": ["p2"]},
@@ -381,7 +397,7 @@ def test_build_golden_set_query_ids_subset(monkeypatch, tmp_path):
 
 
 def test_split_assignment_covers_all_splits_and_is_deterministic():
-    from drbrain.rag.eval import _GOLDEN_QUERIES, _assign_splits
+    from drbrain.rag.eval_data import _GOLDEN_QUERIES, _assign_splits
 
     assert 30 <= len(_GOLDEN_QUERIES) <= 50, "golden set must stay within the 30-50 ticket range"
     split_of = _assign_splits(_GOLDEN_QUERIES)
@@ -608,7 +624,7 @@ def test_atomic_append_text_preserves_existing_artifact_on_replace_failure(monke
     def fail_replace(*args, **kwargs):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("drbrain.rag.eval.os.replace", fail_replace)
+    monkeypatch.setattr("drbrain.rag.eval_data.os.replace", fail_replace)
     with pytest.raises(OSError, match="simulated replace failure"):
         _append_text_atomically(path, "new baseline\n")
 
@@ -653,6 +669,89 @@ def test_run_qagen_honors_out_path(monkeypatch, tmp_path):
         }
     ]
     assert not (tmp_path / "golden.jsonl").exists()
+
+
+def test_run_qagen_does_not_invent_placeholder_api_key(monkeypatch, tmp_path):
+    """Missing model credentials remain SDK/environment responsibility."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    cfg["llm"]["models"] = [{"provider": "openai", "model": "gpt-test", "api_keys": []}]
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    import llama_index.llms.openai as openai_module
+
+    seen: dict = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+    class FakeDatasetGenerator:
+        def __init__(self, nodes, llm, num_questions_per_chunk):
+            assert llm is not None
+
+        def generate_questions_from_nodes(self):
+            return ["Question?"]
+
+    monkeypatch.setattr(openai_module, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr("llama_index.core.evaluation.DatasetGenerator", FakeDatasetGenerator)
+
+    result = run_qagen(cfg, n_nodes=1, num_questions_per_chunk=1)
+
+    assert result["status"] == "ok"
+    assert "api_key" not in seen
+    assert "sk-none" not in str(seen)
+
+
+def test_run_qagen_redacts_llm_initialization_error(monkeypatch, tmp_path):
+    """A provider construction error must not echo its credential value."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    import llama_index.llms.openai as openai_module
+
+    class ExplodingOpenAI:
+        def __init__(self, **kwargs):
+            raise RuntimeError("provider rejected api_key=super-secret")
+
+    monkeypatch.setattr(openai_module, "OpenAI", ExplodingOpenAI)
+
+    result = run_qagen(cfg, n_nodes=1)
+
+    assert result["status"] == "error"
+    assert "super-secret" not in result["reason"]
+    assert "[REDACTED]" in result["reason"]
+
+
+def test_run_qagen_runtime_rejects_output_escape(monkeypatch, tmp_path):
+    """Golden-set writes stay inside an explicitly selected runtime."""
+    from drbrain.rag.eval import run_qagen
+
+    cfg = _golden_cfg(tmp_path)
+    cfg["llm"]["models"] = []
+    node = type("Node", (), {"node_id": "node-1"})()
+    index = type("Index", (), {"docstore": type("Docstore", (), {"docs": {"node-1": node}})()})()
+    monkeypatch.setattr("drbrain.rag.indexer.load_index", lambda _cfg: (index, None))
+
+    class FakeDatasetGenerator:
+        def __init__(self, nodes, llm, num_questions_per_chunk):
+            pass
+
+        def generate_questions_from_nodes(self):
+            return ["Question?"]
+
+    monkeypatch.setattr("llama_index.core.evaluation.DatasetGenerator", FakeDatasetGenerator)
+    monkeypatch.setenv("DRBRAIN_ROOT", str(tmp_path))
+
+    with pytest.raises(ValueError, match="escapes runtime root"):
+        run_qagen(cfg, n_nodes=1, out_path=str(tmp_path.parent / "escape.jsonl"))
 
 
 # ── score parsing / context assembly ─────────────────────────────────────────

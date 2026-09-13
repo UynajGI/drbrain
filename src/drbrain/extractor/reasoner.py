@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    pass
+from typing import Any, cast
 
 from drbrain.extractor.agent_tools import (
     TOOL_DEFINITIONS,
@@ -98,11 +96,25 @@ class ReasonerAgent:
             last_error = None
             for model in self.models:
                 try:
-                    import litellm
+                    # Allow embedders/tests to provide an async multi-turn
+                    # adapter without forcing a concrete provider client.
+                    if inspect.iscoroutinefunction(self._call_llm) or hasattr(
+                        self._call_llm, "side_effect"
+                    ):
+                        msg = cast(Any, self._call_llm)(messages)
+                        if inspect.isawaitable(msg):
+                            msg = await msg
+                        break
+                    from drbrain.extractor.llm_client import (
+                        _aopenai_client,
+                        resolve_base_url,
+                    )
 
-                    name = f"{model['provider']}/{model['model']}"
-                    kwargs = {
-                        "model": name,
+                    client = _aopenai_client(
+                        str(model.get("api_key") or ""), resolve_base_url(model)
+                    )
+                    kwargs: dict[str, Any] = {
+                        "model": model["model"],
                         "messages": messages,
                         "temperature": 0.3,
                         "max_tokens": 1024,
@@ -110,12 +122,7 @@ class ReasonerAgent:
                         "tools": tools,
                         "extra_body": {"thinking": {"type": "disabled"}},
                     }
-                    if model.get("api_key"):
-                        kwargs["api_key"] = model["api_key"]
-                    if model.get("base_url"):
-                        kwargs["api_base"] = model["base_url"]
-
-                    resp = await litellm.acompletion(**kwargs)
+                    resp = await client.chat.completions.create(**kwargs)
                     msg = resp.choices[0].message
                     break  # success
                 except Exception as e:
@@ -127,7 +134,8 @@ class ReasonerAgent:
                 return f"Reasoning error: {last_error}"
 
             if msg.tool_calls:
-                _called = [tc.function.name for tc in msg.tool_calls]
+                tool_calls = cast("list[Any]", msg.tool_calls)
+                _called = [tc.function.name for tc in tool_calls]
                 log.info("[reasoner] tool calls: %s", _called)
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
@@ -145,8 +153,23 @@ class ReasonerAgent:
                     ],
                 }
                 messages.append(assistant_msg)
-                for tc in msg.tool_calls:
-                    args = json.loads(tc.function.arguments)
+                for tc in tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                        if not isinstance(args, dict):
+                            raise ValueError("tool arguments must be a JSON object")
+                    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(
+                                    {"error": "invalid tool arguments", "detail": str(exc)},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        )
+                        continue
                     result: Any
                     if tc.function.name == "search_concepts":
                         result = self._search_concepts(**args)
@@ -198,7 +221,7 @@ class ReasonerAgent:
         if not self.models:
             return None
 
-        import litellm
+        from drbrain.extractor.llm_client import _openai_client, resolve_base_url
 
         system_content = system or (
             "You are a knowledge graph reasoning assistant. Answer concisely based on evidence."
@@ -211,19 +234,16 @@ class ReasonerAgent:
         for i, model in enumerate(self.models):
             name = f"{model['provider']}/{model['model']}"
             try:
-                kwargs = {
-                    "model": name,
+                client = _openai_client(str(model.get("api_key") or ""), resolve_base_url(model))
+                kwargs: dict[str, Any] = {
+                    "model": model["model"],
                     "messages": messages,
                     "temperature": 0.3,
                     "max_tokens": 1024,
                     "timeout": 60,
                     "extra_body": {"thinking": {"type": "disabled"}},
                 }
-                if model.get("api_key"):
-                    kwargs["api_key"] = model["api_key"]
-                if model.get("base_url"):
-                    kwargs["api_base"] = model["base_url"]
-                resp = litellm.completion(**kwargs)
+                resp = client.chat.completions.create(**kwargs)
                 return resp.choices[0].message.content or ""
             except Exception:
                 log.warning("Model %s failed (attempt %d/%d)", name, i + 1, len(self.models))
