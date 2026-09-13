@@ -12,6 +12,8 @@
 
 **[English](README.md)** · [简体中文](README.zh-CN.md)
 
+[Documentation index](docs/README.md) · [CLI reference](docs/cli-reference.md) · [Architecture](docs/architecture.md)
+
 </div>
 
 ---

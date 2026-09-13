@@ -12,7 +12,7 @@ uv sync
 uv pip install -e .
 
 # Install pre-commit hooks
-pre-commit install
+uv run pre-commit install
 
 # Run fast tests (skip integration)
 uv run pytest -m "not integration"
@@ -28,7 +28,7 @@ uv run pytest
 3. Ensure all checks pass:
    ```bash
    uv run ruff check .                  # lint
-   uv run ruff format --check .         # format check
+   uv run ruff format --check src/ tests/ # format check
    uv run pytest -m "not integration"   # fast tests
    uv run pytest                        # full test suite
    ```
