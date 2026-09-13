@@ -28,8 +28,7 @@ it runs the tracked pre-commit hygiene checks and a staged-file Gitleaks scan.
 
 ```bash
 # Install Lefthook with your package manager, then from the repository root:
-lefthook install
-uv run pre-commit install
+make install-hooks
 ```
 
 The CI `secrets` job scans the complete checked-out Git history. A local
