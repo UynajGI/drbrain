@@ -366,7 +366,9 @@ def _restore_tarball(
         # Validate the embedded manifest before touching the destination.
         manifest_member = next((m for m in members if m.name == "manifest.json"), None)
         if manifest_member is None and not allow_legacy:
-            raise ValueError("backup manifest is missing; pass allow_legacy=True for legacy archives")
+            raise ValueError(
+                "backup manifest is missing; pass allow_legacy=True for legacy archives"
+            )
         if manifest_member is not None:
             try:
                 file_obj = tar.extractfile(manifest_member)

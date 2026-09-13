@@ -191,5 +191,5 @@ def test_restore_rejects_manifest_checksum_mismatch(tmp_path):
                 data = json.dumps(manifest).encode()
                 member.size = len(data)
             dst.addfile(member, io.BytesIO(data) if data is not None else None)
-        with pytest.raises(ValueError, match="checksum mismatch"):
-            restore_backup(broken, tmp_path / "target")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        restore_backup(broken, tmp_path / "target")
