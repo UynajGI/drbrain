@@ -1,0 +1,6 @@
+[submodule "vendor/pageindex"]
+	path = vendor/pageindex
+	url = https://github.com/VectifyAI/PageIndex.git
+[submodule "vendor/raptor"]
+	path = vendor/raptor
+	url = https://github.com/parthsarthi03/raptor.git

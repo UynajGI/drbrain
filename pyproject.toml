@@ -70,6 +70,21 @@ web = [
 ]
 plugins = ["jsonschema>=4.23", "mcp>=2.0.0"]
 analytics = ["duckdb", "scikit-learn>=1.5", "umap-learn>=0.5"]
+# Unified tree RAG (docs/unified-tree-rag-design.md): vendored RAPTOR
+# clustering (UMAP/GMM) plus the PageIndex structure helpers the narrow
+# adapters load.  Deliberately does NOT pull the upstream SDK stack
+# (openai-agents / litellm / faiss / torch).
+tree = [
+    "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "umap-learn>=0.5",
+    "tiktoken>=0.12",
+    "PyPDF2>=3.0",
+    "pypdfium2>=5",
+    "python-dotenv>=1.0",
+    "regex>=2024.0",
+    "sortedcontainers>=2.4",
+]
 office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
 gnn = ["torch>=2.0,<2.14"]
 anydoc = ["firecrawl-anydoc>=0.1", "ocrmypdf>=16"]
@@ -110,12 +125,17 @@ full = [
     "pyalex>=0.21",
     "pymupdf>=1.27.2.3",
     "pymupdf4llm>=0.0.13",
+    "PyPDF2>=3.0",
+    "pypdfium2>=5",
     "python-docx>=1.1",
+    "python-dotenv>=1.0",
     "python-multipart>=0.0.20",
     "python-pptx>=1.0",
     "rank-bm25>=0.2",
+    "regex>=2024.0",
     "scikit-learn>=1.5",
     "sentence-transformers>=5.6.1",
+    "sortedcontainers>=2.4",
     "tiktoken>=0.12",
     "torch>=2.0,<2.14",
     "umap-learn>=0.5",

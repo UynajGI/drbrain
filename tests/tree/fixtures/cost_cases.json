@@ -1,0 +1,128 @@
+{
+  "schema": "tree-contract-v1/cost-fixtures",
+  "comment": "Hand-checked cost/acceptance cases. token unit = pipeline tokenizer; routing overhead default 60.",
+  "coverage_cases": [
+    {
+      "name": "identical_range_counts_once",
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 20, "heading_path": ["Methods"]},
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 20, "heading_path": ["Methods"]}
+      ],
+      "expected_tokens": 20,
+      "expected_chars": 100
+    },
+    {
+      "name": "overlapping_ranges_union",
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 20, "heading_path": []},
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 50, "char_end": 150, "tokens": 25, "heading_path": []}
+      ],
+      "expected_tokens": 34,
+      "expected_chars": 150
+    },
+    {
+      "name": "cross_paper_sums_documents",
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 20, "heading_path": []},
+        {"local_id": "p2", "revision": 1, "block_id": "b2", "char_start": 0, "char_end": 100, "tokens": 30, "heading_path": []}
+      ],
+      "expected_tokens": 50,
+      "expected_chars": 200
+    }
+  ],
+  "pre_screen_cases": [
+    {
+      "name": "single_member_rejected",
+      "member_count": 1,
+      "spans": [{"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 900, "heading_path": []}],
+      "member_tokens": 900,
+      "expected_reason": "single_member"
+    },
+    {
+      "name": "no_gain_when_read_cost_below_route",
+      "member_count": 2,
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 120, "heading_path": []},
+        {"local_id": "p1", "revision": 1, "block_id": "b2", "char_start": 0, "char_end": 100, "tokens": 130, "heading_path": []}
+      ],
+      "member_tokens": 250,
+      "expected_reason": "no_compression_gain"
+    },
+    {
+      "name": "over_budget_input_rejected",
+      "member_count": 2,
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 3000, "heading_path": []},
+        {"local_id": "p1", "revision": 1, "block_id": "b2", "char_start": 0, "char_end": 100, "tokens": 3000, "heading_path": []}
+      ],
+      "member_tokens": 6000,
+      "expected_reason": "input_over_budget"
+    },
+    {
+      "name": "reasonable_group_accepted",
+      "member_count": 2,
+      "spans": [
+        {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 800, "heading_path": []},
+        {"local_id": "p1", "revision": 1, "block_id": "b2", "char_start": 0, "char_end": 100, "tokens": 800, "heading_path": []}
+      ],
+      "member_tokens": 1600,
+      "expected_reason": ""
+    }
+  ],
+  "post_check_cases": [
+    {
+      "name": "empty_summary_rejected",
+      "summary": "   ",
+      "summary_tokens": 0,
+      "finish_reason": "stop",
+      "referenced": "all",
+      "expected_reason": "empty_summary"
+    },
+    {
+      "name": "truncated_summary_rejected",
+      "summary": "partial summary",
+      "summary_tokens": 3,
+      "finish_reason": "length",
+      "referenced": "all",
+      "expected_reason": "summary_truncated"
+    },
+    {
+      "name": "summary_growth_rejected",
+      "summary": "a much longer summary than the members",
+      "summary_tokens": 700,
+      "finish_reason": "stop",
+      "referenced": "all",
+      "expected_reason": "summary_over_budget"
+    },
+    {
+      "name": "missing_source_reference_rejected",
+      "summary": "short summary",
+      "summary_tokens": 120,
+      "finish_reason": "stop",
+      "referenced": "first_only",
+      "expected_reason": "coverage_incomplete"
+    },
+    {
+      "name": "compression_gain_accepted",
+      "summary": "short summary",
+      "summary_tokens": 120,
+      "finish_reason": "stop",
+      "referenced": "all",
+      "expected_reason": ""
+    }
+  ],
+  "multi_target_case": {
+    "spans": [
+      {"local_id": "p1", "revision": 1, "block_id": "b1", "char_start": 0, "char_end": 100, "tokens": 500, "heading_path": []},
+      {"local_id": "p2", "revision": 1, "block_id": "b2", "char_start": 0, "char_end": 100, "tokens": 500, "heading_path": []}
+    ],
+    "branches": 2,
+    "summary_tokens": 120,
+    "expected": {
+      "branches": 2,
+      "read_all_unique": 1000,
+      "route_then_read": 1120,
+      "route_only_lower_bound": 240
+    }
+  }
+}
