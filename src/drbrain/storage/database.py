@@ -329,6 +329,63 @@ CREATE TABLE IF NOT EXISTS schema_versions (
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ── Node vector metadata (v27) ─────────────────────────────────
+-- Metadata ONLY: the float vectors live in the shared Zvec index.  A node
+-- vector is usable when this row says ready and matches the node revision,
+-- content hash and embedding profile id.
+CREATE TABLE IF NOT EXISTS node_vectors (
+    node_id TEXT PRIMARY KEY,
+    node_revision INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+    local_id TEXT NOT NULL DEFAULT '',
+    layer INTEGER NOT NULL DEFAULT 0,
+    profile_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    dimension INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'staging'
+        CHECK(state IN ('staging','ready','failed')),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_node_vectors_profile ON node_vectors(profile_id, state);
+CREATE INDEX IF NOT EXISTS idx_node_vectors_doc ON node_vectors(local_id, kind);
+
+-- ── Summary cache and build jobs (v28) ─────────────────────────
+-- Summary reuse is keyed by members+contract (never by text similarity):
+-- a different member set, order, prompt or model revision must miss.  Only
+-- validated summaries are stored as ``ready``; failures are recorded so a
+-- retry can see them without ever treating them as success.
+CREATE TABLE IF NOT EXISTS tree_summary_cache (
+    cache_key TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','failed')),
+    summary TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    summary_tokens INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    contract_json TEXT NOT NULL DEFAULT '{}',
+    members_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tree_summary_state ON tree_summary_cache(state, updated_at);
+
+CREATE TABLE IF NOT EXISTS tree_build_jobs (
+    job_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'build',
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(state IN ('pending','running','paused','done','failed')),
+    owner TEXT NOT NULL DEFAULT '',
+    claim_expires_at TIMESTAMP,
+    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tree_jobs_state ON tree_build_jobs(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tree_jobs_scope ON tree_build_jobs(scope_key, kind);
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
     session_id TEXT PRIMARY KEY,
     title TEXT DEFAULT '',
@@ -752,6 +809,8 @@ class Database:
             (24, "content_store", self._migrate_add_content_store),
             (25, "tree_nodes", self._migrate_add_tree_nodes),
             (26, "content_fts", self._migrate_add_content_fts),
+            (27, "node_vectors", self._migrate_add_node_vectors),
+            (28, "summary_cache_jobs", self._migrate_add_summary_cache_jobs),
         ]
 
         for version, name, fn in migrations:
@@ -1383,6 +1442,71 @@ class Database:
         )
         # Existing blocks (pre-v26 databases) must be indexed too.
         self.conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
+
+    def _migrate_add_node_vectors(self) -> None:
+        """Create the node-vector metadata table (vectors live in Zvec)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS node_vectors (
+                node_id TEXT PRIMARY KEY,
+                node_revision INTEGER NOT NULL DEFAULT 1,
+                kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+                local_id TEXT NOT NULL DEFAULT '',
+                layer INTEGER NOT NULL DEFAULT 0,
+                profile_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                dimension INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'staging'
+                    CHECK(state IN ('staging','ready','failed')),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_node_vectors_profile
+                ON node_vectors(profile_id, state);
+            CREATE INDEX IF NOT EXISTS idx_node_vectors_doc
+                ON node_vectors(local_id, kind);
+            """
+        )
+
+    def _migrate_add_summary_cache_jobs(self) -> None:
+        """Create the summary cache and build-job tables (T26/T36)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tree_summary_cache (
+                cache_key TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','failed')),
+                summary TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                summary_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT '',
+                contract_json TEXT NOT NULL DEFAULT '{}',
+                members_json TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_summary_state
+                ON tree_summary_cache(state, updated_at);
+
+            CREATE TABLE IF NOT EXISTS tree_build_jobs (
+                job_id TEXT PRIMARY KEY,
+                scope_key TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'build',
+                state TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(state IN ('pending','running','paused','done','failed')),
+                owner TEXT NOT NULL DEFAULT '',
+                claim_expires_at TIMESTAMP,
+                checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_jobs_state
+                ON tree_build_jobs(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_tree_jobs_scope
+                ON tree_build_jobs(scope_key, kind);
+            """
+        )
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Execute a SQL statement and return the cursor."""
@@ -2747,6 +2871,206 @@ class Database:
         self.conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
         self.conn.commit()
         return self.content_fts_status()["indexed"]
+
+    # ── Node vector metadata (T24/T25) ────────────────────────────
+    _NODE_VECTOR_COLUMNS = (
+        "node_id",
+        "node_revision",
+        "kind",
+        "local_id",
+        "layer",
+        "profile_id",
+        "content_hash",
+        "dimension",
+        "state",
+        "updated_at",
+    )
+
+    def upsert_node_vector(
+        self,
+        node_id: str,
+        *,
+        node_revision: int,
+        kind: str,
+        profile_id: str,
+        content_hash: str,
+        dimension: int,
+        local_id: str = "",
+        layer: int = 0,
+        state: str = "staging",
+    ) -> None:
+        """Record vector metadata; the float vector lives in the shared index."""
+        if kind not in ("leaf", "region"):
+            raise ValueError(f"unsupported node kind {kind!r}")
+        if state not in ("staging", "ready", "failed"):
+            raise ValueError(f"unsupported vector state {state!r}")
+        if not str(profile_id).strip():
+            raise ValueError("profile_id is required")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO node_vectors
+                   (node_id, node_revision, kind, local_id, layer, profile_id,
+                    content_hash, dimension, state, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(node_id) DO UPDATE SET
+                     node_revision=excluded.node_revision,
+                     kind=excluded.kind,
+                     local_id=excluded.local_id,
+                     layer=excluded.layer,
+                     profile_id=excluded.profile_id,
+                     content_hash=excluded.content_hash,
+                     dimension=excluded.dimension,
+                     state=excluded.state,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    str(node_id),
+                    max(1, int(node_revision)),
+                    kind,
+                    str(local_id),
+                    int(layer),
+                    str(profile_id),
+                    str(content_hash),
+                    int(dimension),
+                    state,
+                ),
+            )
+
+    def get_node_vector(self, node_id: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._NODE_VECTOR_COLUMNS)} FROM node_vectors WHERE node_id = ?",
+            (str(node_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False))
+
+    def list_node_vectors(
+        self,
+        *,
+        state: str | None = None,
+        profile_id: str | None = None,
+        kind: str | None = None,
+        local_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        sql = f"SELECT {', '.join(self._NODE_VECTOR_COLUMNS)} FROM node_vectors"
+        clauses: list[str] = []
+        params: list = []
+        for column, value in (
+            ("state", state),
+            ("profile_id", profile_id),
+            ("kind", kind),
+            ("local_id", local_id),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY node_id LIMIT ?"
+        params.append(max(1, int(limit)))
+        cursor = self.conn.execute(sql, tuple(params))
+        return [dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def count_node_vectors(self, *, state: str | None = None, kind: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM node_vectors"
+        clauses: list[str] = []
+        params: list = []
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_node_vector(self, node_id: str) -> None:
+        with self._write_scope():
+            self.conn.execute("DELETE FROM node_vectors WHERE node_id = ?", (str(node_id),))
+
+    # ── Summary cache (T26) ───────────────────────────────────────
+    _SUMMARY_COLUMNS = (
+        "cache_key",
+        "state",
+        "summary",
+        "reason",
+        "prompt_tokens",
+        "summary_tokens",
+        "model",
+        "contract_json",
+        "members_json",
+        "created_at",
+        "updated_at",
+    )
+
+    def get_summary_cache(self, cache_key: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._SUMMARY_COLUMNS)} FROM tree_summary_cache "
+            "WHERE cache_key = ?",
+            (str(cache_key),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._SUMMARY_COLUMNS, row, strict=False))
+
+    def put_summary_cache(
+        self,
+        cache_key: str,
+        *,
+        state: str,
+        summary: str = "",
+        reason: str = "",
+        prompt_tokens: int = 0,
+        summary_tokens: int = 0,
+        model: str = "",
+        contract_json: str = "{}",
+        members_json: str = "[]",
+    ) -> None:
+        """Store a validated summary, or a recorded failure (never a success)."""
+        if state not in ("ready", "failed"):
+            raise ValueError(f"unsupported summary cache state {state!r}")
+        if state == "ready" and not str(summary).strip():
+            raise ValueError("ready summaries must be non-empty")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO tree_summary_cache
+                   (cache_key, state, summary, reason, prompt_tokens, summary_tokens,
+                    model, contract_json, members_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(cache_key) DO UPDATE SET
+                     state=excluded.state,
+                     summary=excluded.summary,
+                     reason=excluded.reason,
+                     prompt_tokens=excluded.prompt_tokens,
+                     summary_tokens=excluded.summary_tokens,
+                     model=excluded.model,
+                     contract_json=excluded.contract_json,
+                     members_json=excluded.members_json,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    str(cache_key),
+                    state,
+                    str(summary),
+                    str(reason),
+                    int(prompt_tokens),
+                    int(summary_tokens),
+                    str(model),
+                    str(contract_json),
+                    str(members_json),
+                ),
+            )
+
+    def count_summary_cache(self, state: str | None = None) -> int:
+        if state is None:
+            row = self.conn.execute("SELECT COUNT(*) FROM tree_summary_cache").fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM tree_summary_cache WHERE state = ?", (str(state),)
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def clear_raptor_artifacts(self, paper_id: str) -> int:
         """Remove derived RAPTOR rows before rebuilding one paper.
