@@ -124,6 +124,15 @@ def test_retrieve_sql_two_legs(rag_db, cfg, monkeypatch):
         assert row["text"]
 
 
+def test_retrieve_sql_pageindex_leg_is_independently_selectable(rag_db, cfg):
+    """PageIndex tree recall works without enabling BM25 or vector legs."""
+    cfg.llamaindex.retrievers = ["pageindex"]
+    rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
+    assert rows
+    assert all("pageindex" in row["legs"] for row in rows)
+    assert all("bm25" not in row["legs"] and "vector" not in row["legs"] for row in rows)
+
+
 def test_diversity_guarantee_respects_top_k(rag_db, cfg, monkeypatch):
     _patch_embed(monkeypatch, [1.0] * DIM)
     cfg.llamaindex.retrievers = ["bm25", "vector", "raptor"]

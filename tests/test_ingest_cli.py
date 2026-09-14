@@ -35,6 +35,29 @@ runner = CliRunner()
 
 
 class TestIngestCmd:
+    def test_accepts_pdf_markdown_and_latex_inputs(self):
+        from drbrain.cli.ingest_commands import ingest_cmd
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = [root / "paper.pdf", root / "notes.md", root / "source.tex"]
+            for path in paths:
+                path.write_text("# sample", encoding="utf-8")
+            app = _make_app(ingest_cmd, _cfg(dirs={"inbox": td, "papers": td}))
+            fake_db = type("DB", (), {"conn": type("C", (), {"rollback": lambda self: None})()})()
+            with (
+                patch("drbrain.cli.ingest_commands.open_db") as db_patch,
+                patch("drbrain.cli.ingest_commands.DedupEngine"),
+                patch(
+                    "drbrain.cli.ingest_commands._ingest_single_paper",
+                    side_effect=lambda p, *a, **k: {"ok": True, "local_id": p.stem, "report": {}},
+                ) as ingest,
+            ):
+                db_patch.return_value.__enter__.return_value = fake_db
+                db_patch.return_value.__exit__.return_value = False
+                r = runner.invoke(app, ["test", *map(str, paths), "--json"])
+            assert r.exit_code == 0
+            assert ingest.call_count == 3
     def test_nonexistent_file(self):
         from drbrain.cli.ingest_commands import ingest_cmd
 

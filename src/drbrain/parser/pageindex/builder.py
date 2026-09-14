@@ -35,6 +35,9 @@ class TreeConfig:
     sdk_base_url: str = ""
     sdk_index_backend: dict = field(default_factory=dict)
     sdk_chat_backend: dict = field(default_factory=dict)
+    sdk_processing_mode: str = "standard"
+    sdk_timeout: float = 600.0
+    sdk_allow_fallback: bool = False
 
 
 @dataclass

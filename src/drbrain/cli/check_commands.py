@@ -428,7 +428,7 @@ def check_cmd(ctx: typer.Context):
 
             try:
                 req = _urllib.Request(
-                    "https://api.mineru.com/api/v1/status",
+                    cfg.get("mineru", {}).get("api_base_url", "https://api.mineru.com/api/v1").rstrip("/") + "/status",
                     headers={"Authorization": f"Bearer {mineru_token}"},
                 )
                 _urllib.urlopen(req, timeout=5)

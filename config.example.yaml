@@ -147,7 +147,7 @@ llamaindex:
   rag_engine: "sql" # sql = derived corpus copy (drbrain_rag.db) via immutable snapshots; llamaindex = persisted docstore index (single-library / debugging)
   vector_store: "memory" # "memory" | "chroma" (chromadb optional)
   storage_dir: "data/llamaindex" # published index generations
-  retrievers: ["bm25", "vector"] # fusion legs
+  retrievers: ["bm25", "vector", "tree"] # fusion legs; tree=PageIndex
   fusion_mode: "reciprocal_rank" # | relative_score
   rerank: true
   rerank_model: "Qwen/Qwen3-Reranker-0.6B"

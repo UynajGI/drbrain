@@ -183,7 +183,10 @@ if _LLAMA_INDEX_AVAILABLE:
             # different agents pick different keys round-robin.
             from drbrain.extractor.llm_client import resolve_agent_key
 
-            self._models = [resolve_agent_key(m) for m in cfg.llm.models]
+            # RAG answer synthesis is a chat role; keep it independent from
+            # the local extraction/indexing chain when configured.
+            role_models = getattr(cfg.llm, "chat", None) or cfg.llm.models
+            self._models = [resolve_agent_key(m) for m in role_models]
             self._cache: Any = None  # ApiCache | None, built lazily on first call
 
         # ── identity ────────────────────────────────────────────────────

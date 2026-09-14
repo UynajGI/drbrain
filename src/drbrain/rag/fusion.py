@@ -424,7 +424,7 @@ def get_retrievers(
     if generation_backed_only:
         return out
 
-    if "tree" in wanted:
+    if "tree" in wanted or "pageindex" in wanted:
         out["tree"] = DrbrainTreeRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
     if "graph" in wanted:
         out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=top_k)

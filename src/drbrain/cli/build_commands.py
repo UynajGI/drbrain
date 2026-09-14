@@ -310,6 +310,17 @@ def build_cmd(
             structure = tree.get("structure", []) if isinstance(tree, dict) else []
             if not isinstance(structure, list):
                 structure = []
+            def _ensure_line_nums(nodes, counter=None):
+                counter = counter or [0]
+                for node in nodes:
+                    if isinstance(node, dict):
+                        counter[0] += 1
+                        node.setdefault("line_num", counter[0])
+                        _ensure_line_nums(node.get("nodes", []), counter)
+                return nodes
+            structure = _ensure_line_nums(structure)
+            if isinstance(tree, dict):
+                tree["structure"] = structure
         except (OSError, UnicodeError, ValueError) as exc:
             message = safe_error(exc, secrets=secrets)
             db.upsert_paper_artifact(pid, "tree", "failed", error=message)

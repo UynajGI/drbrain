@@ -47,6 +47,10 @@ class _ConfigBase:
 @dataclass
 class LLMConfig(_ConfigBase):
     models: list[dict] = field(default_factory=list)
+    # Named endpoint registry and role -> endpoint routing.  Legacy chains
+    # below remain supported for older integrations.
+    endpoints: dict[str, dict] = field(default_factory=dict)
+    roles: dict[str, str] = field(default_factory=dict)
     # Role-specific fallback chains. ``models`` remains the legacy default.
     index: list[dict] = field(default_factory=list)
     chat: list[dict] = field(default_factory=list)
@@ -59,6 +63,7 @@ class LLMConfig(_ConfigBase):
 @dataclass
 class MinerUConfig(_ConfigBase):
     token: str = ""
+    api_base_url: str = "https://api.mineru.com/api/v1"
     model: str = "vlm"
     is_ocr: bool = False
     enable_formula: bool = True
@@ -67,6 +72,8 @@ class MinerUConfig(_ConfigBase):
     use_anydoc: bool = True
     ocr_enabled: bool = False
     ocr_language: str = "eng"
+    skip_mineru: bool = False
+    request_timeout: int = 120
 
 
 @dataclass
@@ -96,11 +103,16 @@ class PageIndexConfig(_ConfigBase):
     mode: str = "local"
     model: str = "deepseek-v4-flash"
     chat_model: str = "deepseek-v4-pro"
+    processing_mode: str = "standard"
     storage_path: str = "data/pageindex"
     api_key: str = ""
     base_url: str = ""
     index_backend: dict[str, Any] = field(default_factory=dict)
     chat_backend: dict[str, Any] = field(default_factory=dict)
+    chat_base_url: str = ""
+    chat_api_key: str = ""
+    sdk_timeout: float = 600.0
+    allow_fallback: bool = False
 
 
 @dataclass
@@ -182,6 +194,15 @@ class EmbedConfig(_ConfigBase):
     batch_size: int = 64
     dim: int = 1024
     max_seq_length: int = 512
+
+
+@dataclass
+class RetrievalConfig(_ConfigBase):
+    """Named retrieval model routing."""
+
+    embed: str = "bge_embed_cpu"
+    rerank: str = "bge_rerank_cpu"
+    endpoints: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -351,6 +372,7 @@ class Config(_ConfigBase):
     queue: QueueConfig = field(default_factory=QueueConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llamaindex: LlamaIndexConfig = field(default_factory=LlamaIndexConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
     autoresearch: AutoresearchConfig = field(default_factory=AutoresearchConfig)
@@ -432,6 +454,7 @@ class Config(_ConfigBase):
                 "queue",
                 "fetch",
                 "embed",
+                "retrieval",
                 "llamaindex",
                 "backup",
                 "autoresearch",
@@ -466,6 +489,7 @@ class Config(_ConfigBase):
                 queue=QueueConfig(**sections["queue"]),
                 fetch=FetchConfig(**sections["fetch"]),
                 embed=EmbedConfig(**sections["embed"]),
+                retrieval=RetrievalConfig(**sections["retrieval"]),
                 llamaindex=LlamaIndexConfig.from_dict(sections["llamaindex"]),
                 backup=BackupConfig(
                     ssh_bin=backup_raw.get("ssh_bin", "ssh"),
@@ -619,6 +643,15 @@ def load_config(
 
     Returns a typed Config object with full dict-like backward compatibility.
     """
+    # Load deployment secrets from the invoking project directory.  Explicit
+    # shell variables win; the file is never copied into a runtime root.
+    try:
+        from dotenv import load_dotenv
+
+        if str(base_path) == "config.yaml" or "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+            load_dotenv(Path.cwd() / ".env", override=False)
+    except Exception:
+        pass
     # Standalone workers launched with ``DRBRAIN_ROOT`` may have a different
     # current working directory.  Keep the default config lookup in the same
     # runtime namespace while preserving explicit ``base_path`` behavior.

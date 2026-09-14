@@ -8,11 +8,8 @@ reciprocal-rank fusion (each gated by ``llamaindex.retrievers``):
 * BM25:   FTS5 ``MATCH`` with ``bm25()`` ranking (recall stage)
 * vector: cosine rerank of the BM25 pool over ``tree_vectors`` (pageindex)
 * raptor: paper-scoped KNN over hierarchical-summary vectors
+* pageindex: section-heading/tree-text recall from PageIndex nodes
 * graph:  KG concept seeds + 1-hop neighbours
-
-``tree`` is inherent rather than a separate leg: the PageIndex tree nodes ARE
-the ``node_texts`` retrieval units (section navigation is the
-``get_section_content`` tool).
 
 Rows match the shape of :func:`drbrain.rag.agent._retrieval_rows` so the loop's
 evidence machinery (``build_evidence_record``) works unchanged.
@@ -182,6 +179,34 @@ def _bm25_leg(
         log.warning("[rag-sql] FTS5 query failed: {}", exc)
         raise
     return [(r[0], float(r[1])) for r in rows]
+
+
+def _pageindex_leg(
+    conn: sqlite3.Connection,
+    query: str,
+    k: int,
+    *,
+    categories_filter: tuple[str, list[str]] = ("", []),
+) -> list[tuple[str, float]]:
+    """Recall PageIndex sections independently from the BM25 full-text leg.
+
+    PageIndex node text is stored with the section heading first.  Restricting
+    matching to that heading/tree prefix gives the structure-first leg a
+    distinct signal while preserving the same node provenance for fusion.
+    """
+    words = _WORD_RE.findall(query)[:_MAX_TERMS]
+    if not words:
+        return []
+    clause, params = categories_filter
+    predicates = ["substr(nt.text, 1, 320) LIKE ? ESCAPE '\\'" for _ in words]
+    like_params = [f"%{w.replace('%', '\\%').replace('_', '\\_')}%" for w in words]
+    rows = conn.execute(
+        "SELECT nt.node_key, (" + " + ".join("CASE WHEN " + p + " THEN 1 ELSE 0 END" for p in predicates) + ") AS hits "
+        "FROM node_texts nt WHERE (" + " OR ".join(predicates) + ")" + clause +
+        " ORDER BY hits DESC, length(nt.text) ASC LIMIT ?",
+        (*like_params, *like_params, *params, k),
+    ).fetchall()
+    return [(row[0], float(row[1])) for row in rows]
 
 
 def _rerank_with_vectors(
@@ -482,7 +507,7 @@ def retrieve_documents_sql(
     request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
     li = get_llamaindex_config(cfg)
     wanted = list(dict.fromkeys(li.retrievers or ["bm25", "vector"]))
-    unsupported = set(wanted) - {"bm25", "vector", "raptor", "graph", "claims"}
+    unsupported = set(wanted) - {"bm25", "vector", "pageindex", "tree", "raptor", "graph", "claims"}
     if unsupported:
         raise ValueError(f"unsupported SQL retrieval legs: {sorted(unsupported)}")
     if generation is not None and set(wanted).intersection({"graph", "claims"}):
@@ -545,6 +570,13 @@ def retrieve_documents_sql(
                     entries = [
                         {"key": key, "score": score}
                         for key, score in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)
+                    ]
+                elif name in {"pageindex", "tree"}:
+                    entries = [
+                        {"key": key, "score": score}
+                        for key, score in _pageindex_leg(
+                            conn, query, _KNN_POOL, categories_filter=(scope_sql, scope_params)
+                        )
                     ]
                 elif name == "graph":
                     entries = _graph_leg(db, graph, query, max(top_k, 20))
@@ -711,7 +743,7 @@ def _diverse_head(candidates, top_k):
         return []
     selected = list(candidates[:top_k])
     protected = {selected[0]["key"]} if selected else set()
-    for name in ("raptor", "graph", "claims"):
+    for name in ("pageindex", "tree", "raptor", "graph", "claims"):
         best = next((row for row in candidates if name in row["legs"]), None)
         if best is None:
             continue

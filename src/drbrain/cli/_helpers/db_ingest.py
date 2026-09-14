@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 import shutil
 import uuid
@@ -136,7 +137,10 @@ def _ingest_single_paper(
                 citation_count=parsed.citation_count,
             )
         else:
-            local_id = f"p{uuid.uuid4().hex[:6]}"
+            # Six hex digits give only 24 bits and become collision-prone for
+            # corpus-scale ingestion. Keep the human-readable ``p`` prefix,
+            # but use 96 bits for a practical collision margin.
+            local_id = f"p{uuid.uuid4().hex[:24]}"
             db.insert_paper(
                 local_id,
                 parsed.title,
@@ -177,7 +181,7 @@ def _ingest_single_paper(
     # adapters may not, so retain a single fallback lookup.
     try:
         oa_authors = list(getattr(parsed, "authors", []) or [])
-        if not oa_authors:
+        if not oa_authors and os.getenv("DRBRAIN_OFFLINE", "0") != "1":
             oa_authors = search_authors_by_work(doi=ids.doi, title=parsed.title) or []
     except Exception:
         db.conn.rollback()
@@ -271,6 +275,11 @@ def _ingest_single_paper(
             max_node_tokens=10000,
         )
         configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
+        if os.getenv("DRBRAIN_OFFLINE", "0") == "1":
+            # Deterministic contract mode for local pipeline tests: avoid
+            # remote/local LLM TOC generation while exercising the full CLI
+            # artifact and database stages.
+            pageindex_cfg.backend = "legacy"
         doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
         tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
         tree_nodes = len(doc_tree.structure)
@@ -318,7 +327,7 @@ def _ingest_single_paper(
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
-    if not current_doi and parsed.title:
+    if os.getenv("DRBRAIN_OFFLINE", "0") != "1" and not current_doi and parsed.title:
         crossref_email = cfg.get("api", {}).get("crossref_email")
         openalex_token = cfg.get("api", {}).get("openalex_token")
 
