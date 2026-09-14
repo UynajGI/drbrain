@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -331,6 +332,16 @@ def ask_cmd(
     ),
     top_k: int = typer.Option(5, "--top", "-k", help="Number of sections to retrieve"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    pageindex_native: bool = typer.Option(
+        False,
+        "--pageindex-native",
+        help="Use PageIndex native local chat (requires --pageindex-paper)",
+    ),
+    pageindex_paper: str | None = typer.Option(
+        None,
+        "--pageindex-paper",
+        help="Paper local_id for PageIndex native document QA",
+    ),
 ):
     """Ask a question in natural language — LlamaIndex retrieval + REFINE synthesis.
 
@@ -350,6 +361,17 @@ def ask_cmd(
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]
+
+    if pageindex_native:
+        if not pageindex_paper:
+            raise typer.BadParameter("--pageindex-native requires --pageindex-paper")
+        _ask_pageindex_native_cli(
+            cfg,
+            question_text,
+            pageindex_paper,
+            json_output=json_output,
+        )
+        return
 
     from drbrain.rag.engine import resolve_engine
 
@@ -420,6 +442,40 @@ def _ask_llamaindex_cli(
     if final is None:  # pragma: no cover - defensive: empty stream
         final = {"question": question, "answer": "", "sources": [], "engine": "llamaindex"}
     _render_ask_sources(final, secrets=config_secrets)
+
+
+def _ask_pageindex_native_cli(
+    cfg: Any,
+    question: str,
+    paper_id: str,
+    *,
+    json_output: bool,
+) -> None:
+    """Run native PageIndex local chat through the production ``ask`` CLI."""
+    from drbrain.rag.pageindex_native import chat_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    paper_path = paper_dir(papers_root, paper_id)
+    if not paper_path.is_dir():
+        raise typer.BadParameter(f"unknown paper: {paper_id}", param_hint="--pageindex-paper")
+    native = chat_document(cfg, paper_id, paper_path, question)
+    result = {
+        "question": question,
+        "answer": native["answer"],
+        "sources": [
+            {
+                "paper_id": paper_id,
+                "source": "pageindex_native_chat",
+                "pageindex_doc_id": native["pageindex_doc_id"],
+            }
+        ],
+        "engine": "pageindex_native_chat",
+    }
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        _render_ask_llamaindex(result, secrets=configured_secret_values(cfg))
 
 
 def _render_ask_llamaindex(result: dict[str, Any], *, secrets: tuple[str, ...] = ()) -> None:
