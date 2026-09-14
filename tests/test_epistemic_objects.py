@@ -249,7 +249,10 @@ def test_migrate_v13_adds_claims_and_evidence(tmp_path):
 
     db = Database(db_path)
 
-    assert _versions(db) == list(range(1, 23))
+    # Contiguous from 1 with no gaps; new migrations may be appended.
+    _migrated = _versions(db)
+    assert _migrated == list(range(1, len(_migrated) + 1))
+    assert _migrated[-1] >= 22
     assert "evidence" in _table_names(db)
     assert "claims" in _table_names(db)
     assert "claim_evidence" in _table_names(db)
@@ -273,7 +276,9 @@ def test_migration_is_idempotent(tmp_path):
     db.close()
 
     db2 = Database(db_path)
-    assert _versions(db2) == list(range(1, 23))
+    _again = _versions(db2)
+    assert _again == list(range(1, len(_again) + 1))
+    assert _again[-1] >= 22
     assert "evidence" in _table_names(db2)
     assert "claims" in _table_names(db2)
     assert "claim_evidence" in _table_names(db2)
