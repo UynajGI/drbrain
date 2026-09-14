@@ -198,9 +198,7 @@ def cached_embed(
     if missing:
         computed = compute(list(missing))
         if len(computed) != len(missing):
-            raise ValueError(
-                f"embedder returned {len(computed)} vectors for {len(missing)} texts"
-            )
+            raise ValueError(f"embedder returned {len(computed)} vectors for {len(missing)} texts")
         for text, vector in zip(missing, computed):
             cache.put(profile, text, vector)
             for position, candidate in enumerate(texts):

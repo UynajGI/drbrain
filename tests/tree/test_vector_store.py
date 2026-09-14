@@ -125,16 +125,22 @@ class TestViews:
 class TestMetadata:
     def test_metadata_has_no_float_copy(self, tmp_path):
         db = Database(tmp_path / "db.sqlite")
-        columns = {
-            row[1] for row in db.conn.execute("PRAGMA table_info(node_vectors)").fetchall()
-        }
+        columns = {row[1] for row in db.conn.execute("PRAGMA table_info(node_vectors)").fetchall()}
         assert {"node_id", "node_revision", "profile_id", "content_hash", "state"} <= columns
         assert not {"embedding", "vector", "blob", "vec"} & columns
 
     def test_needs_write_decision(self):
         entry = _entry("nl-a", revision=2)
         assert needs_write(None, entry)
-        assert needs_write({"state": "staging", "node_revision": 2, "content_hash": entry.content_hash, "profile_id": entry.profile_id}, entry)
+        assert needs_write(
+            {
+                "state": "staging",
+                "node_revision": 2,
+                "content_hash": entry.content_hash,
+                "profile_id": entry.profile_id,
+            },
+            entry,
+        )
         ready = {
             "state": "ready",
             "node_revision": 2,
@@ -155,18 +161,34 @@ class TestMetadata:
     def test_metadata_upsert_and_listing(self, tmp_path):
         db = Database(tmp_path / "db.sqlite")
         db.upsert_node_vector(
-            "nl-a", node_revision=1, kind="leaf", profile_id="emb-x",
-            content_hash="h1", dimension=3, local_id="p1",
+            "nl-a",
+            node_revision=1,
+            kind="leaf",
+            profile_id="emb-x",
+            content_hash="h1",
+            dimension=3,
+            local_id="p1",
         )
         assert db.get_node_vector("nl-a")["state"] == "staging"
         db.upsert_node_vector(
-            "nl-a", node_revision=1, kind="leaf", profile_id="emb-x",
-            content_hash="h1", dimension=3, local_id="p1", state="ready",
+            "nl-a",
+            node_revision=1,
+            kind="leaf",
+            profile_id="emb-x",
+            content_hash="h1",
+            dimension=3,
+            local_id="p1",
+            state="ready",
         )
         assert db.get_node_vector("nl-a")["state"] == "ready"
         db.upsert_node_vector(
-            "nr-b", node_revision=1, kind="region", profile_id="emb-x",
-            content_hash="h2", dimension=3, state="ready",
+            "nr-b",
+            node_revision=1,
+            kind="region",
+            profile_id="emb-x",
+            content_hash="h2",
+            dimension=3,
+            state="ready",
         )
         assert db.count_node_vectors(state="ready") == 2
         assert [row["node_id"] for row in db.list_node_vectors(kind="region")] == ["nr-b"]

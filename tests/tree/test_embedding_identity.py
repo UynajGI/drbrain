@@ -17,17 +17,39 @@ from drbrain.tree.embedding_identity import (
 class TestProfileIdentity:
     def test_stable_and_sensitive_to_every_field(self):
         base = EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=384)
-        assert base.profile_id() == EmbeddingProfile(
-            provider="local", model="BAAI/bge-small-en-v1.5", dimension=384
-        ).profile_id()
+        assert (
+            base.profile_id()
+            == EmbeddingProfile(
+                provider="local", model="BAAI/bge-small-en-v1.5", dimension=384
+            ).profile_id()
+        )
         variants = [
             EmbeddingProfile(provider="local", model="other-model", dimension=384),
-            EmbeddingProfile(provider="openai-compat", model="BAAI/bge-small-en-v1.5", dimension=384),
+            EmbeddingProfile(
+                provider="openai-compat", model="BAAI/bge-small-en-v1.5", dimension=384
+            ),
             EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=768),
-            EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=384, max_seq_length=512),
-            EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=384, preprocessing="query: "),
-            EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=384, tokenizer="o200k_base"),
-            EmbeddingProfile(provider="local", model="BAAI/bge-small-en-v1.5", dimension=384, revision="weights-v2"),
+            EmbeddingProfile(
+                provider="local", model="BAAI/bge-small-en-v1.5", dimension=384, max_seq_length=512
+            ),
+            EmbeddingProfile(
+                provider="local",
+                model="BAAI/bge-small-en-v1.5",
+                dimension=384,
+                preprocessing="query: ",
+            ),
+            EmbeddingProfile(
+                provider="local",
+                model="BAAI/bge-small-en-v1.5",
+                dimension=384,
+                tokenizer="o200k_base",
+            ),
+            EmbeddingProfile(
+                provider="local",
+                model="BAAI/bge-small-en-v1.5",
+                dimension=384,
+                revision="weights-v2",
+            ),
         ]
         ids = {base.profile_id()} | {variant.profile_id() for variant in variants}
         assert len(ids) == len(variants) + 1
@@ -65,7 +87,9 @@ class TestCachedEmbed:
             return [[float(len(text))] for text in texts]
 
         cache = EmbeddingCache()
-        first = cached_embed(["alpha", "beta", "alpha"], profile=profile, compute=compute, cache=cache)
+        first = cached_embed(
+            ["alpha", "beta", "alpha"], profile=profile, compute=compute, cache=cache
+        )
         assert calls == [["alpha", "beta"]]  # duplicates collapse
         assert first[0] == first[2] == [5.0]
         second = cached_embed(["alpha", "beta"], profile=profile, compute=compute, cache=cache)
@@ -81,8 +105,12 @@ class TestCachedEmbed:
             calls.append(list(texts))
             return [[1.0] for _ in texts]
 
-        cached_embed(["shared text"], profile=EmbeddingProfile(model="m1"), compute=compute, cache=cache)
-        cached_embed(["shared text"], profile=EmbeddingProfile(model="m2"), compute=compute, cache=cache)
+        cached_embed(
+            ["shared text"], profile=EmbeddingProfile(model="m1"), compute=compute, cache=cache
+        )
+        cached_embed(
+            ["shared text"], profile=EmbeddingProfile(model="m2"), compute=compute, cache=cache
+        )
         assert len(calls) == 2
 
     def test_same_text_different_provenance_is_not_deduplicated_away(self):
