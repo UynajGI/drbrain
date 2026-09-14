@@ -236,40 +236,49 @@ def _split_large_text(text: str, max_tokens: int, model: str | None = None) -> l
     """Split text into chunks that each stay under max_tokens.
 
     Splits on paragraph boundaries (double newlines), falling back to
-    single newlines if a single paragraph exceeds the limit.
+    single newlines if a single paragraph exceeds the limit.  Token counts
+    accumulate incrementally — re-encoding the growing candidate on every
+    paragraph made multi-MB sources quadratic (minutes per document).
     """
     paragraphs = re.split(r"\n\n+", text)
     chunks: list[str] = []
-    current = ""
+    current_parts: list[str] = []
+    current_tokens = 0
+    para_sep = count_tokens("\n\n")
+    line_sep = count_tokens("\n")
 
     for para in paragraphs:
-        candidate = f"{current}\n\n{para}".strip() if current else para
-        if count_tokens(candidate) <= max_tokens:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            # If a single paragraph is too large, split by single newlines
-            if count_tokens(para) > max_tokens:
-                lines = para.split("\n")
-                line_chunk = ""
-                for line in lines:
-                    line_candidate = f"{line_chunk}\n{line}".strip() if line_chunk else line
-                    if count_tokens(line_candidate) <= max_tokens:
-                        line_chunk = line_candidate
-                    else:
-                        if line_chunk:
-                            chunks.append(line_chunk)
-                        line_chunk = line
-                if line_chunk:
-                    current = line_chunk
-                else:
-                    current = ""
-            else:
-                current = para
+        para_tokens = count_tokens(para)
+        if current_parts and current_tokens + para_sep + para_tokens > max_tokens:
+            joined = "\n\n".join(current_parts)
+            if joined:
+                chunks.append(joined)
+            current_parts = []
+            current_tokens = 0
+        if not current_parts and para_tokens > max_tokens:
+            # A single paragraph over the limit: split on line boundaries.
+            line_parts: list[str] = []
+            line_tokens = 0
+            for line in para.split("\n"):
+                line_t = count_tokens(line)
+                if line_parts and line_tokens + line_sep + line_t > max_tokens:
+                    chunk = "\n".join(line_parts)
+                    if chunk:
+                        chunks.append(chunk)
+                    line_parts = []
+                    line_tokens = 0
+                line_parts.append(line)
+                line_tokens += (line_sep if len(line_parts) > 1 else 0) + line_t
+            current_parts = line_parts
+            current_tokens = line_tokens
+            continue
+        current_parts.append(para)
+        current_tokens += (para_sep if len(current_parts) > 1 else 0) + para_tokens
 
-    if current:
-        chunks.append(current)
+    if current_parts:
+        joined = "\n\n".join(current_parts)
+        if joined:
+            chunks.append(joined)
     return chunks
 
 
