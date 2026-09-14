@@ -82,6 +82,7 @@ from drbrain.cli.repair_commands import (
 )
 from drbrain.cli.session_commands import session_app
 from drbrain.cli.setup import setup_cmd
+from drbrain.cli.storage_commands import storage_app
 from drbrain.cli.webui_commands import webui_cmd
 from drbrain.cli.ws_commands import ws_app
 from drbrain.log import setup_logging
@@ -380,6 +381,7 @@ app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
 app.add_typer(rag_app, name="rag")
 app.add_typer(autoresearch_app, name="autoresearch")
+app.add_typer(storage_app, name="storage")
 
 if __name__ == "__main__":
     app()

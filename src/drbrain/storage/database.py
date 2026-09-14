@@ -2856,14 +2856,43 @@ class Database:
             item["score"] = float(item["score"])
         return results
 
-    def content_fts_status(self) -> dict:
-        """Rows in the FTS index vs the canonical table (integrity check)."""
-        indexed = self.conn.execute("SELECT COUNT(*) FROM content_fts").fetchone()[0]
-        blocks = self.conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0]
+    def content_fts_status(self, sample: int = 20) -> dict:
+        """Verify the FTS index by querying it, not by counting rows.
+
+        ``content_fts`` is an external-content FTS5 table: ``SELECT COUNT(*)``
+        delegates to ``content_blocks`` and would always agree, so integrity is
+        established by matching a distinctive token of sampled blocks and
+        confirming the index finds them.
+        """
+        import re as _re
+
+        blocks = int(self.conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0])
+        rows = self.conn.execute(
+            "SELECT block_id, text FROM content_blocks ORDER BY block_id LIMIT ?",
+            (max(1, int(sample)),),
+        ).fetchall()
+        verified = 0
+        for block_id, text in rows:
+            tokens = sorted(_re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", text or ""), key=len)
+            if not tokens:
+                verified += 1  # nothing indexable (punctuation-only block)
+                continue
+            probe = tokens[-1]
+            try:
+                found = self.conn.execute(
+                    "SELECT 1 FROM content_fts WHERE content_fts MATCH ? AND rowid = "
+                    "(SELECT rowid FROM content_blocks WHERE block_id = ?) LIMIT 1",
+                    (f'"{probe}"', str(block_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                found = None
+            if found is not None:
+                verified += 1
         return {
-            "indexed": int(indexed),
-            "blocks": int(blocks),
-            "consistent": int(indexed) == int(blocks),
+            "indexed": verified,
+            "blocks": blocks,
+            "sampled": len(rows),
+            "consistent": verified == len(rows),
         }
 
     def rebuild_content_fts(self) -> int:
