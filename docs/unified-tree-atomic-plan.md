@@ -2,7 +2,7 @@
 
 日期：2026-09-15。依据：[统一算法设计](unified-tree-rag-design.md)、[RAPTOR 源码审阅](research/raptor-source-audit-2026-09-14.md)、[PageIndex 源码审阅](research/pageindex-source-audit-2026-09-14.md)及两份算法反向审查。
 
-状态：**进行中** — T01–T13、T17–T22、T23–T42、T49 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e/70e3edd/370b5a1/27ad515/a288190；T22 的“不再新增 per-paper MD/tree 文件”随 T14–T16/T45 切换消费者后收口）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
+状态：**进行中** — T01–T13、T17–T22、T23–T42、T49/T50 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e/70e3edd/370b5a1/27ad515/a288190；T22 的“不再新增 per-paper MD/tree 文件”随 T14–T16/T45 切换消费者后收口）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
 
 ## 执行规则
 
@@ -402,7 +402,7 @@
 - 先写测试：单/双正文副本、hash冲突、缺源文件、坏树、短ID冲突、旧向量未知模型和不可解析证据。
 - 完成标准：只读枚举来源、正文、节点、索引及旧副本；输出可对账的分类和样本清单，不触发数据库自动升级或网络修复。
 
-### [ ] T50 — 增加确定性的迁移dry-run
+### [x] T50 — 增加确定性的迁移dry-run
 
 - 依赖：T49。
 - 范围：迁移计划生成及`storage migrate --dry-run --json`。
