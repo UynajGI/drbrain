@@ -309,9 +309,14 @@ class UnifiedVectorStore:
         collection = self._collection
         assert collection is not None
         try:
-            stats = collection.stats()
+            stats = getattr(collection, "stats", None)
+            if callable(stats):
+                try:
+                    stats = stats()
+                except TypeError:
+                    pass
             for attribute in ("doc_count", "count", "num_docs"):
-                if hasattr(stats, attribute):
+                if stats is not None and hasattr(stats, attribute):
                     return int(getattr(stats, attribute))
         except Exception:  # noqa: BLE001 - stats are advisory
             logger.debug("[vector] stats unavailable for {}", self.path)
