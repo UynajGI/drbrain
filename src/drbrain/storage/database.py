@@ -2970,7 +2970,9 @@ class Database:
         sql += " ORDER BY node_id LIMIT ?"
         params.append(max(1, int(limit)))
         cursor = self.conn.execute(sql, tuple(params))
-        return [dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+        return [
+            dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False)) for row in cursor.fetchall()
+        ]
 
     def count_node_vectors(self, *, state: str | None = None, kind: str | None = None) -> int:
         sql = "SELECT COUNT(*) FROM node_vectors"
@@ -3071,6 +3073,105 @@ class Database:
                 "SELECT COUNT(*) FROM tree_summary_cache WHERE state = ?", (str(state),)
             ).fetchone()
         return int(row[0]) if row else 0
+
+    # ── Tree build jobs (T36) ─────────────────────────────────────
+    _JOB_COLUMNS = (
+        "job_id",
+        "scope_key",
+        "kind",
+        "state",
+        "owner",
+        "claim_expires_at",
+        "checkpoint_json",
+        "metrics_json",
+        "reason",
+        "created_at",
+        "updated_at",
+    )
+
+    def insert_tree_job(self, job_id: str, scope_key: str, *, kind: str = "build") -> None:
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO tree_build_jobs (job_id, scope_key, kind, state)
+                   VALUES (?, ?, ?, 'pending')""",
+                (str(job_id), str(scope_key), str(kind)),
+            )
+
+    def claim_tree_job(self, job_id: str, owner: str, *, ttl_seconds: int = 900) -> bool:
+        """Claim a pending (or lease-expired) job; one winner per claim."""
+        lease = f"+{max(1, int(ttl_seconds))} seconds"
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs
+                   SET state = 'running', owner = ?,
+                       claim_expires_at = datetime('now', ?),
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ?
+                     AND (state IN ('pending', 'paused')
+                          OR (state = 'running'
+                              AND (claim_expires_at IS NULL
+                                   OR claim_expires_at < CURRENT_TIMESTAMP)))""",
+                (str(owner), lease, str(job_id)),
+            )
+            return cursor.rowcount == 1
+
+    def checkpoint_tree_job(
+        self, job_id: str, *, checkpoint: str, metrics: str | None = None, owner: str = ""
+    ) -> None:
+        if not str(checkpoint).strip():
+            raise ValueError("checkpoint payload is required")
+        with self._write_scope():
+            if owner:
+                cursor = self.conn.execute(
+                    """UPDATE tree_build_jobs SET checkpoint_json = ?,
+                       metrics_json = COALESCE(?, metrics_json),
+                       updated_at = CURRENT_TIMESTAMP
+                       WHERE job_id = ? AND owner = ?""",
+                    (str(checkpoint), metrics, str(job_id), str(owner)),
+                )
+            else:
+                cursor = self.conn.execute(
+                    """UPDATE tree_build_jobs SET checkpoint_json = ?,
+                       metrics_json = COALESCE(?, metrics_json),
+                       updated_at = CURRENT_TIMESTAMP
+                       WHERE job_id = ?""",
+                    (str(checkpoint), metrics, str(job_id)),
+                )
+            if cursor.rowcount == 0:
+                raise ValueError(f"job {job_id!r} is not claimed by {owner!r}")
+
+    def finish_tree_job(self, job_id: str, state: str, *, reason: str = "") -> None:
+        if state not in ("done", "failed", "paused"):
+            raise ValueError(f"unsupported job state {state!r}")
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs SET state = ?, reason = ?,
+                   claim_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ?""",
+                (state, str(reason), str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"unknown tree job {job_id!r}")
+
+    def get_tree_job(self, job_id: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._JOB_COLUMNS)} FROM tree_build_jobs WHERE job_id = ?",
+            (str(job_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._JOB_COLUMNS, row, strict=False))
+
+    def list_tree_jobs(self, state: str | None = None, limit: int = 100) -> list[dict]:
+        sql = f"SELECT {', '.join(self._JOB_COLUMNS)} FROM tree_build_jobs"
+        params: tuple = ()
+        if state is not None:
+            sql += " WHERE state = ?"
+            params = (str(state),)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params = (*params, max(1, int(limit)))
+        cursor = self.conn.execute(sql, params)
+        return [dict(zip(self._JOB_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
 
     def clear_raptor_artifacts(self, paper_id: str) -> int:
         """Remove derived RAPTOR rows before rebuilding one paper.

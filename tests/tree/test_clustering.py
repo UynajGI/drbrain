@@ -68,6 +68,26 @@ class TestDeterminismAndMapping:
         assert first.labels == second.labels
         assert first.fitted["global_neighbors"] == second.fitted["global_neighbors"]
 
+    def test_duplicate_vectors_still_reproduce(self):
+        """Degenerate inputs (duplicate vectors) must not break determinism.
+
+        The default UMAP spectral init is arbitrary on such inputs; the
+        adapter seeds it and uses a random init instead.
+        """
+        matrix, row_ids = _blobs(clusters=4, per_cluster=6, dim=6)
+        matrix = np.vstack([matrix[:6], matrix[:6]])  # six exact duplicates
+        row_ids = [f"row-{index}" for index in range(matrix.shape[0])]
+        params = _params(random_state=17)
+        first = global_stage(matrix, row_ids, params)
+        second = global_stage(matrix, row_ids, params)
+        assert first.labels == second.labels
+        first_global, first_local = two_stage_posteriors(matrix, row_ids, params)
+        second_global, second_local = two_stage_posteriors(matrix, row_ids, params)
+        assert first_global.labels == second_global.labels
+        assert {key: stage.labels for key, stage in first_local.items()} == {
+            key: stage.labels for key, stage in second_local.items()
+        }
+
     def test_duplicate_vectors_keep_their_rows(self):
         """Positional mapping: identical vectors must not collapse into one row."""
         matrix, row_ids = _blobs(dim=6)

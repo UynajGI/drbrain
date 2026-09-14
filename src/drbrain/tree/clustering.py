@@ -145,6 +145,14 @@ def _gmm_posterior(
 def _umap_reduce(
     embeddings: np.ndarray, dim: int, n_neighbors: int, params: ClusteringParams
 ) -> np.ndarray:
+    """Deterministic UMAP reduction.
+
+    Upstream leaves UMAP unseeded (results vary run to run).  We seed it and
+    use ``init="random"``: the default spectral initialisation solves an
+    eigenproblem whose eigenvectors are arbitrary for degenerate inputs
+    (duplicate vectors are common across papers), which made otherwise
+    identical runs produce different groupings.
+    """
     import umap
 
     reducer = umap.UMAP(
@@ -152,6 +160,8 @@ def _umap_reduce(
         n_components=int(dim),
         metric=params.metric,
         random_state=params.random_state,
+        init="random",
+        n_jobs=1,
     )
     return reducer.fit_transform(embeddings)
 
