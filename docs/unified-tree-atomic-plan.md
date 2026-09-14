@@ -2,7 +2,7 @@
 
 日期：2026-09-15。依据：[统一算法设计](unified-tree-rag-design.md)、[RAPTOR 源码审阅](research/raptor-source-audit-2026-09-14.md)、[PageIndex 源码审阅](research/pageindex-source-audit-2026-09-14.md)及两份算法反向审查。
 
-状态：**进行中** — T01–T13、T20/T21、T23–T36 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
+状态：**进行中** — T01–T13、T17–T22、T23–T40 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e/70e3edd/370b5a1/27ad515/a288190；T22 的“不再新增 per-paper MD/tree 文件”随 T14–T16/T45 切换消费者后收口）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
 
 ## 执行规则
 
@@ -155,21 +155,21 @@
 
 ## P2 — 角色配置和CLI入库
 
-### [ ] T17 — 统一解析index/chat模型角色
+### [x] T17 — 统一解析index/chat模型角色
 
 - 依赖：T06。
 - 范围：`config.py`、`services/model_roles.py`及check配置展示。
 - 先写测试：同model不同URL、不同角色同endpoint、旧配置冲突、缺少角色；日志不含密钥。
 - 完成标准：角色解析只有一个入口；明确兼容/冲突规则，不由PageIndex/RAPTOR调用点各拼地址；不会静默使用通用models覆盖index。
 
-### [ ] T18 — 实现共享IndexModel客户端与调度
+### [x] T18 — 实现共享IndexModel客户端与调度
 
 - 依赖：T02、T17。
 - 范围：`services/index_model.py`，复用已有LLM客户端，统一预算、超时和并发。
 - 先写测试：结构任务与摘要任务到同一index endpoint；并发上限跨任务生效；超长、空响应、取消及重试状态准确。
 - 完成标准：Spark 4B角色可完成一条真实CLI连通性探测；不会使用全局环境变量切换端点，不接管GPU0/1服务。
 
-### [ ] T19 — 实现显式绑定端点的ChatModel适配
+### [x] T19 — 实现显式绑定端点的ChatModel适配
 
 - 依赖：T02、T17。
 - 范围：在线模型实例/Agent适配；明确Chat Completions协议。
@@ -190,7 +190,7 @@
 - 先写测试：标题层级、代码块中的井号、公式、TeX规范化行映射；不会走PDF/OCR接口。
 - 完成标准：在内存正文上得到可靠锚点和候选范围，必要临时适配文件有生命周期且不成为事实存储。
 
-### [ ] T22 — 将ingest写入统一正文和叶节点
+### [x] T22 — 将ingest写入统一正文和叶节点
 
 - 依赖：T07、T08、T09、T10、T11、T17、T20、T21。
 - 范围：`cli/_helpers/db_ingest.py`、现有ingest CLI和artifact状态。
@@ -299,28 +299,28 @@
 
 ## P4 — 一个检索器与一致的索引修订
 
-### [ ] T37 — 原子发布主库与Zvec修订
+### [x] T37 — 原子发布主库与Zvec修订
 
 - 依赖：T24、T25、T36。
 - 范围：统一索引revision发布、当前版本指针、现有generation接口。
 - 先写测试：向量构建中断、文件完成但主库未切换、读请求与发布并发；旧正文配新ANN必须被拒绝。
 - 完成标准：读请求捕获同一修订；未完成的staging不暴露；旧成功版本仍可读；默认不再复制一份drbrain_rag.db。
 
-### [ ] T38 — 实现统一节点读取工具
+### [x] T38 — 实现统一节点读取工具
 
 - 依赖：T10、T11、T37。
 - 范围：`tree/tools.py`的expand/read/parents/read_scope。
 - 先写测试：未知ID、越界、未授权范围、旧修订、同页重叠、MD行范围、多来源region；返回大小受限。
 - 完成标准：parents来自同一children关系，邻域来自正文顺序；每次原文读取产生可验证凭证；不使用SDK文献store。
 
-### [ ] T39 — 实现tree的全层独立入口
+### [x] T39 — 实现tree的全层独立入口
 
 - 依赖：T25、T37、T38。
 - 范围：`tree/search.py`的search_nodes及query embedding复用。
 - 先写测试：BM25返回空仍可命中；叶/中层/高层可分别进入；同一query不重复计算embedding；与精确搜索比较召回。
 - 完成标准：直接在完整授权scope内搜索，不限raptor_L1、不先接受BM25 paper池；小树没有摘要时仍能进入真实叶。
 
-### [ ] T40 — 实现单个有状态导航器
+### [x] T40 — 实现单个有状态导航器
 
 - 依赖：T06、T19、T38、T39。
 - 范围：`tree/navigator.py`，一个Agent/Runner驱动统一工具。
