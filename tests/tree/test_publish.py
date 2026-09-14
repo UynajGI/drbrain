@@ -145,7 +145,7 @@ class TestPublication:
             )
         # Nothing was published and no staging directory remains.
         assert get_active_tree_generation(tmp_path / "storage") is None
-        generations = (tmp_path / "storage" / GENERATIONS_DIR_NAME)
+        generations = tmp_path / "storage" / GENERATIONS_DIR_NAME
         assert not any(path.name.startswith(".staging-") for path in generations.iterdir())
 
 
@@ -184,9 +184,7 @@ class TestReaderGuards:
         _seed(db)
         storage = tmp_path / "storage"
         result = publish_tree_generation(db, storage, profile_id="emb-test")
-        manifest_file = (
-            storage / GENERATIONS_DIR_NAME / result["generation"] / MANIFEST_NAME
-        )
+        manifest_file = storage / GENERATIONS_DIR_NAME / result["generation"] / MANIFEST_NAME
         payload = json.loads(manifest_file.read_text(encoding="utf-8"))
         assert payload["generation"] == result["generation"]
         pointer = json.loads((storage / ACTIVE_POINTER_NAME).read_text(encoding="utf-8"))

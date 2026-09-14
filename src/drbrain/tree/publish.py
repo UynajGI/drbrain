@@ -241,7 +241,9 @@ def publish_tree_generation(
             shutil.rmtree(staging, ignore_errors=True)
 
 
-def compute_watermarks_offline(conn: sqlite3.Connection, *, profile_id: str | None) -> dict[str, Any]:
+def compute_watermarks_offline(
+    conn: sqlite3.Connection, *, profile_id: str | None
+) -> dict[str, Any]:
     """Watermarks computed from a snapshot file rather than a live Database."""
 
     def rows(sql: str, params: tuple = ()) -> list:
