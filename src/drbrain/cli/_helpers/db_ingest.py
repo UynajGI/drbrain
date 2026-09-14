@@ -214,6 +214,22 @@ def _ingest_single_paper(
     except Exception:
         db.conn.rollback()
         raise
+    # Unified canonical content (T22): one revision, its blocks, and one
+    # published leaf per block.  Failure here is recorded, not fatal: the
+    # paper record and its artifacts stay usable and a later repair can
+    # re-derive the canonical store.
+    try:
+        canonical = _write_canonical_content(db, local_id, parsed, pdf_path, echo=echo)
+        if not canonical.get("ok"):
+            _ingest_log.warning(
+                "[ingest] canonical content skipped for %s: %s",
+                local_id,
+                canonical.get("reason"),
+            )
+    except Exception as exc:  # noqa: BLE001 - canonical write is additive
+        message = safe_error(exc, secrets=secrets)
+        _ingest_log.warning("[ingest] canonical content failed for %s: %s", local_id, message)
+        echo(f"  [yellow]Canonical content failed: {message}[/yellow]")
     db.upsert_paper_artifact(
         local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
         "raw",
@@ -589,6 +605,115 @@ def _same_file(left: Path, right: Path) -> bool:
         return left.samefile(right)
     except OSError:
         return False
+
+
+def _material_media_type(source: Path) -> str:
+    suffix = Path(source).suffix.lower()
+    if suffix in ("", ".pdf"):
+        return "pdf"
+    if suffix in (".tex", ".latex"):
+        return "tex"
+    return "md"
+
+
+def _write_canonical_content(
+    db: Database,
+    local_id: str,
+    parsed,
+    source: Path,
+    *,
+    echo=None,
+) -> dict:
+    """Write the canonical content (revision -> blocks -> leaves) for one input.
+
+    This is the unified-store write path (T22): one document revision, the
+    boundary-faithful blocks, and one published leaf per block.  Re-ingesting
+    identical bytes reuses the existing revision and writes nothing new, so a
+    re-run can never create a second content copy.
+    """
+    import hashlib as _hashlib
+
+    from drbrain.storage.inbox import file_sha256
+    from drbrain.tree.align import align_page_marks
+    from drbrain.tree.blocks import build_content_blocks
+    from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
+
+    text = str(getattr(parsed, "raw_md", "") or "")
+    if not text.strip():
+        return {"ok": False, "reason": "empty_canonical_text"}
+    media_type = _material_media_type(source)
+    canonical_hash = _hashlib.sha256(text.encode("utf-8")).hexdigest()
+    source_hash = file_sha256(source) if Path(source).is_file() else ""
+
+    latest = db.get_document_revision(local_id)
+    if (
+        latest is not None
+        and str(latest.get("canonical_hash")) == canonical_hash
+        and str(latest.get("state")) == "ready"
+    ):
+        # Same bytes, same document: nothing new to write (idempotent ingest).
+        count = db.count_content_blocks(local_id, int(latest["revision"]))
+        return {
+            "ok": True,
+            "reused": True,
+            "revision": int(latest["revision"]),
+            "blocks": count,
+            "pages": False,
+        }
+
+    revision = db.next_document_revision(local_id)
+    page_marks = None
+    if media_type == "pdf":
+        page_marks = align_page_marks(source, text)
+    blocks = build_content_blocks(
+        text,
+        local_id=local_id,
+        revision=revision,
+        media_type=media_type,
+        parser=str(getattr(parsed, "backend", "") or ""),
+        page_marks=page_marks,
+    )
+    written = 0
+    with db.transaction():
+        db.upsert_document_revision(
+            local_id,
+            revision,
+            source_hash=source_hash,
+            canonical_hash=canonical_hash,
+            backend=str(getattr(parsed, "backend", "") or ""),
+            media_type=media_type,
+            parser_revision=str(getattr(parsed, "pdf_type", "") or ""),
+        )
+        written = db.insert_content_blocks(blocks)
+        for block in blocks:
+            ref = LeafRef(
+                local_id=local_id,
+                revision=revision,
+                block_id=block.block_id,
+                char_start=0,
+                char_end=len(block.text),
+            )
+            leaf = NodeRecord(
+                node_id=leaf_node_id(ref),
+                revision=1,
+                kind="leaf",
+                state="ready",
+                layer=0,
+                content_hash=block.text_hash,
+                leaf=ref,
+                heading_path=block.heading_path,
+            )
+            db.insert_tree_node(leaf, publish=True)
+    if echo is not None:
+        page_note = f", pages 1-{page_marks[-1][0]}" if page_marks else ", no page marks"
+        echo(f"  Canonical: revision {revision}, {written} blocks{page_note}")
+    return {
+        "ok": True,
+        "reused": False,
+        "revision": revision,
+        "blocks": written,
+        "pages": bool(page_marks),
+    }
 
 
 def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Path) -> None:

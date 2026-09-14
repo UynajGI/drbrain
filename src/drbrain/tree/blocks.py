@@ -336,8 +336,9 @@ def build_content_blocks(
         raise ValueError("canonical text must be non-empty")
     if media_type not in ("pdf", "tex", "md"):
         raise ValueError(f"unsupported media_type {media_type!r}")
-    if media_type == "pdf" and not page_marks:
-        raise ValueError("pdf materials must provide page marks (never fabricate pages)")
+    # PDF blocks carry page spans only when the caller verified real page
+    # offsets; a PDF without verified marks gets no page fields rather than a
+    # guessed range (never fabricate pages, and never invent absence as data).
     policy = policy or BlockPolicy()
     starts = _line_starts(text)
 

@@ -105,10 +105,11 @@ class TestLocators:
         assert all(block.line_start is None or block.line_start >= 1 for block in blocks)
         assert all(block.page_start is None for block in blocks)
 
-    def test_pdf_pages_require_marks_and_map_ranges(self):
+    def test_pdf_pages_map_only_from_verified_marks(self):
         text = "Page one text.\nPage two text.\n"
-        with pytest.raises(ValueError, match="page marks"):
-            build_content_blocks(text, local_id="p", revision=1, media_type="pdf")
+        # A PDF without verified marks gets no page fields (never fabricated).
+        unmarked = build_content_blocks(text, local_id="p", revision=1, media_type="pdf")
+        assert all(block.page_start is None and block.page_end is None for block in unmarked)
         split = text.index("Page two")
         blocks = build_content_blocks(
             text,
