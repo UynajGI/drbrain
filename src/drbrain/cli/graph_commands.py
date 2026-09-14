@@ -573,7 +573,7 @@ def graph_query_cmd(
       {"type": "union",     "queries": [...]}
       {"type": "negate",    "query": {...}}
 
-    Requires trained embeddings (drbrain embed).
+    Requires trained embeddings (drbrain embed --graph).
     """
     import json as _json
 

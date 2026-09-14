@@ -46,7 +46,10 @@ uv run drbrain build
 uv run drbrain query "your research question"
 ```
 
-For semantic retrieval, configure an embedding provider and run `drbrain embed`. For rule-based graph closure, run `drbrain closure` after the build step.
+For semantic retrieval, configure an embedding provider and run
+`drbrain embed --tree` followed by `drbrain rag prepare`. For the optional
+knowledge-graph branch, run `drbrain embed --graph` and then `drbrain closure`
+after the `build` step.
 
 ## Research loop
 

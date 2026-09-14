@@ -310,6 +310,7 @@ def build_cmd(
             structure = tree.get("structure", []) if isinstance(tree, dict) else []
             if not isinstance(structure, list):
                 structure = []
+
             def _ensure_line_nums(nodes, counter=None):
                 counter = counter or [0]
                 for node in nodes:
@@ -318,6 +319,7 @@ def build_cmd(
                         node.setdefault("line_num", counter[0])
                         _ensure_line_nums(node.get("nodes", []), counter)
                 return nodes
+
             structure = _ensure_line_nums(structure)
             if isinstance(tree, dict):
                 tree["structure"] = structure
@@ -476,6 +478,9 @@ def embed_cmd(
     tree: bool = typer.Option(
         False, "--tree", help="Generate tree node text embeddings (PageIndex + RAPTOR)"
     ),
+    graph_mode: bool = typer.Option(
+        False, "--graph", help="Train TransE entity/relation embeddings for the knowledge graph"
+    ),
     papers: str = typer.Option(
         "", "--papers", help="Comma-separated paper IDs to embed (default: all)"
     ),
@@ -483,10 +488,22 @@ def embed_cmd(
         "", "--db", help="Override db path (shard databases; default cfg db.path)"
     ),
 ):
-    """Train TransE graph embeddings. Use --tree for text embeddings."""
+    """Generate text embeddings or train graph embeddings.
+
+    ``--tree`` builds PageIndex/RAPTOR text vectors for RAG.  ``--graph``
+    trains TransE entity/relation vectors for the optional knowledge-graph
+    branch.  A bare invocation remains a backwards-compatible alias for
+    ``--graph``.
+    """
     cfg = ctx.obj["config"]
     db = Database(db_path or cfg["db"]["path"])
     embed_secrets = configured_secret_values(cfg)
+
+    if tree and graph_mode:
+        raise typer.BadParameter("--tree and --graph are mutually exclusive")
+    # Keep existing scripts valid while making the production intent explicit:
+    # callers should use `embed --tree` or `embed --graph`.  With no mode flag,
+    # the historical graph behavior is retained below.
 
     # --tree mode: text embeddings for tree nodes (Layer 2)
     if tree:

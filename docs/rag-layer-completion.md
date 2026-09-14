@@ -15,6 +15,74 @@ The RAG layer is a retrieval service over stored papers and derived evidence uni
 
 Each leg is isolated. A degraded or unavailable leg is recorded in retrieval trace and does not invalidate candidates returned by other legs.
 
+## Complete CLI pipeline
+
+The current production path is a text RAG path; knowledge-graph construction is
+an optional branch and is not required to prepare or query the SQL RAG index.
+
+```mermaid
+flowchart TD
+    A[PDF / Markdown / LaTeX / URL] --> B[drbrain ingest]
+    B --> B1[Material adapter + generic candidate IDs\nDOI / arXiv / ISBN / URL / file hash]
+    B1 --> B2[PDF parser chain\npdf-inspector → MinerU → anydoc/OCRmyPDF\n→ pymupdf4llm → plain text]
+    B2 --> B3[raw.md + parser metadata]
+    B3 --> B4[PageIndex SDK tree build\nSpark 4B index endpoint]
+    B4 --> B5[tree.json + provenance\nsource PDF remains untouched]
+    B5 --> C[drbrain embed --tree]
+    C --> C1[BGE CPU node embeddings\ntree_vectors: pageindex]
+    C --> C2[RAPTOR summaries and vectors\noptional Spark 4B summary calls]
+    C1 --> D[drbrain rag prepare]
+    C2 --> D
+    B5 --> D
+    D --> D1[Corpus-wide consistent read\nfrom primary data/drbrain.db]
+    D1 --> D2[Derived drbrain_rag.db\nnode_texts + FTS5 + vectors + summaries]
+    D2 --> D3[Immutable generation publish\ncorpus.sqlite3 + zvec/ + manifest.json]
+    D3 --> E[drbrain ask / query]
+    E --> E1[Resolve active generation]
+    E1 --> E2[BM25 FTS5 recall]
+    E1 --> E3[Zvec HNSW ANN recall]
+    E1 --> E4[PageIndex node-prefix recall]
+    E1 --> E5[Optional RAPTOR / tree / graph / claims legs]
+    E2 --> F[RRF fusion]
+    E3 --> F
+    E4 --> F
+    E5 --> F
+    F --> G[ACL + category filters\noptional BGE rerank]
+    G --> H[Evidence materialization\nsection / node / page provenance]
+    H --> I[DeepSeek chat endpoint\nanswer synthesis]
+    I --> J[answer + sources + telemetry]
+
+    K[Optional: drbrain build] -. KG extraction .-> L[drbrain embed --graph\nTransE entity/relation vectors]
+    L -. graph query / closure .-> E5
+
+    N[Alternate: rag_engine=llamaindex] -. drbrain rag prepare/index .-> N1[Settings.embed_model\nDrbrainEmbedding → BGE CPU]
+    N1 --> N2[VectorStoreIndex + BM25Retriever\nincremental LlamaIndex store]
+    N2 -. same ask/query contract .-> E
+```
+
+The critical commands are therefore:
+
+```bash
+uv run drbrain ingest <material>
+uv run drbrain embed --tree
+uv run drbrain rag prepare
+uv run drbrain ask "your question" --json
+```
+
+`drbrain embed --graph` trains TransE entity/relation vectors in the
+`embeddings` table; it does not populate `tree_vectors` or the Zvec index. A
+bare `drbrain embed` remains a compatibility alias for `--graph`, but production
+scripts should state the mode explicitly. `rag prepare` in SQL mode does not
+create missing document embeddings; it packages the vectors already produced by
+`embed --tree`.
+
+When `llamaindex.rag_engine=llamaindex`, `drbrain rag prepare` (or `rag index`)
+uses LlamaIndex's `VectorStoreIndex` and `BM25Retriever`. Its
+`Settings.embed_model` is `DrbrainEmbedding`, which delegates to the same
+configured BGE provider. That mode embeds PageIndex documents while building the
+LlamaIndex store; it is an alternate publication path, not a second embedding
+model in the SQL+Zvec path.
+
 ## Storage architecture
 
 SQLite is the authoritative store for paper metadata, projected PageIndex text,

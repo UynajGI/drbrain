@@ -63,10 +63,10 @@ This creates `~/DrBrain/` as your library root
 (`%USERPROFILE%/DrBrain` on Windows).
 
 ```bash
-# Ingest → build → embed → closure (all incremental)
+# Ingest → build → graph embed → closure (all incremental)
 drbrain fetch "10.1038/nature14539"     # grab a paper by DOI
 drbrain build                           # 5-stage LLM extraction
-drbrain embed                           # TransE graph embeddings
+drbrain embed --graph                   # TransE graph embeddings
 drbrain closure                         # rule-based inference
 drbrain ask "What gaps remain in deep learning?"
 

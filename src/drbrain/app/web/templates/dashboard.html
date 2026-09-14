@@ -19,7 +19,8 @@
   <ol class="guide-steps">
     <li><code>drbrain ingest</code> — 处理 <code>data/spool/inbox/</code> 中的 PDF</li>
     <li><code>drbrain build</code> — LLM 抽取概念与论证</li>
-    <li><code>drbrain embed &amp;&amp; drbrain closure</code> — 向量与规则闭环（可选但推荐）</li>
+    <li><code>drbrain embed --tree &amp;&amp; drbrain rag prepare</code> — 文本检索索引</li>
+    <li><code>drbrain embed --graph &amp;&amp; drbrain closure</code> — 知识图谱向量与规则闭环（可选）</li>
   </ol>
   <p class="muted small">导入完成后刷新此页即可看到文献与统计。</p>
 </section>

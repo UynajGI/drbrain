@@ -1410,7 +1410,7 @@ def pipeline_cmd(
                 args.append("--all")
         elif name == "embed":
             # Pipeline runs tree-embedding (PageIndex/RAPTOR) which is already
-            # content-hash incremental. Standalone 'drbrain embed' (no --tree)
+            # content-hash incremental. Standalone 'drbrain embed --graph'
             # does TransE and has its own incremental path; pipeline does not
             # invoke TransE to match prior behavior.
             args = child_command("embed", "--tree")

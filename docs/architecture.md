@@ -52,6 +52,33 @@ to the selected generation.  The `sqlite` backend is retained for compatibility
 and small test fixtures, while a missing Zvec sidecar is reported as a failed
 leg instead of silently changing the retrieval plan.
 
+The complete text-RAG CLI path is:
+
+```text
+material → ingest (parser + generic IDs + PageIndex tree)
+             → embed --tree (BGE node vectors + optional RAPTOR summaries)
+             → rag prepare (derived SQLite + generation-scoped Zvec)
+             → ask/query (BM25 + Zvec + PageIndex + optional legs)
+             → RRF/filter/rerank → evidence provenance → DeepSeek synthesis
+```
+
+The alternate `llamaindex` RAG backend is published by the same `rag prepare`
+command (or `rag index`): LlamaIndex sets `Settings.embed_model` to DrBrain's
+`DrbrainEmbedding` adapter, which uses the configured BGE provider while
+building `VectorStoreIndex` and `BM25Retriever`. The production SQL+Zvec path
+reuses the vectors from `embed --tree` instead of building a second LlamaIndex
+vector store.
+
+The knowledge-graph branch is explicit and optional:
+
+```text
+build → embed --graph (TransE) → closure / graph retrieval
+```
+
+The standalone `embed --graph` command is the TransE graph-embedding branch. It
+can be run for KG queries and closure, but it is outside the text-RAG critical
+path.
+
 ### Capabilities and plugins
 
 `CapabilityDescriptor` is the neutral description of an invokable capability. `CapabilityCatalog` is the single discovery, recommendation, validation, invocation, and job entry point. Adapters cover Python plugins, MCP servers, non-executable Skills, model providers, APIs, and CLI commands. Descriptors include schemas, annotations, permissions, execution mode, job support, and provenance. Names are namespaced and duplicate registration is rejected unless replacement is explicit.
