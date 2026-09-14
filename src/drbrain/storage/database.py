@@ -2956,6 +2956,31 @@ class Database:
         ]
         return [dict(zip(cols, row)) for row in rows]
 
+    def list_paper_ids_by_raw_source(self, source: str) -> list[str]:
+        """Return local_ids whose ``raw`` artifact came from a given material kind.
+
+        The raw artifact metadata records the source kind and filename
+        (``{"source": "tex", "path": "tex_00001_....tex"}``).  Bulk re-ingest
+        flows use this to select a whole material family for re-processing.
+        """
+        wanted = (source or "").strip().lower()
+        if not wanted:
+            return []
+        selected: list[str] = []
+        rows = self.conn.execute(
+            "SELECT paper_id, metadata_json FROM paper_artifacts WHERE stage = 'raw'"
+        ).fetchall()
+        for paper_id, metadata_json in rows:
+            if not metadata_json:
+                continue
+            try:
+                meta = json.loads(metadata_json)
+            except (TypeError, ValueError):
+                continue
+            if str((meta or {}).get("source", "")).strip().lower() == wanted:
+                selected.append(str(paper_id))
+        return sorted(selected)
+
     def delete_paper(self, local_id: str) -> dict:
         """Delete a paper and all associated data. Returns counts of deleted items.
 

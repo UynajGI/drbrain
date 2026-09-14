@@ -458,6 +458,122 @@ def test_delete_cmd_json_missing_paper():
             assert e.exit_code == 1
 
 
+# ── delete_cmd: bulk --source ────────────────────────────────────────────
+
+
+def _seed_raw_artifact(db_path, local_id: str, source: str, title: str):
+    db = Database(str(db_path))
+    db.insert_paper(local_id, title, 2024, "uploaded")
+    db.upsert_paper_artifact(
+        local_id,
+        "raw",
+        "ready",
+        metadata_json=json.dumps({"source": source, "path": f"{local_id}.{source}"}),
+    )
+    db.commit()
+    db.close()
+
+
+def test_delete_cmd_bulk_by_source_refuses_without_force():
+    """Bulk --source without --force previews matches and exits 1 without deleting."""
+    from drbrain.cli.export_commands import delete_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+        _seed_raw_artifact(db_path, "ptex1", "tex", "tex one")
+        _seed_raw_artifact(db_path, "ptex2", "tex", "tex two")
+        _seed_raw_artifact(db_path, "ppdf1", "pdf", "pdf one")
+
+        captured: list[str] = []
+        with mock.patch("typer.echo", side_effect=_capture_factory(captured)):
+            try:
+                delete_cmd(
+                    ctx,
+                    None,
+                    force=False,
+                    rm_files=False,
+                    source="tex",
+                    dry_run=False,
+                    json_output=False,
+                )
+                assert False, "Should have refused without --force"
+            except typer.Exit as e:
+                assert e.exit_code == 1
+
+        db = Database(str(db_path))
+        assert db.get_paper("ptex1") is not None
+        assert db.get_paper("ptex2") is not None
+        assert db.get_paper("ppdf1") is not None
+        db.close()
+
+
+def test_delete_cmd_bulk_by_source_dry_run_deletes_nothing():
+    """Bulk --dry-run previews JSON and keeps every paper."""
+    from drbrain.cli.export_commands import delete_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+        _seed_raw_artifact(db_path, "ptex1", "tex", "tex one")
+        _seed_raw_artifact(db_path, "ptex2", "tex", "tex two")
+
+        captured: list[str] = []
+        with mock.patch("typer.echo", side_effect=_capture_factory(captured)):
+            delete_cmd(
+                ctx,
+                None,
+                force=False,
+                rm_files=False,
+                source="tex",
+                dry_run=True,
+                json_output=True,
+            )
+
+        payload = json.loads(captured[-1])
+        assert payload["matched"] == 2
+        assert payload["deleted"] == 0
+        db = Database(str(db_path))
+        assert db.get_paper("ptex1") is not None
+        assert db.get_paper("ptex2") is not None
+        db.close()
+
+
+def test_delete_cmd_bulk_by_source_force_deletes_family_only():
+    """Bulk --source --force deletes exactly the matching material family."""
+    from drbrain.cli.export_commands import delete_cmd
+
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        cfg = _make_minimal_config(str(db_path), str(Path(td) / "reports"))
+        ctx = _make_ctx(cfg)
+        _seed_raw_artifact(db_path, "ptex1", "tex", "tex one")
+        _seed_raw_artifact(db_path, "ptex2", "tex", "tex two")
+        _seed_raw_artifact(db_path, "ppdf1", "pdf", "pdf one")
+
+        captured: list[str] = []
+        with mock.patch("typer.echo", side_effect=_capture_factory(captured)):
+            delete_cmd(
+                ctx,
+                None,
+                force=True,
+                rm_files=False,
+                source="tex",
+                dry_run=False,
+                json_output=True,
+            )
+
+        payload = json.loads(captured[-1])
+        assert payload["deleted"] == 2
+        db = Database(str(db_path))
+        assert db.get_paper("ptex1") is None
+        assert db.get_paper("ptex2") is None
+        assert db.get_paper("ppdf1") is not None
+        db.close()
+
+
 # ── backup_cmd ────────────────────────────────────────────────────────────
 
 
