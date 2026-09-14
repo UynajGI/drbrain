@@ -182,6 +182,11 @@
 - 范围：`tree/outline.py`的PDF适配；复用PageIndex所需源码函数。
 - 先写测试：注入已解析page_list与原PDF页面一致；正文残余保留；不再生成临时伪PDF或SDK文献库。
 - 完成标准：输出结构锚点/候选范围，不持久化独立PageIndex树；Flash若仍需读几何数据如实计量，不假定有block注入接口。
+- **实现记录（2026-09-15，与原始假设的差异）**：原任务描述假定 classic 管线可"无LLM"复用，实测不成立——
+  `page_index_main` 的 `tree_parser` → `check_toc` → `find_toc_pages` 第一步就调用 `llm_completion`，
+  `opt` 只能关闭摘要类工作。因此落地为：PDF 默认路径只复用 classic 的**真实页提取**（`utils.get_page_tokens`，
+  1-based 真实页，不伪造），输出页级覆盖提示；章节树仅在调用方显式注入 index_model 时走 `page_index_main`。
+  两者都不持久化 PageIndex 树、不生成临时伪 PDF，也不使用上游 `JsonLogger`（它会写 `./logs`）。
 
 ### [x] T21 — 复用MD/TeX结构提取为瞬态提示
 

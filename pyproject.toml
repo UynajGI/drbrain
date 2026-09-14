@@ -212,7 +212,15 @@ warn_return_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-norecursedirs = ["docs/learn/scholaraio/tests", "research", ".qwen"]
+# ``vendor/`` holds pinned upstream submodules with their own upstream test
+# suites; they are not part of this repository's test surface (same reason
+# ruff excludes the directory).
+norecursedirs = [
+    "vendor",
+    "docs/learn/scholaraio/tests",
+    "research",
+    ".qwen",
+]
 markers = [
     "integration: slow end-to-end tests using real PDFs and API calls",
 ]
