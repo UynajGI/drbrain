@@ -231,18 +231,29 @@ def _ingest_single_paper(
         raise typer.Exit(1)
 
     # Stage 2.1: Detect paper type
-    from drbrain.extractor.detection import detect_paper_type_async
+    from drbrain.extractor.detection import detect_paper_type, detect_paper_type_async
 
     echo("  Detecting paper type...")
     first_page = parsed.text_blocks[0] if parsed.text_blocks else getattr(parsed, "abstract", None)
-    paper_type = asyncio.run(
-        detect_paper_type_async(
+    if os.getenv("DRBRAIN_OFFLINE", "0") == "1":
+        # The heuristic detector is deterministic and avoids one LLM request
+        # per material during corpus-scale CLI throughput tests.  A later
+        # online build/enrichment pass can classify ambiguous papers with the
+        # configured model chain.
+        paper_type = detect_paper_type(
             title=parsed.title,
             abstract=getattr(parsed, "abstract", None),
             first_page=first_page,
-            models=llm_models,
         )
-    )
+    else:
+        paper_type = asyncio.run(
+            detect_paper_type_async(
+                title=parsed.title,
+                abstract=getattr(parsed, "abstract", None),
+                first_page=first_page,
+                models=llm_models,
+            )
+        )
     echo(f"  Paper type: {paper_type}")
     # Update paper_type in DB (already inserted as 'paper' default)
     db.set_paper_type(local_id, paper_type)  # type: ignore[arg-type]  # pre-existing: see mypy debt

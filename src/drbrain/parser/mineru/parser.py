@@ -266,7 +266,14 @@ class MinerUParser:
         )
         try:
             fallback: dict = inspected or {}
-            if out_dir is not None:
+            if inspected is not None:
+                # pdf-inspector is the CPU-first parser.  It intentionally
+                # bypasses MinerU, so do not report this successful path as a
+                # MinerU fallback in the ingest log.
+                raw_md = inspected["markdown"]
+                _parse_log.info("[parse] pdf-inspector succeeded for %s", pdf_path.name)
+                out_dir = None
+            elif out_dir is not None:
                 raw_md = self._read_output_md(out_dir)
                 _parse_log.info("[parse] MinerU succeeded for %s", pdf_path.name)
             else:
