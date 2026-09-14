@@ -74,8 +74,10 @@ class TestAffinityFixtures:
         spans = _spans(case["rows"])
         stage = _stage(case["rows"], case["components"], case["probs"])
         picture = build_pictures(stage, spans, exclude_row="a1")["g0"]
-        assert picture.spans and all(
-            span.local_id != "p1" or span is not spans["a1"] for span, _ in picture.spans
+        assert picture.parts
+        assert all(
+            not (local_id == "p1" and path == ("Methods",) and weight == pytest.approx(80.0))
+            for local_id, path, weight in picture.parts
         )
         with_self = build_pictures(stage, spans)["g0"]
         assert with_self.doc_mass.get("p1", 0.0) > picture.doc_mass.get("p1", 0.0)

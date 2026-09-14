@@ -63,23 +63,69 @@ def path_similarity(a: Sequence[str], b: Sequence[str]) -> float:
     return common / max(1, min(len(a), len(b)))
 
 
+@dataclass(frozen=True)
+class SourceProfile:
+    """A node's real source distribution: token mass per (document, heading path).
+
+    Leaves carry a single part; upper-layer regions aggregate their
+    descendants' parts (design §4.2: an upper region uses its true source
+    distribution instead of being pinned to one document).  Duplicate soft
+    paths must be collapsed by the caller so the same origin range is not
+    counted twice.
+    """
+
+    parts: tuple[tuple[str, tuple[str, ...], int], ...]
+
+    def __post_init__(self) -> None:
+        if any(tokens < 0 for _local, _path, tokens in self.parts):
+            raise ValueError("profile tokens must be >= 0")
+
+    @classmethod
+    def from_span(cls, span: SourceSpan) -> SourceProfile:
+        return cls(parts=((span.local_id, span.heading_path, span.tokens),))
+
+    def is_empty(self) -> bool:
+        return not self.parts or self.token_total() <= 0
+
+    def token_total(self) -> int:
+        return sum(max(0, tokens) for _local, _path, tokens in self.parts)
+
+    def documents(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(local_id for local_id, _path, _tokens in self.parts))
+
+    def merged(self) -> SourceProfile:
+        """Collapse duplicate (document, path) parts into one token mass."""
+        aggregated: dict[tuple[str, tuple[str, ...]], int] = {}
+        for local_id, path, tokens in self.parts:
+            key = (local_id, tuple(path))
+            aggregated[key] = aggregated.get(key, 0) + max(0, int(tokens))
+        return SourceProfile(
+            parts=tuple((local_id, path, tokens) for (local_id, path), tokens in aggregated.items())
+        )
+
+
+def _as_profile(source: SourceSpan | SourceProfile) -> SourceProfile:
+    return SourceProfile.from_span(source) if isinstance(source, SourceSpan) else source
+
+
 @dataclass
 class ClusterPicture:
     """Fixed component profile derived from an unmodified posterior."""
 
     component_id: str
     spans: list[tuple[SourceSpan, float]] = field(default_factory=list)
+    parts: list[tuple[str, tuple[str, ...], float]] = field(default_factory=list)
     doc_mass: dict[str, float] = field(default_factory=dict)
     path_mass: dict[str, list[tuple[tuple[str, ...], float]]] = field(default_factory=dict)
     total_mass: float = 0.0
 
     def is_empty(self) -> bool:
-        return self.total_mass <= 0.0 or not self.spans
+        return self.total_mass <= 0.0 or not self.parts
 
 
 def build_pictures(
     stage: PosteriorStage,
-    spans: Mapping[str, SourceSpan],
+    sources: Mapping[str, SourceSpan | SourceProfile],
     *,
     exclude_row: str | None = None,
 ) -> dict[str, ClusterPicture]:
@@ -94,32 +140,34 @@ def build_pictures(
     for row_id, row in zip(stage.row_ids, stage.probs):
         if exclude_row is not None and row_id == exclude_row:
             continue
-        span = spans.get(row_id)
-        if span is None:
+        source = sources.get(row_id)
+        if source is None:
+            continue
+        profile = _as_profile(source).merged()
+        if profile.is_empty():
             continue
         for idx, component in enumerate(stage.component_ids):
             prob = float(row[idx])
             if prob <= 0.0:
                 continue
-            weight = prob * max(span.tokens, 1)
             picture = pictures[component]
-            picture.spans.append((span, weight))
-            picture.doc_mass[span.local_id] = picture.doc_mass.get(span.local_id, 0.0) + weight
-            entries = picture.path_mass.setdefault(span.local_id, [])
-            entries.append((span.heading_path, weight))
-            picture.total_mass += weight
+            for local_id, path, part_tokens in profile.parts:
+                weight = prob * max(int(part_tokens), 1)
+                picture.parts.append((local_id, tuple(path), weight))
+                picture.doc_mass[local_id] = picture.doc_mass.get(local_id, 0.0) + weight
+                picture.path_mass.setdefault(local_id, []).append((tuple(path), weight))
+                picture.total_mass += weight
     return pictures
 
 
-def structural_affinity(span: SourceSpan, picture: ClusterPicture) -> float:
-    """A(i,k) for one evaluated span against a fixed cluster picture."""
+def _span_affinity(local_id: str, heading_path: tuple[str, ...], picture: ClusterPicture) -> float:
     if picture.is_empty():
         return 0.0
-    doc_mass = picture.doc_mass.get(span.local_id, 0.0)
+    doc_mass = picture.doc_mass.get(local_id, 0.0)
     if doc_mass <= 0.0:
         return 0.0
     doc_share = doc_mass / picture.total_mass
-    path_entries = picture.path_mass.get(span.local_id) or []
+    path_entries = picture.path_mass.get(local_id) or []
     if not path_entries:
         return 0.0
     total_weight = sum(weight for _, weight in path_entries)
@@ -127,26 +175,48 @@ def structural_affinity(span: SourceSpan, picture: ClusterPicture) -> float:
         return 0.0
     similarity = 0.0
     for path, weight in path_entries:
-        similarity += weight * path_similarity(span.heading_path, path)
+        similarity += weight * path_similarity(heading_path, path)
     similarity /= total_weight
     return max(0.0, min(1.0, doc_share * similarity))
 
 
+def structural_affinity(span: SourceSpan, picture: ClusterPicture) -> float:
+    """A(i,k) for one evaluated span against a fixed cluster picture."""
+    return _span_affinity(span.local_id, span.heading_path, picture)
+
+
+def profile_affinity(profile: SourceProfile, picture: ClusterPicture) -> float:
+    """A(i,k) for a multi-source node: token-weighted mean over its parts."""
+    parts = profile.merged().parts
+    if not parts:
+        return 0.0
+    total = sum(max(0, tokens) for _local, _path, tokens in parts)
+    if total <= 0:
+        return 0.0
+    value = 0.0
+    for local_id, path, tokens in parts:
+        value += max(0, tokens) * _span_affinity(local_id, tuple(path), picture)
+    return max(0.0, min(1.0, value / total))
+
+
 def affinity_matrix(
     stage: PosteriorStage,
-    spans: Mapping[str, SourceSpan],
+    sources: Mapping[str, SourceSpan | SourceProfile],
 ) -> tuple[tuple[float, ...], ...]:
     """A(i,k) for every row of ``stage`` with per-row self-exclusion."""
     matrix: list[tuple[float, ...]] = []
     for row_id in stage.row_ids:
-        span = spans.get(row_id)
-        if span is None:
+        source = sources.get(row_id)
+        if source is None:
             matrix.append(tuple(0.0 for _ in stage.component_ids))
             continue
-        pictures = build_pictures(stage, spans, exclude_row=row_id)
+        pictures = build_pictures(stage, sources, exclude_row=row_id)
         matrix.append(
             tuple(
-                structural_affinity(span, pictures[component]) for component in stage.component_ids
+                structural_affinity(source, pictures[component])
+                if isinstance(source, SourceSpan)
+                else profile_affinity(source, pictures[component])
+                for component in stage.component_ids
             )
         )
     return tuple(matrix)
