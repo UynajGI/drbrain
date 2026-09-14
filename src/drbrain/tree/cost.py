@@ -219,3 +219,78 @@ def post_check(
 
 def coverage_from_leaves(leaves: Mapping[str, SourceSpan]) -> Coverage:
     return unique_coverage(leaves.values())
+
+
+# ── Proposal-level gates (T32/T33) ────────────────────────────────
+
+
+def coverage_for_members(db, member_ids: Sequence[str], *, count_tokens=None) -> Coverage:
+    """Exact unique coverage over the members' *leaf* spans (shared origins once)."""
+    from drbrain.tree.assign import leaf_spans_of_node
+
+    spans: list[SourceSpan] = []
+    for node_id in member_ids:
+        spans.extend(leaf_spans_of_node(db, node_id, count_tokens=count_tokens))
+    return unique_coverage(spans)
+
+
+def _profile_parts(db, member_ids: Sequence[str], count_tokens) -> list[tuple[str, tuple, int]]:
+    from drbrain.tree.assign import node_source_profile
+
+    parts: list[tuple[str, tuple, int]] = []
+    for node_id in member_ids:
+        profile = node_source_profile(db, node_id, count_tokens=count_tokens).merged()
+        parts.extend(profile.parts)
+    return parts
+
+
+def proposal_pre_screen(
+    db,
+    proposal,
+    *,
+    params: CostParams | None = None,
+    seen_member_keys: frozenset[str] | set[str] | None = None,
+    count_tokens=None,
+) -> Decision:
+    """Cheap pre-screen for one candidate proposal (no model call)."""
+    params = params or CostParams()
+    coverage = coverage_for_members(db, proposal.member_ids, count_tokens=count_tokens)
+    member_tokens = sum(
+        tokens for _local, _path, tokens in _profile_parts(db, proposal.member_ids, count_tokens)
+    )
+    return pre_screen(
+        member_ids=proposal.member_ids,
+        coverage=coverage,
+        member_tokens=member_tokens,
+        seen_member_keys=seen_member_keys or set(),
+        member_key=proposal.key,
+        params=params,
+    )
+
+
+def proposal_post_check(
+    db,
+    proposal,
+    *,
+    summary_text: str,
+    summary_tokens: int,
+    finish_reason: str,
+    referenced_spans: Sequence[SourceSpan],
+    params: CostParams | None = None,
+    count_tokens=None,
+) -> Decision:
+    """Post-generation gate over the actual summary.
+
+    ``referenced_spans`` must be the sources the generation contract actually
+    put in front of the model (not the proposal's wish list): the gate rejects
+    any accepted group whose summary was built from an incomplete member set.
+    """
+    coverage = coverage_for_members(db, proposal.member_ids, count_tokens=count_tokens)
+    return post_check(
+        summary_text=summary_text,
+        summary_tokens=summary_tokens,
+        finish_reason=finish_reason,
+        coverage=coverage,
+        referenced_spans=referenced_spans,
+        params=params,
+    )

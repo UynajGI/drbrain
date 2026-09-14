@@ -109,6 +109,71 @@ def node_source_profiles(
     }
 
 
+def leaf_spans_of_node(db, node_id: str, *, count_tokens=None) -> list[SourceSpan]:
+    """Every unique leaf span under a node (used for exact cost coverage)."""
+    if count_tokens is None:
+        from drbrain.services.tokens import count_tokens as _count
+
+        count_tokens = _count
+    row = db.get_tree_node(node_id)
+    if row is None:
+        raise AssignmentError(f"unknown tree node {node_id!r}")
+    return _collect_leaf_spans(db, row, count_tokens, seen=set())
+
+
+def _collect_leaf_spans(db, row: Mapping, count_tokens, *, seen: set[str]) -> list[SourceSpan]:
+    node_id = str(row["node_id"])
+    if node_id in seen:
+        raise AssignmentError(f"node graph contains a cycle at {node_id!r}")
+    seen.add(node_id)
+    if row["kind"] == "leaf":
+        block = _block_row(db, row)
+        text = str(block.get("text") or "")
+        char_start = int(row.get("char_start") or 0)
+        char_end = int(row.get("char_end") or len(text))
+        snippet = text[char_start:char_end]
+        return [
+            SourceSpan(
+                local_id=str(row.get("local_id") or ""),
+                revision=int(row.get("doc_revision") or 1),
+                block_id=str(row.get("block_id")),
+                char_start=char_start,
+                char_end=max(char_start + 1, char_end),
+                tokens=max(1, int(count_tokens(snippet))) if snippet else 0,
+                heading_path=_heading_of(block),
+            )
+        ]
+    spans: list[SourceSpan] = []
+    for child in db.get_tree_children(node_id):
+        child_row = db.get_tree_node(child["child_id"])
+        if child_row is None:
+            raise AssignmentError(f"region {node_id!r} references missing child")
+        spans.extend(_collect_leaf_spans(db, child_row, count_tokens, seen=set(seen)))
+    return spans
+
+
+def _block_row(db, row: Mapping) -> Mapping:
+    block_id = row.get("block_id")
+    blocks = [
+        block
+        for block in db.get_content_blocks(row["local_id"], int(row["doc_revision"]))
+        if block["block_id"] == block_id
+    ]
+    if not blocks:
+        raise AssignmentError(f"leaf {row['node_id']!r} references a missing block {block_id!r}")
+    return blocks[0]
+
+
+def _heading_of(block: Mapping) -> tuple[str, ...]:
+    import json
+
+    raw = block.get("heading_path") or "[]"
+    try:
+        return tuple(json.loads(raw)) if isinstance(raw, str) else tuple(raw)
+    except (TypeError, ValueError):
+        return ()
+
+
 def stage_affinities(
     stage: PosteriorStage,
     profiles: Mapping[str, SourceProfile | SourceSpan],
