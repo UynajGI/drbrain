@@ -83,3 +83,51 @@ def storage_audit_cmd(
 
 
 __all__ = ["storage_app", "storage_audit_cmd"]
+
+
+@storage_app.command("migrate")
+def storage_migrate_cmd(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--apply", help="Plan only (default) or execute the plan"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable plan"),
+    papers_root: str = typer.Option(
+        "", "--papers-root", help="Legacy paper directories to plan against"
+    ),
+):
+    """Plan the legacy migration deterministically (T50); apply lands later."""
+    from drbrain.services.storage_migration import build_migration_plan
+
+    cfg = _runtime_config(ctx)
+    db_path = _db_path(ctx, cfg)
+    if papers_root:
+        root: Path | None = Path(runtime_data_path(ctx, papers_root, label="papers root"))
+    else:
+        default_root = "data/papers"
+        if isinstance(cfg, dict):
+            dirs_cfg = cfg.get("dirs", {})
+            if isinstance(dirs_cfg, dict):
+                default_root = dirs_cfg.get("papers", default_root)
+        candidate = Path(runtime_data_path(ctx, default_root, label="papers root"))
+        root = candidate if candidate.is_dir() else None
+    plan = build_migration_plan(db_path=db_path, papers_root=root)
+    payload = plan.to_json()
+    if json_output:
+        typer.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        summary = payload["summary"]
+        typer.echo(f"Migration plan {payload['plan_id']} (schema v{payload['schema_version']})")
+        typer.echo(
+            "  " + ", ".join(f"{action}={count}" for action, count in sorted(summary.items()))
+        )
+        for item in payload["items"][:25]:
+            typer.echo(f"  - {item['action']:<9} {item['local_id']}: {item['reason']}")
+        if len(payload["items"]) > 25:
+            typer.echo(f"  … {len(payload['items']) - 25} more items")
+    if not dry_run:
+        typer.echo(
+            "Applying a migration is not available yet; re-run with --dry-run to inspect the plan.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
