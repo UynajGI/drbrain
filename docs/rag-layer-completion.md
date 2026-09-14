@@ -15,6 +15,28 @@ The RAG layer is a retrieval service over stored papers and derived evidence uni
 
 Each leg is isolated. A degraded or unavailable leg is recorded in retrieval trace and does not invalidate candidates returned by other legs.
 
+## Storage architecture
+
+SQLite is the authoritative store for paper metadata, projected PageIndex text,
+FTS5, claims, and the immutable `corpus.sqlite3` generation.  Vector search is a
+derived sidecar selected with `retrieval.vector_backend`.  Production configs use
+`zvec`: `rag prepare` builds an HNSW index from the generation's PageIndex vectors
+and publishes it under the same generation directory as the SQLite snapshot.  A
+query therefore pins text and ANN results to one generation.  `sqlite` remains
+available for small fixtures and compatibility, where the vector leg reranks the
+BM25 candidate pool in process.  Zvec load or query failures are surfaced in the
+vector leg trace; they are never silently replaced by a different backend.
+
+```text
+primary SQLite (papers, KG, artifacts)
+            │  rag prepare
+            ▼
+derived generation/
+├── corpus.sqlite3       authoritative text + FTS snapshot
+├── zvec/                optional HNSW PageIndex ANN sidecar
+└── manifest.json        generation + embedding + vector backend identity
+```
+
 ## Evidence semantics
 
 PageIndex sections and RAPTOR summaries are logical evidence units. Long documents may have physical fragments with parent checksums and character offsets. A response must cite the logical unit and retain enough provenance to locate the source artifact.

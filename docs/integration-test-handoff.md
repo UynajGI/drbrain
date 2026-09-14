@@ -15,7 +15,7 @@ The worktree contained no local changes before the merge. Keep any integration-t
 
 ```bash
 cd /home/jiangyuan/drbrain-phy
-uv sync
+uv sync --extra full
 uv pip install -e .
 uv run drbrain --help
 uv run drbrain check

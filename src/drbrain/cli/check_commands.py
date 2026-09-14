@@ -73,6 +73,14 @@ def check_cmd(ctx: typer.Context):
         ("pyyaml", "yaml"),
         ("pydantic", "pydantic"),
     ]
+    retrieval_cfg = getattr(cfg, "retrieval", {})
+    vector_backend = (
+        retrieval_cfg.get("vector_backend", "sqlite")
+        if isinstance(retrieval_cfg, dict)
+        else getattr(retrieval_cfg, "vector_backend", "sqlite")
+    )
+    if str(vector_backend).lower() == "zvec":
+        required_packages.append(("zvec", "zvec"))
     for pkg_name, import_name in required_packages:
         try:
             mod = importlib.import_module(import_name)
@@ -99,6 +107,12 @@ def check_cmd(ctx: typer.Context):
         anydoc_found = True
     except ImportError:
         pass
+    pdf_inspector_found = False
+    try:
+        importlib.import_module("pdf_inspector")
+        pdf_inspector_found = True
+    except ImportError:
+        pass
     ocrmypdf_found = False
     try:
         importlib.import_module("ocrmypdf")
@@ -108,6 +122,11 @@ def check_cmd(ctx: typer.Context):
     tesseract_found = shutil.which("tesseract")
 
     cli_tools = {
+        "pdf-inspector": (
+            "CPU-first text PDF parser",
+            pdf_inspector_found,
+            "uv sync --extra pdf",
+        ),
         "mineru-open-api": ("MinerU PDF parser CLI", mineru_found, ""),
         "anydoc": ("PDF fallback parser", anydoc_found, "pip install firecrawl-anydoc"),
         "ocrmypdf": ("OCR backend for scanned PDFs", ocrmypdf_found, "uv sync --extra anydoc"),
@@ -428,7 +447,10 @@ def check_cmd(ctx: typer.Context):
 
             try:
                 req = _urllib.Request(
-                    cfg.get("mineru", {}).get("api_base_url", "https://api.mineru.com/api/v1").rstrip("/") + "/status",
+                    cfg.get("mineru", {})
+                    .get("api_base_url", "https://api.mineru.com/api/v1")
+                    .rstrip("/")
+                    + "/status",
                     headers={"Authorization": f"Bearer {mineru_token}"},
                 )
                 _urllib.urlopen(req, timeout=5)

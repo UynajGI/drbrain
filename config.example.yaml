@@ -133,6 +133,11 @@ embed:
   api_key: "" # API key (set via drbrain setup, or env var DRBRAIN_EMBED_API_KEY)
   batch_size: 64
 
+retrieval:
+  # Authoritative text/metadata stay in SQLite; Zvec is the derived ANN sidecar.
+  vector_backend: "zvec" # "zvec" | "sqlite"
+  vector_top_k: 100 # oversampled ANN candidates before ACL/category filtering
+
 # ── Quality Control ──────────────────────────────────────────────
 queue:
   weak_threshold: 0.7 # confidence below this → review queue

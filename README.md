@@ -55,7 +55,7 @@ relationships through rule-based reasoning.
 ```bash
 git clone https://github.com/UynajGI/DrBrain.git
 cd DrBrain
-uv sync && uv pip install -e .
+uv sync --extra full && uv pip install -e .
 drbrain setup          # interactive wizard (bilingual EN / 中文)
 ```
 
@@ -195,7 +195,7 @@ Quick start for contributors:
 
 ```bash
 git clone https://github.com/UynajGI/DrBrain.git && cd DrBrain
-uv sync && uv pip install -e .
+uv sync --extra full && uv pip install -e .
 uv run pre-commit install                # install auto-lint/format hooks before commits
 uv run pytest -m "not integration"      # fast tests
 ```

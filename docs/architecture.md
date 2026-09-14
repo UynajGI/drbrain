@@ -43,6 +43,15 @@ Parser adapters return a normalized `Parsed` result. PDF ingestion prefers the c
 
 The RAG layer combines BM25, vector, PageIndex/tree, RAPTOR, and graph-aware sources through fusion and optional reranking. Results retain source and section provenance. The RAG agent exposes retrieval and validation tools, while MCP tools are adapted into the same capability model as local plugins and Skills.
 
+SQLite remains the source of truth for metadata, projected text, FTS5, claims,
+and immutable RAG snapshots.  The vector leg uses a rebuildable Zvec HNSW
+sidecar in production (`retrieval.vector_backend: zvec`); `rag prepare` copies
+the sidecar into the same generation directory as `corpus.sqlite3` and records
+its backend, dimension, and count in `manifest.json`.  Queries pin both stores
+to the selected generation.  The `sqlite` backend is retained for compatibility
+and small test fixtures, while a missing Zvec sidecar is reported as a failed
+leg instead of silently changing the retrieval plan.
+
 ### Capabilities and plugins
 
 `CapabilityDescriptor` is the neutral description of an invokable capability. `CapabilityCatalog` is the single discovery, recommendation, validation, invocation, and job entry point. Adapters cover Python plugins, MCP servers, non-executable Skills, model providers, APIs, and CLI commands. Descriptors include schemas, annotations, permissions, execution mode, job support, and provenance. Names are namespaced and duplicate registration is rejected unless replacement is explicit.

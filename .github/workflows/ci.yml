@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --extra full
       - run: uv pip install -e .
       # Keep formatting visible without making it a functional gate.
       - run: uv run ruff format --check src/ tests/
@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --extra full
       - run: uv pip install -e .
       - run: uv run mypy src/drbrain
 
@@ -47,7 +47,7 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --extra full
       - run: uv pip install -e .
       - run: uv pip install pip-audit
       # Ignored advisories — no fix available on this toolchain (see
@@ -95,6 +95,6 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v4
-      - run: uv sync
+      - run: uv sync --extra full
       - run: uv pip install -e .
       - run: uv run pytest -m "not integration" --timeout=30 -q

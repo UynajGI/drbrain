@@ -9,10 +9,25 @@
 
 ## Install
 
+The base install contains the lightweight CLI, configuration, storage, and
+graph surface. Feature stacks are opt-in profiles:
+
+| Profile | Adds |
+| --- | --- |
+| `pdf` | PyMuPDF and `pymupdf4llm` |
+| `ingest` | PDF parsing, PageIndex, LLM bridge, and metadata providers |
+| `models` | sentence-transformers and ModelScope for local BGE models |
+| `rag` | LlamaIndex, BM25, and Zvec ANN retrieval |
+| `full` | All runtime profiles, OCR, Office, analytics, and PyTorch/GNN |
+
 ```bash
+# Minimal CLI
 uv sync
 uv pip install -e .
 uv run drbrain --help
+
+# Typical local PDF + BGE + Zvec workflow
+uv sync --extra ingest --extra models --extra rag
 ```
 
 ## Initialize a runtime

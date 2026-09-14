@@ -30,44 +30,98 @@ classifiers = [
 ]
 
 dependencies = [
-    "arxiv>=2.0",
-    "fastapi>=0.115",
-    "httpx[socks]>=0.27",
-    "jinja2>=3.1",
-    "openai>=2.54",
-    "python-multipart>=0.0.20",
-    "tiktoken>=0.12",
-    "uvicorn>=0.30",
+    # Minimal CLI, config, storage, and graph surface. Feature profiles below
+    # keep PDF/LLM/RAG/web/provider stacks out of a small installation.
+    "click>=8.1",
     "loguru>=0.7.3",
     "networkx>=3.4",
     "pydantic>=2.10",
-    "pyalex>=0.21",
-    "pymupdf>=1.27.2.3",
-    "pymupdf4llm>=0.0.13",
     "pyyaml>=6.0",
-    "jsonschema>=4.23",
     "numpy>=1.26",
-    "rank-bm25>=0.2",
     "requests>=2.31",
     "rich>=13.9",
-    "scikit-learn>=1.5",
     "typer>=0.15",
-    "umap-learn>=0.5",
+]
+
+[project.optional-dependencies]
+# Feature profiles. Install one with ``uv sync --extra <name>`` or combine
+# profiles, e.g. ``uv sync --extra ingest --extra models --extra rag``.
+pdf = ["pdf-inspector>=1.19.0", "pymupdf>=1.27.2.3", "pymupdf4llm>=0.0.13"]
+llm = ["openai>=2.54", "tiktoken>=0.12", "pageindex>=0.1.0"]
+models = ["sentence-transformers>=5.6.1", "modelscope>=1.39.0"]
+rag = [
+    "rank-bm25>=0.2",
+    "llama-index-core>=0.14.23",
+    "llama-index-llms-openai>=0.6.0",
+    "llama-index-retrievers-bm25>=0.7.1",
+    "zvec>=0.7.0",
+]
+providers = [
+    "arxiv>=2.0",
     "deepxiv-sdk>=0.2.5",
-    "sentence-transformers>=5.6.1",
-    "modelscope>=1.39.0",
+    "httpx[socks]>=0.27",
+    "pyalex>=0.21",
+]
+web = [
+    "fastapi>=0.115",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.20",
+    "uvicorn>=0.30",
+]
+plugins = ["jsonschema>=4.23", "mcp>=2.0.0"]
+analytics = ["duckdb", "scikit-learn>=1.5", "umap-learn>=0.5"]
+office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
+gnn = ["torch>=2.0,<2.14"]
+anydoc = ["firecrawl-anydoc>=0.1", "ocrmypdf>=16"]
+# Common complete profiles. Dependencies are repeated intentionally because
+# PEP 621 extras cannot portably reference another extra by name.
+ingest = [
+    "arxiv>=2.0",
+    "deepxiv-sdk>=0.2.5",
+    "httpx[socks]>=0.27",
+    "openai>=2.54",
+    "pageindex>=0.1.0",
+    "pyalex>=0.21",
+    "pdf-inspector>=1.19.0",
+    "pymupdf>=1.27.2.3",
+    "pymupdf4llm>=0.0.13",
+    "tiktoken>=0.12",
+]
+full = [
+    "arxiv>=2.0",
+    "deepxiv-sdk>=0.2.5",
+    "duckdb",
+    "fastapi>=0.115",
+    "firecrawl-anydoc>=0.1",
+    "httpx[socks]>=0.27",
+    "jinja2>=3.1",
+    "jsonschema>=4.23",
     "llama-index-core>=0.14.23",
     "llama-index-llms-openai>=0.6.0",
     "llama-index-retrievers-bm25>=0.7.1",
     "mcp>=2.0.0",
+    "modelscope>=1.39.0",
+    "numpy>=1.26",
+    "ocrmypdf>=16",
+    "openai>=2.54",
+    "openpyxl>=3.1",
     "pageindex>=0.1.0",
+    "pdf-inspector>=1.19.0",
+    "pyalex>=0.21",
+    "pymupdf>=1.27.2.3",
+    "pymupdf4llm>=0.0.13",
+    "python-docx>=1.1",
+    "python-multipart>=0.0.20",
+    "python-pptx>=1.0",
+    "rank-bm25>=0.2",
+    "scikit-learn>=1.5",
+    "sentence-transformers>=5.6.1",
+    "tiktoken>=0.12",
+    "torch>=2.0,<2.14",
+    "umap-learn>=0.5",
+    "uvicorn>=0.30",
+    "zvec>=0.7.0",
 ]
-
-[project.optional-dependencies]
-office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
-gnn = ["torch>=2.0,<2.14"]
-analytics = ["duckdb"]
-anydoc = ["firecrawl-anydoc>=0.1", "ocrmypdf>=16"]
 
 [project.urls]
 Homepage = "https://github.com/UynajGI/DrBrain"

@@ -70,6 +70,12 @@ embed:
   api_key: ""
   batch_size: 64
 
+retrieval:
+  # SQLite remains authoritative; Zvec is the rebuildable ANN sidecar copied
+  # into each immutable SQL generation.
+  vector_backend: "zvec"
+  vector_top_k: 100
+
 # ── LlamaIndex RAG ────────────────────────────────────────────────────
 # LlamaIndex 集成配置(工单 T1 基础设施)。enabled=false 全局回退旧实现。
 # 设计:docs/llamaindex-integration-design.md

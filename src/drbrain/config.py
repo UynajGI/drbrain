@@ -202,6 +202,12 @@ class RetrievalConfig(_ConfigBase):
 
     embed: str = "bge_embed_cpu"
     rerank: str = "bge_rerank_cpu"
+    # Vector ANN is a derived index; SQLite remains the source of truth for
+    # metadata, text, FTS, and immutable SQL snapshots. ``sqlite`` preserves
+    # the small/legacy two-stage path for programmatic configurations while
+    # production YAML can select ``zvec`` explicitly.
+    vector_backend: str = "sqlite"
+    vector_top_k: int = 100
     endpoints: dict[str, dict] = field(default_factory=dict)
 
 
@@ -648,7 +654,11 @@ def load_config(
     try:
         from dotenv import load_dotenv
 
-        if str(base_path) == "config.yaml" or "DRBRAIN_ROOT" in os.environ or "DRBRAIN_RUNTIME_ROOT" in os.environ:
+        if (
+            str(base_path) == "config.yaml"
+            or "DRBRAIN_ROOT" in os.environ
+            or "DRBRAIN_RUNTIME_ROOT" in os.environ
+        ):
             load_dotenv(Path.cwd() / ".env", override=False)
     except Exception:
         pass

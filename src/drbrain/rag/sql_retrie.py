@@ -6,7 +6,8 @@ a database feature instead of a parallel LlamaIndex store.  Legs fused via
 reciprocal-rank fusion (each gated by ``llamaindex.retrievers``):
 
 * BM25:   FTS5 ``MATCH`` with ``bm25()`` ranking (recall stage)
-* vector: cosine rerank of the BM25 pool over ``tree_vectors`` (pageindex)
+* vector: Zvec HNSW ANN over PageIndex vectors (or SQLite cosine rerank in
+  compatibility mode)
 * raptor: paper-scoped KNN over hierarchical-summary vectors
 * pageindex: section-heading/tree-text recall from PageIndex nodes
 * graph:  KG concept seeds + 1-hop neighbours
@@ -201,9 +202,14 @@ def _pageindex_leg(
     predicates = ["substr(nt.text, 1, 320) LIKE ? ESCAPE '\\'" for _ in words]
     like_params = [f"%{w.replace('%', '\\%').replace('_', '\\_')}%" for w in words]
     rows = conn.execute(
-        "SELECT nt.node_key, (" + " + ".join("CASE WHEN " + p + " THEN 1 ELSE 0 END" for p in predicates) + ") AS hits "
-        "FROM node_texts nt WHERE (" + " OR ".join(predicates) + ")" + clause +
-        " ORDER BY hits DESC, length(nt.text) ASC LIMIT ?",
+        "SELECT nt.node_key, ("
+        + " + ".join("CASE WHEN " + p + " THEN 1 ELSE 0 END" for p in predicates)
+        + ") AS hits "
+        "FROM node_texts nt WHERE ("
+        + " OR ".join(predicates)
+        + ")"
+        + clause
+        + " ORDER BY hits DESC, length(nt.text) ASC LIMIT ?",
         (*like_params, *like_params, *params, k),
     ).fetchall()
     return [(row[0], float(row[1])) for row in rows]
@@ -255,6 +261,35 @@ def _rerank_with_vectors(
             scored.append((node_key, float(q @ v)))
     scored.sort(key=lambda kv: kv[1], reverse=True)
     return scored[:k]
+
+
+def _zvec_leg(
+    cfg: Any,
+    query: str,
+    generation: str | None,
+    k: int,
+    *,
+    allowed_papers: set[str] | None = None,
+) -> list[tuple[str, float]]:
+    """Independent ANN recall from the Zvec index pinned to ``generation``."""
+
+    if generation is None:
+        raise RetrievalUnavailableError("Zvec retrieval requires a pinned SQL generation")
+    from drbrain.rag.sql_snapshot import resolve_sql_vector_index
+    from drbrain.rag.zvec_index import configured_vector_top_k, query_zvec_index
+    from drbrain.services.embedding import _embed_batch
+
+    qvec = _embed_batch([query], cfg.embed)[0]
+    # Oversample before applying category/ACL filters, which are authoritative
+    # in SQLite and intentionally not duplicated in the ANN payload.
+    requested = max(int(k), configured_vector_top_k(cfg), 100)
+    raw = query_zvec_index(resolve_sql_vector_index(cfg, generation), qvec, requested)
+    out = [
+        (node_id, score)
+        for node_id, score, paper_id in raw
+        if allowed_papers is None or paper_id in allowed_papers
+    ]
+    return out[:k]
 
 
 def _fuse(legs: list[list[tuple[str, float]]]) -> list[tuple[str, float]]:
@@ -499,14 +534,26 @@ def retrieve_documents_sql(
 ) -> RetrievalRows:
     """Retrieve from a pinned SQL snapshot or an explicitly live working copy.
 
-    Vector and RAPTOR are BM25-pool rerankers, not independent recall legs.
-    Diagnostics remain available as rows.result, including empty results.
+    Zvec vector and PageIndex legs are independent recall sources.  The legacy
+    SQLite vector backend and RAPTOR remain BM25-pool rerankers.  Diagnostics
+    remain available as rows.result, including empty results.
     """
     from drbrain.rag.config import get_llamaindex_config
+    from drbrain.rag.zvec_index import configured_vector_backend
 
-    request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
     li = get_llamaindex_config(cfg)
+    vector_backend = configured_vector_backend(cfg)
     wanted = list(dict.fromkeys(li.retrievers or ["bm25", "vector"]))
+    if generation is None and vector_backend == "zvec" and "vector" in wanted:
+        # Direct callers (the research loop and low-level API) may omit the
+        # generation. Resolve the active immutable snapshot before opening the
+        # database so the ANN sidecar and SQLite text always share an epoch.
+        from drbrain.rag.index_generations import capture_index_generation
+
+        generation = capture_index_generation(cfg)
+        if generation is None:
+            raise RetrievalUnavailableError("no active SQL generation for Zvec retrieval")
+    request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
     unsupported = set(wanted) - {"bm25", "vector", "pageindex", "tree", "raptor", "graph", "claims"}
     if unsupported:
         raise ValueError(f"unsupported SQL retrieval legs: {sorted(unsupported)}")
@@ -522,7 +569,7 @@ def retrieve_documents_sql(
     capabilities = {
         "backend": "sql",
         "snapshot": generation is not None,
-        "vector_recall": "bm25_pool",
+        "vector_recall": "zvec_ann" if vector_backend == "zvec" else "bm25_pool",
         "raptor_recall": "bm25_papers",
     }
     try:
@@ -537,6 +584,15 @@ def retrieve_documents_sql(
         if request.acl_filter.get("paper_id") not in (None, "*"):
             scope_sql += " AND nt.paper_id = ?"
             scope_params += [request.acl_filter["paper_id"]]
+        allowed_papers: set[str] | None = None
+        if scope_sql:
+            allowed_papers = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT nt.paper_id FROM node_texts nt WHERE 1=1" + scope_sql,
+                    tuple(scope_params),
+                ).fetchall()
+            }
         if top_k == 0:
             return finish_retrieval([], generation=resolved, legs=[], capabilities=capabilities)
         pool_error: Exception | None = None
@@ -544,7 +600,9 @@ def retrieve_documents_sql(
         try:
             bm25 = (
                 _bm25_leg(conn, query, 1000, categories_filter=(scope_sql, scope_params))
-                if set(wanted).intersection({"bm25", "vector", "raptor"})
+                if set(wanted).intersection(
+                    {"bm25", "raptor"} | ({"vector"} if vector_backend == "sqlite" else set())
+                )
                 else []
             )
         except Exception as exc:
@@ -557,15 +615,24 @@ def retrieve_documents_sql(
         for name in wanted:
             started = time.perf_counter()
             try:
-                if name in {"bm25", "vector", "raptor"} and pool_error is not None:
+                if (
+                    name in {"bm25", "raptor"} or (name == "vector" and vector_backend == "sqlite")
+                ) and pool_error is not None:
                     raise pool_error
                 if name == "bm25":
                     entries = [{"key": key, "score": score} for key, score in bm25]
                 elif name == "vector":
-                    entries = [
-                        {"key": key, "score": score}
-                        for key, score in _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
-                    ]
+                    if vector_backend == "zvec":
+                        vector_entries = _zvec_leg(
+                            cfg,
+                            query,
+                            generation,
+                            _KNN_POOL,
+                            allowed_papers=allowed_papers,
+                        )
+                    else:
+                        vector_entries = _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
+                    entries = [{"key": key, "score": score} for key, score in vector_entries]
                 elif name == "raptor":
                     entries = [
                         {"key": key, "score": score}

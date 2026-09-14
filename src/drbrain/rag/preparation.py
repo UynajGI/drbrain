@@ -163,7 +163,14 @@ def prepare_sql_rag(
                 finally:
                     db.close()
             raise
-        stats["generation"] = generation.get("generation", "")
+        stats.update(
+            {
+                "generation": generation.get("generation", ""),
+                "vector_backend": generation.get("vector_backend", "sqlite"),
+                "vector_count": generation.get("vector_count", 0),
+                "vector_dimension": generation.get("vector_dimension", 0),
+            }
+        )
         if all_paper_ids:
             db = Database(main_path)
             try:
