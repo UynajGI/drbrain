@@ -24,6 +24,92 @@ rag_app = typer.Typer(help="RAG index publication, readiness and evaluation")
 console = Console()
 
 
+@rag_app.command("pageindex-index")
+def pageindex_index_cmd(
+    ctx: typer.Context,
+    paper: list[str] = typer.Option(None, "--paper", help="Restrict indexing to local_id(s)"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Materialize DrBrain papers in PageIndex's native local filesystem.
+
+    This invokes the PageIndex SDK indexer and writes its native
+    ``.pageindex/docs`` store beside each paper.  It is separate from SQL RAG
+    preparation because the native SDK accepts PDF documents only.
+    """
+    cfg = ctx.obj["config"]
+    from drbrain.rag.pageindex_native import ensure_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    selected = set(paper or [])
+    candidates = sorted(
+        p for p in papers_root.iterdir() if p.is_dir() and (not selected or p.name in selected)
+    )
+    indexed = 0
+    skipped = 0
+    errors: list[dict[str, str]] = []
+    for paper_path in candidates:
+        paper_id = paper_path.name
+        try:
+            resolved = paper_dir(papers_root, paper_id)
+            ensure_document(cfg, paper_id, resolved)
+            indexed += 1
+        except Exception as exc:
+            if "requires source.pdf" in str(exc):
+                skipped += 1
+            else:
+                errors.append({"paper": paper_id, "error": safe_error(exc)})
+    result = {
+        "indexed": indexed,
+        "skipped_non_pdf": skipped,
+        "failed": len(errors),
+        "errors": errors,
+    }
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        typer.echo(
+            f"PageIndex native filesystem: indexed={indexed}, "
+            f"skipped_non_pdf={skipped}, failed={len(errors)}"
+        )
+        for item in errors[:10]:
+            typer.echo(f"  {item['paper']}: {item['error']}", err=True)
+    if errors:
+        raise typer.Exit(1)
+
+
+@rag_app.command("pageindex-chat")
+def pageindex_chat_cmd(
+    ctx: typer.Context,
+    paper: str = typer.Option(..., "--paper", help="DrBrain local_id to scope native PageIndex chat"),
+    question: list[str] = typer.Argument(..., help="Question for PageIndex native document QA"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Ask PageIndex's native local chat agent about one indexed paper.
+
+    This is intentionally document-scoped: PageIndex local ``chat_completions``
+    returns an answer, while corpus-wide BM25/Zvec/PageIndex-tree/RAPTOR
+    fusion remains the evidence-retrieval path used by ``drbrain ask``.
+    """
+    cfg = ctx.obj["config"]
+    from drbrain.rag.pageindex_native import chat_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    paper_path = paper_dir(papers_root, paper)
+    if paper_path is None or not paper_path.is_dir():
+        raise typer.BadParameter(f"unknown paper: {paper}", param_hint="--paper")
+    prompt = " ".join(question).strip()
+    try:
+        result = chat_document(cfg, paper, paper_path, prompt)
+    except Exception as exc:
+        raise typer.ClickException(safe_error(exc, secrets=configured_secret_values(cfg))) from exc
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        typer.echo(result["answer"])
+
+
 @rag_app.command("index")
 def rag_index_cmd(
     ctx: typer.Context,
