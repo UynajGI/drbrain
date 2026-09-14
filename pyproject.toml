@@ -181,6 +181,9 @@ packages = ["src/drbrain"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+# Vendored upstream research sources are pinned submodules; they are linted
+# upstream at their fixed revisions, not by this repository's rules.
+extend-exclude = ["vendor"]
 
 [tool.ruff.format]
 quote-style = "double"

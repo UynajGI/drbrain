@@ -93,6 +93,7 @@ def _ingest_single_paper(
         _ingest_log.error(f"Parse failed for {pdf_path}: {message}")
         echo(f"Error parsing PDF: {message}")
         _move_to_pending(pdf_path, cfg, f"PDF parse error: {message}")
+        _record_spool_state(db, pdf_path, "failed", reason=f"parse: {message}")
         return {"ok": False, "local_id": None, "error": message}
 
     # Override parsed metadata with values from fetch_paper (e.g. arXiv API)
@@ -446,6 +447,7 @@ def _ingest_single_paper(
     )
     echo(f"  Ingested: {local_id} ({_t_total:.1f}s)")
     result_status = "complete" if tree_status == "ready" else "partial"
+    _record_spool_state(db, pdf_path, "done", local_id=local_id or "")
     return {
         "ok": True,
         "status": result_status,
@@ -522,15 +524,71 @@ def _resolve_node_type(db: Database, node_id: str) -> tuple[str, dict | None]:
     return "Unknown", None
 
 
+def _input_identity(pdf_path: Path) -> tuple[str, int]:
+    """Content hash and size of one input, for the spool ledger (T07)."""
+    from drbrain.storage.inbox import file_sha256
+
+    try:
+        stat = pdf_path.stat()
+    except OSError:
+        return "", 0
+    try:
+        return file_sha256(pdf_path), int(stat.st_size)
+    except OSError:
+        return "", int(stat.st_size)
+
+
 def _move_to_pending(pdf_path: Path, cfg: dict, reason: str) -> None:
-    """Move a failed PDF to the pending directory."""
-    from drbrain.storage.inbox import move_to_pending
+    """Copy a failed input into the pending archive; never remove the input."""
+    from drbrain.storage.inbox import copy_to_pending
 
     pending_dir = Path(cfg.get("dirs", {}).get("pending", "data/spool/pending"))
     try:
-        move_to_pending(pdf_path, pending_dir, reason=reason)
+        copy_to_pending(pdf_path, pending_dir, reason=reason)
     except Exception:
         pass  # Best-effort; don't block the error path
+
+
+def _record_spool_state(
+    db: Database,
+    pdf_path: Path,
+    status: str,
+    *,
+    local_id: str = "",
+    reason: str = "",
+) -> None:
+    """Ledger update; failures here must never break the ingest outcome."""
+    content_hash, size = _input_identity(pdf_path)
+    if not content_hash:
+        return
+    try:
+        db.record_spool_input(
+            content_hash,
+            path=str(pdf_path),
+            size=size,
+            status=status,
+            local_id=local_id,
+            reason=reason,
+        )
+        db.commit()
+    except Exception:
+        try:
+            db.conn.rollback()
+        except Exception:
+            pass
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    """Whether two paths denote the same file (lexically or by inode)."""
+    try:
+        if left.resolve() == right.resolve():
+            return True
+    except OSError:
+        pass
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
 
 
 def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Path) -> None:
@@ -541,8 +599,12 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
             source.pdf   — original PDF (copied from inbox), or source.<ext>
             raw.md       — MinerU markdown output
             images/      — extracted images
+
+    The input is only ever copied: ingest never moves or deletes the original
+    material (T07), including when the input already lives in a paper
+    directory (already-hosted source).
     """
-    # Move the original source into the paper directory while retaining its
+    # Copy the original source into the paper directory while retaining its
     # format.  Non-PDF materials must never be disguised as ``source.pdf``.
     suffix = source_pdf.suffix.lower()
     destination = (
@@ -550,12 +612,9 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
         if suffix in ("", ".pdf")
         else writable_artifact_path(paper_dir, f"source{suffix}")
     )
-    if not destination.exists():
-        shutil.copy2(source_pdf, destination)
-        try:
-            source_pdf.unlink()
-        except OSError:
-            pass
+    if not _same_file(source_pdf, destination):
+        if not destination.exists():
+            shutil.copy2(source_pdf, destination)
 
     # Copy images and rewrite refs
     raw_md = parsed.raw_md

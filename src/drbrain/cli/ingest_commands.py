@@ -19,6 +19,8 @@ from drbrain.cli._common import (
     _apply_mined_rules,
     _fetch_citations_interested,
     _ingest_single_paper,
+    _input_identity,
+    _record_spool_state,
     _resolve_workspace_papers,
     open_db,
     runtime_data_path,
@@ -153,7 +155,7 @@ def _runtime_value(runtime, *names):
             value = runtime.get(name)
         else:
             value = getattr(runtime, name, None)
-        if isinstance(value, (str, Path)) and str(value):
+        if isinstance(value, str | Path) and str(value):
             return str(value)
     return None
 
@@ -359,15 +361,24 @@ def ingest_cmd(
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
     ),
+    reprocess: bool = typer.Option(
+        False,
+        "--reprocess",
+        help="Process directory inputs even when the spool ledger marks them done/failed.",
+    ),
 ):
     """Ingest pipeline: parse -> identify -> tree -> paper record.
 
     Accepts PDF, Markdown, text and LaTeX files, or a directory of them.
     Defaults to data/spool/inbox/ when no paths provided.
+
+    Input materials are never moved or deleted: the spool ledger records
+    processed content, and ``--reprocess`` forces directory inputs to be
+    processed again even when the ledger already lists them.
     """
     cfg = ctx.obj["config"]
     with _scoped_deepxiv_token(cfg):
-        return _ingest_cmd_impl(ctx, paths, json_output)
+        return _ingest_cmd_impl(ctx, paths, json_output, reprocess)
 
 
 def _ingest_cmd_impl(
@@ -379,15 +390,24 @@ def _ingest_cmd_impl(
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
     ),
+    reprocess: bool = typer.Option(
+        False,
+        "--reprocess",
+        help="Process directory inputs even when the spool ledger marks them done/failed.",
+    ),
 ):
     """Implementation for :func:`ingest_cmd` under the scoped token context."""
     cfg = ctx.obj["config"]
     config_secrets = configured_secret_values(cfg)
+    if isinstance(reprocess, typer.models.OptionInfo):  # direct-call normalization
+        reprocess = bool(reprocess.default)
     if not paths:
         inbox_path = cfg.get("dirs", {}).get("inbox", "data/spool/inbox")
         paths = [inbox_path]
 
-    pdf_files: list[Path] = []
+    # (path, came_from_directory_scan): ledger skipping applies to scans only,
+    # while an explicit file path is a deliberate retry.
+    pdf_files: list[tuple[Path, bool]] = []
     for p in paths:
         lexical_path = _runtime_lexical_path(ctx, p)
         symlink_component = first_symlink_component(lexical_path)
@@ -398,9 +418,9 @@ def _ingest_cmd_impl(
 
         path = _runtime_path(ctx, p)
         if path.is_dir():
-            pdf_files.extend(scan_materials(path))
+            pdf_files.extend((item, True) for item in scan_materials(path))
         elif path.is_file():
-            pdf_files.append(path)
+            pdf_files.append((path, False))
         else:
             if not json_output:
                 typer.echo(f"File not found: {p}", err=True)
@@ -417,7 +437,19 @@ def _ingest_cmd_impl(
 
         logger.info("[ingest] batch start — %d source file(s)", len(pdf_files))
         results = []
-        for i, pdf_path in enumerate(pdf_files, 1):
+        skipped = 0
+        for i, (pdf_path, from_scan) in enumerate(pdf_files, 1):
+            if from_scan and not reprocess:
+                content_hash, _size = _input_identity(pdf_path)
+                getter = getattr(db, "get_spool_input", None)
+                entry = getter(content_hash) if (content_hash and getter) else None
+                if entry and entry.get("status") in {"done", "failed", "duplicate"}:
+                    skipped += 1
+                    if not json_output:
+                        typer.echo(f"Skipping {pdf_path.name} (spool ledger: {entry['status']})")
+                    logger.info("[ingest] skip %s — ledger status=%s", pdf_path, entry["status"])
+                    continue
+
             if not json_output and len(pdf_files) > 1:
                 typer.echo(f"\n{'=' * 60}")
                 typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
@@ -455,6 +487,7 @@ def _ingest_cmd_impl(
                         secrets=config_secrets,
                     ),
                 }
+                _record_spool_state(db, pdf_path, "failed", reason=str(result.get("error", "")))
             results.append(result)
 
         if json_output:
@@ -463,9 +496,10 @@ def _ingest_cmd_impl(
                 "successful": sum(1 for r in results if r.get("ok")),
                 "failed": sum(1 for r in results if not r.get("ok")),
                 "partial": sum(1 for r in results if r.get("status") == "partial"),
+                "skipped": skipped,
                 "papers": [r.get("report", {}) for r in results if r.get("ok")],
                 "errors": [
-                    r.get("error", str(pdf_files[i]))
+                    r.get("error", str(pdf_files[i][0]))
                     for i, r in enumerate(results)
                     if not r.get("ok")
                 ],
@@ -484,6 +518,8 @@ def _ingest_cmd_impl(
                 typer.echo(f"Batch complete: {len(results)} papers ingested")
                 success = sum(1 for r in results if r.get("ok"))
                 typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
+                if skipped:
+                    typer.echo(f"  Skipped (already processed): {skipped}")
                 partial = sum(1 for r in results if r.get("status") == "partial")
                 if partial:
                     typer.echo(f"  Partial (raw kept, derived stage pending): {partial}")

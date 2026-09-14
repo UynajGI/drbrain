@@ -75,6 +75,10 @@ def scan_materials(
 def move_to_pending(pdf_path: Path, pending_dir: Path, reason: str) -> None:
     """Move a failed PDF to the pending directory and log the reason.
 
+    Legacy destructive helper kept for callers that explicitly archive an
+    input; the ingest pipeline uses :func:`copy_to_pending` so the original
+    material is never removed (T07).
+
     Args:
         pdf_path: Source PDF path in inbox.
         pending_dir: Destination pending directory.
@@ -99,6 +103,67 @@ def move_to_pending(pdf_path: Path, pending_dir: Path, reason: str) -> None:
         raise ValueError(f"pending destination must not be a symlink: {dst}")
     pdf_path.rename(dst)
     _log_pending(dst, reason)
+
+
+def file_sha256(path: Path, *, chunk_size: int = 1 << 20) -> str:
+    """Streaming sha256 of a file, used as the spool ledger key."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def copy_to_pending(pdf_path: Path, pending_dir: Path, reason: str) -> Path:
+    """Copy a failed input to the pending directory, keeping the original.
+
+    Queue state (the ledger plus ``pending.jsonl``) is updated separately from
+    material retention.  A same-path copy is a no-op, and an existing
+    destination with identical content is reused instead of overwritten.
+    """
+    import shutil
+
+    pdf_path = Path(pdf_path)
+    pending_dir = Path(pending_dir)
+    source_link = first_symlink_component(pdf_path)
+    if source_link is not None:
+        raise ValueError(f"pending source must not contain a symlink: {source_link}")
+    destination_link = first_symlink_component(pending_dir)
+    if destination_link is not None:
+        raise ValueError(f"pending directory must not contain a symlink: {destination_link}")
+
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    if pending_dir.is_symlink() or not pending_dir.is_dir():
+        raise ValueError(f"pending directory is not a real directory: {pending_dir}")
+    dst = pending_dir / pdf_path.name
+    if dst.is_symlink():
+        raise ValueError(f"pending destination must not be a symlink: {dst}")
+    if dst.exists():
+        try:
+            if dst.resolve() == pdf_path.resolve():
+                _log_pending(dst, reason)
+                return dst
+            if file_sha256(dst) == file_sha256(pdf_path):
+                _log_pending(dst, reason)
+                return dst
+        except OSError:
+            pass
+        # Different content occupies the name: keep both by disambiguating.
+        suffix = 1
+        while True:
+            candidate = dst.with_name(f"{dst.stem}.{suffix}{dst.suffix}")
+            if not candidate.exists():
+                dst = candidate
+                break
+            suffix += 1
+    shutil.copy2(pdf_path, dst)
+    _log_pending(dst, reason)
+    return dst
 
 
 def _log_pending(pdf_path: Path, reason: str) -> None:

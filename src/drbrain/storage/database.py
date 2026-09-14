@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 import threading
@@ -196,6 +197,68 @@ CREATE TABLE IF NOT EXISTS paper_artifacts (
     PRIMARY KEY (paper_id, stage)
 );
 CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status ON paper_artifacts(stage, status);
+
+-- ── Spool ledger (v23) ─────────────────────────────────────────
+-- Queue state is separate from material retention: spool inputs are never
+-- moved or deleted, and this ledger records which content hashes were
+-- already processed so directory scans stay finite.
+CREATE TABLE IF NOT EXISTS spool_ledger (
+    content_hash TEXT PRIMARY KEY,
+    path TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('done','failed','duplicate')),
+    local_id TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_spool_ledger_status ON spool_ledger(status, updated_at);
+
+-- ── Canonical content store (v24) ──────────────────────────────
+-- ONE normalized body per document revision.  content_blocks are
+-- contiguous, ordered, half-open char ranges: concatenating ``text`` in
+-- ``ordinal`` order reproduces the canonical text verbatim.  Nodes and
+-- FTS both reference this table instead of keeping another body copy.
+CREATE TABLE IF NOT EXISTS document_revisions (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    source_hash TEXT NOT NULL,
+    canonical_hash TEXT NOT NULL,
+    backend TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL CHECK(media_type IN ('pdf','tex','md')),
+    parser_revision TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','stale','failed')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (local_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS content_blocks (
+    block_id TEXT PRIMARY KEY,
+    local_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    char_start INTEGER NOT NULL,
+    char_end INTEGER NOT NULL,
+    page_start INTEGER,
+    page_end INTEGER,
+    line_start INTEGER,
+    line_end INTEGER,
+    heading_path TEXT NOT NULL DEFAULT '[]',
+    anchor TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'paragraph',
+    parser TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (local_id, revision)
+        REFERENCES document_revisions(local_id, revision) ON DELETE CASCADE,
+    UNIQUE (local_id, revision, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_content_blocks_doc
+    ON content_blocks(local_id, revision, ordinal);
+CREATE INDEX IF NOT EXISTS idx_content_blocks_hash
+    ON content_blocks(text_hash);
 
 CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
@@ -621,6 +684,8 @@ class Database:
             (20, "embedding_revision", self._migrate_add_embedding_revision),
             (21, "project_scope", self._migrate_add_project_scope),
             (22, "paper_artifacts", self._migrate_add_paper_artifacts),
+            (23, "spool_ledger", self._migrate_add_spool_ledger),
+            (24, "content_store", self._migrate_add_content_store),
         ]
 
         for version, name, fn in migrations:
@@ -1108,6 +1173,73 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status
                 ON paper_artifacts(stage, status);
+            """
+        )
+
+    def _migrate_add_spool_ledger(self) -> None:
+        """Create the spool ledger that decouples queue state from materials."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS spool_ledger (
+                content_hash TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL CHECK(status IN ('done','failed','duplicate')),
+                local_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_spool_ledger_status
+                ON spool_ledger(status, updated_at);
+            """
+        )
+
+    def _migrate_add_content_store(self) -> None:
+        """Create the canonical content store (one body per document revision)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS document_revisions (
+                local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                canonical_hash TEXT NOT NULL,
+                backend TEXT NOT NULL DEFAULT '',
+                media_type TEXT NOT NULL CHECK(media_type IN ('pdf','tex','md')),
+                parser_revision TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'ready'
+                    CHECK(state IN ('ready','stale','failed')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (local_id, revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS content_blocks (
+                block_id TEXT PRIMARY KEY,
+                local_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                ordinal INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                char_start INTEGER NOT NULL,
+                char_end INTEGER NOT NULL,
+                page_start INTEGER,
+                page_end INTEGER,
+                line_start INTEGER,
+                line_end INTEGER,
+                heading_path TEXT NOT NULL DEFAULT '[]',
+                anchor TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'paragraph',
+                parser TEXT NOT NULL DEFAULT '',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (local_id, revision)
+                    REFERENCES document_revisions(local_id, revision) ON DELETE CASCADE,
+                UNIQUE (local_id, revision, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_doc
+                ON content_blocks(local_id, revision, ordinal);
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_hash
+                ON content_blocks(text_hash);
             """
         )
 
@@ -1732,6 +1864,346 @@ class Database:
         rows = cursor.fetchall()
         columns = [item[0] for item in cursor.description or ()]
         return [dict(zip(columns, row, strict=False)) for row in rows]
+
+    # ── Spool ledger (T07) ────────────────────────────────────────
+    SPOOL_STATUSES = ("done", "failed", "duplicate")
+
+    def record_spool_input(
+        self,
+        content_hash: str,
+        *,
+        path: str = "",
+        size: int = 0,
+        status: str,
+        local_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """Record queue state for one input content hash.
+
+        Materials are never moved or deleted; this ledger is the queue-side
+        state that lets directory scans skip already-processed inputs.
+        """
+        content_hash = str(content_hash).strip()
+        if not content_hash:
+            raise ValueError("spool ledger requires a content hash")
+        if status not in self.SPOOL_STATUSES:
+            raise ValueError(f"invalid spool status {status!r}")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO spool_ledger
+                   (content_hash, path, size, status, local_id, reason, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(content_hash) DO UPDATE SET
+                     path=excluded.path,
+                     size=excluded.size,
+                     status=excluded.status,
+                     local_id=excluded.local_id,
+                     reason=excluded.reason,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    content_hash,
+                    str(path),
+                    int(size),
+                    status,
+                    str(local_id),
+                    str(reason),
+                ),
+            )
+
+    def get_spool_input(self, content_hash: str) -> dict | None:
+        """Return the ledger row for one content hash, or ``None``."""
+        row = self.conn.execute(
+            "SELECT content_hash, path, size, status, local_id, reason, first_seen, updated_at "
+            "FROM spool_ledger WHERE content_hash = ?",
+            (str(content_hash),),
+        ).fetchone()
+        if row is None:
+            return None
+        columns = (
+            "content_hash",
+            "path",
+            "size",
+            "status",
+            "local_id",
+            "reason",
+            "first_seen",
+            "updated_at",
+        )
+        return dict(zip(columns, row, strict=False))
+
+    def list_spool_inputs(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        """List ledger rows, newest first, optionally filtered by status."""
+        if status is not None and status not in self.SPOOL_STATUSES:
+            raise ValueError(f"invalid spool status {status!r}")
+        sql = (
+            "SELECT content_hash, path, size, status, local_id, reason, first_seen, updated_at "
+            "FROM spool_ledger"
+        )
+        params: tuple = ()
+        if status is not None:
+            sql += " WHERE status = ?"
+            params = (status,)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params = (*params, max(1, int(limit)))
+        cursor = self.conn.execute(sql, params)
+        columns = [item[0] for item in cursor.description or ()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+
+    # ── Canonical content store (T08) ─────────────────────────────
+    _REVISION_COLUMNS = (
+        "local_id",
+        "revision",
+        "source_hash",
+        "canonical_hash",
+        "backend",
+        "media_type",
+        "parser_revision",
+        "state",
+        "created_at",
+        "updated_at",
+    )
+    _BLOCK_COLUMNS = (
+        "block_id",
+        "local_id",
+        "revision",
+        "ordinal",
+        "text",
+        "text_hash",
+        "char_start",
+        "char_end",
+        "page_start",
+        "page_end",
+        "line_start",
+        "line_end",
+        "heading_path",
+        "anchor",
+        "kind",
+        "parser",
+        "provenance_json",
+    )
+
+    def upsert_document_revision(
+        self,
+        local_id: str,
+        revision: int,
+        *,
+        source_hash: str,
+        canonical_hash: str,
+        backend: str = "",
+        media_type: str,
+        parser_revision: str = "",
+        state: str = "ready",
+    ) -> None:
+        """Record one normalized document revision.
+
+        Re-recording the *same* revision with different hashes is an error:
+        changed content must be published as a new revision so old nodes,
+        evidence and vectors stay traceable.
+        """
+        local_id = self._validate_local_id(local_id)
+        revision = int(revision)
+        if revision < 1:
+            raise ValueError("document revision must be >= 1")
+        if media_type not in ("pdf", "tex", "md"):
+            raise ValueError(f"unsupported media_type {media_type!r}")
+        if state not in ("ready", "stale", "failed"):
+            raise ValueError(f"unsupported document state {state!r}")
+        with self._write_scope():
+            existing = self.conn.execute(
+                "SELECT source_hash, canonical_hash FROM document_revisions "
+                "WHERE local_id = ? AND revision = ?",
+                (local_id, revision),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != source_hash or existing[1] != canonical_hash:
+                    raise ValueError(
+                        f"document revision {local_id}@{revision} already exists with "
+                        "different hashes; allocate a new revision"
+                    )
+                self.conn.execute(
+                    "UPDATE document_revisions SET state = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE local_id = ? AND revision = ?",
+                    (state, local_id, revision),
+                )
+                return
+            self.conn.execute(
+                """INSERT INTO document_revisions
+                   (local_id, revision, source_hash, canonical_hash, backend,
+                    media_type, parser_revision, state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    local_id,
+                    revision,
+                    str(source_hash),
+                    str(canonical_hash),
+                    str(backend),
+                    media_type,
+                    str(parser_revision),
+                    state,
+                ),
+            )
+
+    def get_document_revision(self, local_id: str, revision: int | None = None) -> dict | None:
+        """Return one revision row; ``revision=None`` selects the latest."""
+        local_id = self._validate_local_id(local_id)
+        if revision is None:
+            row = self.conn.execute(
+                f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+                "WHERE local_id = ? ORDER BY revision DESC LIMIT 1",
+                (local_id,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+                "WHERE local_id = ? AND revision = ?",
+                (local_id, int(revision)),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._REVISION_COLUMNS, row, strict=False))
+
+    def list_document_revisions(self, local_id: str) -> list[dict]:
+        local_id = self._validate_local_id(local_id)
+        cursor = self.conn.execute(
+            f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+            "WHERE local_id = ? ORDER BY revision",
+            (local_id,),
+        )
+        return [dict(zip(self._REVISION_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def set_document_revision_state(self, local_id: str, revision: int, state: str) -> None:
+        """Mark a revision ready/stale/failed without touching its content."""
+        if state not in ("ready", "stale", "failed"):
+            raise ValueError(f"unsupported document state {state!r}")
+        local_id = self._validate_local_id(local_id)
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "UPDATE document_revisions SET state = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE local_id = ? AND revision = ?",
+                (state, local_id, int(revision)),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"unknown document revision {local_id}@{revision}")
+
+    def next_document_revision(self, local_id: str) -> int:
+        local_id = self._validate_local_id(local_id)
+        row = self.conn.execute(
+            "SELECT MAX(revision) FROM document_revisions WHERE local_id = ?", (local_id,)
+        ).fetchone()
+        return int(row[0]) + 1 if row and row[0] is not None else 1
+
+    def insert_content_blocks(self, blocks: list) -> int:
+        """Insert one revision's blocks atomically; returns blocks written.
+
+        Blocks must be ordered, contiguous, and hash-consistent with their
+        revision's ``canonical_hash``.  Re-inserting identical blocks is a
+        no-op; conflicting content for an existing ``block_id`` is an error.
+        """
+        from drbrain.tree.contracts import ContentBlock  # local: keep storage import-light
+
+        blocks = list(blocks)
+        if not blocks:
+            raise ValueError("insert_content_blocks requires at least one block")
+        for block in blocks:
+            if not isinstance(block, ContentBlock):
+                raise TypeError(f"expected ContentBlock, got {type(block)!r}")
+        local_id = blocks[0].local_id
+        revision = blocks[0].revision
+        for block in blocks:
+            if (block.local_id, block.revision) != (local_id, revision):
+                raise ValueError("all blocks must share one document revision")
+        ordered = sorted(blocks, key=lambda item: item.ordinal)
+        for expected_ordinal, block in enumerate(ordered):
+            if block.ordinal != expected_ordinal:
+                raise ValueError(f"ordinals must be contiguous from 0 (got {block.ordinal})")
+        if ordered[0].char_start != 0:
+            raise ValueError("first block must start at char 0")
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous.char_end != current.char_start:
+                raise ValueError("blocks must be contiguous (gap or overlap found)")
+        revision_row = self.get_document_revision(local_id, revision)
+        if revision_row is None:
+            raise ValueError(f"document revision {local_id}@{revision} does not exist")
+        canonical = "".join(block.text for block in ordered)
+        actual_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if actual_hash != revision_row["canonical_hash"]:
+            raise ValueError("blocks do not reproduce the revision's canonical text hash")
+
+        written = 0
+        with self._write_scope():
+            for block in ordered:
+                existing = self.conn.execute(
+                    "SELECT text_hash, char_start, char_end, ordinal FROM content_blocks "
+                    "WHERE block_id = ?",
+                    (block.block_id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing[0] != block.text_hash
+                        or existing[1] != block.char_start
+                        or existing[2] != block.char_end
+                        or existing[3] != block.ordinal
+                    ):
+                        raise ValueError(f"block id conflict for {block.block_id}")
+                    continue
+                self.conn.execute(
+                    """INSERT INTO content_blocks
+                       (block_id, local_id, revision, ordinal, text, text_hash,
+                        char_start, char_end, page_start, page_end, line_start, line_end,
+                        heading_path, anchor, kind, parser, provenance_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        block.block_id,
+                        block.local_id,
+                        block.revision,
+                        block.ordinal,
+                        block.text,
+                        block.text_hash,
+                        block.char_start,
+                        block.char_end,
+                        block.page_start,
+                        block.page_end,
+                        block.line_start,
+                        block.line_end,
+                        json.dumps(list(block.heading_path), ensure_ascii=False),
+                        block.anchor,
+                        block.kind,
+                        block.parser,
+                        json.dumps(block.provenance, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+                written += 1
+        return written
+
+    def get_content_blocks(self, local_id: str, revision: int | None = None) -> list[dict]:
+        """Return a revision's blocks in reading order."""
+        local_id = self._validate_local_id(local_id)
+        if revision is None:
+            row = self.get_document_revision(local_id)
+            if row is None:
+                return []
+            revision = int(row["revision"])
+        cursor = self.conn.execute(
+            f"SELECT {', '.join(self._BLOCK_COLUMNS)} FROM content_blocks "
+            "WHERE local_id = ? AND revision = ? ORDER BY ordinal",
+            (local_id, int(revision)),
+        )
+        return [dict(zip(self._BLOCK_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def count_content_blocks(self, local_id: str | None = None, revision: int | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM content_blocks"
+        clauses: list[str] = []
+        params: list = []
+        if local_id is not None:
+            clauses.append("local_id = ?")
+            params.append(self._validate_local_id(local_id))
+        if revision is not None:
+            clauses.append("revision = ?")
+            params.append(int(revision))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0]) if row else 0
 
     def clear_raptor_artifacts(self, paper_id: str) -> int:
         """Remove derived RAPTOR rows before rebuilding one paper.

@@ -33,7 +33,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 CONTRACT_SCHEMA = "tree-contract-v1"
@@ -66,7 +66,7 @@ REJECTION_REASONS: tuple[str, ...] = (
 )
 
 
-class StageState(str, Enum):
+class StageState(StrEnum):
     """Stage-level state for ingest/prepare/ask reporting (T06)."""
 
     ABSENT = "absent"
