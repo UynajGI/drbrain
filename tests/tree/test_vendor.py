@@ -116,21 +116,51 @@ class TestNarrowLoaders:
         with pytest.raises(KeyError, match="allowlist"):
             upstream.load_pageindex_module("local_store")
 
+    def _run_isolated(self, code: str) -> subprocess.CompletedProcess:
+        """Run one loader check in a fresh interpreter.
+
+        The heavy-stack assertions below are about what the *loaders* import;
+        running them in-process would inherit whatever earlier tests already
+        imported (faiss/torch arrive with the embedding suites), so the check
+        has to start from a clean module table.
+        """
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+
     @requires_submodules
     def test_raptor_cluster_utils_loads_without_heavy_stack(self):
-        upstream.reset_caches()
-        module = upstream.load_raptor_module("cluster_utils")
-        assert hasattr(module, "GMM_cluster") and hasattr(module, "RAPTOR_Clustering")
-        for banned in ("faiss", "torch", "sentence_transformers"):
-            assert not any(name.startswith(banned) for name in sys.modules), banned
+        code = (
+            "import sys\n"
+            "from drbrain.tree import upstream\n"
+            "module = upstream.load_raptor_module('cluster_utils')\n"
+            "assert hasattr(module, 'GMM_cluster') and hasattr(module, 'RAPTOR_Clustering')\n"
+            "for banned in ('faiss', 'torch', 'sentence_transformers'):\n"
+            "    assert not any(name.startswith(banned) for name in sys.modules), banned\n"
+            "print('LOADED_CLEAN')\n"
+        )
+        result = self._run_isolated(code)
+        assert result.returncode == 0, result.stderr
+        assert "LOADED_CLEAN" in result.stdout
 
     @requires_submodules
     def test_pageindex_md_and_classic_load_without_sdk_store(self):
-        upstream.reset_caches()
-        md_module = upstream.load_pageindex_module("page_index_md")
-        classic = upstream.load_pageindex_module("page_index_classic")
-        assert hasattr(md_module, "md_to_tree") and hasattr(classic, "page_index_main")
-        assert not any("local_store" in name or "cloud_api" in name for name in sys.modules)
+        code = (
+            "import sys\n"
+            "from drbrain.tree import upstream\n"
+            "md_module = upstream.load_pageindex_module('page_index_md')\n"
+            "classic = upstream.load_pageindex_module('page_index_classic')\n"
+            "assert hasattr(md_module, 'md_to_tree') and hasattr(classic, 'page_index_main')\n"
+            "assert not any('local_store' in name or 'cloud_api' in name for name in sys.modules)\n"
+            "print('LOADED_CLEAN')\n"
+        )
+        result = self._run_isolated(code)
+        assert result.returncode == 0, result.stderr
+        assert "LOADED_CLEAN" in result.stdout
 
     @requires_submodules
     def test_missing_dependency_gives_actionable_error(self):
