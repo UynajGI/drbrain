@@ -375,6 +375,9 @@
 - 范围：ask入口、每次查询的检索器选择、最终答案与JSON。
 - 先写测试：只开tree也可查询；缺失索引报未准备，不调用submit_document或IndexModel；用户选择的路由确实生效。
 - 完成标准：ask只读索引并调用chat角色；证据、状态、路由遥测进入CLI响应，最终答案不混用来源不可核验的摘要。
+- **实现记录（2026-09-15）**：`deepseek-flash` 是 reasoning 端点——实测 16 token 预算会被 `reasoning_content`
+  吃光而返回空答案（`finish_reason=length`）；ask 的答案预算必须 ≥128 且把 `truncated` 当作可报告状态，
+  不能把空答案当成功。真实 chat 探针已验证可达（`drbrain check`，~0.7–1.0s，脱敏输出）。
 
 ### [ ] T47 — 准备隔离的本地验收配置
 
