@@ -274,7 +274,7 @@ class LlamaIndexConfig(_ConfigBase):
     #: cumulative estimated tokens fit ``context_token_budget``.
     context_docs: int = 10
     context_token_budget: int = 8000
-    #: Unified tree generation root (T45/T47): ``rag prepare --unified``
+    #: Unified tree generation root (T45/T47): ``drbrain index build``
     #: publishes here and readers resolve the active generation from it.
     tree_storage: str = "data/tree"
     #: Summary generation cap for the tree builder's contract.  The protocol

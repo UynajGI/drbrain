@@ -430,7 +430,7 @@ def run_qagen(
 
     index, _bm25 = load_index(cfg)
     if index is None:
-        return {"status": "unavailable", "reason": "no vector index (run: drbrain rag index)"}
+        return {"status": "unavailable", "reason": "no vector index (run: drbrain index build)"}
 
     nodes = index.docstore.docs.values() if hasattr(index.docstore, "docs") else []
     nodes = list(nodes)[: int(n_nodes)]

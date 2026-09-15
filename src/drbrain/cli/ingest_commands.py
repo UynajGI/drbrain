@@ -554,7 +554,7 @@ def fetch_cmd(
 
     if ingest_result.get("ok"):
         typer.echo(f"  Ingested: {ingest_result.get('local_id')}")
-        typer.echo(f"  Next: drbrain build {ingest_result.get('local_id')}")
+        typer.echo(f"  Next: drbrain graph build {ingest_result.get('local_id')}")
     else:
         typer.echo(
             "  Ingest failed: "
@@ -1202,12 +1202,12 @@ def ingest_link_cmd(
                 ),
             )
             # Ingest registers the body and its leaves only; the hierarchy is
-            # built by ``rag prepare`` (T20/T21/T45).
+            # built by ``drbrain index build`` (T20/T21/T45).
             db.upsert_paper_artifact(
                 local_id,
                 "tree",
                 "skipped",
-                error="no per-paper tree: hierarchy is built by 'rag prepare'",
+                error="no per-paper tree: hierarchy is built by 'drbrain index build'",
             )
             db.commit()
 
@@ -1401,11 +1401,14 @@ def pipeline_cmd(
 ):
     """Chain multiple processing steps in sequence (ingest → build → embed → closure).
 
+    Each step runs the main-line command it now belongs to: ``graph build``
+    (LLM extraction), ``graph embed`` (TransE), ``graph closure`` and
+    ``index build`` (the ``rag`` step: lexical + FTS + vectors + tree).
     By default each step runs in incremental mode: build only touches papers
     not yet extracted (or touched since last build), closure only scans the
     neighborhood of recently-changed concepts, embed only trains on new edges.
     Use --full to force a complete rebuild across every step. The ``full-rag``
-    preset also materializes and publishes the configured RAG generation.
+    preset also prepares and publishes the searchable index generation.
     """
     from drbrain.services.pipeline import list_steps_info, resolve_steps
 
@@ -1463,23 +1466,22 @@ def pipeline_cmd(
         elif name == "build":
             # Incremental (default): no --all → builds only dirty papers.
             # Full: --all → rebuilds every paper.
-            args = child_command("build")
+            args = child_command("graph", "build")
             if full:
                 args.append("--all")
         elif name == "embed":
-            # Pipeline runs tree-embedding (PageIndex/RAPTOR) which is already
-            # content-hash incremental. Standalone 'drbrain embed --graph'
-            # does TransE and has its own incremental path; pipeline does not
-            # invoke TransE to match prior behavior.
-            args = child_command("embed", "--tree")
+            # The graph namespace owns TransE training.  Tree text embeddings
+            # are part of `drbrain index build` (the `rag` step), so this step
+            # no longer trains them.
+            args = child_command("graph", "embed")
         elif name == "closure":
             # Incremental (default): --incremental → 2-hop neighborhood.
             # Full: --full flag on closure_cmd → whole-graph scan.
-            args = child_command("closure")
+            args = child_command("graph", "closure")
             if full:
                 args.append("--full")
         elif name == "rag":
-            args = child_command("rag", "prepare")
+            args = child_command("index", "build")
             if full:
                 args.append("--force")
         else:  # resolve_steps currently prevents this; keep the invariant local.

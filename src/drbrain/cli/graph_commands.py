@@ -1,4 +1,4 @@
-"""Graph query subcommands: neighbors, path."""
+"""Graph subcommands: build/embed/closure (registered in ``main``) and queries."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from drbrain.security import safe_error
 from drbrain.services.graph_to_text import describe_path, describe_subgraph
 from drbrain.storage.paths import iter_paper_dirs, tree_json_path
 
-graph_app = typer.Typer(help="Direct graph queries without BM25 text search")
+graph_app = typer.Typer(help="Knowledge graph: build / embed / closure plus direct graph queries")
 
 
 @graph_app.command("neighbors")
@@ -573,7 +573,7 @@ def graph_query_cmd(
       {"type": "union",     "queries": [...]}
       {"type": "negate",    "query": {...}}
 
-    Requires trained embeddings (drbrain embed --graph).
+    Requires trained embeddings (drbrain graph embed).
     """
     import json as _json
 
@@ -778,7 +778,7 @@ def export_cmd(
         graph.load_from_db(db, paper_ids=paper_ids)
 
         if graph.graph.number_of_nodes() == 0:
-            typer.echo("Graph is empty. Run: drbrain build first.")
+            typer.echo("Graph is empty. Run: drbrain graph build first.")
             raise typer.Exit(0)
 
         exporters = {

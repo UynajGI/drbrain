@@ -219,7 +219,7 @@ def _tree_leg(
     """Unified tree recall over the published generation (T43/T45/T46).
 
     The leg resolves the *active unified tree generation* published by
-    ``rag prepare --unified``, searches every published layer through the
+    ``drbrain index build``, searches every published layer through the
     shared ANN, walks the tree with the stateful navigator, and keeps only
     leaf text whose receipt validates against the SQL node projection the
     BM25/vector legs read (same node id, same content revision).  The retired
@@ -549,7 +549,7 @@ def retrieve_documents_sql(
         if generation is None:
             raise RetrievalUnavailableError("no active SQL generation for Zvec retrieval")
     if generation is None and not _default_rag_db(cfg).is_file():
-        # The default ``rag prepare`` no longer copies the text/vector
+        # The default ``drbrain index build`` no longer copies the text/vector
         # projection: serve the tree request straight from the published
         # unified generation and report the missing legs instead of failing
         # the whole query (fail-closed per leg).
@@ -755,7 +755,7 @@ def _unified_corpus_retrieval(
 ) -> RetrievalRows:
     """Answer from the published unified generation when no SQL corpus exists.
 
-    ``rag prepare`` defaults to the unified tree index (FTS + shared vectors +
+    ``drbrain index build`` defaults to the unified tree index (FTS + shared vectors +
     hierarchy in the main store) and no longer copies the legacy retrieval
     database.  A tree request is then served by the unified leg alone; every
     other requested leg is reported ``source_unavailable`` so the fused status

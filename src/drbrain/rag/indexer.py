@@ -306,7 +306,9 @@ def build_index(
         manifest.get("fragment_format") != 2 or manifest.get("max_node_tokens") != max_node_tokens
     )
     if format_changed and paper_ids is not None:
-        raise ValueError("fragment format changed; run a full rag index before indexing a subset")
+        raise ValueError(
+            "fragment format changed; run 'drbrain index build' before indexing a subset"
+        )
     model_changed = (bool(old_model) and old_model != new_model) or format_changed
 
     changed: set[str] = set()

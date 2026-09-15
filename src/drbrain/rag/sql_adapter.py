@@ -15,7 +15,7 @@ def build_sql_retriever(cfg, db, *, top_k, acl_filter=None):
 
     generation = capture_index_generation(cfg)
     if generation is None:
-        # The default ``rag prepare`` publishes the unified tree generation
+        # The default ``drbrain index build`` publishes the unified tree generation
         # without copying the SQL working database.  A tree request can still
         # be served from that generation; anything else stays not-prepared.
         from drbrain.rag.legs import normalize_legs

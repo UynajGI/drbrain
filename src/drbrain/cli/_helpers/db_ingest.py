@@ -276,13 +276,13 @@ def _ingest_single_paper(
         ),
     )
     # Ingest registers the body, anchors and leaves only; the region hierarchy
-    # is built by ``rag prepare`` (T20/T21/T45).  No per-paper MD/tree/pages
-    # file is generated (frozen protocol §4).
+    # is built by ``drbrain index build`` (T20/T21/T45).  No per-paper MD/tree/
+    # pages file is generated (frozen protocol §4).
     db.upsert_paper_artifact(
         local_id,  # type: ignore[arg-type]
         "tree",
         "skipped",
-        error="no per-paper tree: hierarchy is built by 'rag prepare'",
+        error="no per-paper tree: hierarchy is built by 'drbrain index build'",
     )
     db.commit()
     _set_abstract_from_canonical(db, local_id)  # type: ignore[arg-type]
@@ -324,9 +324,10 @@ def _ingest_single_paper(
     db.commit()
 
     # Stage 3 (PageIndex tree) was removed by T22: the document hierarchy is
-    # built by ``rag prepare`` from the canonical leaves and structure hints,
-    # so ingest no longer generates or persists a per-paper tree.json/page
-    # files.  The ``tree`` artifact above records the stage as skipped.
+    # built by ``drbrain index build`` from the canonical leaves and structure
+    # hints, so ingest no longer generates or persists a per-paper
+    # tree.json/page files.  The ``tree`` artifact above records the stage as
+    # skipped.
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
@@ -426,7 +427,7 @@ def _ingest_single_paper(
     if concept_count < 1 or edge_count < 1:
         echo(
             f"  [dim]Quality Gate 3: concepts={concept_count}, edges={edge_count} "
-            f"(post-build check — run 'drbrain build {local_id}' to populate)[/dim]"
+            f"(post-build check — run 'drbrain graph build {local_id}' to populate)[/dim]"
         )
         _ingest_log.info(
             f"Quality Gate 3 for {local_id}: concepts={concept_count}, edges={edge_count}"

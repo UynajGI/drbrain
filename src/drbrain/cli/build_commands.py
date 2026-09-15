@@ -193,7 +193,7 @@ def build_cmd(
     else:
         # Incremental default: build papers that are either (a) not yet
         # extracted (status == 'uploaded') or (b) extracted but touched since
-        # the last build run (e.g. rebuilt via 'drbrain build PID' after a
+        # the last build run (e.g. rebuilt via 'drbrain graph build PID' after a
         # re-ingest). Falls back to pure status filter when no last_run is set
         # or when the db helper is unavailable (keeps test mocks working).
         all_paper_rows = db.get_all_papers()
@@ -696,7 +696,7 @@ def embed_cmd(
     graph.load_from_db(db)
 
     if graph.graph.number_of_nodes() == 0:
-        typer.echo("No graph data. Run: drbrain build first", err=True)
+        typer.echo("No graph data. Run: drbrain graph build first", err=True)
         db.close()
         raise typer.Exit(1)
 

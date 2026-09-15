@@ -38,7 +38,7 @@ def publish_sql_snapshot(cfg: Any) -> dict[str, Any]:
 
     source = _default_rag_db(cfg).resolve()
     if not source.is_file():
-        raise RetrievalUnavailableError("SQL corpus is missing; build the corpus before rag index")
+        raise RetrievalUnavailableError("SQL corpus is missing; build the corpus before indexing")
     root = Path(get_llamaindex_config(cfg).storage_dir).resolve()
     previous = indexer.get_active_index_generation(cfg)
     generation = indexer._new_generation_id()

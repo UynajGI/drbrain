@@ -1,10 +1,13 @@
-"""RAG subcommands: ``drbrain rag index`` / ``prepare`` / ``baselines`` / ``eval``.
+"""RAG subcommands: evaluation plus the compatibility index entries.
 
-The ``rag`` Typer sub-app hosts LlamaIndex-driven operations: index and
-PageIndex commands, the incremental unified-tree prepare (FTS + shared
-vectors + hierarchy), evaluation-only baselines (``unified_tree_flat`` is the
-unified-tree retrieval ablation; ``raptor_collapsed`` is the provenance-gated
-independent RAPTOR comparison), health checks and golden-set evaluation.
+The ``rag`` Typer sub-app hosts the evaluation-only operations (``eval``,
+``baselines``, the native PageIndex commands) and, for the compatibility
+period, the historical index entries.  ``rag prepare``/``rag index``/
+``rag health`` are hidden aliases with one stderr migration line: the main
+line prepares and inspects the index through ``drbrain index build`` /
+``drbrain index status``.  The legacy names keep their flags, exit codes and
+JSON contracts, and the ``rag_*_cmd`` symbols stay importable.
+
 Baselines never register a production route.
 """
 
@@ -19,6 +22,7 @@ from rich.console import Console
 from rich.table import Table
 
 from drbrain.cli._common import open_db, runtime_data_path
+from drbrain.cli._compat import migration_alias
 from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 rag_app = typer.Typer(help="RAG index publication, readiness and evaluation")
@@ -114,7 +118,7 @@ def pageindex_chat_cmd(
         typer.echo(result["answer"])
 
 
-@rag_app.command("index")
+@rag_app.command("index", hidden=True)
 def rag_index_cmd(
     ctx: typer.Context,
     force: bool = typer.Option(
@@ -130,6 +134,8 @@ def rag_index_cmd(
     SQL snapshots the existing corpus database without running embeddings.
     LlamaIndex builds nodes and embeddings from paper assets; --paper and
     --force control incremental indexing on that backend.
+
+    Compatibility alias: the main line is ``drbrain index build``.
     """
     cfg = ctx.obj["config"]
 
@@ -190,7 +196,12 @@ def rag_index_cmd(
     console.print(table)
 
 
-@rag_app.command("prepare")
+rag_app.command("index", hidden=True)(
+    migration_alias(rag_index_cmd, name="rag index", hint="drbrain index build")
+)
+
+
+@rag_app.command("prepare", hidden=True)
 def rag_prepare_cmd(
     ctx: typer.Context,
     force: bool = typer.Option(False, "--force", "-f", help="Force a full rebuild"),
@@ -230,6 +241,7 @@ def rag_prepare_cmd(
     dependency, no re-parsing of verified content, no copy of the legacy
     retrieval database).
 
+    Compatibility alias: the main line is ``drbrain index build``.
     ``--legacy-sql`` keeps the deprecated derived ``drbrain_rag.db`` working
     copy available while its readers are migrated; it is opt-in only.
     """
@@ -291,6 +303,11 @@ def rag_prepare_cmd(
         )
     if not outcome.ok:
         raise typer.Exit(code=1)
+
+
+rag_app.command("prepare", hidden=True)(
+    migration_alias(rag_prepare_cmd, name="rag prepare", hint="drbrain index build")
+)
 
 
 @rag_app.command("baselines")
@@ -363,12 +380,16 @@ def rag_baselines_cmd(
         typer.echo(f"Baseline report written to {target}")
 
 
-@rag_app.command("health")
+@rag_app.command("health", hidden=True)
 def rag_health_cmd(
     ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output the readiness report as JSON"),
 ):
-    """Check RAG index readiness without querying, embedding, or writing."""
+    """Check RAG index readiness without querying, embedding, or writing.
+
+    Compatibility alias: the main line is ``drbrain index status``, which
+    reports per-leg readiness, versions and backlog for the same storage.
+    """
     from drbrain.rag.indexer import get_index_health
 
     report = get_index_health(ctx.obj["config"])
@@ -380,6 +401,11 @@ def rag_health_cmd(
             typer.echo("Reasons: " + ", ".join(report["reasons"]))
     if not report["ready"]:
         raise typer.Exit(1)
+
+
+rag_app.command("health", hidden=True)(
+    migration_alias(rag_health_cmd, name="rag health", hint="drbrain index status")
+)
 
 
 @rag_app.command("eval")

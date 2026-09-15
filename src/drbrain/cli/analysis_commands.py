@@ -957,7 +957,7 @@ def difficulty_cmd(
     else:
         total = sum(len(v) for v in result.values())
         if total == 0:
-            typer.echo("No gaps found. Run: drbrain build first.")
+            typer.echo("No gaps found. Run: drbrain graph build first.")
         else:
             typer.echo(f"\nDifficulty map ({total} gaps)")
             typer.echo("=" * 50)

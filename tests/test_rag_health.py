@@ -107,11 +107,14 @@ def test_rag_health_cli_emits_json_with_automation_exit_status(monkeypatch, tmp_
     result = runner.invoke(rag_app, ["health", "--json"], obj={"config": _cfg(tmp_path)})
 
     assert result.exit_code == 0
-    assert json.loads(result.output) == healthy
+    # `rag health` is a hidden compatibility alias: its stdout JSON contract is
+    # unchanged, the migration notice goes to stderr.
+    assert json.loads(result.stdout) == healthy
+    assert "'rag health' has moved" in result.stderr
 
     unhealthy = {**healthy, "ready": False, "status": "not_ready", "reasons": ["index_missing"]}
     monkeypatch.setattr("drbrain.rag.indexer.get_index_health", lambda _cfg: unhealthy)
     result = runner.invoke(rag_app, ["health", "--json"], obj={"config": _cfg(tmp_path)})
 
     assert result.exit_code == 1
-    assert json.loads(result.output) == unhealthy
+    assert json.loads(result.stdout) == unhealthy
