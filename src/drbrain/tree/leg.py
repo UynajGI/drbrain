@@ -139,6 +139,11 @@ class TreeLegOutcome:
         }
 
 
+def active_tree_generation(cfg: Any, storage_dir: str | Path | None = None) -> str | None:
+    """The published unified generation for this config, or ``None``."""
+    return get_active_tree_generation(_tree_storage_root(cfg, storage_dir))
+
+
 def resolve_navigation_planner(cfg: Any) -> tuple[Any, str]:
     """The chat-model planner when the chat role resolves, else deterministic.
 
@@ -301,6 +306,7 @@ __all__ = [
     "TreeLegHit",
     "TreeLegOutcome",
     "TreeLegUnavailableError",
+    "active_tree_generation",
     "resolve_navigation_planner",
     "run_tree_leg",
 ]

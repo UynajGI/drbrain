@@ -38,6 +38,7 @@ from drbrain.rag.contracts import (
     failure_leg,
     finish_retrieval,
     matches_scope,
+    normalize_filters,
 )
 from drbrain.rag.evidence import build_evidence_record
 from drbrain.rag.legs import normalize_legs
@@ -541,6 +542,14 @@ def retrieve_documents_sql(
         generation = capture_index_generation(cfg)
         if generation is None:
             raise RetrievalUnavailableError("no active SQL generation for Zvec retrieval")
+    if generation is None and not _default_rag_db(cfg).is_file():
+        # The default ``rag prepare`` no longer copies the text/vector
+        # projection: serve the tree request straight from the published
+        # unified generation and report the missing legs instead of failing
+        # the whole query (fail-closed per leg).
+        return _unified_corpus_retrieval(
+            cfg, wanted, query, top_k, filters=filters, acl_filter=acl_filter
+        )
     request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
     if generation is not None and set(wanted).intersection({"graph", "claims"}):
         raise ValueError("pinned SQL retrieval cannot include live graph/claims sources")
@@ -727,6 +736,93 @@ def retrieve_documents_sql(
         return result
     finally:
         conn.close()
+
+
+def _unified_corpus_retrieval(
+    cfg: Any,
+    wanted: list[str],
+    query: str,
+    top_k: int,
+    *,
+    filters: dict[str, Any] | None,
+    acl_filter: dict[str, str] | None,
+) -> RetrievalRows:
+    """Answer from the published unified generation when no SQL corpus exists.
+
+    ``rag prepare`` defaults to the unified tree index (FTS + shared vectors +
+    hierarchy in the main store) and no longer copies the legacy retrieval
+    database.  A tree request is then served by the unified leg alone; every
+    other requested leg is reported ``source_unavailable`` so the fused status
+    stays honest, and a missing generation is fail-closed like everywhere else.
+    """
+    from drbrain.rag.status import RetrievalStatus
+    from drbrain.tree.leg import TreeLegUnavailableError, run_tree_leg
+
+    tree_cap = _leg_cap(cfg, "tree", _KNN_POOL)
+    try:
+        outcome = run_tree_leg(cfg, query=query, top_k=max(tree_cap, int(top_k), 1))
+    except TreeLegUnavailableError as exc:
+        raise RetrievalUnavailableError(str(exc)) from exc
+    traces: list[LegResult] = []
+    for name in wanted:
+        if name == "tree":
+            continue
+        traces.append(
+            LegResult(
+                name,
+                "unavailable",
+                reason=RetrievalStatus.SOURCE_UNAVAILABLE.value,
+            )
+        )
+    traces.append(
+        LegResult(
+            "tree",
+            "ok" if outcome.hits else ("empty" if outcome.status == "empty" else "unavailable"),
+            len(outcome.hits),
+            reason=(
+                ""
+                if outcome.status in {"ok", "empty"}
+                else RetrievalStatus.INSUFFICIENT_EVIDENCE.value
+            ),
+        )
+    )
+    rows: list[dict[str, Any]] = []
+    for rank, hit in enumerate(outcome.hits[: max(int(top_k), 1)], 1):
+        row: dict[str, Any] = {
+            "paper_id": hit.local_id,
+            "node_id": hit.node_id,
+            "title": "",
+            "text": hit.text[:500],
+            "source": "unified-tree",
+            "score": round(float(hit.score), 6),
+            "score_kind": "tree",
+            "categories": "",
+            "legs": ["tree"],
+        }
+        row.update(
+            build_evidence_record(
+                generation=outcome.generation,
+                query=query,
+                retriever="unified-tree",
+                rank=rank,
+                score=row["score"],
+                source={**row, "text": hit.text},
+                filters=filters,
+                excerpt=row["text"],
+            )
+        )
+        rows.append(row)
+    rows = [row for row in rows if matches_scope(row, normalize_filters(filters), acl_filter)]
+    capabilities = {
+        "backend": "unified",
+        "snapshot": True,
+        "vector_recall": "shared_ann",
+        "sql_corpus": False,
+        "tree": outcome.to_json(),
+    }
+    return finish_retrieval(
+        rows, generation=outcome.generation, legs=traces, capabilities=capabilities
+    )
 
 
 def _materialize(

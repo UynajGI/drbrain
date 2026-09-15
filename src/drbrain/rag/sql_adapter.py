@@ -15,7 +15,16 @@ def build_sql_retriever(cfg, db, *, top_k, acl_filter=None):
 
     generation = capture_index_generation(cfg)
     if generation is None:
-        return None
+        # The default ``rag prepare`` publishes the unified tree generation
+        # without copying the SQL working database.  A tree request can still
+        # be served from that generation; anything else stays not-prepared.
+        from drbrain.rag.legs import normalize_legs
+        from drbrain.tree.leg import active_tree_generation
+
+        li = getattr(cfg, "llamaindex", None)
+        wanted = normalize_legs(getattr(li, "retrievers", None) if li is not None else None)
+        if "tree" not in wanted.legs or active_tree_generation(cfg) is None:
+            return None
 
     class SQLRetriever(BaseRetriever):
         _trace: dict = PrivateAttr(default_factory=dict)

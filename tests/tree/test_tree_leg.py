@@ -17,6 +17,7 @@ generation), plus the SQL projection the BM25/vector legs read, and then run:
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -197,6 +198,41 @@ class TestSqlTreeLeg:
             assert node is not None and node["kind"] == "leaf"
             assert row["legs"] == ["tree"]
             assert row["evidence_id"]
+
+    def test_tree_only_ask_works_without_the_sql_corpus(self, prepared, monkeypatch):
+        """The target flow: ingest → rag prepare (unified, default) → ask.
+
+        With no ``drbrain_rag.db`` and no SQL generation, the tree request is
+        served from the published unified generation; the missing legacy legs
+        are reported unavailable instead of failing the whole query.
+        """
+        from llama_index.core import Settings
+        from llama_index.core.llms import MockLLM
+
+        import drbrain.rag.sql_adapter as sql_adapter
+        from drbrain.rag import sql_retrie
+        from drbrain.rag.engine import ask_llamaindex
+
+        # sql_adapter binds the resolver at import time; patch that binding.
+        monkeypatch.setattr(sql_adapter, "capture_index_generation", lambda cfg: None)
+        absent = Path(prepared.cfg.llamaindex.tree_storage).parent / "absent_rag.db"
+        monkeypatch.setattr(sql_retrie, "_default_rag_db", lambda cfg: absent)
+
+        def _init(_cfg):
+            Settings.llm = MockLLM(max_tokens=64)
+            return True
+
+        monkeypatch.setattr("drbrain.rag.llm.init_llamaindex_settings", _init)
+        result = ask_llamaindex(
+            prepared.cfg, prepared.db, THEME, top_k=5, streaming=False, legs=["tree"]
+        )
+        assert result["route"]["legs"] == ["tree"]
+        assert result["sources"], result
+        assert result.get("status") != "retrieval_failure"
+        assert result["answer"]
+        for source in result["sources"]:
+            node = prepared.db.get_tree_node(source["node_id"])
+            assert node is not None and node["kind"] == "leaf"
 
     def test_tree_only_ask_fails_closed_without_the_generation(self, prepared):
         """A missing unified generation abstains (retrieval_failure), never a fallback."""
