@@ -175,8 +175,14 @@ def run_tree_leg(
     max_expansions: int = 6,
     verify: Callable[[TreeLegHit], bool] | None = None,
     embed: Callable[[Sequence[str]], list[list[float]]] | None = None,
+    local_ids: Sequence[str] | None = None,
 ) -> TreeLegOutcome:
-    """Resolve → search → navigate → validate → leaf text (one call, no writes)."""
+    """Resolve → search → navigate → validate → leaf text (one call, no writes).
+
+    ``local_ids`` scopes the ANN entry search (and every in-walk re-search) to
+    the given papers, so a paper-scoped query cannot silently read another
+    paper's leaves; ``None`` keeps the corpus-wide search.
+    """
     root = _tree_storage_root(cfg, storage_dir)
     generation = get_active_tree_generation(root)
     if not generation:
@@ -191,7 +197,7 @@ def run_tree_leg(
         raise TreeLegUnavailableError("query embedding failed")
     with UnifiedVectorStore(Path(resolved["vectors"]), dimension=int(profile.dimension)) as store:
         searcher = TreeSearch(store, profile_id=profile.profile_id(), top_k=top_k)
-        candidates = searcher.search(vectors[0], top_k=top_k, view=view)
+        candidates = searcher.search(vectors[0], top_k=top_k, view=view, local_ids=local_ids)
         outcome = TreeLegOutcome(
             status="empty",
             reason="no_candidates",
@@ -211,7 +217,7 @@ def run_tree_leg(
                 db,
                 budget=budget,
                 search_nodes=lambda text: searcher.search_from_text(
-                    embed_query, text, top_k=top_k, view=view
+                    embed_query, text, top_k=top_k, view=view, local_ids=local_ids
                 ),
             )
             result = navigator.navigate(

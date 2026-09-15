@@ -164,6 +164,22 @@ class TestUnifiedTreeLeg:
         assert outcome.reason == "revision_mismatch"
         assert outcome.hits == []
 
+    def test_local_ids_scope_the_ann_entry_search(self, prepared):
+        """``search --paper`` scoping: a scoped walk cannot read another paper."""
+        from drbrain.tree.leg import run_tree_leg
+
+        scoped = run_tree_leg(prepared.cfg, query=THEME, top_k=10, local_ids=["p1"])
+        assert scoped.status == "ok", scoped.to_json()
+        assert scoped.hits, scoped.to_json()
+        assert {hit.local_id for hit in scoped.hits} == {"p1"}
+
+        unscoped = run_tree_leg(prepared.cfg, query=THEME, top_k=10)
+        assert {hit.local_id for hit in unscoped.hits} == {"p1", "p2"}
+
+        unknown = run_tree_leg(prepared.cfg, query=THEME, top_k=10, local_ids=["p-unknown"])
+        assert unknown.hits == []
+        assert unknown.status == "empty"
+
 
 class TestSqlTreeLeg:
     def _generation(self, prepared):
@@ -198,6 +214,33 @@ class TestSqlTreeLeg:
             assert node is not None and node["kind"] == "leaf"
             assert row["legs"] == ["tree"]
             assert row["evidence_id"]
+
+    def test_pinned_sql_tree_leg_honours_the_paper_scope(self, prepared, monkeypatch):
+        """``filters={"paper_ids": [...]}`` reaches the tree leg's ANN search."""
+        from drbrain.rag.retrieval import retrieve_documents
+        from drbrain.tree import leg as tree_leg
+
+        captured: dict = {}
+        original = tree_leg.run_tree_leg
+
+        def spy(cfg_arg, *, query, top_k, local_ids=None, **kwargs):
+            captured["local_ids"] = list(local_ids) if local_ids is not None else None
+            return original(cfg_arg, query=query, top_k=top_k, local_ids=local_ids, **kwargs)
+
+        monkeypatch.setattr(tree_leg, "run_tree_leg", spy)
+        rows = retrieve_documents(
+            prepared.cfg,
+            prepared.db,
+            None,
+            THEME,
+            generation=self._generation(prepared),
+            filters={"paper_ids": ["p1"]},
+            top_k=5,
+        )
+
+        assert captured["local_ids"] == ["p1"]
+        assert rows, "scoped retrieval must return the paper's own evidence"
+        assert all(row["paper_id"] == "p1" for row in rows)
 
     def test_tree_only_ask_works_without_the_sql_corpus(self, prepared, monkeypatch):
         """The target flow: ingest → rag prepare (unified, default) → ask.

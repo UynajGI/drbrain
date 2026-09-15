@@ -243,7 +243,13 @@ def _tree_leg(
         return _same_revision(str(row[1] or ""), hit.content_hash)
 
     try:
-        outcome = run_tree_leg(cfg, query=query, top_k=max(int(k), 1), verify=verify)
+        outcome = run_tree_leg(
+            cfg,
+            query=query,
+            top_k=max(int(k), 1),
+            verify=verify,
+            local_ids=sorted(allowed_papers) if allowed_papers is not None else None,
+        )
     except TreeLegUnavailableError as exc:
         raise RetrievalUnavailableError(str(exc)) from exc
     entries = [(hit.key, hit.score) for hit in outcome.hits]
@@ -754,13 +760,21 @@ def _unified_corpus_retrieval(
     database.  A tree request is then served by the unified leg alone; every
     other requested leg is reported ``source_unavailable`` so the fused status
     stays honest, and a missing generation is fail-closed like everywhere else.
+    ``filters["paper_ids"]`` is pushed into the ANN entry search as
+    ``local_ids`` so a paper-scoped query never reads another paper.
     """
     from drbrain.rag.status import RetrievalStatus
     from drbrain.tree.leg import TreeLegUnavailableError, run_tree_leg
 
+    normalized = normalize_filters(filters)
     tree_cap = _leg_cap(cfg, "tree", _KNN_POOL)
     try:
-        outcome = run_tree_leg(cfg, query=query, top_k=max(tree_cap, int(top_k), 1))
+        outcome = run_tree_leg(
+            cfg,
+            query=query,
+            top_k=max(tree_cap, int(top_k), 1),
+            local_ids=normalized.get("paper_ids") or None,
+        )
     except TreeLegUnavailableError as exc:
         raise RetrievalUnavailableError(str(exc)) from exc
     traces: list[LegResult] = []
@@ -798,6 +812,10 @@ def _unified_corpus_retrieval(
             "score_kind": "tree",
             "categories": "",
             "legs": ["tree"],
+            # Text locator of the leaf text the walk actually read (additive).
+            "block_id": hit.block_id,
+            "char_start": int(hit.char_start),
+            "char_end": int(hit.char_end),
         }
         row.update(
             build_evidence_record(

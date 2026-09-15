@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 from loguru import logger
 
+from drbrain.cli._compat import migration_alias
 from drbrain.cli._helpers.security import redact_cli_args
 from drbrain.cli.analysis_commands import (
     ask_cmd,
@@ -64,12 +65,12 @@ from drbrain.cli.ingest_commands import (
     proceedings_cmd,
     report_cmd,
 )
+from drbrain.cli.library_commands import library_app
 from drbrain.cli.query_commands import (
     fsearch_cmd,
     hybrid_cmd,
     list_cmd,
     query_cmd,
-    search_cmd,
     seed_cmd,
     show_cmd,
     stats_cmd,
@@ -80,6 +81,7 @@ from drbrain.cli.repair_commands import (
     import_cmd,
     repair_cmd,
 )
+from drbrain.cli.search_commands import search_cmd
 from drbrain.cli.session_commands import session_app
 from drbrain.cli.setup import setup_cmd
 from drbrain.cli.storage_commands import storage_app
@@ -335,10 +337,17 @@ app.command("list")(list_cmd)
 app.command("stats")(stats_cmd)
 app.command("webui")(webui_cmd)
 app.command("show")(show_cmd)
-app.command("query")(query_cmd)
-app.command("fsearch")(fsearch_cmd)
+# New main line: `search` retrieves evidence over the ask chain.
 app.command("search")(search_cmd)
-app.command("hybrid")(hybrid_cmd)
+# Compatibility aliases (hidden + one stderr migration line): the historical
+# retrieval entries keep their flags, exit codes and JSON contracts.
+app.command("query", hidden=True)(migration_alias(query_cmd, name="query", hint="drbrain search"))
+app.command("hybrid", hidden=True)(
+    migration_alias(hybrid_cmd, name="hybrid", hint="drbrain search")
+)
+app.command("fsearch", hidden=True)(
+    migration_alias(fsearch_cmd, name="fsearch", hint="drbrain search --source all")
+)
 app.command("export")(export_cmd)
 app.command("export-okf")(export_okf_cmd)
 app.command("queue")(queue_cmd)
@@ -382,6 +391,7 @@ app.add_typer(
     invoke_without_command=True,
     no_args_is_help=False,
 )
+app.add_typer(library_app, name="library")
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
 app.add_typer(rag_app, name="rag")
