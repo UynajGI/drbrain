@@ -129,6 +129,8 @@ class TreeBuilder:
         embed: Callable[[Sequence[str]], list[list[float]]] | None = None,
         config: BuilderConfig | None = None,
         count_tokens: Callable[[str], int] | None = None,
+        model: Any | None = None,
+        profile_id: str = "",
     ) -> None:
         self.db = db
         self.vectors = vectors
@@ -136,6 +138,15 @@ class TreeBuilder:
         self.summary = summary_service or SummaryService(db, count_tokens=self.count_tokens)
         self.embed = embed
         self.config = config or BuilderConfig()
+        self.profile_id = str(profile_id or "unknown")
+        if model is not None:
+            self.set_model(model)
+
+    def set_model(self, model: Any) -> TreeBuilder:
+        """Bind the summary/index model (fail-closed before any work)."""
+        self.model = model
+        self._model_impl = model
+        return self
 
     # ── public API ───────────────────────────────────────────────
     def build(self, seed_nodes: Sequence[str]) -> BuildResult:

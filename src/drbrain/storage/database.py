@@ -4180,6 +4180,20 @@ class Database:
         ).fetchone()
         return row[0] if row else None
 
+    def get_vector_metadata(self, key: str) -> str | None:
+        """Raw vector_metadata value for ``key`` (stage watermarks, T45)."""
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = ?", (str(key),)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_vector_metadata(self, key: str, value: str) -> None:
+        """Store a raw vector_metadata ``key``→``value`` pair (sole write surface)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES (?, ?)",
+            (str(key), str(value)),
+        )
+
     def set_last_run(self, name: str, ts: str | None = None) -> None:
         """Record the timestamp of a successful run of a named stage.
 

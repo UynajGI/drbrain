@@ -325,12 +325,32 @@ class UnifiedVectorStore:
 
 def needs_write(existing_meta: dict | None, entry: VectorEntry) -> bool:
     """Whether one node's vector must be (re)written for this entry."""
+    return needs_write_meta(
+        existing_meta,
+        node_revision=entry.node_revision,
+        content_hash=entry.content_hash,
+        profile_id=entry.profile_id,
+    )
+
+
+def needs_write_meta(
+    existing_meta: dict | None,
+    *,
+    node_revision: int,
+    content_hash: str,
+    profile_id: str,
+) -> bool:
+    """Whether a node's vector must be (re)written for these identifiers.
+
+    The staging entry form of :func:`needs_write`, usable before the vector
+    itself exists (T45 preparation walks nodes that need embedding).
+    """
     if existing_meta is None:
         return True
     if str(existing_meta.get("state")) != "ready":
         return True
-    if int(existing_meta.get("node_revision") or 0) != entry.node_revision:
+    if int(existing_meta.get("node_revision") or 0) != int(node_revision):
         return True
-    if str(existing_meta.get("content_hash") or "") != entry.content_hash:
+    if str(existing_meta.get("content_hash") or "") != str(content_hash):
         return True
-    return str(existing_meta.get("profile_id") or "") != entry.profile_id
+    return str(existing_meta.get("profile_id") or "") != str(profile_id)
