@@ -393,7 +393,7 @@
   未启动**：`index_model` probe = connection error——本任务作为外部阻塞保留（与 G2/G5/G7/G8 同因），端点可达后重跑
   `drbrain check` 即可复核，故此处暂不勾选。
 
-### [ ] T48 — 通过单篇CLI全流程验收
+### [x] T48 — 通过单篇CLI全流程验收
 
 - 依赖：T22、T45、T46、T47。
 - 范围：真实PDF、TeX、SciBase MD各一篇的spool→ingest→prepare→ask。
