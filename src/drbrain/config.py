@@ -186,6 +186,7 @@ class EmbedConfig(_ConfigBase):
     cache_dir: str = "~/.cache/modelscope/hub/models"
     device: str = "auto"
     extra_gpus: list[int] = field(default_factory=list)  # 大规模嵌入的额外并行卡号
+    cpu_workers: int = 0  # parallel spool 的 CPU worker 进程数（与 extra_gpus 一起启用）
     top_k: int = 10
     source: str = "modelscope"
     hf_endpoint: str = ""
@@ -285,6 +286,12 @@ class LlamaIndexConfig(_ConfigBase):
     #: Summary input budget for the tree builder's contract (protocol default
     #: 3500 tokens).  Larger groups need a larger prompt budget.
     summary_input_budget: int = 3500
+    #: Bounded frontier per hierarchy run (T59 scheduling): the first N ready
+    #: leaves enter one run; the rest stay roots and re-enter later runs.
+    #: 0 keeps the unbounded whole-frontier fit.
+    hierarchy_frontier_limit: int = 0
+    #: Concurrent summary calls per hierarchy round (T59 scheduling).
+    hierarchy_summary_workers: int = 1
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000

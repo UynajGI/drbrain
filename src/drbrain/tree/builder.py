@@ -60,6 +60,12 @@ class BuilderConfig:
     max_new_nodes_per_round: int = 200
     use_structure_hints: bool = True
     structure_hints_per_document: int = 32
+    #: Per-run cap on the seed frontier (T59 scheduling): only the first N
+    #: ready seeds enter this run; the rest stay roots for later runs.
+    #: 0 keeps the unbounded whole-frontier fit.
+    frontier_limit: int = 0
+    #: Summary calls allowed to be in flight per round (T59 scheduling).
+    summary_workers: int = 1
 
 
 @dataclass
@@ -102,6 +108,8 @@ class BuildResult:
     roots: list[str] = field(default_factory=list)
     stop_reason: str = ""
     ready_layers: int = 0
+    frontier_total: int = 0
+    frontier_processed: int = 0
 
     @property
     def created_nodes(self) -> list[str]:
@@ -124,6 +132,10 @@ class BuildResult:
             "stop_reason": self.stop_reason,
             "created": len(self.created_nodes),
             "failed": self.failed,
+            "frontier": {
+                "total": self.frontier_total,
+                "processed": self.frontier_processed,
+            },
         }
 
 
@@ -171,6 +183,14 @@ class TreeBuilder:
             raise BuilderError("build requires at least one ready seed node")
         self._model()  # fail closed before any embedding/clustering work
         result = BuildResult()
+        result.frontier_total = len(frontier)
+        if self.config.frontier_limit > 0 and len(frontier) > self.config.frontier_limit:
+            # Bounded batches (T59): process a slice per run; the remaining
+            # seeds stay roots and re-enter the next run's frontier.  The
+            # result records both counts so a capped build is never mistaken
+            # for full coverage.
+            frontier = frontier[: self.config.frontier_limit]
+        result.frontier_processed = len(frontier)
         layer = max((self._node_layer(node_id) for node_id in frontier), default=0) + 1
         for round_index in range(self.config.max_layers):
             if len(frontier) <= self.config.min_frontier:
@@ -200,11 +220,21 @@ class TreeBuilder:
     def _round(self, round_index: int, frontier: Sequence[str], layer: int):
         started = time.monotonic()
         metrics = RoundMetrics(round_index=round_index, frontier_size=len(frontier))
+        timings: dict[str, float] = {}
+
+        def mark(name: str, mark_from: float) -> float:
+            now = time.monotonic()
+            timings[name] = timings.get(name, 0.0) + (now - mark_from)
+            return now
+
+        t0 = time.monotonic()
         profiles = {
             node_id: node_source_profile(self.db, node_id, count_tokens=self.count_tokens)
             for node_id in frontier
         }
+        t0 = mark("profiles", t0)
         embeddings = self._embeddings(frontier)
+        t0 = mark("embeddings", t0)
         proposals: list[CandidateProposal] = []
         if self.embed is not None and len(frontier) >= 3:
             try:
@@ -221,7 +251,9 @@ class TreeBuilder:
                 metrics.duration_ms = (time.monotonic() - started) * 1000
                 return metrics, []
             metrics.components = len(local_map)
+            t0 = mark("clustering", t0)
             candidates = self._assignment_candidates(local_map, profiles)
+            t0 = mark("assignment", t0)
             proposals.extend(
                 proposals_from_assignment(
                     candidates,
@@ -229,16 +261,27 @@ class TreeBuilder:
                     min_members=self.config.cost.min_members,
                 )
             )
+            t0 = mark("assignment-proposals", t0)
         if self.config.use_structure_hints:
             proposals.extend(self._structure_proposals(frontier))
+        t0 = mark("structure", t0)
         merged = merge_proposals(proposals)
         metrics.proposals = len(merged)
+        t0 = mark("merge", t0)
         accepted, created = self._materialize(merged, metrics, layer)
+        mark("gates+summaries", t0)
         metrics.accepted = accepted
         metrics.created_nodes = created
         metrics.duration_ms = (time.monotonic() - started) * 1000
         if not merged:
             metrics.stop_reason = "no_candidates"
+        logger.info(
+            "[tree] round {} (frontier={}): {} | total={:.0f}s",
+            round_index,
+            len(frontier),
+            " ".join(f"{name}={value:.0f}s" for name, value in timings.items()),
+            metrics.duration_ms / 1000,
+        )
         return metrics, created
 
     def _assignment_candidates(self, local_map, profiles):
@@ -311,48 +354,90 @@ class TreeBuilder:
     def _materialize(
         self, proposals: Sequence[CandidateProposal], metrics: RoundMetrics, layer: int
     ) -> tuple[int, list[str]]:
+        """Prescreen serially; keep up to ``summary_workers`` calls in flight.
+
+        The prescreen order, the ``seen_member_keys`` coverage filter and the
+        publish order stay strictly sequential — only the model call itself
+        overlaps (T59 scheduling).  A failed call still stops the round, at the
+        cost of at most ``summary_workers - 1`` calls already in flight.
+        """
+        from collections import deque
+        from concurrent.futures import ThreadPoolExecutor
+
         seen_keys: set[str] = set()
         accepted = 0
         created: list[str] = []
-        for proposal in sorted(proposals, key=lambda item: -len(item.member_ids)):
-            if len(created) >= self.config.max_new_nodes_per_round:
-                metrics.rejected["budget_exhausted"] = (
-                    metrics.rejected.get("budget_exhausted", 0) + 1
-                )
-                continue
-            decision = proposal_pre_screen(
-                self.db,
-                proposal,
-                params=self.config.cost,
-                seen_member_keys=seen_keys,
-                count_tokens=self.count_tokens,
+        stop = False
+        workers = max(1, int(self.config.summary_workers))
+        pending: deque[tuple[CandidateProposal, Any]] = deque()
+
+        def drain() -> None:
+            nonlocal accepted, stop
+            proposal, future = pending.popleft()
+            node_id, execution_failed = self._publish_summary(
+                proposal, future.result(), layer, metrics
             )
-            if not decision.accepted:
-                metrics.rejected[decision.reason] = metrics.rejected.get(decision.reason, 0) + 1
-                continue
-            node_id, execution_failed = self._summarize_and_publish(proposal, layer, metrics)
             if node_id is None:
                 if execution_failed:
                     # A broken endpoint is a state, not a rejected group: stop
                     # instead of spending one failing call per candidate.  The
                     # members stay in the frontier (nothing was published).
                     metrics.stop_reason = "summary_failed"
-                    break
+                    stop = True
+                    return
                 metrics.rejected["summary_rejected"] = (
                     metrics.rejected.get("summary_rejected", 0) + 1
                 )
-                continue
+                return
             seen_keys.add(proposal.key)
             accepted += 1
             created.append(node_id)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for proposal in sorted(proposals, key=lambda item: -len(item.member_ids)):
+                if stop:
+                    break
+                while len(pending) >= workers:
+                    drain()
+                    if stop:
+                        break
+                if stop:
+                    break
+                if len(created) >= self.config.max_new_nodes_per_round:
+                    metrics.rejected["budget_exhausted"] = (
+                        metrics.rejected.get("budget_exhausted", 0) + 1
+                    )
+                    continue
+                decision = proposal_pre_screen(
+                    self.db,
+                    proposal,
+                    params=self.config.cost,
+                    seen_member_keys=seen_keys,
+                    count_tokens=self.count_tokens,
+                )
+                if not decision.accepted:
+                    metrics.rejected[decision.reason] = metrics.rejected.get(decision.reason, 0) + 1
+                    continue
+                members = [self._summary_member(node_id) for node_id in proposal.member_ids]
+                pending.append(
+                    (
+                        proposal,
+                        pool.submit(
+                            self.summary.summarize,
+                            members,
+                            self.config.contract,
+                            self._model(),
+                        ),
+                    )
+                )
+            while pending and not stop:
+                drain()
         return accepted, created
 
-    def _summarize_and_publish(
-        self, proposal: CandidateProposal, layer: int, metrics: RoundMetrics
+    def _publish_summary(
+        self, proposal: CandidateProposal, outcome: Any, layer: int, metrics: RoundMetrics
     ) -> tuple[str | None, bool]:
-        """Summarize and publish one candidate; ``(node_id, execution_failed)``."""
-        members = [self._summary_member(node_id) for node_id in proposal.member_ids]
-        outcome = self.summary.summarize(members, self.config.contract, self._model())
+        """Post-check and publish one summarised candidate; ``(node_id, failed)``."""
         metrics.prompt_tokens += outcome.prompt_tokens
         if not outcome.ok:
             if outcome.execution_failure:

@@ -273,6 +273,8 @@ def index_build_cmd(
             config=cfg,
             summary_max_tokens=li.summary_max_tokens,
             summary_input_budget=li.summary_input_budget,
+            hierarchy_frontier_limit=int(getattr(li, "hierarchy_frontier_limit", 0) or 0),
+            hierarchy_summary_workers=int(getattr(li, "hierarchy_summary_workers", 1) or 1),
             force=_force,
         )
     payload = outcome.to_json()
@@ -463,8 +465,8 @@ def build_index_status(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
     elif backend.get("generation"):
         if not backend.get("ready"):
             retrievable_reasons.append("sql_snapshot_unavailable")
-    elif "tree" not in route_legs:
-        # No pinned SQL snapshot and no tree leg to fall back to.
+    elif not tree_leg.get("generation"):
+        # BM25/vector also read the unified generation when no SQL corpus exists.
         retrievable_reasons.append("no_published_index")
     retrievable = {
         "ready": not retrievable_reasons,

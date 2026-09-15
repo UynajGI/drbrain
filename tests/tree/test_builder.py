@@ -315,3 +315,37 @@ class TestFailureStates:
             "duration_ms",
             "stop_reason",
         }
+
+
+class TestBoundedScheduling:
+    """T59 scheduling: per-run frontier cap and in-flight summary calls."""
+
+    def test_frontier_limit_bounds_one_run_and_leaves_the_rest_roots(self, tmp_path):
+        db = Database(tmp_path / "db.sqlite")
+        leaves = _make_docs(db, papers=2, sections=3)
+        builder = _builder(db, frontier_limit=3)
+        result = builder.build(leaves)
+        assert result.frontier_total == len(leaves)
+        assert result.frontier_processed == 3
+        assert all(metrics.frontier_size <= 3 for metrics in result.rounds)
+        covered: set[str] = set()
+        for node_id in result.created_nodes:
+            covered.update(child["child_id"] for child in db.get_tree_children(node_id))
+        assert covered <= set(leaves[:3])
+        # Unprocessed seeds stay roots and re-enter the next run's frontier.
+        assert set(result.roots) >= set(leaves[3:])
+        assert len(db.leaves_missing_parent()) > 0
+
+    def test_summary_workers_keep_the_serial_result(self, tmp_path):
+        def run(workers: int):
+            db = Database(tmp_path / f"db-{workers}.sqlite")
+            leaves = _make_docs(db)
+            builder = _builder(db, summary_workers=workers)
+            result = builder.build(leaves)
+            return (
+                [list(metrics.created_nodes) for metrics in result.rounds],
+                builder.model.calls,
+                result.stop_reason,
+            )
+
+        assert run(1) == run(3)

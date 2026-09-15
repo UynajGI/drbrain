@@ -226,21 +226,24 @@ def coverage_from_leaves(leaves: Mapping[str, SourceSpan]) -> Coverage:
 
 def coverage_for_members(db, member_ids: Sequence[str], *, count_tokens=None) -> Coverage:
     """Exact unique coverage over the members' *leaf* spans (shared origins once)."""
-    from drbrain.tree.assign import leaf_spans_of_node
+    from drbrain.tree.assign import leaf_spans_of_nodes
 
+    grouped = leaf_spans_of_nodes(db, member_ids, count_tokens=count_tokens)
     spans: list[SourceSpan] = []
     for node_id in member_ids:
-        spans.extend(leaf_spans_of_node(db, node_id, count_tokens=count_tokens))
+        spans.extend(grouped.get(str(node_id), ()))
     return unique_coverage(spans)
 
 
 def _profile_parts(db, member_ids: Sequence[str], count_tokens) -> list[tuple[str, tuple, int]]:
-    from drbrain.tree.assign import node_source_profile
+    from drbrain.tree.assign import source_profiles_for_nodes
 
+    profiles = source_profiles_for_nodes(db, member_ids, count_tokens=count_tokens)
     parts: list[tuple[str, tuple, int]] = []
     for node_id in member_ids:
-        profile = node_source_profile(db, node_id, count_tokens=count_tokens).merged()
-        parts.extend(profile.parts)
+        profile = profiles.get(str(node_id))
+        if profile is not None:
+            parts.extend(profile.parts)
     return parts
 
 

@@ -208,26 +208,36 @@ def local_stages(
     global_fitted: FittedStage,
     params: ClusteringParams | None = None,
 ) -> dict[str, FittedStage]:
-    """Independent local stages inside each global component (upstream order)."""
+    """Independent local stages inside each global component (upstream order).
+
+    Components are fitted independently (each keeps its own seeded UMAP/GMM),
+    so they run on a small thread pool — per-component results are identical to
+    a serial run, only their wall-clock overlaps.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     params = params or ClusteringParams()
     matrix = np.asarray(embeddings, dtype=np.float32)
     if len(row_ids) != matrix.shape[0]:
         raise ClusteringError("row_ids must match embeddings rows")
-    result: dict[str, FittedStage] = {}
     global_labels = global_fitted.labels
+    items: list[tuple[str, list[int]]] = []
     for component_index, component_id in enumerate(global_fitted.component_ids):
         member_rows = [
             index for index, labels in enumerate(global_labels) if component_index in labels
         ]
-        if not member_rows:
-            continue
+        if member_rows:
+            items.append((component_id, member_rows))
+
+    def fit_one(item: tuple[str, list[int]]) -> tuple[str, FittedStage]:
+        component_id, member_rows = item
         subset = matrix[member_rows]
         subset_ids = tuple(str(row_ids[index]) for index in member_rows)
         if len(member_rows) <= params.dim + 1:
             # Upstream: small subsets stay one local component without fitting.
             probs = tuple((1.0,) for _ in member_rows)
             labels = tuple((0,) for _ in member_rows)
-            result[component_id] = FittedStage(
+            return component_id, FittedStage(
                 stage="local",
                 row_ids=subset_ids,
                 component_ids=(f"{component_id}.l0",),
@@ -239,10 +249,9 @@ def local_stages(
                 reduced_dim=0,
                 fitted={"small_subset": True, "size": len(member_rows)},
             )
-            continue
         reduced = _umap_reduce(subset, params.dim, params.local_neighbors, params)
         fitted = _gmm_posterior(reduced, params.threshold, params)
-        result[component_id] = FittedStage(
+        return component_id, FittedStage(
             stage="local",
             row_ids=subset_ids,
             component_ids=tuple(f"{component_id}.l{index}" for index in range(fitted.n_components)),
@@ -258,7 +267,13 @@ def local_stages(
                 "local_neighbors": params.local_neighbors,
             },
         )
-    return result
+
+    if len(items) <= 1:
+        pairs = [fit_one(item) for item in items]
+    else:
+        with ThreadPoolExecutor(max_workers=min(8, len(items))) as pool:
+            pairs = list(pool.map(fit_one, items))
+    return dict(pairs)
 
 
 def two_stage_posteriors(

@@ -36,7 +36,12 @@ from loguru import logger
 
 from drbrain.tree.builder import BuilderConfig, TreeBuilder
 from drbrain.tree.embedding_identity import EmbeddingProfile
-from drbrain.tree.publish import publish_tree_generation
+from drbrain.tree.publish import (
+    compute_watermarks,
+    get_active_tree_generation,
+    publish_tree_generation,
+    resolve_tree_generation,
+)
 from drbrain.tree.summary import identify_contract
 from drbrain.tree.vector_store import UnifiedVectorStore, VectorEntry, needs_write_meta
 
@@ -45,6 +50,7 @@ WORKING_VECTORS_DIR = "vectors"
 
 #: Watermark key for the hierarchy stage signature.
 HIERARCHY_WATERMARK = "tree.prepare.hierarchy"
+HIERARCHY_PROFILE = "tree.prepare.hierarchy_profile"
 
 #: Metadata key for the latest ``prepare_unified_index`` outcome.  Overwritten
 #: on every run (a success clears an earlier failure) and read back by
@@ -132,6 +138,8 @@ def prepare_unified_index(
     builder_config: BuilderConfig | None = None,
     summary_max_tokens: int | None = None,
     summary_input_budget: int | None = None,
+    hierarchy_frontier_limit: int = 0,
+    hierarchy_summary_workers: int = 1,
     seed_nodes: Sequence[str] | None = None,
     force: bool = False,
     publish: bool = True,
@@ -169,7 +177,13 @@ def prepare_unified_index(
             root / WORKING_VECTORS_DIR, create=True, dimension=profile.dimension
         ) as store:
             outcome.vectors = _prepare_vectors(
-                db, store, profile, embed=embed, force=force, batch_size=batch_size
+                db,
+                store,
+                profile,
+                embed=embed,
+                force=force,
+                batch_size=batch_size,
+                embed_cfg=embed_cfg,
             )
             if outcome.vectors.get("status") == "failed":
                 outcome.hierarchy = {"status": "skipped", "reason": "vectors-failed"}
@@ -185,6 +199,8 @@ def prepare_unified_index(
                     builder_config=builder_config,
                     seed_nodes=seed_nodes,
                     force=force,
+                    frontier_limit=hierarchy_frontier_limit,
+                    summary_workers=hierarchy_summary_workers,
                 )
     except Exception as exc:  # noqa: BLE001 - an unusable collection is a reported state
         logger.warning("[tree] vector store unavailable: {}", exc)
@@ -197,7 +213,7 @@ def prepare_unified_index(
         outcome.publication = {"status": "skipped", "reason": "publish-disabled"}
     elif not outcome.ok:
         outcome.publication = {"status": "skipped", "reason": "stage-failed"}
-    elif not outcome.changed:
+    elif not outcome.changed and not _publication_pending(db, root, profile):
         outcome.publication = {"status": "skipped", "reason": "unchanged"}
     else:
         try:
@@ -220,6 +236,20 @@ def prepare_unified_index(
     outcome.duration_ms = (time.monotonic() - started) * 1000
     _record_last_build(db, outcome)
     return outcome
+
+
+def _publication_pending(db, root: Path, profile: EmbeddingProfile) -> bool:
+    """Computation completion is independent of publication completion."""
+    generation = get_active_tree_generation(root)
+    if not generation:
+        return True
+    try:
+        manifest = resolve_tree_generation(root, generation)["manifest"]
+    except Exception:
+        return True
+    return manifest.get("profile_id") != profile.profile_id() or manifest.get(
+        "watermarks"
+    ) != compute_watermarks(db, profile_id=profile.profile_id())
 
 
 def _record_last_build(db, outcome: PrepareOutcome) -> None:
@@ -298,6 +328,7 @@ def _prepare_vectors(
     embed,
     force: bool,
     batch_size: int,
+    embed_cfg: Any | None = None,
 ) -> dict[str, Any]:
     if embed is None:
         return {
@@ -306,6 +337,14 @@ def _prepare_vectors(
         }
     if profile.dimension is None:
         return {"status": "failed", "error": "embedding profile needs a dimension"}
+    if embed_cfg is not None:
+        from drbrain.tree.embed_parallel import parallel_vectors_stage, parse_embed_devices
+
+        devices = parse_embed_devices(embed_cfg)
+        if devices:
+            return parallel_vectors_stage(
+                db, store, profile, embed_cfg, devices=devices, force=force
+            )
     profile_id = profile.profile_id()
     rows = ready_node_rows(db)
     pending: list[dict[str, Any]] = []
@@ -501,8 +540,16 @@ def _prepare_hierarchy(
     builder_config: BuilderConfig | None,
     seed_nodes: Sequence[str] | None,
     force: bool,
+    frontier_limit: int = 0,
+    summary_workers: int = 1,
 ) -> dict[str, Any]:
     builder_config = builder_config or BuilderConfig()
+    if int(frontier_limit or 0) or int(summary_workers or 1) != 1:
+        builder_config = dataclasses.replace(
+            builder_config,
+            frontier_limit=max(0, int(frontier_limit or 0)),
+            summary_workers=max(1, int(summary_workers or 1)),
+        )
     model = summary_model
     if model is None:
         try:
@@ -523,6 +570,11 @@ def _prepare_hierarchy(
     )
     signature = _hierarchy_signature(db, builder_config, profile)
     previous = db.get_vector_metadata(HIERARCHY_WATERMARK)
+    # Scheduling knobs (frontier cap, summary concurrency) must not move the
+    # deployment identity — they change how much is built per run, not how.
+    scheduling_neutral = dataclasses.replace(builder_config, frontier_limit=0, summary_workers=1)
+    deployment = _param_digest(scheduling_neutral) + ":" + profile.profile_id()
+    deployment_changed = db.get_vector_metadata(HIERARCHY_PROFILE) != deployment
     # Retire every ready region built under a different contract before the
     # unchanged-signature return: a region node id embeds the contract digest,
     # so superseded nodes are stale by construction and must not keep certifying
@@ -530,12 +582,17 @@ def _prepare_hierarchy(
     # killed build, a previous partial run or a rolled-back deployment can leave
     # the watermark equal to the current signature (or unset) while another
     # contract's regions are still ready.  Steady state costs one read.
-    retired = db.retire_regions_with_other_contract(_contract_json(builder_config.contract))
+    retired = db.retire_regions_with_other_contract(
+        None if force or deployment_changed else _contract_json(builder_config.contract)
+    )
     if retired:
         logger.info("[tree] retired {} stale region(s) for the current contract", len(retired))
         db.retire_node_vectors(retired)
         if store is not None:
             store.delete(retired)
+    # This records the contract of in-progress nodes, not successful completion.
+    # A failed run can therefore resume its current-profile partial hierarchy.
+    db.set_vector_metadata(HIERARCHY_PROFILE, deployment)
     if not force and previous == signature and not db.leaves_missing_parent():
         return {
             "status": "complete",
@@ -572,6 +629,7 @@ def _prepare_hierarchy(
         logger.warning("[tree] hierarchy stage failed: {}", exc)
         return {"status": "failed", "error": str(exc), "frontier": len(frontier)}
     payload = result.to_json()
+    payload["frontier_remaining"] = len(db.leaves_missing_parent())
     failures = dict(payload.get("failed") or {})
     stop_reason = str(payload.get("stop_reason") or "")
     if failures or stop_reason in FAILED_BUILD_REASONS:

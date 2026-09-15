@@ -109,6 +109,148 @@ def node_source_profiles(
     }
 
 
+#: One recursive lookup for every leaf reachable from the given nodes.  The
+#: per-node helpers above refetch the whole document per leaf; batch callers
+#: (the cost gates walk hundreds of proposals over thousands of members) use
+#: this instead — one query replaces ``O(members)`` document reads.
+_LEAF_ROWS_SQL = """
+WITH RECURSIVE members(root_id, node_id, depth) AS (
+    SELECT value, value, 0 FROM json_each(?)
+    UNION ALL
+    SELECT m.root_id, c.child_id, m.depth + 1
+    FROM members m
+    JOIN tree_node_children c ON c.parent_id = m.node_id
+    WHERE m.depth < 32
+)
+SELECT m.root_id, n.node_id, n.local_id, n.doc_revision, n.block_id,
+       n.char_start, n.char_end, b.text, b.heading_path
+FROM members m
+JOIN tree_nodes n ON n.node_id = m.node_id
+LEFT JOIN content_blocks b
+  ON b.local_id = n.local_id AND b.revision = n.doc_revision AND b.block_id = n.block_id
+WHERE n.kind = 'leaf'
+"""
+
+
+def _leaf_rows_for_nodes(db, node_ids: Sequence[str]) -> list[dict]:
+    ids = [str(node_id) for node_id in dict.fromkeys(node_ids)]
+    if not ids:
+        return []
+    import json
+
+    cursor = db.conn.execute(_LEAF_ROWS_SQL, (json.dumps(ids),))
+    columns = [item[0] for item in cursor.description or ()]
+    rows = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+    for row in rows:
+        if row.get("text") is None:
+            raise AssignmentError(
+                f"leaf {row['node_id']!r} references a missing block {row.get('block_id')!r}"
+            )
+    return rows
+
+
+def _span_from_fields(
+    *,
+    local_id: str,
+    revision: int,
+    block_id: str,
+    char_start: int,
+    char_end: int,
+    text: str,
+    heading_raw: object,
+    count_tokens,
+) -> SourceSpan:
+    snippet = text[char_start:char_end]
+    return SourceSpan(
+        local_id=str(local_id),
+        revision=max(1, int(revision or 1)),
+        block_id=str(block_id),
+        char_start=char_start,
+        char_end=max(char_start + 1, char_end),
+        tokens=max(1, int(count_tokens(snippet))) if snippet else 0,
+        heading_path=_heading_path_of(heading_raw),
+    )
+
+
+def _span_from_row(row: Mapping, block: Mapping, count_tokens) -> SourceSpan:
+    text = str(block.get("text") or "")
+    char_start = int(row.get("char_start") or 0)
+    char_end = int(row.get("char_end") or len(text))
+    return _span_from_fields(
+        local_id=str(row.get("local_id") or ""),
+        revision=int(row.get("doc_revision") or 1),
+        block_id=str(row.get("block_id")),
+        char_start=char_start,
+        char_end=char_end,
+        text=text,
+        heading_raw=block.get("heading_path"),
+        count_tokens=count_tokens,
+    )
+
+
+def _heading_path_of(raw: object) -> tuple[str, ...]:
+    import json
+
+    try:
+        return tuple(json.loads(raw)) if isinstance(raw, str) else tuple(raw or ())
+    except (TypeError, ValueError):
+        return ()
+
+
+def leaf_spans_of_nodes(
+    db, node_ids: Sequence[str], *, count_tokens=None
+) -> dict[str, list[SourceSpan]]:
+    """Batch :func:`leaf_spans_of_node`: one query for every reachable leaf."""
+    if count_tokens is None:
+        from drbrain.services.tokens import count_tokens as _count
+
+        count_tokens = _count
+    out: dict[str, list[SourceSpan]] = {str(node_id): [] for node_id in node_ids}
+    for row in _leaf_rows_for_nodes(db, node_ids):
+        text = str(row.get("text") or "")
+        char_start = int(row.get("char_start") or 0)
+        char_end = int(row.get("char_end") or len(text))
+        out.setdefault(str(row["root_id"]), []).append(
+            _span_from_fields(
+                local_id=str(row.get("local_id") or ""),
+                revision=int(row.get("doc_revision") or 1),
+                block_id=str(row.get("block_id")),
+                char_start=char_start,
+                char_end=char_end,
+                text=text,
+                heading_raw=row.get("heading_path"),
+                count_tokens=count_tokens,
+            )
+        )
+    return out
+
+
+def source_profiles_for_nodes(
+    db, node_ids: Sequence[str], *, count_tokens=None
+) -> dict[str, SourceProfile]:
+    """Batch :func:`node_source_profile`: one query for every descendant leaf."""
+    if count_tokens is None:
+        from drbrain.services.tokens import count_tokens as _count
+
+        count_tokens = _count
+    parts: dict[str, list[tuple[str, tuple[str, ...], int]]] = {
+        str(node_id): [] for node_id in node_ids
+    }
+    for row in _leaf_rows_for_nodes(db, node_ids):
+        text = str(row.get("text") or "")
+        char_start = int(row.get("char_start") or 0)
+        char_end = int(row.get("char_end") or len(text))
+        snippet = text[char_start:char_end]
+        parts.setdefault(str(row["root_id"]), []).append(
+            (
+                str(row.get("local_id") or ""),
+                _heading_path_of(row.get("heading_path")),
+                int(count_tokens(snippet)) if snippet else 0,
+            )
+        )
+    return {node_id: SourceProfile(parts=tuple(items)).merged() for node_id, items in parts.items()}
+
+
 def leaf_spans_of_node(db, node_id: str, *, count_tokens=None) -> list[SourceSpan]:
     """Every unique leaf span under a node (used for exact cost coverage)."""
     if count_tokens is None:
