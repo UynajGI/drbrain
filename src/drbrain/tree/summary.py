@@ -147,6 +147,21 @@ class SummaryOutcome:
         return self.reason.startswith(EXECUTION_FAILURE_PREFIX)
 
 
+@dataclass(frozen=True)
+class SummaryAttempt:
+    """One model call's raw result, before validation and cache bookkeeping.
+
+    :meth:`SummaryService.generate` produces it with no database access, so a
+    worker thread may run it; :meth:`SummaryService.finalize` consumes it on
+    the calling (build) thread, which owns every database write.
+    """
+
+    prompt_tokens: int
+    text: str = ""
+    finish_reason: str = ""
+    reason: str = ""
+
+
 class SummaryModel(Protocol):  # pragma: no cover - structural typing
     def complete(self, prompt: str, *, max_tokens: int) -> SummaryResponse: ...
 
@@ -200,17 +215,16 @@ class SummaryService:
         self._count_tokens = count_tokens or _default_count_tokens
         self.model_calls = 0
 
-    def summarize(
+    def cached_outcome(
         self,
         members: Sequence[SummaryMember],
         contract: SummaryContract,
-        model: SummaryModel,
-    ) -> SummaryOutcome:
+    ) -> SummaryOutcome | None:
+        """The cached outcome for this group, or ``None`` to call the model."""
         ordered = order_members(members, contract)
         if not ordered:
             raise ValueError("summarize requires at least one member")
-        key = cache_key(ordered, contract)
-        cached = self.db.get_summary_cache(key)
+        cached = self.db.get_summary_cache(cache_key(ordered, contract))
         if cached is not None and cached.get("state") == "ready" and cached.get("summary"):
             return SummaryOutcome(
                 ok=True,
@@ -219,85 +233,99 @@ class SummaryService:
                 prompt_tokens=int(cached.get("prompt_tokens") or 0),
                 from_cache=True,
             )
+        return None
 
+    def generate(
+        self,
+        members: Sequence[SummaryMember],
+        contract: SummaryContract,
+        model: SummaryModel,
+    ) -> SummaryAttempt:
+        """Build the prompt and call the model — no database access.
+
+        Touch nothing but the model, so a worker thread may run it while the
+        build thread keeps using the shared connection.
+        """
+        ordered = order_members(members, contract)
+        if not ordered:
+            raise ValueError("summarize requires at least one member")
         prompt = build_prompt(ordered, contract)
         prompt_tokens = self._count_tokens(prompt)
         if prompt_tokens > contract.input_budget:
-            reason = "input_over_budget"
-            self._record_failure(key, ordered, contract, reason, prompt_tokens)
-            return SummaryOutcome(
-                ok=False,
-                summary="",
-                summary_tokens=0,
-                prompt_tokens=prompt_tokens,
-                from_cache=False,
-                reason=reason,
-            )
-
+            return SummaryAttempt(prompt_tokens=prompt_tokens, reason="input_over_budget")
         self.model_calls += 1
         try:
             response = model.complete(prompt, max_tokens=contract.max_output_tokens)
         except Exception as exc:  # noqa: BLE001 - recorded, then re-raised as outcome
-            reason = f"{EXECUTION_FAILURE_PREFIX}: {type(exc).__name__}"
-            self._record_failure(key, ordered, contract, reason, prompt_tokens)
-            return SummaryOutcome(
-                ok=False,
-                summary="",
-                summary_tokens=0,
+            return SummaryAttempt(
                 prompt_tokens=prompt_tokens,
-                from_cache=False,
-                reason=reason,
+                reason=f"{EXECUTION_FAILURE_PREFIX}: {type(exc).__name__}",
             )
+        return SummaryAttempt(
+            prompt_tokens=prompt_tokens,
+            text=str(getattr(response, "text", "") or "").strip(),
+            finish_reason=str(getattr(response, "finish_reason", "") or "").strip().lower(),
+        )
 
-        summary = str(getattr(response, "text", "") or "").strip()
-        finish_reason = str(getattr(response, "finish_reason", "") or "").strip().lower()
-        if not summary:
-            reason = "empty_summary"
-        elif finish_reason not in {"stop", "end_turn", "completed", ""}:
-            reason = "summary_truncated"
-        else:
-            summary_tokens = self._count_tokens(summary)
-            if summary_tokens > contract.max_output_tokens:
-                reason = "summary_over_budget"
+    def finalize(
+        self,
+        members: Sequence[SummaryMember],
+        contract: SummaryContract,
+        attempt: SummaryAttempt,
+    ) -> SummaryOutcome:
+        """Validate one attempt and persist its outcome (build thread only)."""
+        ordered = order_members(members, contract)
+        key = cache_key(ordered, contract)
+        reason = attempt.reason
+        summary = attempt.text
+        summary_tokens = 0
+        if not reason:
+            if not summary:
+                reason = "empty_summary"
+            elif attempt.finish_reason not in {"stop", "end_turn", "completed", ""}:
+                reason = "summary_truncated"
             else:
-                self.db.put_summary_cache(
-                    key,
-                    state="ready",
-                    summary=summary,
-                    prompt_tokens=prompt_tokens,
-                    summary_tokens=summary_tokens,
-                    model=contract.model,
-                    contract_json=json.dumps(contract.canonical(), sort_keys=True),
-                    members_json=json.dumps(
-                        [member.node_id for member in ordered], ensure_ascii=False
-                    ),
-                )
-                return SummaryOutcome(
-                    ok=True,
-                    summary=summary,
-                    summary_tokens=summary_tokens,
-                    prompt_tokens=prompt_tokens,
-                    from_cache=False,
-                )
-            self._record_failure(key, ordered, contract, reason, prompt_tokens)
+                summary_tokens = self._count_tokens(summary)
+                if summary_tokens > contract.max_output_tokens:
+                    reason = "summary_over_budget"
+        if reason:
+            self._record_failure(key, ordered, contract, reason, attempt.prompt_tokens)
             return SummaryOutcome(
                 ok=False,
                 summary="",
                 summary_tokens=summary_tokens,
-                prompt_tokens=prompt_tokens,
+                prompt_tokens=attempt.prompt_tokens,
                 from_cache=False,
                 reason=reason,
             )
-
-        self._record_failure(key, ordered, contract, reason, prompt_tokens)
-        return SummaryOutcome(
-            ok=False,
-            summary="",
-            summary_tokens=0,
-            prompt_tokens=prompt_tokens,
-            from_cache=False,
-            reason=reason,
+        self.db.put_summary_cache(
+            key,
+            state="ready",
+            summary=summary,
+            prompt_tokens=attempt.prompt_tokens,
+            summary_tokens=summary_tokens,
+            model=contract.model,
+            contract_json=json.dumps(contract.canonical(), sort_keys=True),
+            members_json=json.dumps([member.node_id for member in ordered], ensure_ascii=False),
         )
+        return SummaryOutcome(
+            ok=True,
+            summary=summary,
+            summary_tokens=summary_tokens,
+            prompt_tokens=attempt.prompt_tokens,
+            from_cache=False,
+        )
+
+    def summarize(
+        self,
+        members: Sequence[SummaryMember],
+        contract: SummaryContract,
+        model: SummaryModel,
+    ) -> SummaryOutcome:
+        cached = self.cached_outcome(members, contract)
+        if cached is not None:
+            return cached
+        return self.finalize(members, contract, self.generate(members, contract, model))
 
     def _record_failure(
         self,

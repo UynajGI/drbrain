@@ -42,7 +42,12 @@ from drbrain.tree.proposals import (
     proposals_from_assignment,
     proposals_from_structure,
 )
-from drbrain.tree.summary import SummaryContract, SummaryMember, SummaryService
+from drbrain.tree.summary import (
+    SummaryContract,
+    SummaryMember,
+    SummaryOutcome,
+    SummaryService,
+)
 from drbrain.tree.vector_store import needs_write_meta
 
 
@@ -359,8 +364,11 @@ class TreeBuilder:
 
         The prescreen order, the ``seen_member_keys`` coverage filter and the
         publish order stay strictly sequential — only the model call itself
-        overlaps (T59 scheduling).  A failed call still stops the round, at the
-        cost of at most ``summary_workers - 1`` calls already in flight.
+        overlaps (T59 scheduling), and it touches no database state: every
+        cache read and write stays on this thread, so the shared SQLite
+        connection is never used concurrently.  A failed call still stops the
+        round, at the cost of at most ``summary_workers - 1`` calls already in
+        flight.
         """
         from collections import deque
         from concurrent.futures import ThreadPoolExecutor
@@ -370,14 +378,11 @@ class TreeBuilder:
         created: list[str] = []
         stop = False
         workers = max(1, int(self.config.summary_workers))
-        pending: deque[tuple[CandidateProposal, Any]] = deque()
+        pending: deque[tuple[CandidateProposal, Sequence[SummaryMember], Any]] = deque()
 
-        def drain() -> None:
+        def settle(proposal: CandidateProposal, outcome: SummaryOutcome) -> None:
             nonlocal accepted, stop
-            proposal, future = pending.popleft()
-            node_id, execution_failed = self._publish_summary(
-                proposal, future.result(), layer, metrics
-            )
+            node_id, execution_failed = self._publish_summary(proposal, outcome, layer, metrics)
             if node_id is None:
                 if execution_failed:
                     # A broken endpoint is a state, not a rejected group: stop
@@ -393,6 +398,11 @@ class TreeBuilder:
             seen_keys.add(proposal.key)
             accepted += 1
             created.append(node_id)
+
+        def drain() -> None:
+            proposal, members, future = pending.popleft()
+            attempt = future.result()
+            settle(proposal, self.summary.finalize(members, self.config.contract, attempt))
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for proposal in sorted(proposals, key=lambda item: -len(item.member_ids)):
@@ -420,11 +430,18 @@ class TreeBuilder:
                     metrics.rejected[decision.reason] = metrics.rejected.get(decision.reason, 0) + 1
                     continue
                 members = [self._summary_member(node_id) for node_id in proposal.member_ids]
+                cached = self.summary.cached_outcome(members, self.config.contract)
+                if cached is not None:
+                    settle(proposal, cached)
+                    if stop:
+                        break
+                    continue
                 pending.append(
                     (
                         proposal,
+                        members,
                         pool.submit(
-                            self.summary.summarize,
+                            self.summary.generate,
                             members,
                             self.config.contract,
                             self._model(),

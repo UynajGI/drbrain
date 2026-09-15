@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import threading
 
 import pytest
 
@@ -61,11 +62,16 @@ def _leaf(block, local_id: str, layer: int = 0) -> NodeRecord:
 class FakeModel:
     def __init__(self):
         self.calls = 0
+        self._lock = threading.Lock()
 
     def complete(self, prompt: str, *, max_tokens: int) -> SummaryResponse:
-        self.calls += 1
+        # Summary workers call this from several threads and the count is
+        # compared against the serial run, so it must not lose increments.
+        with self._lock:
+            self.calls += 1
+            call = self.calls
         # Keep the summary well below the members' read cost.
-        return SummaryResponse(f"summary of {self.calls} members")
+        return SummaryResponse(f"summary of {call} members")
 
 
 def _make_docs(db: Database, *, papers: int = 3, sections: int = 4) -> list[str]:
@@ -349,3 +355,29 @@ class TestBoundedScheduling:
             )
 
         assert run(1) == run(3)
+
+    def test_summary_workers_keep_database_off_the_worker_threads(self, tmp_path, monkeypatch):
+        """Summary workers overlap model calls only — the shared SQLite
+        connection must stay on the build thread (concurrent use raised
+        ``sqlite3.InterfaceError`` under CI timing)."""
+        db = Database(tmp_path / "db.sqlite")
+        leaves = _make_docs(db)
+        build_thread = threading.get_ident()
+        seen: list[int] = []
+        real_get, real_put = db.get_summary_cache, db.put_summary_cache
+
+        def tracked_get(key):
+            seen.append(threading.get_ident())
+            return real_get(key)
+
+        def tracked_put(key, **kwargs):
+            seen.append(threading.get_ident())
+            return real_put(key, **kwargs)
+
+        monkeypatch.setattr(db, "get_summary_cache", tracked_get)
+        monkeypatch.setattr(db, "put_summary_cache", tracked_put)
+        result = _builder(db, summary_workers=3).build(leaves)
+
+        assert result.created_nodes, "the build must publish regions"
+        assert seen, "cache lookups and writes must happen"
+        assert set(seen) == {build_thread}
