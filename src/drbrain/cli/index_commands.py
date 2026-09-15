@@ -113,6 +113,26 @@ def _vector_backlog(db: Any, profile: Any) -> dict[str, Any]:
     }
 
 
+def _last_build_record(db: Any) -> dict[str, Any]:
+    """The latest recorded prepare outcome (``{}`` when never recorded).
+
+    Written by ``prepare_unified_index`` (``LAST_BUILD_KEY``, overwritten on
+    every run), so ``index status``/``index verify`` can tell a *failed* build
+    apart from retired-vector debris without guessing.  An absent record (a
+    corpus last built before the key existed) is "no signal", not a failure.
+    """
+    from drbrain.tree.prepare import LAST_BUILD_KEY
+
+    raw = db.get_vector_metadata(LAST_BUILD_KEY)
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 # ── the historical incremental BM25 stage (bare ``drbrain index``) ───────────
 
 
@@ -303,6 +323,20 @@ def _tree_leg_status(ctx: typer.Context, cfg: Any, db: Any, profile: Any) -> dic
         "leaves_missing_parent": len(db.leaves_missing_parent()),
         "reasons": [],
     }
+    last_build = _last_build_record(db)
+    if last_build:
+        failed_stages = [str(stage) for stage in (last_build.get("failed_stages") or [])]
+        leg["last_build"] = {
+            "ok": bool(last_build.get("ok")),
+            "failed_stages": failed_stages,
+            "published": str(last_build.get("published") or ""),
+        }
+        if not last_build.get("ok"):
+            # A failed stage must never be reported as ready, even while an
+            # older generation is still readable; the next successful build
+            # overwrites the record and clears this reason.
+            failed = ", ".join(failed_stages) or "unknown"
+            leg["reasons"].append(f"last_build_failed: {failed}")
     if not generation:
         leg["reasons"].append("no_published_generation")
         return leg
@@ -662,6 +696,17 @@ def build_index_verify(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
                     stale_sections=stale_sections,
                     live=live,
                 )
+
+        last_build = _last_build_record(db)
+        if last_build:
+            failed = ", ".join(str(stage) for stage in (last_build.get("failed_stages") or []))
+            add(
+                "last_build",
+                bool(last_build.get("ok")),
+                f"the most recent index build failed: {failed or 'unknown stage'}",
+                failed_stages=list(last_build.get("failed_stages") or []),
+                published=str(last_build.get("published") or ""),
+            )
 
         fts = db.content_fts_status()
         add(

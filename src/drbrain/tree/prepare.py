@@ -46,6 +46,12 @@ WORKING_VECTORS_DIR = "vectors"
 #: Watermark key for the hierarchy stage signature.
 HIERARCHY_WATERMARK = "tree.prepare.hierarchy"
 
+#: Metadata key for the latest ``prepare_unified_index`` outcome.  Overwritten
+#: on every run (a success clears an earlier failure) and read back by
+#: ``index status``/``index verify``, so a failed stage is never reported as
+#: ready without inferring from node counters.
+LAST_BUILD_KEY = "tree.prepare.last"
+
 #: Builder stop reasons that mean an execution failure (a clustered or a
 #: summarised group could not even be attempted), not a valid stop.
 FAILED_BUILD_REASONS = frozenset({"clustering_failed", "summary_failed"})
@@ -212,7 +218,24 @@ def prepare_unified_index(
                 "vector_count": result.get("vector_count"),
             }
     outcome.duration_ms = (time.monotonic() - started) * 1000
+    _record_last_build(db, outcome)
     return outcome
+
+
+def _record_last_build(db, outcome: PrepareOutcome) -> None:
+    """Persist the latest build outcome for the readiness readers (T06/T35).
+
+    ``index status`` and ``index verify`` gate on the most recent run instead
+    of inferring from node counters — ``vectors.failed`` also holds retired
+    contract debris, which is not a build failure.  The record is overwritten
+    on every run, so a later success clears an earlier failure; recording is
+    best-effort and never fails the build itself.
+    """
+    try:
+        db.set_vector_metadata(LAST_BUILD_KEY, json.dumps(outcome.to_json(), sort_keys=True))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - reporting must not break the build
+        logger.warning("[tree] could not record the last build outcome: {}", exc)
 
 
 # ── stages ──────────────────────────────────────────────────────────────────

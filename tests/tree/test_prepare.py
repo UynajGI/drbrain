@@ -18,7 +18,7 @@ from drbrain.tree.builder import BuilderConfig
 from drbrain.tree.clustering import ClusteringParams
 from drbrain.tree.cost import CostParams
 from drbrain.tree.embedding_identity import EmbeddingProfile
-from drbrain.tree.prepare import HIERARCHY_WATERMARK, prepare_unified_index
+from drbrain.tree.prepare import HIERARCHY_WATERMARK, LAST_BUILD_KEY, prepare_unified_index
 from drbrain.tree.publish import get_active_tree_generation, resolve_tree_generation
 from drbrain.tree.summary import SummaryContract
 
@@ -279,6 +279,10 @@ class TestPrepare:
         assert first.published is None
         assert db.get_vector_metadata(HIERARCHY_WATERMARK) is None
         assert db.leaves_missing_parent()  # every leaf still awaits a parent
+        failed_record = json.loads(db.get_vector_metadata(LAST_BUILD_KEY))
+        assert failed_record["ok"] is False
+        assert failed_record["failed_stages"] == ["hierarchy"]
+        assert failed_record["published"] is None
 
         recovered = _FakeSummaryModel()
         second = _prepare(db, tmp_path, embed=_FakeEmbedder(), model=recovered)
@@ -287,6 +291,9 @@ class TestPrepare:
         assert second.hierarchy["created"] > 0
         assert second.published
         assert db.get_vector_metadata(HIERARCHY_WATERMARK) is not None
+        recovered_record = json.loads(db.get_vector_metadata(LAST_BUILD_KEY))
+        assert recovered_record["ok"] is True
+        assert recovered_record["failed_stages"] == []
 
     def test_model_identity_change_invalidates_and_rebuilds(self, tmp_path):
         """T26/T36: a new index deployment must not reuse the old summaries.

@@ -192,6 +192,31 @@ class TestIndexStatus:
         assert report["states"]["retrievable"]["ready"] is True
         assert report["status"] == "ready"
 
+    def test_failed_build_is_not_ready_and_a_recovered_build_clears_it(self, tmp_path, monkeypatch):
+        """A failed stage is never reported as ready, even with a fallback tree.
+
+        The recorded last-build outcome gates the tree leg; the next successful
+        run overwrites it and readiness returns without any extra state.
+        """
+        _write_config(tmp_path)
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch, raise_model=True)
+        assert _invoke(tmp_path, "index", "build", "--json").exit_code == 1
+
+        report = json.loads(_invoke(tmp_path, "index", "status", "--json").stdout)
+        tree = report["legs"]["tree"]
+        assert tree["ready"] is False
+        assert tree["last_build"]["ok"] is False
+        assert "hierarchy" in tree["last_build"]["failed_stages"]
+        assert any(reason.startswith("last_build_failed") for reason in tree["reasons"])
+
+        _patch_build(monkeypatch)
+        assert _invoke(tmp_path, "index", "build", "--json").exit_code == 0
+
+        recovered = json.loads(_invoke(tmp_path, "index", "status", "--json").stdout)
+        assert recovered["legs"]["tree"]["ready"] is True
+        assert recovered["legs"]["tree"]["last_build"]["ok"] is True
+
 
 class TestIndexBuild:
     def test_build_reports_stages_and_publishes_then_status_is_ready(self, tmp_path, monkeypatch):
@@ -330,6 +355,37 @@ class TestIndexVerify:
         by_name = {check["name"]: check for check in report["checks"]}
         assert by_name["node_vectors"]["detail"]["pending"] == 0
         assert by_name["generation_freshness"]["ok"] is True
+        assert by_name["last_build"]["ok"] is True
+
+    def test_verify_reports_the_failed_last_build_and_recovers(self, tmp_path, monkeypatch):
+        """A recorded failed build is an error even while an older generation reads."""
+        _write_config(tmp_path)
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        assert _invoke(tmp_path, "index", "build", "--json").exit_code == 0
+        assert _invoke(tmp_path, "index", "verify", "--json").exit_code == 0
+
+        db = Database(tmp_path / "data" / "drbrain.db")
+        try:
+            db.set_vector_metadata(
+                "tree.prepare.last",
+                json.dumps({"ok": False, "failed_stages": ["hierarchy"], "published": None}),
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        result = _invoke(tmp_path, "index", "verify", "--json")
+
+        assert result.exit_code == 1
+        report = json.loads(result.stdout)
+        assert any(error.startswith("last_build") for error in report["errors"])
+
+        # The next successful run overwrites the record and clears the error.
+        assert _invoke(tmp_path, "index", "build", "--json").exit_code == 0
+        recovered = _invoke(tmp_path, "index", "verify", "--json")
+        assert recovered.exit_code == 0, recovered.stderr
+        assert json.loads(recovered.stdout)["ok"] is True
 
     def test_verify_fails_closed_without_a_generation(self, tmp_path):
         _write_config(tmp_path)
