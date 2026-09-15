@@ -151,6 +151,71 @@ def storage_migrate_cmd(
         raise typer.Exit(code=1)
 
 
+@storage_app.command("export")
+def storage_export_cmd(
+    ctx: typer.Context,
+    paper: str = typer.Option(..., "--paper", help="Paper local_id to export"),
+    format: str = typer.Option("json", "--format", help="json | md | tree"),
+    output: str = typer.Option("", "--output", help="Write to this file instead of stdout"),
+    papers_root: str = typer.Option(
+        "", "--papers-root", help="Legacy paper directories for the fallback"
+    ),
+):
+    """Explicitly export one paper (T53): canonical first, legacy fallback.
+
+    Only this explicit command materializes an export; daily reads never write
+    files, and nothing is copied into a second retrieval store.
+    """
+    from drbrain.storage.paper_view import export_paper_view
+
+    fmt = str(format).strip().lower()
+    if fmt not in ("json", "md", "tree"):
+        raise typer.BadParameter("format must be json, md or tree", param_hint="--format")
+
+    cfg = _runtime_config(ctx)
+    db_path = _db_path(ctx, cfg)
+    if papers_root:
+        root: Path | None = Path(runtime_data_path(ctx, papers_root, label="papers root"))
+    else:
+        default_root = "data/papers"
+        if isinstance(cfg, dict):
+            dirs_cfg = cfg.get("dirs", {})
+            if isinstance(dirs_cfg, dict):
+                default_root = dirs_cfg.get("papers", default_root)
+        candidate = Path(runtime_data_path(ctx, default_root, label="papers root"))
+        root = candidate if candidate.is_dir() else None
+
+    from drbrain.storage.database import Database
+
+    database = Database(db_path)
+    try:
+        bundle = export_paper_view(database, paper, papers_root=root)
+    finally:
+        database.close()
+
+    if not bundle.text and not bundle.structure:
+        typer.echo(f"Nothing to export for {paper}", err=True)
+        raise typer.Exit(code=1)
+    if fmt == "md":
+        payload_text = bundle.text
+    elif fmt == "tree":
+        payload_text = _json.dumps(
+            {"structure": list(bundle.structure)}, indent=2, ensure_ascii=False
+        )
+    else:
+        payload_text = _json.dumps(bundle.to_json(), indent=2, ensure_ascii=False)
+    if output:
+        target = Path(runtime_data_path(ctx, output, label="export output"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            payload_text if payload_text.endswith("\n") else payload_text + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(f"Exported {paper} ({fmt}, source={bundle.source or 'none'}) -> {target}")
+    else:
+        typer.echo(payload_text)
+
+
 def _print_plan_human(payload: dict) -> None:
     summary = payload["summary"]
     typer.echo(f"Migration plan {payload['plan_id']} (schema v{payload['schema_version']})")

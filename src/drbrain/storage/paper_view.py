@@ -193,3 +193,107 @@ def _first_line(text: str) -> str:
         if stripped:
             return stripped[:120]
     return ""
+
+
+# ── explicit export (T53) ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ExportBundle:
+    """Self-contained export of one paper's body and node tree (T53)."""
+
+    local_id: str
+    source: str
+    revision: int | None
+    text: str
+    structure: tuple[dict[str, Any], ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "local_id": self.local_id,
+            "source": self.source,
+            "revision": self.revision,
+            "text": self.text,
+            "structure": list(self.structure),
+            "warnings": list(self.warnings),
+        }
+
+
+def export_structure(
+    db,
+    local_id: str,
+    *,
+    papers_root: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Nested, self-contained node tree with inline text (explicit export).
+
+    Canonical papers export their region/leaf structure with each node's exact
+    text attached, so the tree is usable without ``raw.md``; un-migrated papers
+    re-emit their legacy ``tree.json`` structure unchanged.
+    """
+    revision = _canonical_revision(db, local_id)
+    if revision is not None:
+        from drbrain.extractor.context import canonical_node_structure
+
+        structure = canonical_node_structure(db.conn, local_id)
+        if structure:
+            from drbrain.storage.node_projection import collect_canonical_node_records
+
+            records = collect_canonical_node_records(db.conn, local_id, include_regions=True)
+            texts = {str(record["node_id"]): str(record["text"]) for record in records}
+            return _attach_text(structure, texts)
+    if papers_root is None:
+        return []
+    from drbrain.storage.paths import resolve_paper_dir, tree_json_path
+
+    try:
+        directory = resolve_paper_dir(papers_root, local_id)
+    except ValueError:
+        return []
+    if directory is None:
+        return []
+    path = tree_json_path(directory)
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    structure = payload.get("structure") if isinstance(payload, dict) else payload
+    return list(structure) if isinstance(structure, list) else []
+
+
+def _attach_text(nodes: list[dict[str, Any]], texts: dict[str, str]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        item = dict(node)
+        node_id = str(item.get("node_id") or "")
+        if node_id in texts:
+            item["text"] = texts[node_id]
+        children = item.get("nodes") or item.get("children") or []
+        if isinstance(children, list) and children:
+            item["nodes"] = _attach_text(children, texts)
+        out.append(item)
+    return out
+
+
+def export_paper_view(
+    db,
+    local_id: str,
+    *,
+    papers_root: str | Path | None = None,
+) -> ExportBundle:
+    """Explicitly export body + structure; only this path materializes output."""
+    body = read_body(db, local_id, papers_root=papers_root)
+    structure = export_structure(db, local_id, papers_root=papers_root)
+    return ExportBundle(
+        local_id=local_id,
+        source=body.source,
+        revision=body.revision,
+        text=body.text,
+        structure=tuple(structure),
+        warnings=tuple(body.warnings),
+    )
