@@ -32,11 +32,14 @@ lint: ## Run Ruff lint checks
 typecheck: ## Run mypy over the application package
 	$(MYPY) src/drbrain
 
+# Tests are hermetic: a DRBRAIN_ROOT inherited from the shell would point the
+# suite at an unrelated runtime root (mass failures).  The Makefile unsets it
+# for every pytest invocation, matching the documented test recipe.
 test: ## Run the complete test suite
-	$(PYTEST) -q
+	env -u DRBRAIN_ROOT -u DRBRAIN_RUNTIME_ROOT $(PYTEST) -q
 
 test-unit: ## Run tests excluding external integrations
-	$(PYTEST) -m "not integration" --timeout=30 -q
+	env -u DRBRAIN_ROOT -u DRBRAIN_RUNTIME_ROOT $(PYTEST) -m "not integration" --timeout=30 -q
 
 security: ## Run dependency and repository secret checks
 	$(UV) run pip-audit --desc
