@@ -73,6 +73,7 @@ def write_canonical_content(
             "revision": int(latest["revision"]),
             "blocks": count,
             "pages": False,
+            "hash": canonical_hash,
         }
 
     revision = db.next_document_revision(local_id)
@@ -131,4 +132,5 @@ def write_canonical_content(
         "revision": revision,
         "blocks": written,
         "pages": bool(page_marks),
+        "hash": canonical_hash,
     }

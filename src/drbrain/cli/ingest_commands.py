@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,28 +34,9 @@ from drbrain.services.fetch import (  # noqa: F401
     resolve_pdf_url,
 )
 from drbrain.storage.inbox import first_symlink_component, scan_materials
-from drbrain.storage.paths import paper_dir as resolve_paper_dir_path
-from drbrain.storage.paths import paper_fs_key, writable_artifact_path
+from drbrain.storage.paths import paper_fs_key
 
 console = Console()
-
-
-def _write_paper_text_atomically(paper_path: Path, filename: str, content: str) -> Path:
-    """Publish a paper text artifact without following a stale symlink."""
-    destination = writable_artifact_path(paper_path, filename)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{filename}.", dir=str(paper_path), text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, destination)
-    finally:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-    return destination
 
 
 def _runtime_data_path(ctx: typer.Context, value: str | Path, *, label: str) -> Path:
@@ -1122,7 +1102,6 @@ def ingest_link_cmd(
 
     cfg = ctx.obj["config"]
     config_secrets = configured_secret_values(cfg)
-    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     with open_db(cfg) as db:
         results: list[dict] = []
         for i, url in enumerate(u for u in urls if u.strip()):
@@ -1151,7 +1130,6 @@ def ingest_link_cmd(
                 title=title,
                 source_key=canonical_web_url(url),
             )
-            paper_dir = resolve_paper_dir_path(papers_dir, local_id)
 
             # A pre-existing DB row means this URL was already ingested.  Do
             # not mint a suffix based on the current title: that made retries
@@ -1162,37 +1140,76 @@ def ingest_link_cmd(
                 )
                 continue
 
-            paper_dir.mkdir(parents=True, exist_ok=True)
-
-            # Write markdown
+            # URL ingest registers the extracted body through the same
+            # canonical write path as file ingest (T22): identity rows, the
+            # document revision/blocks/leaves and the artifact states commit as
+            # one unit per URL, and no per-paper MD/tree/pages file is written.
             md_content = _render_extracted_markdown(title, url, text)
-            _write_paper_text_atomically(paper_dir, "raw.md", md_content)
+            try:
+                from drbrain.services.canonical_content import write_canonical_content
 
-            # Register in DB
-            db.insert_paper(
-                local_id=local_id,
-                title=title or url,
-                year=None,
-                status="uploaded",
-            )
-            db.insert_paper_ids(
-                local_id,
-                doi=ids.doi,
-                arxiv=ids.arxiv,
-                s2_id=ids.s2_id,
-                openalex_id=ids.openalex_id,
-                strict=True,
-            )
+                db.insert_paper(
+                    local_id=local_id,
+                    title=title or url,
+                    year=None,
+                    status="uploaded",
+                )
+                db.insert_paper_ids(
+                    local_id,
+                    doi=ids.doi,
+                    arxiv=ids.arxiv,
+                    s2_id=ids.s2_id,
+                    openalex_id=ids.openalex_id,
+                    strict=True,
+                )
+                revision = write_canonical_content(
+                    db,
+                    local_id,
+                    md_content,
+                    media_type="md",
+                    # The extractor's own text is the source material; the
+                    # rendered markdown is the canonical revision.
+                    source_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    parser="web-extractor",
+                )
+                if not revision.get("ok"):
+                    raise RuntimeError(
+                        str(revision.get("reason") or "canonical content write failed")
+                    )
+            except Exception as exc:  # noqa: BLE001 - isolation per URL
+                # A URL that cannot register its body fails as a whole: roll
+                # back its (still uncommitted) rows so a retry starts clean.
+                db.conn.rollback()
+                message = safe_error(exc, secrets=config_secrets)
+                typer.echo(f"  Canonical content failed: {message}", err=True)
+                results.append(
+                    {"url": url, "local_id": local_id, "status": "error", "error": message}
+                )
+                continue
+
             db.upsert_paper_artifact(
                 local_id,
                 "raw",
                 "ready",
-                fingerprint=hashlib.sha256(md_content.encode("utf-8")).hexdigest(),
-                metadata_json=json.dumps({"source": "url", "url": canonical_web_url(url)}),
+                fingerprint=str(revision.get("hash") or ""),
+                metadata_json=json.dumps(
+                    {
+                        "source": "url",
+                        "url": canonical_web_url(url),
+                        "revision": int(revision.get("revision") or 0),
+                        "blocks": int(revision.get("blocks") or 0),
+                    }
+                ),
             )
+            # Ingest registers the body and its leaves only; the hierarchy is
+            # built by ``rag prepare`` (T20/T21/T45).
             db.upsert_paper_artifact(
-                local_id, "tree", "pending", error="run build to structure URL"
+                local_id,
+                "tree",
+                "skipped",
+                error="no per-paper tree: hierarchy is built by 'rag prepare'",
             )
+            db.commit()
 
             results.append(
                 {
@@ -1208,6 +1225,8 @@ def ingest_link_cmd(
 
         db.commit()
 
+    ok_count = sum(1 for r in results if r["status"] == "ok")
+    err_count = sum(1 for r in results if r["status"] == "error")
     if json_output:
         typer.echo(
             json.dumps(
@@ -1216,11 +1235,14 @@ def ingest_link_cmd(
                 indent=2,
             )
         )
-        return
-
-    ok_count = sum(1 for r in results if r["status"] == "ok")
-    err_count = sum(1 for r in results if r["status"] == "error")
-    typer.echo(f"\nIngested {ok_count} link(s)" + (f", {err_count} error(s)" if err_count else ""))
+    else:
+        typer.echo(
+            f"\nIngested {ok_count} link(s)" + (f", {err_count} error(s)" if err_count else "")
+        )
+    # Mirror ``ingest``: independent URLs keep their own result, but callers
+    # must be able to detect that at least one link failed.
+    if err_count:
+        raise typer.Exit(1)
 
 
 def patent_search_cmd(

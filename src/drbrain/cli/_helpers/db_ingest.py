@@ -646,7 +646,7 @@ def _write_canonical_content(
         "pages": bool(result.get("pages")),
         # Content identity of the registered revision (same text -> same hash),
         # recorded as the ``raw`` artifact fingerprint.
-        "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "hash": str(result.get("hash") or hashlib.sha256(text.encode("utf-8")).hexdigest()),
     }
 
 

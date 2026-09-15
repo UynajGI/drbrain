@@ -96,7 +96,9 @@ class TestArtifactSaveKeepsSource:
         _save_paper_artifacts(parsed, "p1", paper_dir, source)
         assert source.exists(), "input must never be removed by ingest"
         assert (paper_dir / "source.pdf").exists()
-        assert (paper_dir / "raw.md").read_text(encoding="utf-8") == "# md"
+        # T22: the body is registered in the canonical store, not as a
+        # per-paper markdown file.
+        assert not (paper_dir / "raw.md").exists()
 
     def test_save_handles_already_hosted_source(self, monkeypatch, tmp_path):
         from types import SimpleNamespace
