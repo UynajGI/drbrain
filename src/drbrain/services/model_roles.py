@@ -291,6 +291,12 @@ def _role_from_entry(
             f"endpoint {label} has no usable base_url ({exc})",
             action=f"set `base_url` on {label if endpoint_name else 'the endpoint entry'}",
         ) from exc
+    # `timeout_secs` (the ModelRole field name) parses as an alias so the config
+    # key cannot be silently misspelled into the 60s default; `timeout` wins
+    # when both are present.
+    timeout = entry.get("timeout")
+    if timeout is None:
+        timeout = entry.get("timeout_secs")
     return ModelRole(
         role=role,
         endpoint_name=endpoint_name,
@@ -300,7 +306,7 @@ def _role_from_entry(
         api_key=api_key,
         max_concurrent=_as_positive_int(entry.get("max_concurrent"), _DEFAULT_MAX_CONCURRENT),
         source=source,
-        timeout_secs=_as_positive_float(entry.get("timeout"), 60.0),
+        timeout_secs=_as_positive_float(timeout, 60.0),
     )
 
 
@@ -331,7 +337,7 @@ def _named_endpoint(
 
 
 def _first_chain_entry(chain: Any) -> Mapping[str, Any]:
-    if isinstance(chain, (list, tuple)) and chain:
+    if isinstance(chain, list | tuple) and chain:
         first = chain[0]
         return first if isinstance(first, Mapping) else {}
     return {}

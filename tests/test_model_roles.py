@@ -109,6 +109,29 @@ def test_same_model_at_different_urls_resolves_to_different_endpoints():
     assert second.max_concurrent == 5
 
 
+def test_endpoint_timeout_accepts_canonical_key_and_field_name_alias():
+    """`timeout` is canonical; `timeout_secs` (the ModelRole field name) is an alias.
+
+    Regression: an unrecognised key was silently ignored and fell back to the
+    60s default, so every ~56s local summary call timed out (2026-09-16 flow
+    test failure).
+    """
+    cfg = _cfg(_llm_cfg(roles={"index_model": "spark_a"}))
+    cfg["llm"]["endpoints"]["spark_a"]["timeout"] = 600
+    assert resolve_model_role(cfg, ROLE_INDEX).timeout_secs == 600.0
+
+    cfg["llm"]["endpoints"]["spark_a"].pop("timeout")
+    cfg["llm"]["endpoints"]["spark_a"]["timeout_secs"] = 600
+    assert resolve_model_role(cfg, ROLE_INDEX).timeout_secs == 600.0
+
+    cfg["llm"]["endpoints"]["spark_a"]["timeout"] = 120
+    assert resolve_model_role(cfg, ROLE_INDEX).timeout_secs == 120.0
+
+    cfg["llm"]["endpoints"]["spark_a"].pop("timeout")
+    cfg["llm"]["endpoints"]["spark_a"].pop("timeout_secs")
+    assert resolve_model_role(cfg, ROLE_INDEX).timeout_secs == 60.0
+
+
 def test_different_roles_may_share_one_endpoint():
     """index and chat on the same named endpoint keep the same binding."""
     cfg = _cfg(_llm_cfg(roles={"index_model": "spark_a", "chat_model": "spark_a"}))

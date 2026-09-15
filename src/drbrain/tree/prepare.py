@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -118,11 +119,25 @@ class IndexModelSummary:
 
     def __init__(self, model: Any) -> None:
         self._model = model
+        # ``complete`` runs on summary worker threads while the build thread
+        # reads the counter, so increments must not race.
+        self._calls_lock = threading.Lock()
         self.calls = 0
 
     def complete(self, prompt: str, *, max_tokens: int) -> Any:
-        self.calls += 1
-        return self._model.call_text(prompt, max_tokens=int(max_tokens))
+        with self._calls_lock:
+            self.calls += 1
+        try:
+            return self._model.call_text(prompt, max_tokens=int(max_tokens))
+        except Exception:
+            # A local index endpoint can hiccup once (CUDA OOM recovery, busy
+            # queue).  One retry keeps a transient failure from failing the
+            # whole round; a second failure propagates and the stage still
+            # fails closed.
+            time.sleep(1.5)
+            with self._calls_lock:
+                self.calls += 1
+            return self._model.call_text(prompt, max_tokens=int(max_tokens))
 
 
 def prepare_unified_index(
