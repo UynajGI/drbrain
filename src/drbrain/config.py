@@ -274,6 +274,9 @@ class LlamaIndexConfig(_ConfigBase):
     #: cumulative estimated tokens fit ``context_token_budget``.
     context_docs: int = 10
     context_token_budget: int = 8000
+    #: Unified tree generation root (T45/T47): ``rag prepare --unified``
+    #: publishes here and readers resolve the active generation from it.
+    tree_storage: str = "data/tree"
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000

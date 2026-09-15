@@ -223,10 +223,12 @@ def rag_prepare_cmd(
                 "--unified prepares the unified index incrementally; omit --paper",
                 param_hint="--paper",
             )
+        from drbrain.rag.config import get_llamaindex_config
         from drbrain.tree.embedding_identity import profile_from_config
         from drbrain.tree.prepare import prepare_unified_index
 
-        root = runtime_data_path(ctx, tree_storage or "data/tree", label="tree storage")
+        default_tree_storage = get_llamaindex_config(cfg).tree_storage or "data/tree"
+        root = runtime_data_path(ctx, tree_storage or default_tree_storage, label="tree storage")
         embed_cfg = getattr(cfg, "embed", None)
         outcome = None
         with open_db(cfg) as db:
