@@ -109,7 +109,7 @@ class TestNotPrepared:
         cfg = _cfg(engine="sql", storage_dir=str(tmp_path / "llamaindex"))
         with pytest.raises(AskIndexNotPreparedError) as excinfo:
             ask_llamaindex(cfg, db=None, question="q", streaming=False)
-        assert excinfo.value.hint == "drbrain rag prepare --unified"
+        assert excinfo.value.hint == "drbrain index build"
         assert excinfo.value.engine == "sql"
 
     def test_ask_cli_reports_source_unavailable_without_building(self, tmp_path):
@@ -144,7 +144,7 @@ class TestNotPrepared:
         assert excinfo.value.exit_code == 1
         payload = json.loads(captured[0])
         assert payload["status"] == "source_unavailable"
-        assert payload["hint"] == "drbrain rag prepare --unified"
+        assert payload["hint"] == "drbrain index build"
         assert payload["sources"] == [] and payload["evidence_ids"] == []
 
 

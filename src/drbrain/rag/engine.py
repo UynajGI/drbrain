@@ -137,9 +137,7 @@ class AskIndexNotPreparedError(RuntimeError):
 
 def ask_prepare_hint(cfg: Any) -> str:
     """The command that prepares the index for the configured engine (T46)."""
-    if get_llamaindex_config(cfg).rag_engine == "sql":
-        return "drbrain rag prepare --unified"
-    return "drbrain rag index"
+    return "drbrain index build"
 
 
 def _config_with_route(cfg: Any, normalized: NormalizedLegs) -> Any:

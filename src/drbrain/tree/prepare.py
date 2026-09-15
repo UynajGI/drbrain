@@ -238,7 +238,12 @@ def _prepare_fts(db, *, force: bool, sample: int) -> dict[str, Any]:
         return {"status": "failed", "error": str(exc)}
 
 
-def _ready_node_rows(db) -> list[dict[str, Any]]:
+def ready_node_rows(db) -> list[dict[str, Any]]:
+    """Ready leaves/regions with the identity a vector write is keyed on.
+
+    Shared by the vector stage and the read-only index status/verify commands
+    so "this node needs a vector" is decided by one enumeration.
+    """
     rows = db.conn.execute(
         "SELECT node_id, kind, revision, content_hash, local_id, layer FROM tree_nodes "
         "WHERE state = 'ready' AND kind IN ('leaf', 'region') ORDER BY layer, node_id"
@@ -279,7 +284,7 @@ def _prepare_vectors(
     if profile.dimension is None:
         return {"status": "failed", "error": "embedding profile needs a dimension"}
     profile_id = profile.profile_id()
-    rows = _ready_node_rows(db)
+    rows = ready_node_rows(db)
     pending: list[dict[str, Any]] = []
     for row in rows:
         if not force and not needs_write_meta(
@@ -575,4 +580,5 @@ __all__ = [
     "PrepareOutcome",
     "WORKING_VECTORS_DIR",
     "prepare_unified_index",
+    "ready_node_rows",
 ]

@@ -234,7 +234,7 @@ def reason_cmd(
         if resolve_engine(cfg, "llamaindex") != "llamaindex":
             typer.echo(
                 "[reason] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-                "in config.yaml and run `drbrain rag index` to build the index",
+                "in config.yaml and run `drbrain index build` to build the index",
                 err=True,
             )
             db.close()
@@ -353,7 +353,7 @@ def ask_cmd(
     Sole engine since T9 (终态清理): the legacy hybrid-search + graph-context
     path and the ``--engine``/``--hyde``/``--rerank``/``--rrf-k`` switches were
     removed (design §1 替换清单). Requires ``llamaindex.enabled: true`` and a
-    built index (``drbrain rag index``); the answer includes structured
+    built index (``drbrain index build``); the answer includes structured
     sources.
 
     Example: drbrain ask "Is attention better than CNN for NLP?"
@@ -395,7 +395,7 @@ def ask_cmd(
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
             "[ask] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "in config.yaml and run `drbrain rag prepare --unified` to prepare the index",
+            "in config.yaml and run `drbrain index build` to prepare the index",
             err=True,
         )
         raise typer.Exit(1)

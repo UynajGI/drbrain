@@ -258,7 +258,8 @@ def rag_prepare_cmd(
     if paper:
         raise typer.BadParameter(
             "the unified index is corpus-wide and incremental; omit --paper "
-            "(use 'drbrain rag index --paper' for per-paper LlamaIndex rebuilds)",
+            "(use 'drbrain index build' for the corpus-wide index; per-paper "
+            "LlamaIndex rebuilds remain 'drbrain rag index --paper')",
             param_hint="--paper",
         )
     from drbrain.rag.config import get_llamaindex_config

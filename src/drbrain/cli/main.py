@@ -49,6 +49,7 @@ from drbrain.cli.export_commands import (
     style_cmd,
 )
 from drbrain.cli.graph_commands import graph_app
+from drbrain.cli.index_commands import index_app
 from drbrain.cli.ingest_commands import (
     batch_fetch_cmd,
     check_citations_cmd,
@@ -66,7 +67,6 @@ from drbrain.cli.ingest_commands import (
 from drbrain.cli.query_commands import (
     fsearch_cmd,
     hybrid_cmd,
-    index_cmd,
     list_cmd,
     query_cmd,
     search_cmd,
@@ -335,7 +335,6 @@ app.command("list")(list_cmd)
 app.command("stats")(stats_cmd)
 app.command("webui")(webui_cmd)
 app.command("show")(show_cmd)
-app.command("index")(index_cmd)
 app.command("query")(query_cmd)
 app.command("fsearch")(fsearch_cmd)
 app.command("search")(search_cmd)
@@ -377,6 +376,12 @@ app.command("reason")(reason_cmd)
 # Sub-apps
 app.add_typer(session_app, name="session")
 app.add_typer(graph_app, name="graph")
+app.add_typer(
+    index_app,
+    name="index",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
 app.add_typer(rag_app, name="rag")

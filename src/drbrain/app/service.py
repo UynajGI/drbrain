@@ -427,7 +427,7 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         return {
             "error": "llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "and run `drbrain rag index`",
+            "and run `drbrain index build`",
             "unavailable": True,
         }
     with _db(cfg) as db:
