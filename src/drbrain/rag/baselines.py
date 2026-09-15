@@ -245,6 +245,25 @@ class BaselineRunner:
 # ── default wiring ───────────────────────────────────────────────────────────
 
 
+def _runtime_scoped_path(value: Any, *, label: str) -> Path:
+    """Resolve a config path under the selected runtime root (mirrors the CLI).
+
+    Config values stay relative; the CLI resolves them against ``DRBRAIN_ROOT``
+    when a runtime is selected.  The eval entry must do the same or it reads
+    the repository's directory instead of the runtime's.
+    """
+    import os
+
+    path = Path(str(value or "")).expanduser()
+    if not str(path):
+        return path
+    if "DRBRAIN_ROOT" not in os.environ and "DRBRAIN_RUNTIME_ROOT" not in os.environ:
+        return path
+    from drbrain.runtime import RuntimeContext
+
+    return RuntimeContext.create().assert_within_root(path, label=label)
+
+
 def _default_sql_search(cfg: Any, db: Any) -> _SQL_SEARCH:
     from drbrain.rag.config import get_llamaindex_config
     from drbrain.rag.sql_retrie import retrieve_documents_sql
@@ -272,7 +291,7 @@ def _default_tree_search(cfg: Any, db: Any) -> _TREE_SEARCH:
         from drbrain.tree.vector_store import UnifiedVectorStore
 
         li = get_llamaindex_config(cfg)
-        root = Path(li.tree_storage or "data/tree")
+        root = _runtime_scoped_path(li.tree_storage or "data/tree", label="tree storage")
         generation = get_active_tree_generation(root)
         if not generation:
             raise RuntimeError(f"no active tree generation under {root}")
@@ -299,7 +318,9 @@ def _default_pageindex_search(cfg: Any, db: Any) -> _PAGEINDEX_SEARCH:
         models = list(getattr(cfg.llm, "models", None) or [])
         if not models:
             raise RuntimeError("PageIndex baseline needs llm.models")
-        papers_root = Path(getattr(getattr(cfg, "dirs", None), "papers", "data/papers"))
+        papers_root = _runtime_scoped_path(
+            getattr(getattr(cfg, "dirs", None), "papers", "data/papers"), label="papers root"
+        )
         selected = list(papers) or [
             str(row["local_id"]) for row in (db.get_all_papers() if db is not None else [])
         ]
