@@ -69,7 +69,7 @@
   </ul>
   <p class="muted small">node_id 即证据定位符，可与运行裁决中的 <code>paper:node</code> 引用对照。</p>
   {% else %}
-  {{ m.empty_state('没有可用的章节树', '该文献可能尚未完成 ingest（tree.json 缺失）。') }}
+  {{ m.empty_state('没有可用的章节树', '该文献可能尚未完成 ingest（没有正文章节）。') }}
   {% endif %}
 </section>
 
