@@ -904,6 +904,7 @@ class ResearchLoopWorkflow(Workflow):
                 from pathlib import Path
 
                 from drbrain.storage.database import Database
+
                 root = Path(os.environ.get("DRBRAIN_ROOT", "."))
                 self._db = Database(root / "data" / "drbrain.db")
 

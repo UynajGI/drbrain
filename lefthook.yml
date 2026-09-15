@@ -3,3 +3,15 @@ pre-commit:
   commands:
     hygiene:
       run: uv run pre-commit run --config .pre-commit-config.yaml
+
+pre-push:
+  parallel: true
+  commands:
+    format-check:
+      run: make format-check
+    lint:
+      run: make lint
+    typecheck:
+      run: make typecheck
+    tests:
+      run: make test-unit

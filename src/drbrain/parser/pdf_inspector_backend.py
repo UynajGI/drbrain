@@ -1,4 +1,5 @@
 """Optional CPU-first PDF to Markdown backend using Firecrawl pdf-inspector."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +10,7 @@ def extract_pdf_inspector(path: str | Path) -> dict[str, Any] | None:
     """Extract a text PDF and return normalized Markdown/provenance metadata."""
     try:
         import pdf_inspector
+
         result = pdf_inspector.process_pdf(str(path))
         markdown = getattr(result, "markdown", None)
         if not markdown or not str(markdown).strip():

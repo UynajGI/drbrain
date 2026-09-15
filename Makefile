@@ -36,7 +36,7 @@ test: ## Run the complete test suite
 	$(PYTEST) -q
 
 test-unit: ## Run tests excluding external integrations
-	$(PYTEST) -m "not integration" -q
+	$(PYTEST) -m "not integration" --timeout=30 -q
 
 security: ## Run dependency and repository secret checks
 	$(UV) run pip-audit --desc

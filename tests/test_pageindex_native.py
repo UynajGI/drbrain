@@ -12,15 +12,15 @@ def test_pageindex_filesystem_status_and_doc_lookup(tmp_path: Path):
     manifest = {
         "docs": {
             "pi-test": {
-            "id": "pi-test",
-            "name": "source.pdf",
-            "description": "",
-            "status": "completed",
-            "createdAt": "2026-01-01T00:00:00Z",
-            "pageNum": 1,
-            "folderId": None,
-            "metadata": {"drbrain_paper_id": "p123"},
-            "mode": "flash",
+                "id": "pi-test",
+                "name": "source.pdf",
+                "description": "",
+                "status": "completed",
+                "createdAt": "2026-01-01T00:00:00Z",
+                "pageNum": 1,
+                "folderId": None,
+                "metadata": {"drbrain_paper_id": "p123"},
+                "mode": "flash",
             }
         }
     }

@@ -3,6 +3,7 @@
 The real-corpus test is opt-in because the physics corpus is local and large:
 ``DRBRAIN_PHYSICS_PDF_DIR=/path/to/physics/data/arxiv-pdf pytest -m integration``.
 """
+
 from __future__ import annotations
 
 import os
