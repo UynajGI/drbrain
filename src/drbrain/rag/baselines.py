@@ -1,11 +1,21 @@
 """Evaluation-only baseline adapters (plan T56).
 
 Each baseline is a standalone comparison algorithm registered *only* for the
-evaluation entry: BM25+vector fusion, the real PageIndex iterative tree
-search (model-guided over ``tree.json``; never SQL LIKE), RAPTOR's collapsed
-tree (flat all-layer ANN, no expansion) and a simple concatenation arm.
-Baselines share the unified model/context caps, record the algorithm they
-actually ran plus cost counters, and never become production routes.
+evaluation entry: BM25+vector fusion, the real PageIndex iterative tree search
+(model-guided over ``tree.json``; never SQL LIKE), the unified-tree retrieval
+ablation (flat all-layer ANN over the unified builder's own generation) and a
+simple concatenation arm.  Baselines share the unified model/context caps,
+record the algorithm they actually ran plus cost counters, and never become
+production routes.
+
+The unified-tree arm is **not** an independent RAPTOR baseline: it reads the
+unified build products (structural candidates, conditioned groups and parent
+cost gates) and says so in its own name, notes and report fields.  The real
+RAPTOR comparison is ``raptor_collapsed``, which may only score a generation
+produced and fingerprinted by an independent RAPTOR build; a missing or
+mismatched provenance record fails closed with
+:class:`BaselineProvenanceError` instead of silently scoring the unified tree
+(review finding 8).
 
 Dependencies are injectable so tests exercise the algorithms without a
 database, a vector store or a model.
@@ -15,25 +25,71 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+#: The unified-tree arm replaced the mislabelled RAPTOR arm (review finding 8).
+UNIFIED_TREE_ABLATION = "unified_tree_flat"
+#: The independent RAPTOR comparison; provenance-gated.
+RAPTOR_BASELINE = "raptor_collapsed"
+
 #: Registered evaluation baselines → the real algorithm they run.
 BASELINES: dict[str, str] = {
     "bm25_vector": "BM25 + vector (RRF fusion of both legs)",
     "pageindex": "PageIndex iterative tree search (model-guided over tree.json; no SQL LIKE)",
-    "raptor_collapsed": "RAPTOR collapsed tree (flat all-layer ANN, no expansion)",
+    UNIFIED_TREE_ABLATION: (
+        "unified tree retrieval ablation (flat all-layer ANN over one unified-tree generation: "
+        "structural candidates, conditioned groups, parent cost gates; no expansion, no navigation)"
+    ),
+    RAPTOR_BASELINE: (
+        "RAPTOR collapsed tree over an independent RAPTOR build "
+        "(provenance fingerprint verified; refuses to score a unified-tree generation)"
+    ),
     "concat": "simple concatenation (BM25 top-k then vector top-k, deduplicated)",
 }
+
+#: What the unified-tree arm actually reads; reported with every outcome so no
+#: reader can mistake it for an independent RAPTOR comparison (finding 8).
+UNIFIED_TREE_ABLATION_NOTE = (
+    "reads the unified-tree generation (structural candidates, conditioned groups, parent cost "
+    "gates); this is a retrieval ablation of the unified builder, not an independent RAPTOR baseline"
+)
+
+#: Independent-RAPTOR provenance (plan T56/T62).  ``raptor_collapsed`` may only
+#: score a generation whose own build published this record next to its
+#: manifest.
+RAPTOR_PROVENANCE_NAME = "raptor-provenance.json"
+RAPTOR_ALGORITHM = "raptor"
+#: Root of the independent RAPTOR build; never the unified-tree storage.
+DEFAULT_RAPTOR_STORAGE = "data/raptor"
+#: A record must carry all of these, non-empty, or the arm fails closed.
+RAPTOR_PROVENANCE_FIELDS: tuple[str, ...] = (
+    "algorithm",
+    "algorithm_version",
+    "build_params",
+    "corpus",
+    "generated_at",
+    "generation",
+    "manifest_fingerprint",
+    "content_hash",
+    "members_hash",
+)
 
 _SQL_SEARCH = Callable[..., list[dict[str, Any]]]
 _TREE_SEARCH = Callable[[str, int], list[dict[str, Any]]]
 _PAGEINDEX_SEARCH = Callable[[str, Sequence[str], int], list[dict[str, Any]]]
+_RAPTOR_SEARCH = Callable[[str, int], list[dict[str, Any]]]
+
+
+class BaselineProvenanceError(RuntimeError):
+    """A baseline input is not the independent build product it claims to be."""
 
 
 def baseline_algorithm(name: str) -> str:
@@ -42,6 +98,159 @@ def baseline_algorithm(name: str) -> str:
     if key not in BASELINES:
         raise ValueError(f"unknown baseline {name!r}; expected one of {sorted(BASELINES)}")
     return BASELINES[key]
+
+
+def raptor_provenance_fingerprint(record: Mapping[str, Any] | None) -> str:
+    """Canonical fingerprint over a declared RAPTOR provenance record.
+
+    Recorded in the evaluation report so a run names the exact build it scored.
+    """
+    payload = {
+        field_name: (record or {}).get(field_name) for field_name in RAPTOR_PROVENANCE_FIELDS
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def verify_raptor_provenance(
+    provenance: Mapping[str, Any] | None,
+    *,
+    generation: str,
+    manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Fail-closed check that a generation is an independent RAPTOR build.
+
+    Raises :class:`BaselineProvenanceError` when the record is absent,
+    incomplete, declares another algorithm or generation, or does not bind to
+    the published manifest fingerprint.  Callers get an auditable summary only
+    for a verified record; nothing here ever falls back to another build.
+    """
+    if not isinstance(provenance, Mapping) or not provenance:
+        raise BaselineProvenanceError(
+            f"no RAPTOR provenance record for generation {generation!r}; expected "
+            f"{RAPTOR_PROVENANCE_NAME} from an independent RAPTOR build"
+        )
+    missing = [
+        field_name
+        for field_name in RAPTOR_PROVENANCE_FIELDS
+        if provenance.get(field_name) in (None, "", {}, [])
+    ]
+    if missing:
+        raise BaselineProvenanceError(
+            "RAPTOR provenance is missing required fields: " + ", ".join(missing)
+        )
+    algorithm = str(provenance.get("algorithm") or "").strip().lower()
+    if algorithm != RAPTOR_ALGORITHM:
+        raise BaselineProvenanceError(
+            f"generation {generation!r} was built by {algorithm!r}, not by {RAPTOR_ALGORITHM!r}; "
+            "it cannot be scored as the RAPTOR baseline"
+        )
+    declared = str(provenance.get("generation") or "")
+    if declared != generation:
+        raise BaselineProvenanceError(
+            f"provenance names generation {declared!r} but {generation!r} was requested"
+        )
+    manifest_fingerprint = str(provenance.get("manifest_fingerprint"))
+    manifest_checked = manifest is not None
+    if manifest is not None:
+        published = str(manifest.get("fingerprint") or "")
+        if not published:
+            raise BaselineProvenanceError(
+                f"generation {generation!r} has no manifest fingerprint to bind its provenance to"
+            )
+        if manifest_fingerprint != published:
+            raise BaselineProvenanceError(
+                "provenance does not match the published manifest fingerprint of generation "
+                f"{generation!r}"
+            )
+        manifest_fingerprint = published
+    return {
+        "generation": generation,
+        "algorithm": algorithm,
+        "algorithm_version": str(provenance.get("algorithm_version")),
+        "generated_at": str(provenance.get("generated_at")),
+        "corpus": provenance.get("corpus"),
+        "build_params": provenance.get("build_params"),
+        "content_hash": str(provenance.get("content_hash")),
+        "members_hash": str(provenance.get("members_hash")),
+        "manifest_fingerprint": manifest_fingerprint,
+        "manifest_checked": manifest_checked,
+        "provenance_fingerprint": raptor_provenance_fingerprint(provenance),
+    }
+
+
+def read_raptor_provenance(generation_path: str | Path) -> dict[str, Any]:
+    """Read a generation's own provenance record; a missing file is an error."""
+    path = Path(generation_path) / RAPTOR_PROVENANCE_NAME
+    if not path.is_file():
+        raise BaselineProvenanceError(
+            f"generation at {generation_path} has no {RAPTOR_PROVENANCE_NAME}; only an "
+            "independent RAPTOR build may be scored as the RAPTOR baseline"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise BaselineProvenanceError(f"unreadable {RAPTOR_PROVENANCE_NAME} at {path}") from exc
+    if not isinstance(payload, dict):
+        raise BaselineProvenanceError(f"{RAPTOR_PROVENANCE_NAME} at {path} must be a JSON object")
+    return payload
+
+
+@dataclass(frozen=True)
+class RaptorBuild:
+    """A published independent RAPTOR build: root, generation, manifest, provenance."""
+
+    storage_root: str
+    generation: str
+    manifest: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+    def verify(self) -> dict[str, Any]:
+        """Fail-closed provenance audit of this build (raises on any mismatch)."""
+        return verify_raptor_provenance(
+            self.provenance, generation=self.generation, manifest=self.manifest
+        )
+
+
+def load_raptor_build(cfg: Any = None, *, storage_root: str | Path | None = None) -> RaptorBuild:
+    """Load the published independent RAPTOR generation and its provenance.
+
+    Unlike the unified-tree arm this never looks at the unified-tree storage:
+    the RAPTOR root defaults to ``data/raptor`` under the selected runtime
+    (``llamaindex.raptor_storage`` overrides it when configured).
+    """
+    from drbrain.tree.publish import get_active_tree_generation, resolve_tree_generation
+
+    if storage_root is not None:
+        root = Path(storage_root).expanduser()
+    else:
+        if cfg is None:
+            raise BaselineProvenanceError(
+                "no configuration to locate the independent RAPTOR build; the RAPTOR baseline "
+                "needs its own published generation (plan T62)"
+            )
+        from drbrain.rag.config import get_llamaindex_config
+
+        li = get_llamaindex_config(cfg)
+        root = Path(
+            _runtime_scoped_path(
+                getattr(li, "raptor_storage", None) or DEFAULT_RAPTOR_STORAGE,
+                label="raptor storage",
+            )
+        ).expanduser()
+    generation = get_active_tree_generation(root)
+    if not generation:
+        raise BaselineProvenanceError(
+            f"no independent RAPTOR generation under {root}; the RAPTOR baseline needs its own "
+            "build (plan T62)"
+        )
+    resolved = resolve_tree_generation(root, generation)
+    return RaptorBuild(
+        storage_root=str(root),
+        generation=generation,
+        manifest=dict(resolved.get("manifest") or {}),
+        provenance=read_raptor_provenance(resolved["path"]),
+    )
 
 
 @dataclass
@@ -84,6 +293,20 @@ def _dedup(keys: Sequence[str]) -> list[str]:
     return out
 
 
+def _tree_keys(candidates: Sequence[Mapping[str, Any]], top_k: int) -> tuple[str, ...]:
+    """Evidence keys of flat all-layer tree candidates, deduplicated and capped."""
+    return tuple(
+        _dedup(
+            [
+                f"{item.get('local_id', '')}:{item.get('node_id', '')}"
+                if item.get("local_id")
+                else str(item.get("node_id") or "")
+                for item in candidates
+            ]
+        )[:top_k]
+    )
+
+
 @dataclass
 class BaselineRunner:
     """Runs one registered baseline with injectable algorithm dependencies."""
@@ -93,6 +316,10 @@ class BaselineRunner:
     sql_search: _SQL_SEARCH | None = None
     tree_search: _TREE_SEARCH | None = None
     pageindex_search: _PAGEINDEX_SEARCH | None = None
+    raptor_search: _RAPTOR_SEARCH | None = None
+    #: The independent RAPTOR build to score; when absent it is loaded from the
+    #: RAPTOR root and a missing/invalid build fails closed.
+    raptor_build: RaptorBuild | None = None
 
     # ── algorithms ──────────────────────────────────────────────────────
 
@@ -128,9 +355,21 @@ class BaselineRunner:
                 return self._bm25_vector(query, top_k, algorithm)
             if key == "concat":
                 return self._concat(query, top_k, algorithm)
-            if key == "raptor_collapsed":
+            if key == UNIFIED_TREE_ABLATION:
+                return self._unified_tree_flat(query, top_k, algorithm)
+            if key == RAPTOR_BASELINE:
                 return self._raptor_collapsed(query, top_k, algorithm)
             return self._pageindex(query, top_k, papers, algorithm)
+        except BaselineProvenanceError as exc:
+            # fail closed: never report keys from a build the baseline did not verify
+            logger.warning("[rag] baseline {} refused: {}", key, exc)
+            return BaselineOutcome(
+                name=key,
+                algorithm=algorithm,
+                status="unavailable",
+                details={"error": f"{type(exc).__name__}: {exc}", "fail_closed": True},
+                notes=("fail-closed: the input is not the independent build this baseline claims",),
+            )
         except Exception as exc:  # noqa: BLE001 - a baseline failure is a reported state
             logger.warning("[rag] baseline {} unavailable: {}", key, exc)
             return BaselineOutcome(
@@ -183,29 +422,58 @@ class BaselineRunner:
             notes=notes,
         )
 
-    def _raptor_collapsed(self, query: str, top_k: int, algorithm: str) -> BaselineOutcome:
-        search = self.tree_search or _default_tree_search(self.cfg, self.db)
+    def _unified_tree_flat(self, query: str, top_k: int, algorithm: str) -> BaselineOutcome:
+        """Flat all-layer ANN over the unified builder's own generation."""
+        search = self.tree_search or _default_unified_tree_search(self.cfg, self.db)
         started = time.perf_counter()
         candidates = list(search(query, top_k) or [])
         elapsed = int((time.perf_counter() - started) * 1000)
-        keys = _dedup(
-            [
-                f"{item.get('local_id', '')}:{item.get('node_id', '')}"
-                if item.get("local_id")
-                else str(item.get("node_id") or "")
-                for item in candidates
-            ]
-        )[:top_k]
+        keys = _tree_keys(candidates, top_k)
         return BaselineOutcome(
-            name="raptor_collapsed",
+            name=UNIFIED_TREE_ABLATION,
             algorithm=algorithm,
             status="ok" if keys else "empty",
-            keys=tuple(keys),
+            keys=keys,
             details={
                 "top_k": top_k,
                 "candidates": len(candidates),
                 "view": "all",
                 "elapsed_ms": elapsed,
+                "source": "unified-tree generation",
+            },
+            notes=(UNIFIED_TREE_ABLATION_NOTE,),
+        )
+
+    def _raptor_collapsed(self, query: str, top_k: int, algorithm: str) -> BaselineOutcome:
+        """Flat all-layer ANN over an *independent, verified* RAPTOR build."""
+        build = self.raptor_build or load_raptor_build(self.cfg)
+        audit = build.verify()  # fail-closed: raises BaselineProvenanceError
+        search = self.raptor_search or _default_raptor_search(build, self.cfg)
+        started = time.perf_counter()
+        candidates = list(search(query, top_k) or [])
+        elapsed = int((time.perf_counter() - started) * 1000)
+        keys = _tree_keys(candidates, top_k)
+        return BaselineOutcome(
+            name=RAPTOR_BASELINE,
+            algorithm=algorithm,
+            status="ok" if keys else "empty",
+            keys=keys,
+            details={
+                "top_k": top_k,
+                "candidates": len(candidates),
+                "view": "all",
+                "elapsed_ms": elapsed,
+                "generation": build.generation,
+                "build": {
+                    "algorithm": audit["algorithm"],
+                    "algorithm_version": audit["algorithm_version"],
+                    "generated_at": audit["generated_at"],
+                    "corpus": audit["corpus"],
+                    "build_params": audit["build_params"],
+                    "manifest_fingerprint": audit["manifest_fingerprint"],
+                    "provenance_fingerprint": audit["provenance_fingerprint"],
+                    "manifest_checked": audit["manifest_checked"],
+                },
             },
         )
 
@@ -281,7 +549,9 @@ def _default_sql_search(cfg: Any, db: Any) -> _SQL_SEARCH:
     return search
 
 
-def _default_tree_search(cfg: Any, db: Any) -> _TREE_SEARCH:
+def _default_unified_tree_search(cfg: Any, db: Any) -> _TREE_SEARCH:
+    """Flat all-layer ANN over the active unified-tree generation."""
+
     def search(query: str, top_k: int) -> list[dict[str, Any]]:
         from drbrain.rag.config import get_llamaindex_config
         from drbrain.services.embedding import _embed_batch
@@ -296,6 +566,35 @@ def _default_tree_search(cfg: Any, db: Any) -> _TREE_SEARCH:
         if not generation:
             raise RuntimeError(f"no active tree generation under {root}")
         resolved = resolve_tree_generation(root, generation)
+        profile = profile_from_config(cfg.embed)
+        with UnifiedVectorStore(Path(resolved["vectors"]), dimension=profile.dimension) as store:
+            searcher = TreeSearch(store, profile_id=profile.profile_id(), top_k=top_k)
+            candidates = searcher.search_from_text(
+                lambda texts: _embed_batch(list(texts), cfg.embed),
+                query,
+                top_k=top_k,
+                view="all",
+            )
+        return [candidate.to_json() for candidate in candidates]
+
+    return search
+
+
+def _default_raptor_search(build: RaptorBuild, cfg: Any) -> _RAPTOR_SEARCH:
+    """Flat all-layer ANN over the *verified* independent RAPTOR generation.
+
+    Same ANN step as RAPTOR's collapsed tree, but the generation is the one the
+    provenance audit accepted — never the unified-tree storage.
+    """
+
+    def search(query: str, top_k: int) -> list[dict[str, Any]]:
+        from drbrain.services.embedding import _embed_batch
+        from drbrain.tree.embedding_identity import profile_from_config
+        from drbrain.tree.publish import resolve_tree_generation
+        from drbrain.tree.search import TreeSearch
+        from drbrain.tree.vector_store import UnifiedVectorStore
+
+        resolved = resolve_tree_generation(build.storage_root, build.generation)
         profile = profile_from_config(cfg.embed)
         with UnifiedVectorStore(Path(resolved["vectors"]), dimension=profile.dimension) as store:
             searcher = TreeSearch(store, profile_id=profile.profile_id(), top_k=top_k)
@@ -428,20 +727,42 @@ def evaluate_baseline(
     result.hit_rate_node = sum(1 for row in result.per_query if row["node_rank"]) / result.queries
     result.mrr_paper = total_paper / result.queries
     result.mrr_node = total_node / result.queries
+    unavailable = sum(1 for row in result.per_query if row["status"] == "unavailable")
     result.cost = {
         "elapsed_ms": elapsed_ms,
         "queries": result.queries,
         "k": k,
+        "unavailable_queries": unavailable,
+        # a run that could not execute is not a comparison, even if it scores 0
+        "usable": unavailable < result.queries,
         "production_route": False,
     }
+    if unavailable == result.queries:
+        result.notes = (
+            *result.notes,
+            "every query was unavailable; these metrics are not a usable comparison",
+        )
     return result
 
 
 __all__ = [
     "BASELINES",
+    "DEFAULT_RAPTOR_STORAGE",
+    "RAPTOR_ALGORITHM",
+    "RAPTOR_BASELINE",
+    "RAPTOR_PROVENANCE_FIELDS",
+    "RAPTOR_PROVENANCE_NAME",
+    "UNIFIED_TREE_ABLATION",
+    "UNIFIED_TREE_ABLATION_NOTE",
     "BaselineEval",
     "BaselineOutcome",
+    "BaselineProvenanceError",
     "BaselineRunner",
+    "RaptorBuild",
     "baseline_algorithm",
     "evaluate_baseline",
+    "load_raptor_build",
+    "raptor_provenance_fingerprint",
+    "read_raptor_provenance",
+    "verify_raptor_provenance",
 ]

@@ -205,7 +205,14 @@ def step_freeze(root: Path, report: dict) -> None:
         "k": 10,
         "baseline": {
             "bm25_vector": {"hit_rate_paper": 0.857, "hit_rate_node": 0.571},
-            "raptor_collapsed": {"hit_rate_paper": 0.429, "hit_rate_node": 0.429},
+            # Review finding 8: this row was produced by the unified-tree all-layer flat
+            # search and used to carry the RAPTOR label; the arm is now named after what
+            # it reads (drbrain.rag.baselines.UNIFIED_TREE_ABLATION).
+            "unified_tree_flat": {"hit_rate_paper": 0.429, "hit_rate_node": 0.429},
+            # The independent RAPTOR row may only be filled by a provenance-verified run
+            # (`rag baselines --name raptor_collapsed`, plan T62); it fails closed until
+            # that build exists, so no number is frozen here.
+            "raptor_collapsed": None,
         },
         "acceptance": {
             "tree_hit_rate_paper_min": 0.5,

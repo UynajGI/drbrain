@@ -11,6 +11,7 @@ import typer
 from drbrain.rag.baselines import (
     BASELINES,
     BaselineRunner,
+    RaptorBuild,
     baseline_algorithm,
     evaluate_baseline,
 )
@@ -24,11 +25,45 @@ def _rows(*keys: str) -> list[dict]:
     return out
 
 
+def _provenance() -> dict:
+    return {
+        "algorithm": "raptor",
+        "algorithm_version": "raptor@0.0.1+vendored-pin",
+        "build_params": {"umap_dim": 10, "threshold": 0.1},
+        "corpus": {"name": "mixed-9", "digest": "sha256:aaa"},
+        "generated_at": "2026-09-15T00:00:00Z",
+        "generation": "gen-raptor-1",
+        "manifest_fingerprint": "fp-raptor-1",
+        "content_hash": "sha256:bbb",
+        "members_hash": "sha256:ccc",
+    }
+
+
+def _raptor_build(*, provenance: dict | None = None) -> RaptorBuild:
+    return RaptorBuild(
+        storage_root="/nonexistent/raptor",
+        generation="gen-raptor-1",
+        manifest={"generation": "gen-raptor-1", "fingerprint": "fp-raptor-1"},
+        provenance=_provenance() if provenance is None else provenance,
+    )
+
+
 class TestRegistry:
     def test_registered_algorithms_are_documented(self):
-        assert set(BASELINES) == {"bm25_vector", "pageindex", "raptor_collapsed", "concat"}
+        assert set(BASELINES) == {
+            "bm25_vector",
+            "pageindex",
+            "unified_tree_flat",
+            "raptor_collapsed",
+            "concat",
+        }
         assert "no SQL LIKE" in BASELINES["pageindex"]
-        assert "all-layer" in BASELINES["raptor_collapsed"]
+        assert "all-layer" in BASELINES["unified_tree_flat"]
+        # finding 8: the unified-tree ablation may never carry the RAPTOR label
+        assert "RAPTOR" not in BASELINES["unified_tree_flat"]
+        assert "unified tree" in BASELINES["unified_tree_flat"]
+        assert "independent RAPTOR build" in BASELINES["raptor_collapsed"]
+        assert "provenance" in BASELINES["raptor_collapsed"]
         with pytest.raises(ValueError, match="unknown baseline"):
             baseline_algorithm("dense_only")
 
@@ -71,7 +106,7 @@ class TestAlgorithms:
         assert outcome.keys == ("p1:a", "p2:b")  # deduplicated, capped at top_k
         assert outcome.details["candidates"] == 3
 
-    def test_raptor_collapsed_reads_all_layers_without_expansion(self):
+    def test_unified_tree_flat_reads_all_layers_without_expansion(self):
         seen: dict = {}
 
         def tree(query, top_k):
@@ -81,10 +116,59 @@ class TestAlgorithms:
                 {"node_id": "nl-leaf", "local_id": "p2", "kind": "leaf", "score": 0.7},
             ]
 
-        outcome = BaselineRunner(tree_search=tree).run("raptor_collapsed", "q", top_k=4)
+        outcome = BaselineRunner(tree_search=tree).run("unified_tree_flat", "q", top_k=4)
         assert outcome.keys == ("p1:nr-region", "p2:nl-leaf")  # both layers kept
         assert outcome.details["view"] == "all"
         assert seen["top_k"] == 4
+        assert outcome.algorithm == BASELINES["unified_tree_flat"]
+        # finding 8: the ablation must say what it reads and what it is not
+        assert "not an independent RAPTOR baseline" in " ".join(outcome.notes)
+
+    def test_raptor_collapsed_never_reads_the_unified_tree(self):
+        unified_calls: list[str] = []
+
+        def tree(query, top_k):
+            unified_calls.append(query)
+            return [{"node_id": "nl-leaf", "local_id": "p1", "kind": "leaf", "score": 0.9}]
+
+        outcome = BaselineRunner(tree_search=tree).run("raptor_collapsed", "q", top_k=3)
+        assert unified_calls == []  # the unified-tree arm is not what the RAPTOR label scores
+        assert outcome.status == "unavailable"
+        assert outcome.keys == ()
+        assert outcome.details["fail_closed"] is True
+        assert "BaselineProvenanceError" in outcome.details["error"]
+
+    def test_raptor_collapsed_runs_only_on_a_verified_build(self):
+        calls: list[tuple[str, int]] = []
+
+        def raptor(query, top_k):
+            calls.append((query, top_k))
+            return [{"node_id": "nl-1", "local_id": "p1", "kind": "leaf", "score": 0.9}]
+
+        outcome = BaselineRunner(raptor_build=_raptor_build(), raptor_search=raptor).run(
+            "raptor_collapsed", "q", top_k=5
+        )
+        assert calls == [("q", 5)]
+        assert outcome.status == "ok" and outcome.keys == ("p1:nl-1",)
+        assert outcome.algorithm == BASELINES["raptor_collapsed"]
+        recorded = outcome.details["build"]
+        assert outcome.details["generation"] == "gen-raptor-1"
+        assert recorded["manifest_fingerprint"] == "fp-raptor-1"
+        assert recorded["algorithm_version"] == "raptor@0.0.1+vendored-pin"
+        assert recorded["provenance_fingerprint"]
+
+    def test_a_build_without_provenance_is_refused_before_searching(self):
+        calls: list[str] = []
+
+        def raptor(query, top_k):
+            calls.append(query)
+            return [{"node_id": "nl-1", "local_id": "p1", "kind": "leaf", "score": 0.9}]
+
+        outcome = BaselineRunner(
+            raptor_build=_raptor_build(provenance={}), raptor_search=raptor
+        ).run("raptor_collapsed", "q", top_k=3)
+        assert calls == []  # fail-closed: no search happens without a verified build
+        assert outcome.status == "unavailable" and outcome.details["fail_closed"] is True
 
     def test_pageindex_uses_the_tree_search_not_like(self):
         seen: dict = {}
@@ -159,6 +243,7 @@ class TestScoring:
         assert result.mrr_paper == 0.5 and result.mrr_node == 0.5  # rank 1 → 1.0, miss → 0
         assert result.per_query[0]["node_rank"] == 1
         assert result.cost["elapsed_ms"] == 14 and result.cost["production_route"] is False
+        assert result.cost["usable"] is True and result.cost["unavailable_queries"] == 0
 
     def test_papers_for_is_forwarded(self):
         runner = _FakeRunner({"first": ["p1:nl-1"], "second": ["p2:nl-2"]})
@@ -177,6 +262,20 @@ class TestScoring:
     def test_empty_split_is_noted(self):
         result = evaluate_baseline("concat", None, None, [], k=5)
         assert result.queries == 0 and result.notes == ("no golden entries",)
+
+    def test_an_all_unavailable_run_is_not_a_usable_comparison(self):
+        from drbrain.rag.baselines import BaselineOutcome
+
+        class _Down:
+            def run(self, name, query, *, top_k=10, papers=None):
+                return BaselineOutcome(
+                    name=name, algorithm=baseline_algorithm(name), status="unavailable", details={}
+                )
+
+        result = evaluate_baseline("concat", None, None, self.ENTRIES, k=5, runner=_Down())
+        assert result.cost["usable"] is False
+        assert result.cost["unavailable_queries"] == 2
+        assert any("unavailable" in note for note in result.notes)
 
 
 class TestCli:
