@@ -448,11 +448,16 @@ def _contract_identities(model: Any, summary_service: Any) -> tuple[str, str]:
     if not model_identity:
         model_identity = str(getattr(model, "identity", "") or "")
     counter = getattr(summary_service, "_count_tokens", None)
-    tokenizer_identity = ""
-    if counter is not None:
-        module = str(getattr(counter, "__module__", "") or "")
-        name = str(getattr(counter, "__name__", type(counter).__name__))
-        tokenizer_identity = f"{module}.{name}".lstrip(".")
+    if counter is None:
+        from drbrain.services.tokens import count_tokens
+
+        # Production passes no summary service, so the builder ends up on the
+        # shared default counter: bind that identity rather than leaving the
+        # field empty, or a counter change slips past the cache key.
+        counter = count_tokens
+    module = str(getattr(counter, "__module__", "") or "")
+    name = str(getattr(counter, "__name__", type(counter).__name__))
+    tokenizer_identity = f"{module}.{name}".lstrip(".")
     return model_identity, tokenizer_identity
 
 
@@ -497,17 +502,19 @@ def _prepare_hierarchy(
             "frontier": len(db.leaves_missing_parent()),
             "created": 0,
         }
-    if previous is not None and (force or previous != signature):
-        # The identity or a parameter changed: parents built under the old
-        # contract are stale (their node ids embed the contract digest), so
-        # retire them and drop their vectors — this is also what puts their
-        # leaves back into the frontier below.
-        retired = db.retire_regions_with_other_contract(_contract_json(builder_config.contract))
-        if retired:
-            logger.info("[tree] retired {} stale region(s) for the current contract", len(retired))
-            db.retire_node_vectors(retired)
-            if store is not None:
-                store.delete(retired)
+    # Retire every ready region built under a different contract: a region node
+    # id embeds the contract digest, so the superseded nodes are stale by
+    # construction and must not keep certifying the tree.  This must **not**
+    # depend on the watermark — an old library, a killed build or a previous
+    # partial run leaves it unset while another contract's regions are already
+    # on disk, and retiring them is also what puts their leaves back into the
+    # frontier below.
+    retired = db.retire_regions_with_other_contract(_contract_json(builder_config.contract))
+    if retired:
+        logger.info("[tree] retired {} stale region(s) for the current contract", len(retired))
+        db.retire_node_vectors(retired)
+        if store is not None:
+            store.delete(retired)
     frontier = (
         [str(node) for node in seed_nodes] if seed_nodes is not None else db.leaves_missing_parent()
     )

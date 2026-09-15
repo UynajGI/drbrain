@@ -343,6 +343,65 @@ class TestPrepare:
         }
         assert vector_states == {"failed"}  # never ready again
 
+    def test_partial_run_does_not_certify_the_next_contract(self, tmp_path):
+        """T36: an unset watermark must not keep the old contract alive.
+
+        A run that fails part way leaves the watermark untouched, so the next
+        deployment starts from ``previous is None`` while regions of the old
+        contract are already on disk.  Those have to be retired, otherwise the
+        rebuild publishes a tree that mixes two contracts.
+        """
+        from drbrain.services.model_roles import ROLE_INDEX, resolve_model_role
+        from drbrain.tree.prepare import IndexModelSummary
+
+        class _FailingIndex(_StubIndex):
+            def __init__(self, role, ok_calls: int) -> None:
+                super().__init__(role)
+                self.ok_calls = ok_calls
+
+            def call_text(self, prompt: str, max_tokens: int = 0) -> SimpleNamespace:
+                if self.calls >= self.ok_calls:
+                    self.calls += 1
+                    raise RuntimeError("index endpoint down")
+                return super().call_text(prompt, max_tokens=max_tokens)
+
+        db = _setup(tmp_path)
+        embedder = _FakeEmbedder()
+        failing = _FailingIndex(resolve_model_role(_role_config("index-a"), ROLE_INDEX), 1)
+        first = _prepare(db, tmp_path, embed=embedder, model=IndexModelSummary(failing))
+        assert not first.ok
+        assert first.hierarchy["created"] > 0  # partial: some parents were built
+        assert db.get_vector_metadata(HIERARCHY_WATERMARK) is None
+        old_regions = [
+            node_id
+            for round_payload in first.hierarchy["rounds"]
+            for node_id in round_payload["created_nodes"]
+        ]
+        assert old_regions
+
+        healthy = _StubIndex(resolve_model_role(_role_config("index-b"), ROLE_INDEX))
+        second = _prepare(db, tmp_path, embed=embedder, model=IndexModelSummary(healthy))
+        assert second.ok, second.to_json()
+        assert healthy.calls > 0
+
+        placeholders = ",".join("?" for _ in old_regions)
+        states = {
+            str(state)
+            for (state,) in db.conn.execute(
+                f"SELECT state FROM tree_nodes WHERE node_id IN ({placeholders})",
+                tuple(old_regions),
+            ).fetchall()
+        }
+        assert states == {"stale"}, f"old-contract regions must not stay ready: {states}"
+        ready_contracts = {
+            str(contract)
+            for (contract,) in db.conn.execute(
+                "SELECT DISTINCT contract_json FROM tree_nodes "
+                "WHERE state = 'ready' AND kind = 'region'"
+            ).fetchall()
+        }
+        assert len(ready_contracts) == 1  # one contract in the published tree
+
     def test_fts_drift_is_repaired_by_the_stage(self, tmp_path):
         db = _setup(tmp_path)
         db.conn.execute("INSERT INTO content_fts(content_fts) VALUES('delete-all')")
