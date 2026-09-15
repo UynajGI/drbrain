@@ -23,7 +23,7 @@ drbrain metrics --json                          # JSON output
 
 ## What's tracked
 
-- **Search events**: keywords searched via `drbrain query` and `drbrain fsearch`
+- **Search events**: keywords searched via `drbrain search` and `drbrain search --source arxiv`
 - **Read events**: papers viewed via `drbrain show`
 - **Weekly trends**: 7-day rolling counts of searches and reads
 - **Top keywords**: most frequently searched terms

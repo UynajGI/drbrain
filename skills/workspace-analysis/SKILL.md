@@ -46,9 +46,8 @@ All analysis commands accept `--workspace` / `-w`:
 ```bash
 drbrain analyze --workspace gnn-drugs --full --json
 drbrain seed --workspace gnn-drugs
-drbrain query "binding affinity" --workspace gnn-drugs
 drbrain stats --workspace gnn-drugs
-drbrain closure --workspace gnn-drugs
+drbrain graph closure --workspace gnn-drugs
 drbrain export --workspace gnn-drugs --format bib
 ```
 

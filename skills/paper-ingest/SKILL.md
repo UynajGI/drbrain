@@ -67,7 +67,7 @@ Common failures:
 Ingested papers have status `uploaded`. Run the KG build pipeline to extract concepts and edges:
 
 ```bash
-drbrain build && drbrain embed --tree && drbrain closure --mode hybrid
+drbrain graph build && drbrain index build && drbrain graph closure --mode hybrid
 ```
 
 See `kg-build` skill for details.

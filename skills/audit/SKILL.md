@@ -61,7 +61,7 @@ drbrain audit --workspace attention-methods
 **Fix common issues:**
 - `missing_md` / `empty_tree`: re-run `drbrain ingest`
 - `missing_doi` / `missing_authors` / `missing_abstract`: run `drbrain repair --all`
-- `low_concept_count` / `no_edges`: re-run `drbrain build`
+- `low_concept_count` / `no_edges`: re-run `drbrain graph build`
 
 ## Examples
 
