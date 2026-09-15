@@ -488,7 +488,7 @@ def test_execute_tool_find_path():
 
 
 def test_execute_tool_get_document_structure():
-    """execute_tool routes get_document_structure with papers_dir kwarg."""
+    """execute_tool routes get_document_structure with papers_dir + db kwargs."""
     fake_fn = mock.MagicMock(return_value=[{"node_id": "n1"}])
     with mock.patch.dict(TOOL_HANDLERS, {"get_document_structure": fake_fn}):
         result = execute_tool(
@@ -496,7 +496,7 @@ def test_execute_tool_get_document_structure():
             {"paper_id": "p1"},
             papers_dir=Path("/fake/papers"),
         )
-    fake_fn.assert_called_once_with(Path("/fake/papers"), paper_id="p1")
+    fake_fn.assert_called_once_with(Path("/fake/papers"), db=None, paper_id="p1")
     assert result == [{"node_id": "n1"}]
 
 

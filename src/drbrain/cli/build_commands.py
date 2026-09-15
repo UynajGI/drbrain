@@ -298,39 +298,50 @@ def build_cmd(
                 failed += 1
                 continue
         elif not md_path.exists():
-            db.upsert_paper_artifact(pid, "tree", "skipped", error="raw.md missing")
-            db.upsert_paper_artifact(pid, "kg", "skipped", error="raw.md missing")
-            db.commit()
-            typer.echo("  No raw.md — ingest this paper first")
-            failed += 1
-            continue
+            from drbrain.extractor.context import canonical_extraction_inputs
 
-        try:
-            tree = existing_tree or json.loads(tree_path.read_text(encoding="utf-8"))
-            structure = tree.get("structure", []) if isinstance(tree, dict) else []
-            if not isinstance(structure, list):
-                structure = []
+            canonical = canonical_extraction_inputs(db, pid)
+            if canonical is None:
+                db.upsert_paper_artifact(pid, "tree", "skipped", error="raw.md missing")
+                db.upsert_paper_artifact(pid, "kg", "skipped", error="raw.md missing")
+                db.commit()
+                typer.echo("  No raw.md — ingest this paper first")
+                failed += 1
+                continue
+            section_texts: dict[str, str] | None
+            structure, section_texts = canonical
+            typer.echo(
+                f"  No raw.md — reading canonical content "
+                f"({len(structure)} roots, {len(section_texts)} nodes)"
+            )
+        else:
+            section_texts = None
+            try:
+                tree = existing_tree or json.loads(tree_path.read_text(encoding="utf-8"))
+                structure = tree.get("structure", []) if isinstance(tree, dict) else []
+                if not isinstance(structure, list):
+                    structure = []
 
-            def _ensure_line_nums(nodes, counter=None):
-                counter = counter or [0]
-                for node in nodes:
-                    if isinstance(node, dict):
-                        counter[0] += 1
-                        node.setdefault("line_num", counter[0])
-                        _ensure_line_nums(node.get("nodes", []), counter)
-                return nodes
+                def _ensure_line_nums(nodes, counter=None):
+                    counter = counter or [0]
+                    for node in nodes:
+                        if isinstance(node, dict):
+                            counter[0] += 1
+                            node.setdefault("line_num", counter[0])
+                            _ensure_line_nums(node.get("nodes", []), counter)
+                    return nodes
 
-            structure = _ensure_line_nums(structure)
-            if isinstance(tree, dict):
-                tree["structure"] = structure
-        except (OSError, UnicodeError, ValueError) as exc:
-            message = safe_error(exc, secrets=secrets)
-            db.upsert_paper_artifact(pid, "tree", "failed", error=message)
-            db.upsert_paper_artifact(pid, "kg", "skipped", error="tree.json unreadable")
-            db.commit()
-            typer.echo(f"  Tree read failed: {message}")
-            failed += 1
-            continue
+                structure = _ensure_line_nums(structure)
+                if isinstance(tree, dict):
+                    tree["structure"] = structure
+            except (OSError, UnicodeError, ValueError) as exc:
+                message = safe_error(exc, secrets=secrets)
+                db.upsert_paper_artifact(pid, "tree", "failed", error=message)
+                db.upsert_paper_artifact(pid, "kg", "skipped", error="tree.json unreadable")
+                db.commit()
+                typer.echo(f"  Tree read failed: {message}")
+                failed += 1
+                continue
         if not structure:
             db.upsert_paper_artifact(pid, "tree", "degraded", error="empty tree")
             db.upsert_paper_artifact(pid, "kg", "skipped", error="empty tree")
@@ -344,7 +355,12 @@ def build_cmd(
         try:
             result = asyncio.run(
                 build_graph_from_tree(
-                    md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+                    md_path,
+                    structure,
+                    llm_models,
+                    skip_refine=skip_refine,
+                    cache=cache,
+                    section_texts=section_texts,
                 )
             )
         except Exception as exc:
@@ -406,11 +422,17 @@ def build_cmd(
 
         # Mark as extracted (set_paper_status also bumps updated_at)
         db.set_paper_status(pid, "extracted")
+        if tree_path.exists():
+            tree_fingerprint = hashlib.sha256(tree_path.read_bytes()).hexdigest()
+        else:
+            tree_fingerprint = str(
+                (db.get_document_revision(pid) or {}).get("canonical_hash") or ""
+            )
         db.upsert_paper_artifact(
             pid,
             "tree",
             "ready",
-            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+            fingerprint=tree_fingerprint,
             metadata_json=json.dumps({"nodes": len(structure)}),
         )
         db.upsert_paper_artifact(

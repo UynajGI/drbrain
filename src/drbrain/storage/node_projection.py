@@ -303,9 +303,31 @@ def collect_node_records(
     return collect_tree_node_records(paper_dir, tree_json, paper_id=str(local_id))
 
 
+def read_node_text(conn, node_id: str) -> str:
+    """Exact text of one ready canonical node (leaf block text or summary)."""
+    node = str(node_id)
+    try:
+        row = conn.execute(
+            "SELECT b.text FROM tree_nodes n JOIN content_blocks b ON b.block_id = n.block_id "
+            "WHERE n.node_id = ? AND n.state = 'ready' AND n.kind = 'leaf'",
+            (node,),
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+        row = conn.execute(
+            "SELECT summary FROM tree_nodes WHERE node_id = ? AND state = 'ready' "
+            "AND kind = 'region'",
+            (node,),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - un-migrated stores have no canonical nodes
+        return ""
+    return str(row[0] or "") if row else ""
+
+
 __all__ = [
     "NODE_PROJECTION_VERSION",
     "collect_canonical_node_records",
     "collect_node_records",
     "collect_tree_node_records",
+    "read_node_text",
 ]

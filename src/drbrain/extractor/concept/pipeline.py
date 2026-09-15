@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,7 @@ async def build_graph_from_tree(
     skip_refine: bool = False,
     *,
     cache: ApiCache | None = None,
+    section_texts: Mapping[str, str] | None = None,
 ) -> dict:
     """5-stage graph extraction from a document tree.
 
@@ -75,7 +77,9 @@ async def build_graph_from_tree(
     log.info("[build] ontology done in %.1fs — %d types", _ct1 - _ct0, len(ontology))
 
     # Stage 2: Entity Extraction (tree-guided with section hints)
-    concepts = await _extract_entities(md_path, structure, leaves, ontology, models, cache=cache)
+    concepts = await _extract_entities(
+        md_path, structure, leaves, ontology, models, cache=cache, section_texts=section_texts
+    )
 
     if not concepts:
         return {"concepts": [], "relations": [], "merges": [], "corrections": []}
@@ -254,6 +258,7 @@ async def _extract_entities(
     models: list[dict],
     *,
     cache: ApiCache | None = None,
+    section_texts: Mapping[str, str] | None = None,
 ) -> list[dict]:
     """Stage 2: Per leaf node, extract concepts with subcategories.
 
@@ -281,7 +286,11 @@ async def _extract_entities(
     ordered_leaves = sorted(leaves, key=_leaf_priority)
 
     async def _extract_one(leaf: dict) -> list[dict]:
-        content = get_node_content(md_path, structure, leaf["node_id"])
+        node_id = str(leaf.get("node_id") or "")
+        if section_texts is not None and node_id in section_texts:
+            content = section_texts[node_id]
+        else:
+            content = get_node_content(md_path, structure, node_id)
         if not content or not _is_quality_content(content):
             return []
         hints = _section_type_hints(leaf.get("title", ""))
