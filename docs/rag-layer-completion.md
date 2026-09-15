@@ -16,12 +16,13 @@ extracted markdown is registered through the same canonical write path, no
 `raw.md` is written, and a failed link reports `status=error` and makes the
 command exit non-zero.
 
-`drbrain rag prepare` defaults to the unified index (canonical FTS, shared
+`drbrain index build` defaults to the unified index (canonical FTS, shared
 vectors, hierarchy, one published tree generation). `--legacy-sql` keeps the
 deprecated derived `drbrain_rag.db` working copy available for deployments
-whose readers have not migrated yet; it is opt-in, and `--unified` remains
-accepted as a compatibility alias. Existing SQL working copies and published
-generations stay readable and are never deleted by a prepare run.
+whose readers have not migrated yet; it is opt-in. The historical entry points
+(`rag prepare`, `rag prepare --unified`, `rag index`, `embed --tree`) remain
+hidden compatibility aliases of `index build`. Existing SQL working copies and
+published generations stay readable and are never deleted by a build run.
 
 The tree leg reads the published unified generation (search → navigation →
 read receipts → leaf text). When a SQL corpus exists, every leaf is verified
@@ -30,9 +31,10 @@ so BM25/vector/tree cannot mix revisions. When no SQL corpus exists (the
 default unified deployment), a tree-only request is served from the generation
 alone and every other requested leg is reported `source_unavailable`; a
 missing generation is fail-closed (ask reports `source_unavailable` with the
-prepare hint). The older readers (`query --paper`, `embed --tree`, the
-per-paper PageIndex/RAPTOR retrievers, `translate`, the legacy tree/raw
-inspection helpers) remain read-only compatibility paths for papers ingested
+prepare hint). The older readers (`search --paper` replaces the removed
+`query --paper`; `embed --tree`, the per-paper PageIndex/RAPTOR retrievers,
+`translate` and the legacy tree/raw inspection helpers) remain read-only
+compatibility paths for papers ingested
 before this change; they simply have no input for new papers.
 
 ## Retrieval path
@@ -59,16 +61,15 @@ flowchart TD
     B2 --> B3[raw.md + parser metadata]
     B3 --> B4[PageIndex SDK tree build\nSpark 4B index endpoint]
     B4 --> B5[tree.json + provenance\nsource PDF remains untouched]
-    B5 --> C[drbrain embed --tree]
-    C --> C1[BGE CPU node embeddings\ntree_vectors: pageindex]
-    C --> C2[RAPTOR summaries and vectors\noptional Spark 4B summary calls]
-    C1 --> D[drbrain rag prepare]
-    C2 --> D
-    B5 --> D
-    D --> D1[Corpus-wide consistent read\nfrom primary data/drbrain.db]
-    D1 --> D2[Derived drbrain_rag.db\nnode_texts + FTS5 + vectors + summaries]
-    D2 --> D3[Immutable generation publish\ncorpus.sqlite3 + zvec/ + manifest.json]
-    D3 --> E[drbrain ask / query]
+    B5 --> D[drbrain index build]
+    D --> C1[BGE CPU node embeddings\nshared leaf/region vectors]
+    D --> C2[RAPTOR-style region summaries\noptional index-model calls]
+    C1 --> D1[Corpus-wide consistent read\nfrom primary data/drbrain.db]
+    C2 --> D1
+    B5 --> D1
+    D1 --> D2[Canonical FTS + node projection\nmain store, one text fact]
+    D2 --> D3[Immutable generation publish\ntree.sqlite3 + zvec/ + manifest.json]
+    D3 --> E[drbrain search / ask]
     E --> E1[Resolve active generation]
     E1 --> E2[BM25 FTS5 recall]
     E1 --> E3[Zvec HNSW ANN recall]
@@ -83,32 +84,32 @@ flowchart TD
     H --> I[DeepSeek chat endpoint\nanswer synthesis]
     I --> J[answer + sources + telemetry]
 
-    K[Optional: drbrain build] -. KG extraction .-> L[drbrain embed --graph\nTransE entity/relation vectors]
+    K[Optional: drbrain graph build] -. KG extraction .-> L[drbrain graph embed\nTransE entity/relation vectors]
     L -. graph query / closure .-> E5
 
-    N[Alternate: rag_engine=llamaindex] -. drbrain rag prepare/index .-> N1[Settings.embed_model\nDrbrainEmbedding → BGE CPU]
+    N[Alternate: rag_engine=llamaindex] -. drbrain index build .-> N1[Settings.embed_model\nDrbrainEmbedding → BGE CPU]
     N1 --> N2[VectorStoreIndex + BM25Retriever\nincremental LlamaIndex store]
-    N2 -. same ask/query contract .-> E
+    N2 -. same search/ask contract .-> E
 ```
 
 The critical commands are therefore:
 
 ```bash
 uv run drbrain ingest <material>
-uv run drbrain embed --tree
-uv run drbrain rag prepare
-uv run drbrain ask "your question" --json
+uv run drbrain index build
+uv run drbrain search "your question" --json   # evidence, no synthesis
+uv run drbrain ask "your question"             # evidence + answer
 ```
 
-`drbrain embed --graph` trains TransE entity/relation vectors in the
-`embeddings` table; it does not populate `tree_vectors` or the Zvec index. A
-bare `drbrain embed` remains a compatibility alias for `--graph`, but production
-scripts should state the mode explicitly. `rag prepare` in SQL mode does not
-create missing document embeddings; it packages the vectors already produced by
-`embed --tree`.
+`drbrain graph embed` trains TransE entity/relation vectors in the
+`embeddings` table; it does not populate the shared tree vectors or the Zvec
+index. The historical `embed --tree` (tree text vectors, now `index build`) and
+bare `embed`/`--graph` (`graph embed`) remain hidden compatibility aliases.
+`index build` in SQL mode embeds the ready leaves/regions itself and does not
+require a separate embedding run.
 
-When `llamaindex.rag_engine=llamaindex`, `drbrain rag prepare` (or `rag index`)
-uses LlamaIndex's `VectorStoreIndex` and `BM25Retriever`. Its
+When `llamaindex.rag_engine=llamaindex`, `drbrain index build` (or the legacy
+`rag index`) uses LlamaIndex's `VectorStoreIndex` and `BM25Retriever`. Its
 `Settings.embed_model` is `DrbrainEmbedding`, which delegates to the same
 configured BGE provider. That mode embeds PageIndex documents while building the
 LlamaIndex store; it is an alternate publication path, not a second embedding
@@ -119,7 +120,7 @@ model in the SQL+Zvec path.
 SQLite is the authoritative store for paper metadata, projected PageIndex text,
 FTS5, claims, and the immutable `corpus.sqlite3` generation.  Vector search is a
 derived sidecar selected with `retrieval.vector_backend`.  Production configs use
-`zvec`: `rag prepare` builds an HNSW index from the generation's PageIndex vectors
+`zvec`: `index build` builds an HNSW index from the generation's node vectors
 and publishes it under the same generation directory as the SQLite snapshot.  A
 query therefore pins text and ANN results to one generation.  `sqlite` remains
 available for small fixtures and compatibility, where the vector leg reranks the
@@ -128,7 +129,7 @@ vector leg trace; they are never silently replaced by a different backend.
 
 ```text
 primary SQLite (papers, KG, artifacts)
-            │  rag prepare
+            │  index build
             ▼
 derived generation/
 ├── corpus.sqlite3       authoritative text + FTS snapshot

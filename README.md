@@ -63,16 +63,18 @@ This creates `~/DrBrain/` as your library root
 (`%USERPROFILE%/DrBrain` on Windows).
 
 ```bash
-# Ingest → build → graph embed → closure (all incremental)
+# Main line: ingest → index build → search / ask (all incremental)
 drbrain fetch "10.1038/nature14539"     # grab a paper by DOI
-drbrain build                           # 5-stage LLM extraction
-drbrain embed --graph                   # TransE graph embeddings
-drbrain closure                         # rule-based inference
+drbrain index build                     # prepare + publish the searchable index
+drbrain search "flat bands in kagome"   # evidence, no answer
 drbrain ask "What gaps remain in deep learning?"
 
+# Optional knowledge-graph branch
+drbrain graph build                     # 5-stage LLM extraction
+drbrain graph embed                     # TransE graph embeddings
+drbrain graph closure                   # rule-based inference
+
 # Or chain everything at once
-drbrain pipeline --preset full
-# Include SQL/LlamaIndex RAG materialization and publication
 drbrain pipeline --preset full-rag
 ```
 
@@ -85,10 +87,10 @@ drbrain pipeline --preset full-rag
 | Category | Feature | Details |
 |----------|---------|---------|
 | **Ingest** | PDF → structured knowledge | MinerU parsing → 5-source metadata cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) → LLM tree structuring |
-| **Build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
-| **Query** | BM25 + graph-enhanced search | Keyword search with multiplicative PageRank boost, directed graph traversal, hybrid ranking |
-| **RAG Retrieval** | Hybrid RAG engine (SQL snapshots / LlamaIndex) | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain hybrid` one-shot query, `drbrain rag prepare/index/eval` |
-| **Knowledge Graph** | Rule-based closure *(incremental)* | 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
+| **Graph build** | 5-stage concept extraction *(incremental)* | Ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → iterative refinement |
+| **Search** | Evidence retrieval over BM25 + vector + tree | `drbrain search` returns sources, text locators, route and index version without synthesizing an answer; `drbrain library search` keeps the bibliographic keyword search |
+| **RAG Retrieval** | Hybrid RAG engine (SQL snapshots / LlamaIndex) | BM25 + vector + tree retrieval fused via RRF, rerank, `drbrain index build/status/verify`, `drbrain ask`, `drbrain rag eval` |
+| **Knowledge Graph** | Rule-based closure *(incremental)* | `drbrain graph build/embed/closure` — 8+4 inference rules, t-norm transitive grounding, TransE embeddings for link prediction |
 | **Concept Graph** | Corpus-scale co-occurrence map | `drbrain cg` — concept graph build/embed/neighbors, UMAP map export, leakage-free trend prediction |
 | **Reasoning** | Symbol-driven discovery | Causal chains, confidence propagation, counterfactual analysis, cross-domain isomorphism, hypothesis generation |
 | **Workflows** | 7 structured reasoning pipelines | review, gap-analysis, impact, compare, frontier, lineage, paradigm |

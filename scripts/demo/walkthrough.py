@@ -7,7 +7,7 @@ to a report file, then restores config.local.yaml in a finally block.
 
 Usage:
     python scripts/walkthrough.py [--db data/realdata_fulltext.db] [--papers-dir data/test_papers]
-                                  [--commands "stats,list,index,query"] [--timeout 300]
+                                  [--commands "stats,list,index-build,search"] [--timeout 300]
 """
 
 from __future__ import annotations
@@ -24,14 +24,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_LOCAL = ROOT / "config.local.yaml"
 BAK = ROOT / "config.local.yaml.walkthrough.bak"
 
-# (label, argv, timeout_s)
+#: (label, argv, timeout_s).  Labels mirror the command each entry exercises;
+#: the main line is ``ingest → index build → search / ask``, the historical
+#: BM25 command now lives under ``library search``.
 DEFAULT_COMMANDS = [
     ("stats", ["stats"], 120),
     ("list", ["list", "--limit", "5"], 120),
-    ("index", ["index"], 300),
-    ("query-bm25", ["query", "materials"], 300),
-    ("search", ["search", "perovskite"], 120),
-    ("hybrid", ["hybrid", "machine learning"], 300),
+    ("index-build", ["index", "build"], 600),
+    ("search", ["search", "materials"], 300),
+    ("library-search", ["library", "search", "perovskite"], 120),
+    ("search-hybrid", ["search", "machine learning"], 300),
     ("ask", ["ask", "what are the key synthesis methods?"], 300),
     ("analyze", ["analyze", "--query", "synthesis"], 300),
     ("landscape", ["landscape"], 300),

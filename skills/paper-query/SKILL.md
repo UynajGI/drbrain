@@ -1,66 +1,73 @@
 ---
 name: paper-query
 description: >
-  Search and explore papers in the DrBrain library using BM25 keyword search, graph-enhanced hybrid
-  ranking, and tree-based retrieval. Use this skill whenever the user asks "what papers do I have
-  about X?", "find papers on...", "search for...", "show me papers about...", "look up concept X",
-  "browse my library", wants to explore their collection by topic, or needs to find specific concept
-  types or arguments. Also use when the user wants to deep-read a paper's sections via tree-based
-  retrieval, track concept evolution over time, or expand search results with graph neighborhood
-  traversal. Trigger proactively for any kind of library search or exploration.
+  Search and explore papers in the DrBrain library: three-leg evidence retrieval (`drbrain search`),
+  bibliographic keyword search (`drbrain library search`), and paper-scoped deep reading. Use this
+  skill whenever the user asks "what papers do I have about X?", "find papers on...", "search
+  for...", "show me evidence about...", "look up concept X", "browse my library", wants to explore
+  their collection by topic or concept type, or wants to read a specific paper's sections. Trigger
+  proactively for any kind of library search or exploration.
 ---
 
-# Paper Query
+# Paper query
 
-Search and explore the DrBrain library. Two search modes: BM25 keyword search over concepts and
-arguments (topic-based), and PageIndex tree-based retrieval (deep-reading specific paper sections).
+Search and explore the DrBrain library. Two entry points: `drbrain search` (evidence rows with
+sources and text locators, over the same chain as `ask`) and `drbrain library search`
+(bibliographic BM25 rows over papers, concepts and arguments).
 
 ## Prerequisites
 
-Knowledge graph must be built (`kg-build` skill). BM25 index must be current (run `drbrain index` if search returns stale results). Tree-based retrieval requires `drbrain embed --tree` (PageIndex+RAPTOR embeddings).
+The index must be prepared: `drbrain index build`. `drbrain index status` shows whether evidence
+retrieval is ready; a missing index makes `search` exit 1 with the remedy command.
 
 ## Search modes
 
-### BM25 keyword search
-
-Find papers and concepts across the entire library:
+### Evidence retrieval
 
 ```bash
-drbrain query "graph neural networks"
-drbrain query "transformer attention" --type-filter Method
-drbrain query "over-smoothing" --min-confidence 0.8
-drbrain query "knowledge distillation" --year-start 2020 --limit 10
+drbrain search "graph neural networks"
+drbrain search "over-smoothing" --limit 20
+drbrain search "knowledge distillation" --json | jq '.evidence[]'
 ```
 
-Combine filters: `--type-filter` (Problem/Method/Conclusion/Debate/Gap/Actor), `--arg-type`
-(supports/challenges/extends), `--year-start/--year-end`, `--min-confidence`, `--limit`.
+Each row carries `evidence_id`, `paper_id`, `node_id`, text (with `block_id`/`char_start`/
+`char_end` when the tree leg read the leaf), `source`, `score`, and `content_checksum`; the JSON
+payload also reports `route` and `generations` (which index version answered).
 
-Expand results with graph traversal:
+### Paper-scoped reading
 
 ```bash
-drbrain query "graph attention" --neighbors 2
+drbrain search "how does the proposed method handle overfitting" --paper p3f8a2
+drbrain search "regularization strategy" --paper p3f8a2 --paper p3f8a3 --json
 ```
 
-### Tree-based retrieval
+`--paper` scopes every leg (including the tree leg's ANN entry search) to the given papers, so a
+scoped query never silently reads another paper.
 
-Deep-read a specific paper's sections using the PageIndex tree structure:
+### External sources
 
 ```bash
-drbrain query "how does the proposed method handle overfitting" --paper p3f8a2
+drbrain search "transformer variants" --source all      # local evidence + arXiv
+drbrain search "graph transformers" --source arxiv      # arXiv only
 ```
 
-### Hybrid ranking
+External rows are marked `source="arxiv"` and carry `url`/`doi`/`arxiv_id` with no local locator
+(see the `fsearch` skill).
 
-Boost BM25 results with graph centrality (PageRank):
+### Bibliographic keyword search
 
 ```bash
-drbrain query "graph attention" --hybrid
+drbrain library search "graph neural networks" --type Method --limit 20
 ```
 
-## After finding papers
+BM25 over paper titles, concept labels and argument claims; `--type` filters by document type
+(Problem, Method, Conclusion, Gap, Debate, Actor, Paper, Argument).
 
-- `drbrain show p3f8a2` — inspect a paper's full contents
-- `drbrain ask "what is the main contribution of this paper?"` — natural language Q&A over the KG
+## After finding evidence
+
+- `drbrain ask "what is the main contribution of this paper?"` — natural language answer over the
+  same retrieval chain
+- `drbrain show p3f8a2` — inspect a paper's full record
 - `drbrain reason "compare approach A and B"` — deep LLM agent reasoning (see kg-reason skill)
 - `drbrain analyze p3f8a2` — run knowledge frontier analysis
 - `drbrain citations p3f8a2 --type shared-refs` — find related work
@@ -68,28 +75,25 @@ drbrain query "graph attention" --hybrid
 
 ## Examples
 
-**Topic search with type and confidence filters:**
+**Topic search, machine-readable:**
 ```bash
-drbrain query "contrastive learning" --type-filter Method --min-confidence 0.7 --limit 20
+drbrain search "contrastive learning" --limit 20 --json | jq '.evidence[] | {paper_id, node_id, score}'
 ```
 
-**Graph-expanded search:**
+**Check why a search returns nothing:**
 ```bash
-drbrain query "attention mechanism" --neighbors 2 --json | jq '.[]._distance'
+drbrain index status --json        # is the index ready? which leg is not?
+drbrain index build                # prepare what is missing
 ```
 
-**Section-level deep reading:**
-```bash
-drbrain query "regularization strategy" --paper p3f8a2
-```
-
-## CLI Reference
+## CLI reference
 
 | Command | What it does |
 |---------|--------------|
-| `drbrain query <terms>` | BM25 keyword search |
-| `drbrain query <terms> --type-filter Method` | Filter by concept type |
-| `drbrain query <terms> --neighbors N` | Graph-expanded results |
-| `drbrain query <terms> --paper <id>` | Tree-based section retrieval |
-| `drbrain query <terms> --hybrid` | PageRank-boosted ranking |
-| `drbrain ask "<question>"` | Natural language KGQA |
+| `drbrain search <terms>` | Three-leg evidence retrieval (bm25/vector/tree), no answer |
+| `drbrain search <terms> --paper <id>` | Scope every leg to one or more papers |
+| `drbrain search <terms> --source all\|arxiv` | Add external (arXiv) rows |
+| `drbrain search <terms> --json` | `{query, engine, route, generations, legs, evidence}` |
+| `drbrain library search <terms> [--type T]` | Bibliographic BM25 search (historical `search`) |
+| `drbrain ask "<question>"` | Natural language answer over the same chain |
+| `drbrain query <terms>` | Historical fusion query (hidden alias of `search`) |

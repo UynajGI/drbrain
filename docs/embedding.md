@@ -13,11 +13,11 @@ The embedding service builds vectors for PageIndex/tree evidence and supports re
 ## Operations
 
 ```bash
-uv run drbrain embed --tree
-uv run drbrain query "topic" --engine llamaindex
+uv run drbrain index build            # tree text embeddings are part of the index build
+uv run drbrain search "topic"         # evidence retrieval over the enabled legs
 ```
 
-Configure the provider, model, endpoint, batch size, and dimension in the `embedding` section. The standalone `scripts/serve_embedding.py` provides a local OpenAI-compatible service when embedding work should be isolated from the CLI process.
+The historical `embed --tree` (tree text vectors) and `query --engine llamaindex` remain available as hidden compatibility aliases. Configure the provider, model, endpoint, batch size, and dimension in the `embed` section. The standalone `scripts/serve_embedding.py` provides a local OpenAI-compatible service when embedding work should be isolated from the CLI process.
 
 ## Failure behavior
 

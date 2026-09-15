@@ -55,15 +55,19 @@ drbrain setup          # 交互式向导（中英双语）
 `%USERPROFILE%/DrBrain`）。
 
 ```bash
-# Ingest → build → embed → closure（全增量）
+# 主线：ingest → index build → search / ask（全增量）
 drbrain fetch "10.1038/nature14539"     # 按 DOI 抓取论文
-drbrain build                           # 5 阶段 LLM 抽取
-drbrain embed                           # TransE 图嵌入
-drbrain closure                         # 规则推理
+drbrain index build                     # 准备并发布可检索索引
+drbrain search "kagome 平带"             # 证据检索（不生成回答）
 drbrain ask "深度学习还有哪些未解决的问题？"
 
+# 可选知识图谱分支
+drbrain graph build                     # 5 阶段 LLM 抽取
+drbrain graph embed                     # TransE 图嵌入
+drbrain graph closure                   # 规则推理
+
 # 或者一次性串起来
-drbrain pipeline --preset full
+drbrain pipeline --preset full-rag
 ```
 
 > `pipx install drbrain` 和 `uv tool install drbrain` 将在 beta 版提供。
@@ -75,12 +79,12 @@ drbrain pipeline --preset full
 | 分类 | 命令 | 说明 |
 |------|------|------|
 | **入库** | `ingest` `fetch` | PDF 经 MinerU 解析 → 5 源元数据交叉验证（arXiv、CrossRef、S2、OpenAlex、DeepXiv）→ LLM 树结构化 |
-| **构建** | `build` | 5 阶段概念抽取（增量）：本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
-| **检索** | `query` `search` | BM25 关键词搜索 + PageRank 加权、有向图遍历、混合排序 |
-| **RAG 检索** | `hybrid` `rag` | 混合 RAG 引擎（SQL 快照 / LlamaIndex）：BM25 + 向量 + 树检索 RRF 融合、重排、`drbrain rag prepare/index/eval` |
-| **知识图谱** | `closure` | 规则闭包（增量）：8+4 条推理规则、t-norm 传递接地、TransE 嵌入链接预测 |
+| **图谱构建** | `graph build` | 5 阶段概念抽取（增量）：本体扩展 → 实体抽取（10 路并发）→ 关系抽取 → 共指消解 → 迭代精修 |
+| **检索** | `search` `library search` | `search` 三路证据检索（BM25 + 向量 + tree，返回来源/正文定位/路由/版本，不生成回答）；`library search` 保留书目关键词检索 |
+| **RAG 检索** | `index` `ask` `rag eval` | 混合 RAG 引擎（SQL 快照 / LlamaIndex）：BM25 + 向量 + 树检索 RRF 融合、重排、`drbrain index build/status/verify`、`drbrain ask` |
+| **知识图谱** | `graph closure` | 规则闭包（增量）：8+4 条推理规则、t-norm 传递接地、TransE 嵌入链接预测 |
 | **概念图** | `cg` | 语料级概念共现图：build/embed/neighbors、UMAP 交互地图导出、防泄漏年度趋势预测 |
-| **嵌入** | `embed` | TransE 图嵌入（增量微调）或 PageIndex/RAPTOR 文本向量 |
+| **嵌入** | `graph embed` | TransE 图嵌入（增量微调）；文本向量由 `drbrain index build` 准备 |
 | **推理** | `reason` | 符号驱动发现：因果链、置信度传播、反事实分析、跨域同构、假设生成 |
 | **工作流** | `reason --workflow` | 7 条结构化推理管线：review、gap-analysis、impact、compare、frontier、lineage、paradigm |
 | **会话** | `session` | 持久推理上下文：数据库多轮会话、构建上下文注入、跨调用连续性 |

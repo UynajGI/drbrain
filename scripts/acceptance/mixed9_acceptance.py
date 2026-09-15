@@ -9,7 +9,7 @@ below shells out to the real ``drbrain`` CLI and records a JSON report:
   plan       -- ``storage migrate --dry-run`` twice (determinism)
   apply      -- ``storage migrate --apply`` then again (idempotent no-op)
   verify     -- post-migration reconciliation (counts, hashes, no fake ready)
-  prepare    -- ``rag prepare --unified`` (incremental)
+  prepare    -- ``index build`` (incremental)
   ask        -- one question per format; answer sources must be verifiable
 
 Usage:
@@ -162,7 +162,7 @@ def step_verify(report: dict, root: Path) -> None:
 def step_prepare(report: dict, root: Path) -> None:
     outcome = json_tail(
         drbrain(
-            ["--config", "config.t48.yaml", "rag", "prepare", "--unified", "--json"],
+            ["--config", "config.t48.yaml", "index", "build", "--json"],
             root=root,
         )
     )

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -116,11 +117,32 @@ def _vector_backlog(db: Any, profile: Any) -> dict[str, Any]:
 # ── the historical incremental BM25 stage (bare ``drbrain index``) ───────────
 
 
+@contextmanager
+def _open_database(cfg: Any, db_path: str = ""):
+    """Open the configured database, or an explicit shard override.
+
+    The shard pipelines keep their per-shard databases; ``index build --db``
+    targets one exactly like the historical ``embed --tree --db`` did.
+    """
+    if str(db_path or "").strip():
+        from drbrain.storage.database import Database
+
+        db = Database(db_path)
+        try:
+            yield db
+        finally:
+            db.close()
+        return
+    with open_db(cfg) as db:
+        yield db
+
+
 def rebuild_lexical_index(
     cfg: Any,
     *,
     rebuild: bool = False,
     notify: Callable[[str], None] | None = None,
+    db_path: str = "",
 ) -> dict[str, Any]:
     """Rebuild the lexical BM25 index (the pre-``index build`` behavior).
 
@@ -128,8 +150,9 @@ def rebuild_lexical_index(
     last successful run.  Returns the historical JSON shape — ``{"documents",
     "indexed"}`` (plus ``"up_to_date": True`` on the skip path) — so both the
     legacy command and ``index build`` report the same lexical stage result.
+    ``db_path`` overrides the configured database (shard pipelines).
     """
-    with open_db(cfg) as db:
+    with _open_database(cfg, db_path) as db:
         from drbrain.query.bm25 import build_bm25_index
 
         if not rebuild:
@@ -199,6 +222,9 @@ def index_build_cmd(
         "--tree-storage",
         help="Storage root for unified tree generations (default: data/tree)",
     ),
+    db_path: str = typer.Option(
+        "", "--db", help="Override db path (shard databases; default cfg db.path)"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ) -> None:
     """Prepare every enabled retrieval leg and publish a queryable generation.
@@ -213,11 +239,13 @@ def index_build_cmd(
     _force = bool(_runtime_option(force, False))
     _json = bool(_runtime_option(json_output, False))
     tree_storage = str(_runtime_option(tree_storage, "") or "")
+    db_path = str(_runtime_option(db_path, "") or "")
 
     lexical = rebuild_lexical_index(
         cfg,
         rebuild=_force,
         notify=None if _json else typer.echo,
+        db_path=db_path,
     )
 
     from drbrain.rag.config import get_llamaindex_config
@@ -235,7 +263,7 @@ def index_build_cmd(
 
     root = _tree_storage_root(ctx, cfg, tree_storage)
     started = time.monotonic()
-    with open_db(cfg) as db:
+    with _open_database(cfg, db_path) as db:
         outcome = prepare_unified_index(
             db,
             storage_dir=root,

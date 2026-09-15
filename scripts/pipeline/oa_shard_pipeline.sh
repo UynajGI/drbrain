@@ -58,12 +58,12 @@ for line in open('$INGEST_MANIFEST'):
     except Exception: pass
 print(','.join(ids))
 " 2>/dev/null)
-log "stage 3/3 embed ($(( $(echo "$PIDS" | tr ',' '\n' | wc -l) )) papers)..."
-uv run drbrain --config "$EMBED_CFG" embed --tree --db "$SHARD_DB" --papers "$PIDS" >> "$LOG" 2>&1
+log "stage 3/3 index build ($(( $(echo "$PIDS" | tr ',' '\n' | wc -l) )) papers)..."
+uv run drbrain --config "$EMBED_CFG" index build --db "$SHARD_DB" >> "$LOG" 2>&1
 EMBED_EXIT=$?
-log "stage 3/3 embed exit=$EMBED_EXIT"
+log "stage 3/3 index build exit=$EMBED_EXIT"
 if [ "$EMBED_EXIT" -ne 0 ]; then
-  log "embed failed — 不 touch DONE，重启脚本续跑"
+  log "index build failed — 不 touch DONE，重启脚本续跑"
   exit 1
 fi
 

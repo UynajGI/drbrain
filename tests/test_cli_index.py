@@ -62,9 +62,10 @@ def _write_config(tmp_path: Path, **llamaindex) -> None:
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
 
-def _write_corpus(tmp_path: Path, *local_ids: str) -> None:
+def _write_corpus(tmp_path: Path, *local_ids: str, db_path: Path | None = None) -> None:
     """Register canonical content so the corpus counts as *ingested*."""
-    db_path = tmp_path / "data" / "drbrain.db"
+    if db_path is None:
+        db_path = tmp_path / "data" / "drbrain.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = Database(db_path)
     try:
@@ -221,6 +222,26 @@ class TestIndexBuild:
         assert "Index build (incremental): ok" in result.stdout
         for stage in ("lexical", "fts", "vectors", "hierarchy", "publication"):
             assert stage in result.stdout
+
+    def test_build_db_override_targets_a_shard_database(self, tmp_path, monkeypatch):
+        """``index build --db`` keeps the per-shard pipelines on the main line."""
+        _write_config(tmp_path)
+        shard = tmp_path / "shards" / "shard0.db"
+        _write_corpus(tmp_path, "s1", db_path=shard)
+        _patch_build(monkeypatch)
+
+        result = _invoke(tmp_path, "index", "build", "--db", str(shard), "--json")
+
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["fts"]["blocks"] == 8
+        assert payload["lexical"]["documents"] == 1
+        # The configured database was not the target.
+        db = Database(tmp_path / "data" / "drbrain.db")
+        try:
+            assert db.get_last_run("index") is None
+        finally:
+            db.close()
 
     def test_build_without_an_embedding_profile_fails_closed(self, tmp_path):
         _write_config(tmp_path)
