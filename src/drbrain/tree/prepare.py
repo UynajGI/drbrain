@@ -495,26 +495,26 @@ def _prepare_hierarchy(
     )
     signature = _hierarchy_signature(db, builder_config, profile)
     previous = db.get_vector_metadata(HIERARCHY_WATERMARK)
-    if not force and previous == signature:
-        return {
-            "status": "complete",
-            "reason": "signature-unchanged",
-            "frontier": len(db.leaves_missing_parent()),
-            "created": 0,
-        }
-    # Retire every ready region built under a different contract: a region node
-    # id embeds the contract digest, so the superseded nodes are stale by
-    # construction and must not keep certifying the tree.  This must **not**
-    # depend on the watermark — an old library, a killed build or a previous
-    # partial run leaves it unset while another contract's regions are already
-    # on disk, and retiring them is also what puts their leaves back into the
-    # frontier below.
+    # Retire every ready region built under a different contract before the
+    # unchanged-signature return: a region node id embeds the contract digest,
+    # so superseded nodes are stale by construction and must not keep certifying
+    # the tree.  This must **not** depend on the watermark — an old library, a
+    # killed build, a previous partial run or a rolled-back deployment can leave
+    # the watermark equal to the current signature (or unset) while another
+    # contract's regions are still ready.  Steady state costs one read.
     retired = db.retire_regions_with_other_contract(_contract_json(builder_config.contract))
     if retired:
         logger.info("[tree] retired {} stale region(s) for the current contract", len(retired))
         db.retire_node_vectors(retired)
         if store is not None:
             store.delete(retired)
+    if not force and previous == signature and not db.leaves_missing_parent():
+        return {
+            "status": "complete",
+            "reason": "signature-unchanged",
+            "frontier": 0,
+            "created": 0,
+        }
     frontier = (
         [str(node) for node in seed_nodes] if seed_nodes is not None else db.leaves_missing_parent()
     )
