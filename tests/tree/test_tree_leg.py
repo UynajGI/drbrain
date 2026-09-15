@@ -181,6 +181,79 @@ class TestUnifiedTreeLeg:
         assert unknown.status == "empty"
 
 
+class TestUnifiedCorpusThreeLegs:
+    """Without ``drbrain_rag.db`` the main store serves all three legs.
+
+    ``index build`` publishes one generation (canonical FTS + shared vectors +
+    tree); bm25/vector/tree then read that one publication, so every row
+    carries the same generation id and the main-store leaf identity instead of
+    a legacy projection.
+    """
+
+    def _detached(self, prepared, monkeypatch):
+        import dataclasses
+        from pathlib import Path
+
+        from drbrain.rag import index_generations, sql_retrie
+
+        absent = Path(prepared.cfg.llamaindex.tree_storage).parent / "absent_rag.db"
+        monkeypatch.setattr(sql_retrie, "_default_rag_db", lambda cfg: absent)
+        monkeypatch.setattr(index_generations, "capture_index_generation", lambda cfg: None)
+        li = prepared.cfg.llamaindex
+        return dataclasses.replace(
+            prepared.cfg,
+            llamaindex=dataclasses.replace(li, retrievers=["bm25", "vector", "tree"]),
+        )
+
+    def test_vector_and_tree_are_served_from_one_publication(self, prepared, monkeypatch):
+        from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+        route_cfg = self._detached(prepared, monkeypatch)
+        rows = retrieve_documents_sql(route_cfg, prepared.db, THEME, top_k=5)
+
+        assert rows, "the unified store must answer without the legacy corpus"
+        leg_status = {leg.source: leg.status for leg in rows.result.legs}
+        assert leg_status.get("bm25") in {"ok", "empty"}
+        assert leg_status.get("vector") == "ok"
+        assert leg_status.get("tree") == "ok"
+        assert rows.result.capabilities["backend"] == "unified"
+        assert rows.result.capabilities["vector_recall"] == "shared_ann_leaf"
+        assert rows.result.generation == prepared.tree.published
+        assert {row["generation"] for row in rows} == {prepared.tree.published}
+        for row in rows:
+            node = prepared.db.get_tree_node(row["node_id"])
+            assert node is not None and node["kind"] == "leaf"
+            assert row["content_checksum"]
+            assert row["legs"], row
+
+    def test_bm25_reads_the_canonical_fts(self, prepared, monkeypatch):
+        from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+        route_cfg = self._detached(prepared, monkeypatch)
+        rows = retrieve_documents_sql(route_cfg, prepared.db, "alpha7", top_k=5)
+
+        assert rows
+        bm25_rows = [row for row in rows if "bm25" in row["legs"]]
+        assert bm25_rows, [(leg.source, leg.status, leg.count) for leg in rows.result.legs]
+        # alpha is DOC_A: the bm25 leg must serve its own paper with a leaf key.
+        assert {row["paper_id"] for row in bm25_rows} == {"p1"}
+        for row in bm25_rows:
+            node = prepared.db.get_tree_node(row["node_id"])
+            assert node is not None and node["kind"] == "leaf"
+
+    def test_paper_scope_reaches_all_three_legs(self, prepared, monkeypatch):
+        from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+        route_cfg = self._detached(prepared, monkeypatch)
+        rows = retrieve_documents_sql(
+            route_cfg, prepared.db, THEME, top_k=5, filters={"paper_ids": ["p1"]}
+        )
+        assert rows
+        assert {row["paper_id"] for row in rows} == {"p1"}
+        for row in rows:
+            assert row["paper_id"] == "p1"
+
+
 class TestSqlTreeLeg:
     def _generation(self, prepared):
         from drbrain.rag.index_generations import capture_index_generation

@@ -144,6 +144,15 @@ def active_tree_generation(cfg: Any, storage_dir: str | Path | None = None) -> s
     return get_active_tree_generation(_tree_storage_root(cfg, storage_dir))
 
 
+def tree_storage_root(cfg: Any, storage_dir: str | Path | None = None) -> Path:
+    """The unified tree storage root this config resolves to (public seam).
+
+    Read-path helpers outside this module (the unified vector leg) must resolve
+    the exact directory the tree leg reads, so the resolution lives here once.
+    """
+    return _tree_storage_root(cfg, storage_dir)
+
+
 def resolve_navigation_planner(cfg: Any) -> tuple[Any, str]:
     """The chat-model planner when the chat role resolves, else deterministic.
 
