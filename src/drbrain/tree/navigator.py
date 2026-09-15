@@ -294,7 +294,11 @@ class ChatActionPlanner:
         model: Any,
         *,
         system_prompt: str = DEFAULT_NAVIGATOR_PROMPT,
-        max_tokens: int = 512,
+        # Not a small budget on purpose: reasoning endpoints spend the output
+        # budget on hidden reasoning before the tool call, so a 512-token cap
+        # can return finish_reason=length with no action at all (verified
+        # against the configured DeepSeek role).
+        max_tokens: int = 2048,
         temperature: float = 0.2,
     ) -> None:
         self.model = model
@@ -325,7 +329,11 @@ class ChatActionPlanner:
             self._pending_tool_ids = []
             return NavAction("finish", reason="model-finished")
         call = result.tool_calls[0]
-        self._pending_tool_ids = [call.id or ""]
+        # Every tool_call in the assistant message needs a tool response before
+        # the next request — strict OpenAI-compatible endpoints reject an
+        # unanswered tool_call.  Only the first action is executed; observe()
+        # answers the rest with the one-action-per-round refusal.
+        self._pending_tool_ids = [str(item.id or "") for item in result.tool_calls]
         payload = dict(call.arguments_dict())
         payload["action"] = str(call.name or "").strip()
         try:

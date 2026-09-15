@@ -367,6 +367,64 @@ class TestChatPlanner:
         )
         assert result.planner == "ChatActionPlanner"
 
+    def test_every_tool_call_gets_a_response_before_the_next_request(self, layered):
+        """A multi-call answer is fully answered; strict endpoints 400 otherwise.
+
+        DeepSeek rejects a request whose assistant message carries tool_calls
+        that lack tool responses ("insufficient tool messages following
+        tool_calls"), so every id must be answered — the executed action's
+        result for the first, the one-action-per-round refusal for the rest.
+        """
+        import json as _json
+
+        db, leaves, mid_a, mid_b, top = layered
+        requests: list[dict] = []
+        multi = {
+            "text": "",
+            "tool_calls": [
+                {
+                    "id": "call-a",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": _json.dumps({"node_id": top.node_id}),
+                    },
+                },
+                {
+                    "id": "call-b",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": _json.dumps({"node_id": mid_a.node_id}),
+                    },
+                },
+            ],
+            "finish_reason": "tool_calls",
+        }
+        script = [
+            multi,
+            _tool_call("read", {"node_id": leaves[0].node_id}, "call-c"),
+            {"text": "done", "tool_calls": [], "finish_reason": "stop"},
+        ]
+
+        def transport(request):
+            requests.append(dict(request))
+            return script[len(requests) - 1]
+
+        result = TreeNavigator(db).navigate(
+            "q", [_candidate(top)], planner=ChatActionPlanner(self._model(transport))
+        )
+
+        assert result.status == "ok"
+        second = [message for message in requests[1]["messages"] if message.get("role") == "tool"]
+        answered = {message.get("tool_call_id") for message in second}
+        assert {"call-a", "call-b"} <= answered, second
+        refusal = next(message for message in second if message.get("tool_call_id") == "call-b")
+        assert "one action per round" in refusal["content"]
+        # Only the first call's action ran; the refused sibling was not read.
+        assert mid_a.node_id not in {item["node_id"] for item in result.evidence}
+        assert [item["node_id"] for item in result.evidence] == [top.node_id, leaves[0].node_id]
+
     def test_text_only_answer_ends_the_walk_without_leaf_evidence(self, layered):
         db, leaves, mid_a, mid_b, top = layered
         script = [
