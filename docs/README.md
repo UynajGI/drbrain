@@ -19,6 +19,12 @@
 - [结构化工作流](workflows.md)
 - [持久化会话](sessions.md)
 
+## 统一 tree RAG
+
+- [设计](unified-tree-rag-design.md)
+- [原子化实施计划（含 2026-09-15 Round 2 门状态更新）](unified-tree-atomic-plan.md)
+- [冻结算法协议（normative，勿改）](unified-tree-algorithms.md)
+
 ## 数据与模型能力
 
 - [Embedding](embedding.md)

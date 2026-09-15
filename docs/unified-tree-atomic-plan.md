@@ -6,6 +6,13 @@
 
 **2026-09-15 按审阅发现 8 更正验收记录**：T48 的 pass 记录自证 `ask.route = "bm25 ok; vector/tree unavailable until T61"`，回答未经统一索引的 vector/tree 路，不能算通过 → 任务重新打开（`acceptance.jsonl` 已追加更正记录）；T56/T57 中标注为 RAPTOR 的对照臂实际检索统一树构建产物 → 该臂改名为统一树检索消融（`unified_tree_flat`），`raptor_collapsed` 改为来源指纹门控（缺指纹即 fail-closed），真实 RAPTOR 对照建立前两项均不勾选（详见 T56/T57/T62 记录）。G5 门（T43–T48）随 T48 重新打开，标记待复核。
 
+**2026-09-15 Round 2：审阅 8 条发现全部修复并合入 `phy`（`51c6507`→`f6ddd50`）**。每条都有"先失败后通过"的负向对照，另有四轮独立对抗复核（报告 `/tmp/unified-tree-fix-audit.md`：V1/V2/V3 + 二次复核），其中两条真洞（水位为空不 retire、早返回在 retire 之前）由复核发现并修掉。据此更新门状态：
+- **T43/T46 复核通过**：生产 tree 路读统一 generation（旧 PageIndex ANN 经 mock 实验确认零访问），三路同 node_id/同 content_revision，缺 generation fail-closed；无 SQL corpus 时 tree-only 直读 generation、其余腿报 `source_unavailable`。
+- **T29/T30/T34/T35/T36/T40/T42** 的契约测试复跑通过、且经对抗复核（结构重权真的改变成员、向量只算一次、失败不再算 complete、身份变化失效重建、region→真叶 evidence、多父叶 via 完整）——但**真实模型 CLI 验收仍缺**（`127.0.0.1:8010` 不可达），故仍记 partial。
+- **T22/T48 保持未通过**：T48 需活 index 模型重验；ingest 的"不再写 per-paper MD/tree"已落地（含 ingest-link），但 T14–T16 消费方切换未完成（清单见 `docs/rag-layer-completion.md` 与 memory 的下一轮工作单）。
+- **T47 仍 blocked**（index 端点不可达）；**T56 真 RAPTOR 对照未建**（`raptor_collapsed` 现在只接受带来源指纹的独立产物，缺指纹即 fail-closed）。
+- 详细的下一轮清单（P0 audit 误报 → P1 T14–T16 → P2 读路径内容完整性/ablations 保真 → P3 规模）见项目 memory（`project/unified-tree-plan-progress.md`，跨会话可读）；对抗复核的原始报告是会话产物（`/tmp/unified-tree-fix-audit.md`，重启可能丢，结论已进 memory）。
+
 ## 执行规则
 
 - 一个任务对应一个可观察的行为变化，先写能失败的契约测试，再实现，再保存验收证据；默认一个独立提交。不能以“主体完成”勾选任务。

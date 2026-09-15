@@ -45,22 +45,28 @@ The RAG layer combines BM25, vector, PageIndex/tree, RAPTOR, and graph-aware sou
 
 SQLite remains the source of truth for metadata, projected text, FTS5, claims,
 and immutable RAG snapshots.  The vector leg uses a rebuildable Zvec HNSW
-sidecar in production (`retrieval.vector_backend: zvec`); `rag prepare` copies
-the sidecar into the same generation directory as `corpus.sqlite3` and records
-its backend, dimension, and count in `manifest.json`.  Queries pin both stores
-to the selected generation.  The `sqlite` backend is retained for compatibility
-and small test fixtures, while a missing Zvec sidecar is reported as a failed
-leg instead of silently changing the retrieval plan.
+sidecar in production (`retrieval.vector_backend: zvec`).  `rag prepare`
+**defaults to the unified index** (canonical FTS + one shared vector store +
+hierarchy + one published tree generation); the deprecated `--legacy-sql` path
+still writes the derived `corpus.sqlite3` plus a generation-scoped sidecar copy
+and records its backend, dimension, and count in `manifest.json` — queries pin
+both stores to the selected generation.  The `sqlite` backend is retained for
+compatibility and small test fixtures, while a missing Zvec sidecar is reported
+as a failed leg instead of silently changing the retrieval plan.
 
 The complete text-RAG CLI path is:
 
 ```text
-material → ingest (parser + generic IDs + PageIndex tree)
-             → embed --tree (BGE node vectors + optional RAPTOR summaries)
-             → rag prepare (derived SQLite + generation-scoped Zvec)
-             → ask/query (BM25 + Zvec + PageIndex + optional legs)
+material → ingest (parser + generic IDs + canonical body: revisions/blocks/leaves)
+             → rag prepare (default unified index: canonical FTS + shared vectors
+                            + hierarchy → one published generation)
+             → ask/query (BM25 + shared Zvec + unified tree + optional legs)
              → RRF/filter/rerank → evidence provenance → DeepSeek synthesis
 ```
+
+Legacy papers (with per-paper `raw.md`/`tree.json`) stay readable: `embed --tree`
+and the `--legacy-sql` prepare path keep the derived SQLite working copy for
+deployments whose readers have not migrated yet.
 
 The alternate `llamaindex` RAG backend is published by the same `rag prepare`
 command (or `rag index`): LlamaIndex sets `Settings.embed_model` to DrBrain's

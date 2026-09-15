@@ -47,7 +47,9 @@ uv run drbrain query "your research question"
 ```
 
 For semantic retrieval, configure an embedding provider and run
-`drbrain embed --tree` followed by `drbrain rag prepare`. For the optional
+`drbrain rag prepare` — the default unified index builds canonical FTS, the shared
+vector store, and the document hierarchy in one incremental operation (legacy papers
+can still use `drbrain embed --tree` with `rag prepare --legacy-sql`). For the optional
 knowledge-graph branch, run `drbrain embed --graph` and then `drbrain closure`
 after the `build` step.
 

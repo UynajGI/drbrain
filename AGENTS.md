@@ -230,7 +230,7 @@ DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid r
 
 ### Pipeline
 
-**Ingest** (`drbrain ingest`): PDF→markdown (MinerU CLI, fallback pymupdf4llm). 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) for metadata + venue (journal/publisher/citation_count). LLM tree-structures markdown → `tree.json`. Status: `uploaded`.
+**Ingest** (`drbrain ingest`): PDF→markdown (MinerU CLI, fallback pymupdf4llm). 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) for metadata + venue (journal/publisher/citation_count). The body is registered **canonically** (`document_revisions` + `content_blocks` + one leaf per block) and that write is **required** — a canonical failure fails the paper instead of leaving a record without its body. `data/papers/<id>/` keeps only the original material + attachments: no `raw.md`/`tree.json` is written for new papers (the hierarchy is built by `rag prepare`); legacy files stay readable for old papers. Status: `uploaded`.
 
 **Build** (`drbrain build [id...]`): 5-stage LLM extraction — ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → refinement (`--skip-refine` to skip). Status: `extracted`.
 
@@ -245,6 +245,7 @@ DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid r
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
 | Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`, `src/drbrain/services/enrich.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex, CrossRef backfill + scrub detection                                                  |
 | Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
+| Unified tree | `src/drbrain/tree/` (contracts.py, posteriors.py, affinity.py, assign.py, clustering.py, builder.py, prepare.py, summary.py, vector_store.py, search.py, navigator.py, leg.py, reading.py, publish.py, cost.py, proposals.py, jobs.py, vector_migration.py) | Unified-tree RAG core — frozen two-stage assignment with structural reweighting (λ), one shared Zvec store (each leaf/region vector computed once), bounded-round builder with cost gate, `rag prepare` stages (FTS/vectors/hierarchy; deployment-identity signature + stale-contract retirement), request-scoped model-driven navigator (ReadReceipt-only evidence), read-only generation reader (`leg.py`/`reading.py`) behind the production tree leg, immutable generation publication. Protocol: `docs/unified-tree-algorithms.md` |
 | RAG          | `src/drbrain/rag/` (engine.py, fusion.py, retrievers.py, indexer.py, agent.py, llm.py, rerank.py, eval.py, authority.py, status.py, mcp_tools.py)                                                                                                      | LlamaIndex RAG layer — 5-leg fusion retrieval (bm25/vector/tree/graph/raptor), FunctionAgent (7+1 graph tools + MCP tools), Qwen3-Reranker, REFINE synthesis, eval (MRR/RAGAS); Epistemic Layer: authority ranking + conflict resolution, retrieval status/failure semantics, ACL post-filter                                                            |
 | Plugins      | `src/drbrain/plugins/` (protocol.py, manifest.py, conformance.py, registry.py, backends.py) | Model-as-Tool interface abstraction — Plugin/PluginResult/ResultStatus descriptors, `abi_version` fail-closed negotiation, `PLUGIN_MANIFEST` declaration style + conformance suite (`python -m drbrain.plugins.conformance`), PluginRegistry (register/discover/call/jobs/to_llamaindex_tools); drbrain ships only the interface, concrete plugins load externally at runtime. Standard: `docs/plugins.md` |
 | Loop         | `src/drbrain/loop/` (workflow.py, director.py, discussion.py, roles.py, events.py) | Research loop 编排闭环 — LlamaIndex Workflow 13 节点（检索→抽取→gap→假设→讨论→实算→核验→沉淀→报告）+ 条件循环；agent-backed 节点 4 角色 analyst/critic/compute/verifier（`loop/roles.py`）+ 讨论层（`loop/discussion.py` 消息板 MessageBoard + 队列 ResearchQueue，对齐 AutoScientists Discussion-Before-Queuing 非作者门 + queue claim）+ Supports/Refutes/Orthogonal 代码化 + 实算门（`job_id` 作业文件校验）；settle 闭环沉淀写回 claims 表 |
@@ -258,7 +259,7 @@ DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid r
 data/
 ├── spool/inbox/        PDFs awaiting ingest
 ├── spool/pending/      Failed ingests
-├── papers/<id>/        source.pdf, raw.md, tree.json, images/
+├── papers/<id>/        source.pdf, images/ (body lives in the canonical store; legacy raw.md/tree.json only for old papers)
 ├── drbrain.db          SQLite (WAL mode, schema_versions)
 ├── metrics.db          LLM token tracking + user behavior analytics
 ├── cache/              API cache (rebuildable)
@@ -308,7 +309,10 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 | [Sessions](docs/sessions.md) | Persistent SessionAgent deep dive |
 | [Embedding](docs/embedding.md) | local / openai-compat / none provider setup |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
-| [Glossary](docs/glossary.md) | Terminology reference |
+| [Glossary](docs/glossary.md) | Terminology reference (incl. unified-tree terms: generation, leaf/region, λ weighting, ReadReceipt, tree leg) |
+| [Unified tree RAG design](docs/unified-tree-rag-design.md) | Storage/retrieval design for the unified tree (canonical text, one vector store, regions) |
+| [Unified tree atomic plan](docs/unified-tree-atomic-plan.md) | 64-task plan + the 2026-09-15 Round 2 gate-status note |
+| [Unified tree algorithms](docs/unified-tree-algorithms.md) | Frozen two-stage protocol (normative — do not edit) |
 | [Skills](docs/skills.md) | 27 agent skills → CLI command mapping |
 | [Contributing](docs/contributing.md) | Codebase tour, PR process, testing guide |
 | [CHANGELOG](CHANGELOG.md) | Version history |

@@ -7,11 +7,11 @@ All commands are invoked as `uv run drbrain COMMAND`. Use `--help` on any comman
 | Command | Purpose |
 | --- | --- |
 | `setup [--quick]` | Create configuration, directories, and validate the environment |
-| `ingest PATH...` | Parse PDF/Markdown/text/LaTeX into the paper store |
+| `ingest PATH...` | Parse PDF/Markdown/text/LaTeX into the paper store (canonical body is required; no per-paper MD/tree for new papers) |
 | `fetch IDENTIFIER` | Find and download an open paper, then ingest it |
 | `batch-fetch FILE` | Fetch identifiers from a list |
 | `import FILE` | Import Zotero, BibTeX, or Endnote records |
-| `translate` | Translate stored Markdown with resume support |
+| `translate` | Translate a stored paper with resume support (legacy `raw.md` reader; canonical-only support pending) |
 
 ## Retrieval and research
 
@@ -25,6 +25,17 @@ All commands are invoked as `uv run drbrain COMMAND`. Use `--help` on any comman
 | `fsearch TEXT` | Federated local and arXiv search |
 | `frontier` | Report active gaps, debates, and frontier signals |
 | `landscape` | Summarize domain timeline and open problems |
+
+## RAG index (unified tree)
+
+| Command | Purpose |
+| --- | --- |
+| `rag prepare` | Build and publish the unified tree index (canonical FTS + shared vectors + hierarchy) in one incremental operation — this is the default; `--legacy-sql` keeps the deprecated derived SQLite working copy (warning on stderr) and `--paper` is rejected here (use `rag index --paper`) |
+| `rag index` | Publish the configured LlamaIndex/PageIndex backend under `llamaindex.storage_dir` |
+| `rag health` | Read-only readiness check (no query, embedding, or write) |
+| `rag baselines` | Evaluation-only baselines over a golden split: `unified_tree_flat` (unified-tree retrieval ablation) and provenance-gated `raptor_collapsed` (fails closed without an independent RAPTOR build fingerprint) |
+| `rag eval` | Golden-set evaluation (retriever HitRate/MRR and/or RAGAS-style) |
+| `rag pageindex-index` / `rag pageindex-chat` | PageIndex native filesystem materialisation / per-paper chat |
 
 ## Build and maintenance
 
