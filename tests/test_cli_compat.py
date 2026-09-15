@@ -13,6 +13,7 @@ hides the historical index entries.  These tests pin both sides:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -23,6 +24,14 @@ from typer.testing import CliRunner
 from drbrain.cli.main import app
 
 runner = CliRunner()
+
+# Help output may carry ANSI styling (some CI environments force colours), so
+# text assertions must run on the plain rendering.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def _write_config(tmp_path: Path) -> None:
@@ -62,7 +71,7 @@ class TestGraphNamespace:
         result = _invoke(tmp_path, "graph", "closure", "--json")
         assert result.exit_code == 0, result.stderr
         payload = json.loads(result.stdout)
-        assert isinstance(payload, (dict, list))
+        assert isinstance(payload, dict | list)
 
     def test_top_level_pipeline_aliases_are_hidden_and_notice_migration(self, tmp_path):
         _write_config(tmp_path)
@@ -94,7 +103,7 @@ class TestRagNamespace:
     def test_rag_help_hides_the_index_aliases(self):
         result = runner.invoke(app, ["rag", "--help"])
         assert result.exit_code == 0
-        lines = [line.strip("│ ").strip() for line in result.stdout.splitlines()]
+        lines = [line.strip("│ ").strip() for line in _plain(result.stdout).splitlines()]
         for hidden in ("prepare", "index", "health"):
             assert not any(line.startswith(hidden + " ") for line in lines), hidden
         for visible in ("eval", "baselines", "pageindex-index", "pageindex-chat"):

@@ -238,7 +238,7 @@ def _affinity_without(
     source: SourceSpan | SourceProfile,
     picture: ClusterPicture,
     own_parts: Sequence[tuple[str, tuple[str, ...], float]],
-    path_sums: Mapping[tuple[str, Mapping[tuple[str, ...], float]]],
+    path_sums: Mapping[str, Mapping[tuple[str, ...], float]],
 ) -> float:
     """Affinity for one row against a picture that excludes the row itself."""
     own_total = 0.0
@@ -293,7 +293,7 @@ def affinity_matrix(
     components = stage.component_ids
     zero_row = tuple(0.0 for _ in components)
     full = build_pictures(stage, sources)
-    path_sums: dict[str, dict[tuple[str, ...], float]] = {}
+    path_sums: dict[str, dict[str, dict[tuple[str, ...], float]]] = {}
     own_rows: list[dict[str, list[tuple[str, tuple[str, ...], float]]]] = []
     for row_id, row in zip(stage.row_ids, stage.probs):
         source = sources.get(row_id)

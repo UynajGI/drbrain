@@ -11,6 +11,7 @@ read, and bare ``drbrain index`` keeps its historical JSON/exit contract.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -24,6 +25,15 @@ from drbrain.services.canonical_content import write_canonical_content
 from drbrain.storage.database import Database
 
 runner = CliRunner()
+
+# Usage errors may carry ANSI styling (some CI environments force colours), so
+# text assertions must run on the plain rendering.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
+
 
 DIMENSION = 3
 
@@ -300,7 +310,7 @@ class TestIndexBuild:
         result = _invoke(tmp_path, "index", "build", "--db", str(tmp_path / "shard.db"), "--json")
 
         assert result.exit_code == 2
-        assert "--db" in result.output
+        assert "--db" in _plain(result.output)
 
     def test_build_does_not_touch_the_llamaindex_engine_path(self, tmp_path, monkeypatch):
         """`index build` serves the main corpus; `rag index` owns that engine.

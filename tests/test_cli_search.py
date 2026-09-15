@@ -13,6 +13,7 @@ the missing-index remedy, and the untouched legacy JSON shapes.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest import mock
 
@@ -23,6 +24,14 @@ from drbrain.cli.main import app
 from drbrain.storage.database import Database
 
 runner = CliRunner()
+
+# Usage errors may carry ANSI styling (some CI environments force colours), so
+# text assertions must run on the plain rendering.
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def _write_config(tmp_path: Path, *, retrievers=None) -> None:
@@ -198,7 +207,7 @@ class TestSearchContract:
         _write_config(tmp_path)
         result = _invoke(tmp_path, "search", "q", "--source", "web")
         assert result.exit_code == 2
-        assert "--source" in result.output
+        assert "--source" in _plain(result.output)
 
 
 class TestSearchExternalSource:
