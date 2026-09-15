@@ -30,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -91,6 +93,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The unified-tree tests load the pinned vendored sources
+          # (vendor/raptor, vendor/pageindex); a plain checkout leaves them
+          # empty and the hierarchy stage fails closed.
+          submodules: recursive
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
