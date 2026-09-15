@@ -130,15 +130,26 @@ def build_migration_plan(
     db_file = Path(db_path)
     conn = open_readonly(db_file)
     try:
-        versions = [
-            int(row[0])
-            for row in conn.execute("SELECT version FROM schema_versions ORDER BY version").fetchall()
-        ]
+        # An uninitialized database (no schema yet) is a state, not a crash:
+        # the plan then derives from the directory tree alone, and ``--apply``
+        # initialises the schema before writing.
+        try:
+            versions = [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT version FROM schema_versions ORDER BY version"
+                ).fetchall()
+            ]
+        except sqlite3.OperationalError:
+            versions = []
         plan.schema_version = versions[-1] if versions else 0
-        papers = [
-            str(row[0])
-            for row in conn.execute("SELECT local_id FROM papers ORDER BY local_id").fetchall()
-        ]
+        try:
+            papers = [
+                str(row[0])
+                for row in conn.execute("SELECT local_id FROM papers ORDER BY local_id").fetchall()
+            ]
+        except sqlite3.OperationalError:
+            papers = []
         canonical: dict[str, dict[str, Any]] = {}
         if plan.schema_version >= 24:
             for row in conn.execute(
@@ -274,16 +285,23 @@ def _plan_item(
         )
 
     if canonical is not None and (canonical["state"] != "ready" or canonical["blocks"] == 0):
+        # Re-deriving needs a verified legacy source: the guard must follow the
+        # *source* file that will be imported, not the broken canonical hash.
+        source_hash = raw_hash if raw_hash else canonical["canonical_hash"]
         return MigrationItem(
             local_id,
             "recompute",
             "canonical-inconsistent"
             if canonical["blocks"] == 0
             else f"canonical-{canonical['state']}",
-            source="canonical",
-            expected_revision=canonical["revision"],
-            expected_hash=canonical["canonical_hash"],
-            detail={"blocks": canonical["blocks"]},
+            source="legacy-raw" if raw_hash else "canonical",
+            expected_revision=canonical["revision"] + 1 if raw_hash else None,
+            expected_hash=source_hash,
+            detail={
+                "blocks": canonical["blocks"],
+                "legacy_dir": str(directory) if directory is not None else "",
+                "legacy_source_hash": raw_hash,
+            },
         )
 
     if directory is None:
@@ -327,3 +345,236 @@ def _plan_item(
 def plan_rejects_concurrent_change(plan_item: MigrationItem, *, current_hash: str) -> bool:
     """Apply-time guard: the source must still hash to the planned value."""
     return bool(plan_item.expected_hash) and plan_item.expected_hash != current_hash
+
+
+# ── applying a plan (T51) ───────────────────────────────────────────
+
+
+@dataclass
+class ApplyOutcome:
+    job_id: str
+    applied: list[str] = field(default_factory=list)
+    reused: list[str] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    failed: list[dict[str, str]] = field(default_factory=list)
+    remaining: list[str] = field(default_factory=list)
+    created_records: list[str] = field(default_factory=list)
+    paused: bool = False
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "applied": list(self.applied),
+            "reused": list(self.reused),
+            "skipped": list(self.skipped),
+            "failed": list(self.failed),
+            "remaining": list(self.remaining),
+            "created_records": list(self.created_records),
+            "paused": self.paused,
+            "counts": {
+                "applied": len(self.applied),
+                "reused": len(self.reused),
+                "skipped": len(self.skipped),
+                "failed": len(self.failed),
+                "remaining": len(self.remaining),
+                "created_records": len(self.created_records),
+            },
+        }
+
+
+def _title_from_body(text: str) -> str:
+    """Best-effort title for a placeholder record (first non-empty line)."""
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped[:200]
+    return ""
+
+
+def _ensure_paper_record(db, local_id: str, text: str, outcome: ApplyOutcome) -> None:
+    """Create the minimal library record for a directory-only paper.
+
+    The plan classified this directory as an importable legacy source; the
+    record is created as a *placeholder* (never as a verified paper), so
+    nothing here invents provenance beyond what the directory provides.
+    """
+    if db.get_paper(local_id) is not None:
+        return
+    db.insert_paper(local_id, _title_from_body(text), None, "placeholder")
+    db.commit()
+    outcome.created_records.append(local_id)
+
+
+def _legacy_raw_path(root: Path, local_id: str) -> Path | None:
+    """Resolve the legacy raw.md for an item (canonical or legacy layout)."""
+    from drbrain.storage.paths import resolve_paper_dir
+
+    try:
+        directory = resolve_paper_dir(root, local_id)
+    except ValueError:
+        return None
+    if directory is None:
+        return None
+    candidate = directory / _LEGACY_RAW
+    return candidate if candidate.is_file() else None
+
+
+def _load_checkpoint(store, job_id: str, owner: str):
+    claim = store.claim(job_id, owner)
+    checkpoint = claim.checkpoint or {}
+    done = {str(item) for item in checkpoint.get("done", [])}
+    failed = {str(key): str(value) for key, value in (checkpoint.get("failed") or {}).items()}
+    return claim, done, failed
+
+
+def apply_migration_plan(
+    db,
+    plan: MigrationPlan,
+    *,
+    papers_root: str | Path,
+    job_store=None,
+    owner: str | None = None,
+    max_items: int | None = None,
+    count_tokens=None,
+    on_progress=None,
+) -> ApplyOutcome:
+    """Apply a verified plan one paper at a time, resumable and idempotent.
+
+    * the source file must still hash to the planned value or the item is
+      refused (``source-changed``) instead of importing unverified content;
+    * every paper is written in its own transaction, so one failure cannot
+      roll back another, and failures are recorded, never silently skipped;
+    * progress is checkpointed after each item: an interrupted run resumes
+      from the checkpoint and re-running a finished plan is a no-op;
+    * nothing in the legacy tree is moved or deleted.
+    """
+    import uuid as _uuid
+    from pathlib import Path as _Path
+
+    from drbrain.services.canonical_content import write_canonical_content
+    from drbrain.tree.jobs import TreeJobStore
+
+    root = _Path(papers_root)
+    store = job_store or TreeJobStore(db)
+    owner = owner or f"migrate-{_uuid.uuid4().hex[:8]}"
+    scope_key = plan.plan_id()
+    # Resume the newest unfinished job for this exact plan, else start one.
+    job_id = ""
+    for job in db.list_tree_jobs(limit=50):
+        if str(job["scope_key"]) == scope_key and str(job["state"]) in {
+            "pending",
+            "running",
+            "paused",
+        }:
+            job_id = str(job["job_id"])
+            break
+    if not job_id:
+        job_id = store.create(scope_key, kind="migrate")
+
+    claim, done, failed_map = _load_checkpoint(store, job_id, owner)
+    if not claim.granted:
+        raise RuntimeError(f"migration job {job_id} is already claimed by another worker")
+
+    outcome = ApplyOutcome(job_id=job_id)
+    outcome.failed = [
+        {"local_id": local_id, "error": reason} for local_id, reason in sorted(failed_map.items())
+    ]
+    processed = 0
+    for item in plan.items:
+        if item.local_id in done or item.local_id in failed_map:
+            if item.action == "reuse":
+                outcome.reused.append(item.local_id)
+            continue
+        if max_items is not None and processed >= max_items:
+            outcome.paused = True
+            break
+        processed += 1
+        if item.action in {"skip", "conflict"}:
+            outcome.skipped.append({"local_id": item.local_id, "reason": item.reason})
+            done.add(item.local_id)
+            if on_progress is not None:
+                on_progress(item, "skipped")
+            store.save_checkpoint(
+                job_id,
+                owner=owner,
+                checkpoint={"done": sorted(done), "failed": failed_map},
+            )
+            continue
+        if item.action == "reuse":
+            outcome.reused.append(item.local_id)
+            done.add(item.local_id)
+            store.save_checkpoint(
+                job_id,
+                owner=owner,
+                checkpoint={"done": sorted(done), "failed": failed_map},
+            )
+            continue
+
+        raw_path = _legacy_raw_path(root, item.local_id) if root.is_dir() else None
+        if raw_path is None:
+            outcome.failed.append({"local_id": item.local_id, "error": "no-legacy-source"})
+            failed_map[item.local_id] = "no-legacy-source"
+            store.save_checkpoint(
+                job_id,
+                owner=owner,
+                checkpoint={"done": sorted(done), "failed": failed_map},
+            )
+            continue
+        current_hash = _hash_file(raw_path)
+        if plan_rejects_concurrent_change(item, current_hash=current_hash):
+            outcome.failed.append({"local_id": item.local_id, "error": "source-changed"})
+            failed_map[item.local_id] = "source-changed"
+            store.save_checkpoint(
+                job_id,
+                owner=owner,
+                checkpoint={"done": sorted(done), "failed": failed_map},
+            )
+            if on_progress is not None:
+                on_progress(item, "source-changed")
+            continue
+
+        try:
+            text = raw_path.read_text(encoding="utf-8", errors="replace")
+            _ensure_paper_record(db, item.local_id, text, outcome)
+            result = write_canonical_content(
+                db,
+                item.local_id,
+                text,
+                media_type="md",
+                source_hash=current_hash,
+                parser="legacy-migration",
+                stale_previous=item.action == "recompute",
+            )
+            if not result.get("ok"):
+                raise RuntimeError(str(result.get("reason") or "write-failed"))
+        except Exception as exc:  # noqa: BLE001 - one paper must not stop the run
+            outcome.failed.append({"local_id": item.local_id, "error": str(exc)})
+            failed_map[item.local_id] = str(exc)
+        else:
+            if result.get("reused"):
+                outcome.reused.append(item.local_id)
+            else:
+                outcome.applied.append(item.local_id)
+            done.add(item.local_id)
+        store.save_checkpoint(
+            job_id,
+            owner=owner,
+            checkpoint={"done": sorted(done), "failed": failed_map},
+            metrics={"applied": len(outcome.applied), "failed": len(outcome.failed)},
+        )
+        if on_progress is not None:
+            on_progress(item, "applied" if item.local_id in done else "failed")
+    del count_tokens  # reserved for token-aware batching in T60
+
+    outcome.remaining = [
+        item.local_id
+        for item in plan.items
+        if item.local_id not in done and item.local_id not in failed_map
+    ]
+    if outcome.paused:
+        store.pause(job_id, reason="max_items reached")
+    elif outcome.remaining:
+        store.pause(job_id, reason="leftover items")
+    else:
+        store.finish(job_id, done=not outcome.failed, reason="applied")
+    return outcome

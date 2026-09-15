@@ -95,9 +95,12 @@ def storage_migrate_cmd(
     papers_root: str = typer.Option(
         "", "--papers-root", help="Legacy paper directories to plan against"
     ),
+    max_items: int = typer.Option(
+        0, "--max-items", help="Apply at most N items, then checkpoint and pause"
+    ),
 ):
-    """Plan the legacy migration deterministically (T50); apply lands later."""
-    from drbrain.services.storage_migration import build_migration_plan
+    """Plan the legacy migration; --apply executes it resumably (T50/T51)."""
+    from drbrain.services.storage_migration import apply_migration_plan, build_migration_plan
 
     cfg = _runtime_config(ctx)
     db_path = _db_path(ctx, cfg)
@@ -113,21 +116,46 @@ def storage_migrate_cmd(
         root = candidate if candidate.is_dir() else None
     plan = build_migration_plan(db_path=db_path, papers_root=root)
     payload = plan.to_json()
+    if dry_run:
+        if json_output:
+            typer.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            _print_plan_human(payload)
+        return
+
+    from drbrain.storage.database import Database
+
+    database = Database(db_path)
+    try:
+        outcome = apply_migration_plan(
+            database,
+            plan,
+            papers_root=root if root is not None else Path("."),
+            max_items=max_items or None,
+        )
+    finally:
+        database.close()
+    result = outcome.to_json()
     if json_output:
-        typer.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+        typer.echo(_json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        summary = payload["summary"]
-        typer.echo(f"Migration plan {payload['plan_id']} (schema v{payload['schema_version']})")
+        _print_plan_human(payload)
+        counts = result["counts"]
         typer.echo(
-            "  " + ", ".join(f"{action}={count}" for action, count in sorted(summary.items()))
+            f"Migration {outcome.job_id}: applied={counts['applied']} reused={counts['reused']} "
+            f"skipped={counts['skipped']} failed={counts['failed']} remaining={counts['remaining']}"
         )
-        for item in payload["items"][:25]:
-            typer.echo(f"  - {item['action']:<9} {item['local_id']}: {item['reason']}")
-        if len(payload["items"]) > 25:
-            typer.echo(f"  … {len(payload['items']) - 25} more items")
-    if not dry_run:
-        typer.echo(
-            "Applying a migration is not available yet; re-run with --dry-run to inspect the plan.",
-            err=True,
-        )
-        raise typer.Exit(code=2)
+        for entry in result["failed"][:10]:
+            typer.echo(f"  - failed {entry['local_id']}: {entry['error']}", err=True)
+    if outcome.failed:
+        raise typer.Exit(code=1)
+
+
+def _print_plan_human(payload: dict) -> None:
+    summary = payload["summary"]
+    typer.echo(f"Migration plan {payload['plan_id']} (schema v{payload['schema_version']})")
+    typer.echo("  " + ", ".join(f"{action}={count}" for action, count in sorted(summary.items())))
+    for item in payload["items"][:25]:
+        typer.echo(f"  - {item['action']:<9} {item['local_id']}: {item['reason']}")
+    if len(payload["items"]) > 25:
+        typer.echo(f"  … {len(payload['items']) - 25} more items")

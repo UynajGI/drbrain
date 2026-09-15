@@ -626,93 +626,41 @@ def _write_canonical_content(
 ) -> dict:
     """Write the canonical content (revision -> blocks -> leaves) for one input.
 
-    This is the unified-store write path (T22): one document revision, the
-    boundary-faithful blocks, and one published leaf per block.  Re-ingesting
-    identical bytes reuses the existing revision and writes nothing new, so a
-    re-run can never create a second content copy.
+    Thin adapter over :func:`drbrain.services.canonical_content.write_canonical_content`
+    (the one write path shared with the legacy migration, T22/T51): it
+    resolves the material type, verifies PDF page marks by alignment, and
+    reports the outcome.  Re-ingesting identical bytes reuses the existing
+    revision and writes nothing new.
     """
-    import hashlib as _hashlib
-
+    from drbrain.services.canonical_content import write_canonical_content
     from drbrain.storage.inbox import file_sha256
     from drbrain.tree.align import align_page_marks
-    from drbrain.tree.blocks import build_content_blocks
-    from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 
     text = str(getattr(parsed, "raw_md", "") or "")
-    if not text.strip():
-        return {"ok": False, "reason": "empty_canonical_text"}
     media_type = _material_media_type(source)
-    canonical_hash = _hashlib.sha256(text.encode("utf-8")).hexdigest()
     source_hash = file_sha256(source) if Path(source).is_file() else ""
-
-    latest = db.get_document_revision(local_id)
-    if (
-        latest is not None
-        and str(latest.get("canonical_hash")) == canonical_hash
-        and str(latest.get("state")) == "ready"
-    ):
-        # Same bytes, same document: nothing new to write (idempotent ingest).
-        count = db.count_content_blocks(local_id, int(latest["revision"]))
-        return {
-            "ok": True,
-            "reused": True,
-            "revision": int(latest["revision"]),
-            "blocks": count,
-            "pages": False,
-        }
-
-    revision = db.next_document_revision(local_id)
-    page_marks = None
-    if media_type == "pdf":
-        page_marks = align_page_marks(source, text)
-    blocks = build_content_blocks(
+    page_marks = align_page_marks(source, text) if media_type == "pdf" and text.strip() else None
+    result = write_canonical_content(
+        db,
+        local_id,
         text,
-        local_id=local_id,
-        revision=revision,
         media_type=media_type,
+        source_hash=source_hash,
         parser=str(getattr(parsed, "backend", "") or ""),
+        parser_revision=str(getattr(parsed, "pdf_type", "") or ""),
         page_marks=page_marks,
     )
-    written = 0
-    with db.transaction():
-        db.upsert_document_revision(
-            local_id,
-            revision,
-            source_hash=source_hash,
-            canonical_hash=canonical_hash,
-            backend=str(getattr(parsed, "backend", "") or ""),
-            media_type=media_type,
-            parser_revision=str(getattr(parsed, "pdf_type", "") or ""),
-        )
-        written = db.insert_content_blocks(blocks)
-        for block in blocks:
-            ref = LeafRef(
-                local_id=local_id,
-                revision=revision,
-                block_id=block.block_id,
-                char_start=0,
-                char_end=len(block.text),
-            )
-            leaf = NodeRecord(
-                node_id=leaf_node_id(ref),
-                revision=1,
-                kind="leaf",
-                state="ready",
-                layer=0,
-                content_hash=block.text_hash,
-                leaf=ref,
-                heading_path=block.heading_path,
-            )
-            db.insert_tree_node(leaf, publish=True)
-    if echo is not None:
+    if not result.get("ok"):
+        return result
+    if echo is not None and not result.get("reused"):
         page_note = f", pages 1-{page_marks[-1][0]}" if page_marks else ", no page marks"
-        echo(f"  Canonical: revision {revision}, {written} blocks{page_note}")
+        echo(f"  Canonical: revision {result['revision']}, {result['blocks']} blocks{page_note}")
     return {
         "ok": True,
-        "reused": False,
-        "revision": revision,
-        "blocks": written,
-        "pages": bool(page_marks),
+        "reused": bool(result.get("reused")),
+        "revision": int(result.get("revision") or 0),
+        "blocks": int(result.get("blocks") or 0),
+        "pages": bool(result.get("pages")),
     }
 
 

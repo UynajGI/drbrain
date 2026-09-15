@@ -143,12 +143,15 @@ def audit_storage(
     try:
         tables = _table_names(conn)
         report.tables = tuple(sorted(tables))
-        versions = [
-            int(row[0])
-            for row in conn.execute(
-                "SELECT version FROM schema_versions ORDER BY version"
-            ).fetchall()
-        ]
+        try:
+            versions = [
+                int(row[0])
+                for row in conn.execute(
+                    "SELECT version FROM schema_versions ORDER BY version"
+                ).fetchall()
+            ]
+        except sqlite3.OperationalError:
+            versions = []  # an empty database file has no ledger yet
         report.schema_version = versions[-1] if versions else 0
         unified = {"document_revisions", "content_blocks", "tree_nodes"} <= tables
         report.unified_store = unified
