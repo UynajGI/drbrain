@@ -348,7 +348,7 @@
 
 ## P5 — 三路生产CLI接入
 
-### [ ] T43 — 注册唯一tree路并迁移检索名
+### [x] T43 — 注册唯一tree路并迁移检索名
 
 - 依赖：T12、T25、T41、T42。
 - 范围：`rag/sql_retrie.py`、`rag/fusion.py`、retriever注册及配置校验。
