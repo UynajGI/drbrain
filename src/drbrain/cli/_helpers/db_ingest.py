@@ -6,7 +6,6 @@ import asyncio
 import hashlib
 import json
 import os
-import re
 import shutil
 import uuid
 from collections.abc import Iterator
@@ -29,9 +28,7 @@ from drbrain.services.fetch import fetch_paper
 from drbrain.storage.database import Database
 from drbrain.storage.paths import (
     images_dir,
-    raw_md_path,
     source_pdf_path,
-    tree_json_path,
     writable_artifact_path,
 )
 
@@ -209,7 +206,8 @@ def _ingest_single_paper(
             db.insert_concept(local_id, "Actor", actor_label, 1.0, year=parsed.year)  # type: ignore[arg-type]  # pre-existing: see mypy debt
             db.insert_alias(author["display_name"], actor_label)
             db.insert_edge(local_id, actor_label, "affiliated_with", local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
-        db.commit()
+        # No commit here: the identity rows, the canonical revision and the
+        # artifact states publish together below (one transaction unit).
 
     _t2 = _time.monotonic()
     _ingest_log.info(
@@ -224,36 +222,70 @@ def _ingest_single_paper(
 
     paper_dir = resolve_paper_dir(papers_base, local_id)  # type: ignore[arg-type]
     paper_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Canonical content is a required ingest product (T22) ─────────────
+    # Ordering and transaction semantics for one paper:
+    #   1. identity rows (papers / paper_ids / authors) — written above and
+    #      still uncommitted;
+    #   2. canonical revision + blocks + leaves (this step) — REQUIRED;
+    #   3. source materials on disk (source.<ext>, images/) — additive copies;
+    #   4. artifact states ("raw" ready, "tree" skipped) — committed with 1–3.
+    # A canonical failure rolls the whole unit back, records the spool ledger
+    # entry as failed, and returns ``ok=False``: a paper is never published
+    # without its registered body, and the untouched input can be ingested
+    # again (the retry re-derives the revision).
+    canonical: dict = {}
+    canonical_error = ""
+    try:
+        canonical = _write_canonical_content(db, local_id, parsed, pdf_path, echo=echo)
+        if not canonical.get("ok"):
+            canonical_error = str(canonical.get("reason") or "canonical write failed")
+    except Exception as exc:  # noqa: BLE001 - required stage, reported as paper failure
+        canonical_error = safe_error(exc, secrets=secrets)
+    if canonical_error:
+        db.conn.rollback()
+        _ingest_log.error(f"[ingest] canonical content failed for {local_id}: {canonical_error}")
+        echo(f"  [red]Canonical content failed: {canonical_error}[/red]")
+        _record_spool_state(db, pdf_path, "failed", reason=f"canonical: {canonical_error}")
+        return {
+            "ok": False,
+            "local_id": local_id,
+            "error": f"canonical content failed: {canonical_error}",
+        }
+
     try:
         _save_paper_artifacts(parsed, local_id, paper_dir, pdf_path)  # type: ignore[arg-type]  # pre-existing: see mypy debt
     except Exception:
         db.conn.rollback()
         raise
-    # Unified canonical content (T22): one revision, its blocks, and one
-    # published leaf per block.  Failure here is recorded, not fatal: the
-    # paper record and its artifacts stay usable and a later repair can
-    # re-derive the canonical store.
-    try:
-        canonical = _write_canonical_content(db, local_id, parsed, pdf_path, echo=echo)
-        if not canonical.get("ok"):
-            _ingest_log.warning(
-                "[ingest] canonical content skipped for %s: %s",
-                local_id,
-                canonical.get("reason"),
-            )
-    except Exception as exc:  # noqa: BLE001 - canonical write is additive
-        message = safe_error(exc, secrets=secrets)
-        _ingest_log.warning("[ingest] canonical content failed for %s: %s", local_id, message)
-        echo(f"  [yellow]Canonical content failed: {message}[/yellow]")
+    # The ``raw`` stage records the registered body (canonical revision), not
+    # a per-paper markdown file: bulk re-ingest selectors keep working off the
+    # same metadata key.
     db.upsert_paper_artifact(
         local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
         "raw",
         "ready",
-        fingerprint=hashlib.sha256(raw_md_path(paper_dir).read_bytes()).hexdigest(),
+        fingerprint=str(canonical.get("hash") or ""),
         metadata_json=json.dumps(
-            {"source": pdf_path.suffix.lower().lstrip(".") or "unknown", "path": pdf_path.name}
+            {
+                "source": pdf_path.suffix.lower().lstrip(".") or "unknown",
+                "path": pdf_path.name,
+                "revision": int(canonical.get("revision") or 0),
+                "blocks": int(canonical.get("blocks") or 0),
+            }
         ),
     )
+    # Ingest registers the body, anchors and leaves only; the region hierarchy
+    # is built by ``rag prepare`` (T20/T21/T45).  No per-paper MD/tree/pages
+    # file is generated (frozen protocol §4).
+    db.upsert_paper_artifact(
+        local_id,  # type: ignore[arg-type]
+        "tree",
+        "skipped",
+        error="no per-paper tree: hierarchy is built by 'rag prepare'",
+    )
+    db.commit()
+    _set_abstract_from_canonical(db, local_id)  # type: ignore[arg-type]
     db.commit()
 
     llm_models = cfg.get("llm", {}).get("models", [])
@@ -291,82 +323,10 @@ def _ingest_single_paper(
     db.set_paper_type(local_id, paper_type)  # type: ignore[arg-type]  # pre-existing: see mypy debt
     db.commit()
 
-    # Stage 3: Structure markdown into tree (PageIndex)
-    _t_pp = _time.monotonic()
-    _ingest_log.info(f"[ingest] Stage 3/4 tree: type={paper_type}")
-    md_path = raw_md_path(paper_dir)
-    tree_path = tree_json_path(paper_dir)
-    echo("  Structuring document tree...")
-    tree_status = "ready"
-    tree_error = ""
-    db.upsert_paper_artifact(local_id, "tree", "running")  # type: ignore[arg-type]
-    db.commit()
-    try:
-        from drbrain.parser.pageindex.sdk_backend import configure_tree_backend
-        from drbrain.parser.pageindex_parser import TreeConfig, md_to_tree
-
-        pageindex_cfg = TreeConfig(
-            # 关掉 thinning：短论文(<5000 token)会被整体吞成单节点，tree 只剩 root，
-            # 导致 build 的 section 级抽取退化。全文增强场景保留完整标题树。
-            if_thinning=False,
-            # 关 LLM 摘要：每 section 一次 27b 调用（35s+），100 篇 × 14 section
-            # ≈ 13h 纯摘要。树状化=标题层级结构，摘要留给 RAPTOR/检索时按需生成。
-            if_add_node_summary=False,
-            if_add_doc_description=False,
-            if_add_node_text=False,  # Content loaded on demand, not embedded
-            if_add_node_id=True,
-            max_node_tokens=10000,
-        )
-        configure_tree_backend(pageindex_cfg, cfg.get("pageindex"))
-        if os.getenv("DRBRAIN_OFFLINE", "0") == "1":
-            # Deterministic contract mode for local pipeline tests: avoid
-            # remote/local LLM TOC generation while exercising the full CLI
-            # artifact and database stages.
-            pageindex_cfg.backend = "legacy"
-        doc_tree = asyncio.run(md_to_tree(md_path, config=pageindex_cfg, models=llm_models))
-        tree_path.write_text(doc_tree.to_json(), encoding="utf-8")
-        tree_nodes = len(doc_tree.structure)
-        if tree_nodes == 0:
-            tree_status = "degraded"
-            tree_error = "empty tree"
-        db.upsert_paper_artifact(
-            local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
-            "tree",
-            tree_status,
-            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
-            metadata_json=json.dumps({"nodes": tree_nodes}),
-            error=tree_error,
-        )
-        db.commit()
-        _t3 = _time.monotonic()
-        _ingest_log.info(
-            f"[ingest] tree done in {_t3 - _t_pp:.1f}s — {len(doc_tree.structure)} sections"
-        )
-        echo(f"  Document tree: {tree_nodes} sections → {tree_path.name}")
-        # Extract abstract from tree structure
-        for node in doc_tree.structure:
-            title = node.get("title", "") if isinstance(node, dict) else getattr(node, "title", "")
-            if "abstract" in title.lower():
-                abstract = ""
-                if isinstance(node, dict):
-                    abstract = node.get("summary", "") or node.get("content", "")
-                else:
-                    abstract = getattr(node, "summary", "") or getattr(node, "content", "")
-                if abstract.strip():
-                    db.set_paper_abstract(local_id, abstract[:2000])  # type: ignore[arg-type]  # pre-existing: see mypy debt
-                break
-    except Exception as e:
-        tree_status = "degraded"
-        tree_error = safe_error(e, secrets=secrets)
-        db.upsert_paper_artifact(  # type: ignore[arg-type]
-            local_id,  # type: ignore[arg-type]  # local_id is established by identify stage
-            "tree",
-            tree_status,
-            error=tree_error,
-        )
-        db.commit()
-        echo(f"  [yellow]Warning: tree structuring failed: {tree_error}[/yellow]")
-        _log_error(cfg, f"Tree structuring failed for {local_id}: {tree_error}")
+    # Stage 3 (PageIndex tree) was removed by T22: the document hierarchy is
+    # built by ``rag prepare`` from the canonical leaves and structure hints,
+    # so ingest no longer generates or persists a per-paper tree.json/page
+    # files.  The ``tree`` artifact above records the stage as skipped.
 
     # Stage 7: DOI enrichment — multi-source fallback chain
     current_doi = db.get_paper(local_id).get("doi")  # type: ignore[union-attr,arg-type]  # pre-existing: see mypy debt
@@ -432,18 +392,19 @@ def _ingest_single_paper(
 
     # ── Quality Gates (non-blocking) ──────────────────────────────────
 
-    # Gate 1: raw.md size > 200 bytes
-    md_path_check = raw_md_path(paper_dir)
-    if md_path_check.exists():
-        md_size = md_path_check.stat().st_size
-        if md_size <= 200:
-            echo(
-                f"  [yellow]Quality Gate 1: raw.md is only {md_size} bytes (expected > 200)[/yellow]"
-            )
-            _ingest_log.warning(f"Quality Gate 1 failed for {local_id}: raw.md is {md_size} bytes")
-    else:
-        echo(f"  [yellow]Quality Gate 1: raw.md not found for {local_id}[/yellow]")
-        _ingest_log.warning(f"Quality Gate 1 failed for {local_id}: raw.md missing")
+    # Gate 1: the registered canonical body must carry real content
+    canonical_size = sum(
+        len(str(block.get("text") or ""))
+        for block in db.get_content_blocks(local_id)  # type: ignore[arg-type]
+    )
+    if canonical_size <= 200:
+        echo(
+            f"  [yellow]Quality Gate 1: canonical body is only {canonical_size} chars "
+            f"(expected > 200)[/yellow]"
+        )
+        _ingest_log.warning(
+            f"Quality Gate 1 failed for {local_id}: canonical body is {canonical_size} chars"
+        )
 
     # Gate 2: title non-empty + year 1900-2030 + has external ID
     gate2_issues = []
@@ -477,13 +438,20 @@ def _ingest_single_paper(
         f"title={parsed.title[:60]} year={parsed.year}"
     )
     echo(f"  Ingested: {local_id} ({_t_total:.1f}s)")
-    result_status = "complete" if tree_status == "ready" else "partial"
+    # Ingest is complete once the body is registered: semantic layers (KG,
+    # hierarchy, vectors) are separate stages and are not claimed here.
+    result_status = "complete"
     _record_spool_state(db, pdf_path, "done", local_id=local_id or "")
     return {
         "ok": True,
         "status": result_status,
         "local_id": local_id,
-        "report": {"local_id": local_id, "status": result_status, "tree_error": tree_error},
+        "report": {
+            "local_id": local_id,
+            "status": result_status,
+            "canonical_revision": int(canonical.get("revision") or 0),
+            "blocks": int(canonical.get("blocks") or 0),
+        },
     }
 
 
@@ -676,18 +644,56 @@ def _write_canonical_content(
         "revision": int(result.get("revision") or 0),
         "blocks": int(result.get("blocks") or 0),
         "pages": bool(result.get("pages")),
+        # Content identity of the registered revision (same text -> same hash),
+        # recorded as the ``raw`` artifact fingerprint.
+        "hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
 
 
+def _set_abstract_from_canonical(db: Database, local_id: str) -> None:
+    """Record the paper abstract from the canonical blocks (heading anchor).
+
+    Replaces the abstract the removed PageIndex stage used to read out of its
+    in-memory tree; the canonical heading path is the structure hint we keep
+    (T20/T21), so no per-paper tree file is needed for it.
+    """
+    try:
+        blocks = db.get_content_blocks(local_id)
+    except Exception:  # noqa: BLE001 - abstract is best-effort metadata
+        return
+    for block in blocks:
+        raw_heading = block.get("heading_path") or "[]"
+        try:
+            heading = json.loads(raw_heading) if isinstance(raw_heading, str) else list(raw_heading)
+        except (TypeError, ValueError):
+            heading = []
+        if any("abstract" in str(part).lower() for part in heading):
+            text = str(block.get("text") or "").strip()
+            # A canonical block starts with its own heading line(s); the
+            # abstract is the body that follows.
+            lines = text.splitlines()
+            while lines and lines[0].lstrip().startswith("#"):
+                lines.pop(0)
+            body = "\n".join(lines).strip()
+            if body:
+                try:
+                    db.set_paper_abstract(local_id, body[:2000])
+                except Exception:  # noqa: BLE001 - abstract is best-effort metadata
+                    return
+                return
+
+
 def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Path) -> None:
-    """Save all paper artifacts into a per-paper directory.
+    """Save the source materials of one paper into its per-paper directory.
 
     Layout:
         data/papers/<local_id>/
             source.pdf   — original PDF (copied from inbox), or source.<ext>
-            raw.md       — MinerU markdown output
             images/      — extracted images
 
+    The parsed markdown is **not** written to ``raw.md`` (T22): the body lives
+    once, in the canonical store (``content_blocks``), and legacy readers
+    resolve it through the read adapters or an explicit ``storage export``.
     The input is only ever copied: ingest never moves or deletes the original
     material (T07), including when the input already lives in a paper
     directory (already-hosted source).
@@ -704,21 +710,10 @@ def _save_paper_artifacts(parsed, local_id: str, paper_dir: Path, source_pdf: Pa
         if not destination.exists():
             shutil.copy2(source_pdf, destination)
 
-    # Copy images and rewrite refs
-    raw_md = parsed.raw_md
+    # Copy images so the canonical text's relative references resolve.
     if parsed.images_dir and parsed.images_dir.exists():
         img_dst = images_dir(paper_dir)
         shutil.copytree(parsed.images_dir, img_dst, dirs_exist_ok=True)
-        # MinerU outputs "images/<hash>/file.jpg", rewrite to "images/<hash>/file.jpg"
-        # (no local_id prefix needed — images/ is already inside paper_dir)
-        raw_md = re.sub(
-            r"!\[(.*?)\]\(images/([^)]+)\)",
-            r"![\1](images/\2)",
-            raw_md,
-        )
-
-    md_path = raw_md_path(paper_dir)
-    md_path.write_text(raw_md, encoding="utf-8")
 
 
 def _fetch_citations_interested(ctx: typer.Context, result: dict) -> None:

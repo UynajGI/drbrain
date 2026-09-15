@@ -446,12 +446,81 @@ class TestCli:
                 force=False,
                 paper=None,
                 unified=True,
+                legacy_sql=False,
                 tree_storage=str(tmp_path / "tree"),
                 json_output=True,
             )
         assert captured["storage_dir"] == tmp_path / "tree"
         assert captured["profile"].model == "qwen3-embedding-0.6b"
         assert json.loads(echo.call_args[0][0])["ok"] is True
+
+    def test_prepare_defaults_to_the_unified_index(self, tmp_path):
+        """T45: omitting every flag prepares the unified index, not the SQL copy."""
+        from drbrain.cli import rag_commands
+
+        outcome = SimpleNamespace(ok=True, to_json=lambda: {"ok": True, "changed": False})
+        captured = {}
+
+        def _fake_prepare(db, **kwargs):
+            captured.update(kwargs)
+            return outcome
+
+        db = mock.MagicMock()
+        with (
+            mock.patch.object(rag_commands, "open_db", mock.MagicMock(return_value=db)),
+            mock.patch("drbrain.tree.prepare.prepare_unified_index", side_effect=_fake_prepare),
+            mock.patch("drbrain.rag.preparation.prepare_sql_rag") as legacy_sql,
+            mock.patch("typer.echo") as echo,
+        ):
+            rag_commands.rag_prepare_cmd(
+                self._ctx(tmp_path),
+                force=False,
+                paper=None,
+                unified=False,  # typer passes the option value even when omitted
+                legacy_sql=False,
+                tree_storage=str(tmp_path / "tree"),
+                json_output=True,
+            )
+        legacy_sql.assert_not_called()
+        assert captured["storage_dir"] == tmp_path / "tree"
+        assert json.loads(echo.call_args[0][0])["ok"] is True
+
+    def test_legacy_sql_flag_keeps_the_working_copy_with_a_warning(self, tmp_path):
+        """The derived SQL copy is opt-in and explicitly deprecated."""
+        from drbrain.cli import rag_commands
+
+        stats = {"nodes": 3, "backend": "sql"}
+        with (
+            mock.patch("drbrain.rag.preparation.prepare_sql_rag", return_value=stats) as legacy,
+            mock.patch("typer.echo") as echo,
+        ):
+            rag_commands.rag_prepare_cmd(
+                self._ctx(tmp_path),
+                force=False,
+                paper=None,
+                unified=False,
+                legacy_sql=True,
+                tree_storage="",
+                json_output=True,
+            )
+        legacy.assert_called_once()
+        printed = "\n".join(str(call.args[0]) for call in echo.call_args_list if call.args)
+        assert "deprecated" in printed.lower()
+        assert "--legacy-sql" in printed
+
+    def test_default_prepare_rejects_paper_restriction(self, tmp_path):
+        from drbrain.cli import rag_commands
+
+        with pytest.raises(typer.BadParameter):
+            rag_commands.rag_prepare_cmd(
+                self._ctx(tmp_path),
+                force=False,
+                paper=["p1"],
+                unified=False,
+                legacy_sql=False,
+                tree_storage="",
+                json_output=False,
+            )
 
     def test_unified_rejects_paper_restriction(self, tmp_path):
         from drbrain.cli import rag_commands
@@ -462,6 +531,7 @@ class TestCli:
                 force=False,
                 paper=["p1"],
                 unified=True,
+                legacy_sql=False,
                 tree_storage="",
                 json_output=False,
             )

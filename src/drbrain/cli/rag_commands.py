@@ -198,7 +198,18 @@ def rag_prepare_cmd(
     unified: bool = typer.Option(
         False,
         "--unified",
-        help="Incrementally prepare the unified tree index (FTS + shared vectors + hierarchy)",
+        help=(
+            "Compatibility alias: the unified tree index is what this command "
+            "prepares by default (T45)."
+        ),
+    ),
+    legacy_sql: bool = typer.Option(
+        False,
+        "--legacy-sql",
+        help=(
+            "Deprecated: build the derived drbrain_rag.db SQL working copy "
+            "instead of the unified index"
+        ),
     ),
     tree_storage: str = typer.Option(
         "",
@@ -207,87 +218,76 @@ def rag_prepare_cmd(
     ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
-    """Prepare and publish the configured RAG backend in one operation.
+    """Prepare and publish the unified tree index (FTS + shared vectors +
+    hierarchy) for the configured backend in one incremental operation.
 
-    ``--unified`` incrementally fills the unified index — canonical FTS, the
-    shared vector collection and the region hierarchy — and publishes a tree
-    generation only when something changed (no KG build/closure dependency,
-    no re-parsing of verified content, no copy of the legacy retrieval
-    database).  SQL mode rebuilds the derived text/vector database; LlamaIndex
-    mode delegates to the normal index builder.
+    This is the default and the only path that advances the production tree
+    generation: canonical FTS, the shared vector collection and the region
+    hierarchy are filled incrementally from the canonical store, and a tree
+    generation is published only when something changed (no KG build/closure
+    dependency, no re-parsing of verified content, no copy of the legacy
+    retrieval database).
+
+    ``--legacy-sql`` keeps the deprecated derived ``drbrain_rag.db`` working
+    copy available while its readers are migrated; it is opt-in only.
     """
     cfg = ctx.obj["config"]
-    if unified:
-        if paper:
-            raise typer.BadParameter(
-                "--unified prepares the unified index incrementally; omit --paper",
-                param_hint="--paper",
-            )
-        from drbrain.rag.config import get_llamaindex_config
-        from drbrain.tree.embedding_identity import profile_from_config
-        from drbrain.tree.prepare import prepare_unified_index
-
-        default_tree_storage = get_llamaindex_config(cfg).tree_storage or "data/tree"
-        root = runtime_data_path(ctx, tree_storage or default_tree_storage, label="tree storage")
-        embed_cfg = getattr(cfg, "embed", None)
-        outcome = None
-        with open_db(cfg) as db:
-            outcome = prepare_unified_index(
-                db,
-                storage_dir=root,
-                profile=profile_from_config(embed_cfg),
-                embed_cfg=embed_cfg,
-                config=cfg,
-                summary_max_tokens=get_llamaindex_config(cfg).summary_max_tokens,
-                summary_input_budget=get_llamaindex_config(cfg).summary_input_budget,
-                force=force,
-            )
-        stats = outcome.to_json()
-        if json_output:
-            typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
-        else:
-            typer.echo(
-                "Unified prepare: "
-                + ", ".join(
-                    f"{key}={value}" for key, value in stats.items() if key != "failed_stages"
-                )
-            )
-        if not outcome.ok:
-            raise typer.Exit(code=1)
-        return
-
-    from drbrain.rag.config import get_llamaindex_config
-
-    li = get_llamaindex_config(cfg)
-    if li.rag_engine == "sql":
+    if legacy_sql:
+        typer.echo(
+            "warning: --legacy-sql is deprecated; 'rag prepare' prepares the unified "
+            "index by default. The derived drbrain_rag.db copy is only refreshed for "
+            "the remaining legacy readers.",
+            err=True,
+        )
         from drbrain.rag.preparation import prepare_sql_rag
 
         try:
             stats = prepare_sql_rag(cfg, paper_ids=paper or None, publish=True)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--paper") from exc
-    else:
-        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
-
-        if not _LLAMA_INDEX_AVAILABLE:
+        if json_output:
+            typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
+        else:
             typer.echo(
-                "llama-index is not installed. Run: uv add llama-index-core llama-index-retrievers-bm25",
-                err=True,
+                "RAG prepared (legacy SQL copy): " + ", ".join(f"{k}={v}" for k, v in stats.items())
             )
-            raise typer.Exit(1)
+        return
 
-        with open_db(cfg) as db:
-            stats = build_index(
-                cfg,
-                db,
-                paper_ids=paper or None,
-                force=force,
-                max_node_tokens=li.max_node_tokens,
-            )
+    if paper:
+        raise typer.BadParameter(
+            "the unified index is corpus-wide and incremental; omit --paper "
+            "(use 'drbrain rag index --paper' for per-paper LlamaIndex rebuilds)",
+            param_hint="--paper",
+        )
+    from drbrain.rag.config import get_llamaindex_config
+    from drbrain.tree.embedding_identity import profile_from_config
+    from drbrain.tree.prepare import prepare_unified_index
+
+    default_tree_storage = get_llamaindex_config(cfg).tree_storage or "data/tree"
+    root = runtime_data_path(ctx, tree_storage or default_tree_storage, label="tree storage")
+    embed_cfg = getattr(cfg, "embed", None)
+    outcome = None
+    with open_db(cfg) as db:
+        outcome = prepare_unified_index(
+            db,
+            storage_dir=root,
+            profile=profile_from_config(embed_cfg),
+            embed_cfg=embed_cfg,
+            config=cfg,
+            summary_max_tokens=get_llamaindex_config(cfg).summary_max_tokens,
+            summary_input_budget=get_llamaindex_config(cfg).summary_input_budget,
+            force=force,
+        )
+    stats = outcome.to_json()
     if json_output:
         typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
     else:
-        typer.echo("RAG prepared: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
+        typer.echo(
+            "Unified prepare: "
+            + ", ".join(f"{key}={value}" for key, value in stats.items() if key != "failed_stages")
+        )
+    if not outcome.ok:
+        raise typer.Exit(code=1)
 
 
 @rag_app.command("baselines")
