@@ -425,7 +425,7 @@ def build_index_status(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
             vector_leg["reasons"].append(f"vectors_pending:{backlog['pending']}")
         vector_leg["ready"] = not vector_leg["reasons"]
 
-    ingested = {
+    ingested: dict[str, Any] = {
         "ready": bool(snapshot.documents.get("ready")),
         "documents": dict(snapshot.documents),
         "blocks": snapshot.blocks,
@@ -437,7 +437,7 @@ def build_index_status(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
     if snapshot.documents.get("stale"):
         ingested["reasons"].append(f"documents_stale:{snapshot.documents['stale']}")
 
-    legs = {
+    legs: dict[str, dict[str, Any]] = {
         "lexical": lexical,
         "fts": fts_leg,
         "vector": vector_leg,

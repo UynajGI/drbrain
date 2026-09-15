@@ -159,7 +159,7 @@ def _config_with_route(cfg: Any, normalized: NormalizedLegs) -> Any:
         new_li = dataclasses.replace(li, retrievers=route_list)
     else:  # pragma: no cover - dict-style configs
         new_li = LlamaIndexConfig.from_dict({**dict(li), "retrievers": route_list})
-    if dataclasses.is_dataclass(cfg):
+    if dataclasses.is_dataclass(cfg) and not isinstance(cfg, type):
         return dataclasses.replace(cfg, llamaindex=new_li)
     new_cfg = copy.copy(cfg)
     setattr(new_cfg, "llamaindex", new_li)

@@ -72,7 +72,9 @@ class ReadOnlyTreeStore:
         self.path = target
         self.conn = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
         self.conn.execute("PRAGMA query_only = ON")
-        self._scope = None if local_ids is None else frozenset(str(value) for value in local_ids)
+        self._scope: frozenset[str] | None = (
+            None if local_ids is None else frozenset(str(value) for value in local_ids)
+        )
         self._visibility: dict[str, bool] = {}
 
     def search_content(self, query: str, **kwargs) -> list[dict]:
@@ -81,8 +83,13 @@ class ReadOnlyTreeStore:
         requested = kwargs.pop("local_ids", None)
         scope = self._scope
         if requested is not None:
-            scope = set(requested) if scope is None else scope.intersection(requested)
-        return search_content(self.conn, query, local_ids=scope, **kwargs)
+            scope = frozenset(requested) if scope is None else scope.intersection(requested)
+        return search_content(
+            self.conn,
+            query,
+            local_ids=None if scope is None else sorted(scope),
+            **kwargs,
+        )
 
     def _allowed(self, row: dict) -> bool:
         if self._scope is None:

@@ -40,7 +40,7 @@ def configure_tree_backend(tree_config: Any, pageindex_config: Any) -> Any:
             "api_key": get("chat_api_key", "") or os.getenv("DEEPSEEK_API_KEY", ""),
         }
     tree_config.sdk_processing_mode = get("processing_mode", "standard")
-    tree_config.sdk_timeout = float(get("sdk_timeout", get("timeout", 600.0)))
+    tree_config.sdk_timeout = float(get("sdk_timeout", get("timeout", 600.0)) or 600.0)
     tree_config.sdk_allow_fallback = bool(get("allow_fallback", False))
     return tree_config
 
@@ -163,9 +163,7 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
         # tree contract needs the full model-built hierarchy, so request the
         # standard mode explicitly for local runs.
         submit_mode = (
-            getattr(config, "sdk_processing_mode", None) or "flash"
-            if mode == "local"
-            else None
+            getattr(config, "sdk_processing_mode", None) or "flash" if mode == "local" else None
         )
         try:
             timeout = float(getattr(config, "sdk_timeout", 600.0) or 600.0)
@@ -184,18 +182,29 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
             # A timed-out optional index must degrade to the extracted
             # markdown tree; do not propagate into the ingest partial state.
             text = md.read_text(encoding="utf-8")
-            sections = []
-            current = None
+            sections: list[dict[str, Any]] = []
+            current: dict[str, Any] | None = None
             for line_no, line in enumerate(text.splitlines(), 1):
                 if line.startswith("#"):
-                    current = {"title": line.lstrip("#").strip(), "node_id": f"fallback-{len(sections)+1}", "line_num": line_no, "text": ""}
+                    current = {
+                        "title": line.lstrip("#").strip(),
+                        "node_id": f"fallback-{len(sections) + 1}",
+                        "line_num": line_no,
+                        "text": "",
+                    }
                     sections.append(current)
                 elif current is not None:
                     current["text"] += line + "\n"
             if not sections:
-                sections = [{"title": md.stem, "node_id": "fallback-1", "line_num": 1, "text": text}]
-            return {"doc_name": md.stem, "line_count": len(text.splitlines()), "structure": sections,
-                    "warnings": [f"pageindex_sdk_timeout: {timeout:.0f}s"]}
+                sections = [
+                    {"title": md.stem, "node_id": "fallback-1", "line_num": 1, "text": text}
+                ]
+            return {
+                "doc_name": md.stem,
+                "line_count": len(text.splitlines()),
+                "structure": sections,
+                "warnings": [f"pageindex_sdk_timeout: {timeout:.0f}s"],
+            }
         except Exception as exc:
             if not getattr(config, "sdk_allow_fallback", False):
                 raise
@@ -204,17 +213,24 @@ def build_tree_with_sdk(md_path: str | Path, config: Any) -> dict:
             # extracted markdown remains authoritative; construct a small
             # deterministic section tree and expose the degradation clearly.
             text = md.read_text(encoding="utf-8")
-            fallback = []
+            fallback: list[dict[str, Any]] = []
             current = None
             for line_no, line in enumerate(text.splitlines(), 1):
                 if line.startswith("#"):
                     title = line.lstrip("#").strip()
-                    current = {"title": title, "node_id": f"fallback-{len(fallback)+1}", "line_num": line_no, "text": ""}
+                    current = {
+                        "title": title,
+                        "node_id": f"fallback-{len(fallback) + 1}",
+                        "line_num": line_no,
+                        "text": "",
+                    }
                     fallback.append(current)
                 elif current is not None:
                     current["text"] += line + "\n"
             if not fallback:
-                fallback = [{"title": md.stem, "node_id": "fallback-1", "line_num": 1, "text": text}]
+                fallback = [
+                    {"title": md.stem, "node_id": "fallback-1", "line_num": 1, "text": text}
+                ]
             return {
                 "doc_name": md.stem,
                 "line_count": len(text.splitlines()),
@@ -247,16 +263,21 @@ def chat_with_sdk(pdf_path: str | Path, question: str, config: Any) -> str:
     if chat_url:
         backend = dict(chat_url)
     elif getattr(config, "sdk_chat_base_url", ""):
-        backend = {"base_url": config.sdk_chat_base_url, "api_key": os.getenv("DEEPSEEK_API_KEY", "")}
-    kwargs = {"index": {"model": model}, "chat": {"model": model}}
+        backend = {
+            "base_url": config.sdk_chat_base_url,
+            "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+        }
+    kwargs: dict[str, dict[str, Any]] = {"index": {"model": model}, "chat": {"model": model}}
     if backend:
         kwargs["index"]["backend"] = backend
         kwargs["chat"]["backend"] = backend
-    client = PageIndexClient(**kwargs)
+    client = PageIndexClient(mode="local", index=kwargs["index"], chat=kwargs["chat"])
     timeout = float(getattr(config, "sdk_timeout", 120.0) or 120.0)
     pool = ThreadPoolExecutor(max_workers=1)
     try:
-        result = pool.submit(client.submit_document, str(pdf_path), mode="flash", wait=True).result(timeout=timeout)
+        result = pool.submit(client.submit_document, str(pdf_path), mode="flash", wait=True).result(
+            timeout=timeout
+        )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
     answer = client.chat(question, doc_id=result["doc_id"], stream=False, backend=backend)
@@ -266,7 +287,7 @@ def chat_with_sdk(pdf_path: str | Path, question: str, config: Any) -> str:
 def _adapt_nodes(nodes: Any) -> list[dict]:
     if not isinstance(nodes, list):
         return []
-    output = []
+    output: list[dict] = []
     for node in nodes:
         if not isinstance(node, dict):
             continue

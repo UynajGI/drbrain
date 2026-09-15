@@ -487,7 +487,7 @@ class IndexModel:
             tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
             cached_tokens=_cached_tokens(usage),
             duration_ms=_ms_since(started),
-            error=error or "",
+            error=str(error or ""),
             secrets=(self.role.api_key,),
         )
         if raw is not None:

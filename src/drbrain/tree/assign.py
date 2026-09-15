@@ -191,10 +191,14 @@ def _span_from_row(row: Mapping, block: Mapping, count_tokens) -> SourceSpan:
 def _heading_path_of(raw: object) -> tuple[str, ...]:
     import json
 
-    try:
-        return tuple(json.loads(raw)) if isinstance(raw, str) else tuple(raw or ())
-    except (TypeError, ValueError):
-        return ()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return ()
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(item) for item in raw)
+    return ()
 
 
 def leaf_spans_of_nodes(

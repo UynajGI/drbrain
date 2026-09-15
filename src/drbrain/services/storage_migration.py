@@ -100,7 +100,7 @@ def _hash_file(path: Path) -> str:
 def _directory_digest(papers_root: Path, directories: list[Path]) -> str:
     payload = []
     for directory in sorted(directories, key=lambda item: str(item)):
-        entry = {"name": directory.name}
+        entry: dict[str, object] = {"name": directory.name}
         for filename in (_LEGACY_RAW, "tree.json"):
             candidate = directory / filename
             if candidate.is_file():

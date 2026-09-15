@@ -2811,7 +2811,7 @@ class Database:
         # None explicitly retires the complete working hierarchy for an
         # algorithm/profile change or --force; published snapshots are retained.
         sql = "SELECT node_id FROM tree_nodes WHERE kind='region' AND state='ready'"
-        params = ()
+        params: tuple[str, ...] = ()
         if contract_json is not None:
             sql += " AND contract_json != ?"
             params = (str(contract_json),)

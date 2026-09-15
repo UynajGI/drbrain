@@ -18,7 +18,7 @@ import hashlib
 import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 DEFAULT_TEMPLATE = (
     "Summarize the source passages below for retrieval routing.\n"
@@ -111,7 +111,7 @@ def identify_contract(
     """
     model_identity = str(model_identity or "").strip()
     tokenizer_identity = str(tokenizer_identity or "").strip()
-    changes: dict[str, str] = {}
+    changes: dict[str, Any] = {}
     if model_identity and contract.model != model_identity:
         changes["model"] = model_identity
     if tokenizer_identity and contract.tokenizer != tokenizer_identity:

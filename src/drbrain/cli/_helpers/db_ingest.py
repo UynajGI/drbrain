@@ -237,7 +237,7 @@ def _ingest_single_paper(
     canonical: dict = {}
     canonical_error = ""
     try:
-        canonical = _write_canonical_content(db, local_id, parsed, pdf_path, echo=echo)
+        canonical = _write_canonical_content(db, local_id, parsed, pdf_path, echo=echo)  # type: ignore[arg-type]  # pre-existing: see mypy debt
         if not canonical.get("ok"):
             canonical_error = str(canonical.get("reason") or "canonical write failed")
     except Exception as exc:  # noqa: BLE001 - required stage, reported as paper failure
@@ -408,10 +408,8 @@ def _ingest_single_paper(
     # ── Quality Gates (non-blocking) ──────────────────────────────────
 
     # Gate 1: the registered canonical body must carry real content
-    canonical_size = sum(
-        len(str(block.get("text") or ""))
-        for block in db.get_content_blocks(local_id)  # type: ignore[arg-type]
-    )
+    canonical_blocks = db.get_content_blocks(local_id)  # type: ignore[arg-type]  # pre-existing: see mypy debt
+    canonical_size = sum(len(str(block.get("text") or "")) for block in canonical_blocks)
     if canonical_size <= 200:
         echo(
             f"  [yellow]Quality Gate 1: canonical body is only {canonical_size} chars "

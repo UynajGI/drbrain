@@ -195,14 +195,17 @@ class MinerUParser:
                     deepxiv_token=self.deepxiv_token,
                     s2_api_key=self.s2_api_key,
                 )
-            title = meta["title"] or title
-            year = meta["year"] or year
-            doi = meta["doi"] or doi
-            s2_id = meta["s2_id"]
-            oa_id = meta["openalex_id"]
-            journal = meta["journal"]
-            publisher = meta["publisher"]
-            citation_count = meta["citation_count"]
+            title = str(meta["title"] or title)
+            year_value = meta["year"] or year
+            if year_value is not None:
+                year = int(year_value)
+            doi_value = meta["doi"] or doi
+            doi = None if doi_value is None else str(doi_value)
+            s2_id = None if meta["s2_id"] is None else str(meta["s2_id"])
+            oa_id = None if meta["openalex_id"] is None else str(meta["openalex_id"])
+            journal = str(meta["journal"] or "")
+            publisher = str(meta["publisher"] or "")
+            citation_count = int(meta["citation_count"] or 0)
 
             blocks = filter_sections(merged_md)
 
@@ -330,14 +333,17 @@ class MinerUParser:
                 deepxiv_token=self.deepxiv_token,
                 s2_api_key=self.s2_api_key,
             )
-            title = meta["title"] or title
-            year = meta["year"] or year
-            doi = meta["doi"] or doi
-            s2_id = meta["s2_id"]
-            oa_id = meta["openalex_id"]
-            journal = meta["journal"]
-            publisher = meta["publisher"]
-            citation_count = meta["citation_count"]
+            title = str(meta["title"] or title)
+            year_value = meta["year"] or year
+            if year_value is not None:
+                year = int(year_value)
+            doi_value = meta["doi"] or doi
+            doi = None if doi_value is None else str(doi_value)
+            s2_id = None if meta["s2_id"] is None else str(meta["s2_id"])
+            oa_id = None if meta["openalex_id"] is None else str(meta["openalex_id"])
+            journal = str(meta["journal"] or "")
+            publisher = str(meta["publisher"] or "")
+            citation_count = int(meta["citation_count"] or 0)
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work

@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -111,7 +112,7 @@ def pageindex_chat_cmd(
     try:
         result = chat_document(cfg, paper, paper_path, prompt)
     except Exception as exc:
-        raise typer.ClickException(safe_error(exc, secrets=configured_secret_values(cfg))) from exc
+        raise click.ClickException(safe_error(exc, secrets=configured_secret_values(cfg))) from exc
     if json_output:
         typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
     else:

@@ -359,7 +359,10 @@ class NodeRecord:
             _require(self.leaf is not None, "leaf node requires a leaf reference")
             _require(not self.children, "leaf node cannot have children")
             _require(not self.summary, "leaf node stores no generated summary")
-            expected = leaf_node_id(self.leaf)
+            leaf = self.leaf
+            if leaf is None:  # _require already rejected this; narrow for the checker
+                raise ValueError("leaf node requires a leaf reference")
+            expected = leaf_node_id(leaf)
             _require(self.node_id == expected, "leaf node_id does not match its reference")
         else:
             _require(self.leaf is None, "region node cannot reference a block")

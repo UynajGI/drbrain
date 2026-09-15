@@ -152,7 +152,7 @@ def build_zvec_index(sqlite_path: str | Path, index_path: str | Path) -> dict[st
     finally:
         collection.close()
 
-    metadata = {"backend": "zvec", "count": len(rows), "dimension": dimension}
+    metadata: dict[str, int | str] = {"backend": "zvec", "count": len(rows), "dimension": dimension}
     (target / "metadata.json").write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
     return metadata
 

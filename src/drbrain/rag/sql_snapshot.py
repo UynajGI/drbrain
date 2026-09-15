@@ -167,7 +167,7 @@ def sql_index_health(cfg: Any) -> dict[str, Any]:
     from drbrain.rag.zvec_index import configured_vector_backend
 
     li = get_llamaindex_config(cfg)
-    report = {
+    report: dict[str, Any] = {
         "ready": False,
         "status": "unavailable",
         "backend": "sql",

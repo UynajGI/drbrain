@@ -866,7 +866,7 @@ def _unified_materialize(
         batch = keys[offset : offset + 500]
         node_ids = [key.split(":", 1)[-1] for key in batch]
         placeholders = ",".join("?" for _ in node_ids)
-        for row in db.conn.execute(
+        for meta_row in db.conn.execute(
             "SELECT n.node_id, n.local_id, n.title, n.block_id, n.char_start, n.char_end, "
             "       n.content_hash, b.text, n.revision, n.doc_revision "
             "FROM tree_nodes n LEFT JOIN content_blocks b ON b.block_id = n.block_id "
@@ -884,7 +884,7 @@ def _unified_materialize(
                 text,
                 revision,
                 doc_revision,
-            ) = row
+            ) = meta_row
             meta[f"{local_id}:{node_id}"] = {
                 "node_id": str(node_id),
                 "paper_id": str(local_id or ""),

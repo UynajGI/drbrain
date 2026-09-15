@@ -171,7 +171,7 @@ class ChatModel:
         role: ModelRole | None = None,
         *,
         cfg: Any = None,
-        transport: ChatTransport = None,
+        transport: ChatTransport | None = None,
         max_attempts: int | None = None,
         slot_timeout: float | None = 600.0,
     ) -> None:
@@ -439,7 +439,7 @@ class ChatModel:
             tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
             cached_tokens=_cached_tokens(usage),
             duration_ms=_ms_since(started),
-            error=error or "",
+            error=str(error or ""),
             secrets=(self.role.api_key,),
         )
         if raw is not None:

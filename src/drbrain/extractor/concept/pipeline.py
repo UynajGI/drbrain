@@ -290,7 +290,7 @@ async def _extract_entities(
         if section_texts is not None and node_id in section_texts:
             content = section_texts[node_id]
         else:
-            content = get_node_content(md_path, structure, node_id)
+            content = get_node_content(md_path, structure, node_id) or ""
         if not content or not _is_quality_content(content):
             return []
         hints = _section_type_hints(leaf.get("title", ""))

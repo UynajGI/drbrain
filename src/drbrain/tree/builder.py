@@ -25,6 +25,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+import numpy as np
 from loguru import logger
 
 from drbrain.tree.assign import (
@@ -233,7 +234,7 @@ class TreeBuilder:
             for node_id in frontier
         }
         t0 = mark("profiles", t0)
-        embeddings = self._embeddings(frontier)
+        embeddings = np.asarray(self._embeddings(frontier), dtype=np.float32)
         t0 = mark("embeddings", t0)
         proposals: list[CandidateProposal] = []
         if self.embed is not None and len(frontier) >= 3:

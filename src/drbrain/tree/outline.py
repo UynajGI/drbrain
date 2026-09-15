@@ -236,23 +236,23 @@ class StructureHint:
         )
         _require(has_pages or has_lines, "a hint needs at least one real locator family")
         if has_pages:
-            _require(
-                isinstance(self.page_start, int) and isinstance(self.page_end, int),
-                "page locators are 1-based inclusive pairs; both ends are required",
-            )
-            _require(
-                self.page_start >= 1 and self.page_end >= self.page_start,
-                f"invalid page range {self.page_start}..{self.page_end}",
-            )
+            page_start = self.page_start
+            page_end = self.page_end
+            if not (isinstance(page_start, int) and isinstance(page_end, int)):
+                raise ValueError(
+                    "page locators are 1-based inclusive pairs; both ends are required"
+                )
+            if page_start < 1 or page_end < page_start:
+                raise ValueError(f"invalid page range {page_start}..{page_end}")
         else:
-            _require(
-                isinstance(self.line_start, int) and isinstance(self.line_end, int),
-                "line locators are 1-based inclusive pairs; both ends are required",
-            )
-            _require(
-                self.line_start >= 1 and self.line_end >= self.line_start,
-                f"invalid line range {self.line_start}..{self.line_end}",
-            )
+            line_start = self.line_start
+            line_end = self.line_end
+            if not (isinstance(line_start, int) and isinstance(line_end, int)):
+                raise ValueError(
+                    "line locators are 1-based inclusive pairs; both ends are required"
+                )
+            if line_start < 1 or line_end < line_start:
+                raise ValueError(f"invalid line range {line_start}..{line_end}")
 
         if self.kind == "page":
             _require(not self.heading_path, "page hints carry no heading path")

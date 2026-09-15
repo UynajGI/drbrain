@@ -65,10 +65,10 @@ def _client(cfg: Any, storage_path: Path):
         chat_backend.setdefault("base_url", chat_base_url)
         chat_backend.setdefault("api_key", str(_value(cfg, "chat_api_key", "") or ""))
 
-    index = {"model": index_model, "storage_path": str(storage_path)}
+    index: dict[str, Any] = {"model": index_model, "storage_path": str(storage_path)}
     if index_backend:
         index["backend"] = index_backend
-    chat = {"model": chat_model}
+    chat: dict[str, Any] = {"model": chat_model}
     if chat_backend:
         chat["backend"] = chat_backend
     try:
