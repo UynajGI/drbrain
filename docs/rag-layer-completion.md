@@ -11,9 +11,10 @@ database. `ingest` writes the revision, its contiguous blocks and one published
 leaf per block; the original material (plus attachments) is copied under
 `data/papers/<id>/`; no `raw.md` or `tree.json` is generated, and a canonical
 write failure rolls the whole paper back and reports it as failed instead of
-publishing a record without its body. (`ingest-link` still writes its
-extracted markdown as `raw.md`; that flow is a known remaining writer until it
-is migrated too.)
+publishing a record without its body. `ingest-link` follows the same rule: the
+extracted markdown is registered through the same canonical write path, no
+`raw.md` is written, and a failed link reports `status=error` and makes the
+command exit non-zero.
 
 `drbrain rag prepare` defaults to the unified index (canonical FTS, shared
 vectors, hierarchy, one published tree generation). `--legacy-sql` keeps the
