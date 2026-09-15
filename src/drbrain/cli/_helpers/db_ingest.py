@@ -120,6 +120,20 @@ def _ingest_single_paper(
     _ingest_log.info(f"[ingest] Stage 2/4 identify: doi={parsed.doi} arxiv={parsed.arxiv}")
     ids = PaperIDs(doi=parsed.doi, arxiv=parsed.arxiv)
     local_id = dedup.resolve(ids, title=parsed.title, year=parsed.year)
+    content_id = ""
+    if local_id is None:
+        # Materials without an external id get a content-addressed identity so
+        # re-ingesting identical bytes reuses the same paper (T48 重复输入);
+        # edited bytes are a different document and legitimately get a new id.
+        try:
+            from drbrain.storage.inbox import file_sha256
+
+            digest = file_sha256(pdf_path) if pdf_path.is_file() else ""
+        except OSError:
+            digest = ""
+        content_id = f"p{digest[:24]}" if digest else ""
+        if content_id and db.get_paper(content_id) is not None:
+            local_id = content_id
     is_new = local_id is None
 
     if is_new:
@@ -140,8 +154,9 @@ def _ingest_single_paper(
         else:
             # Six hex digits give only 24 bits and become collision-prone for
             # corpus-scale ingestion. Keep the human-readable ``p`` prefix,
-            # but use 96 bits for a practical collision margin.
-            local_id = f"p{uuid.uuid4().hex[:24]}"
+            # but use 96 bits for a practical collision margin.  The
+            # content-addressed id wins when the bytes are hashable.
+            local_id = content_id or f"p{uuid.uuid4().hex[:24]}"
             db.insert_paper(
                 local_id,
                 parsed.title,
