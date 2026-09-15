@@ -151,3 +151,37 @@ def test_markdown_to_tree_has_no_min_node_lines_param():
 
     sig = inspect.signature(markdown_to_tree)
     assert "min_node_lines" not in sig.parameters
+
+
+MACRO_PREAMBLE = r"""
+\documentstyle[aps,preprint]{revtex}
+\def\bd{\begin{document}} \def\ed{\end{document}}
+\def\ds{\documentstyle} \let\fr=\frac
+\begin{document}
+\section{The Real Body}
+Confinement survives the macro preamble intact.
+\end{document}
+"""
+
+MACRO_ONLY_MARKERS = r"""
+%Paper: hep-th/9205013
+\def\bdo{\begin{document}}
+\def\edo{\end{document}}
+Text that must survive without literal document markers.
+"""
+
+
+def test_macro_definition_pair_does_not_empty_the_document():
+    """Old arXiv preambles define \\bd/\\ed as macros; the first literal pair
+    sits inside them and used to reduce the body to the brace between the two
+    definitions."""
+    doc = latex_to_document(MACRO_PREAMBLE)
+    assert "Confinement survives the macro preamble intact." in doc.markdown
+    assert "## The Real Body" in doc.markdown
+
+
+def test_macro_only_markers_keep_the_whole_text():
+    """A file whose only document markers are macro definitions must keep its
+    whole text instead of collapsing to an empty body."""
+    doc = latex_to_document(MACRO_ONLY_MARKERS)
+    assert "must survive without literal document markers" in doc.markdown
