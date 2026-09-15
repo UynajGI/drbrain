@@ -9,6 +9,7 @@ import pytest
 
 from drbrain.config import DBConfig, EmbedConfig, LlamaIndexConfig
 from drbrain.rag import sql_retrie
+from drbrain.rag.status import RetrievalError
 
 DIM = 1024  # must match the production `length(embedding) = 4096` filter
 
@@ -124,26 +125,61 @@ def test_retrieve_sql_two_legs(rag_db, cfg, monkeypatch):
         assert row["text"]
 
 
-def test_retrieve_sql_pageindex_leg_is_independently_selectable(rag_db, cfg):
-    """PageIndex tree recall works without enabling BM25 or vector legs."""
+def test_retrieve_sql_tree_leg_requires_the_pinned_ann(rag_db, cfg):
+    """T43: 'pageindex' folds into the tree leg; with no pinned ANN snapshot
+    the leg reports unavailable instead of falling back to SQL LIKE recall."""
     cfg.llamaindex.retrievers = ["pageindex"]
-    rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
-    assert rows
-    assert all("pageindex" in row["legs"] for row in rows)
-    assert all("bm25" not in row["legs"] and "vector" not in row["legs"] for row in rows)
+    with pytest.raises(RetrievalError):
+        sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
+    assert not hasattr(sql_retrie, "_pageindex_leg")
+    assert not hasattr(sql_retrie, "_raptor_leg")
+
+
+def test_retrieve_sql_legacy_config_folds_into_tree(rag_db, cfg, monkeypatch):
+    """The old pageindex+raptor config resolves to exactly one tree leg."""
+    cfg.llamaindex.retrievers = ["pageindex", "raptor"]
+    captured: dict = {}
+    original = sql_retrie._tree_leg
+
+    def spy(cfg_arg, conn, query, generation, k, **kwargs):
+        captured["called"] = True
+        return original(cfg_arg, conn, query, generation, k, **kwargs)
+
+    monkeypatch.setattr(sql_retrie, "_tree_leg", spy)
+    with pytest.raises(RetrievalError):
+        sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
+    assert captured.get("called"), "the folded legacy names must reach the tree leg"
+
+
+def test_tree_leg_verifies_node_identity_and_revision(rag_db, cfg, monkeypatch):
+    _patch_embed(monkeypatch, [1.0] * DIM)
+
+    def fake_evidence(index_path, qvec, k):
+        return [
+            ("0000", 0.9, "pA", "hA0"),  # matches the node_texts hash
+            ("0001", 0.8, "pA", "STALE"),  # hash mismatch, same revision only
+            ("9999", 0.7, "pA", "hX"),  # no node_texts row at all
+        ]
+
+    monkeypatch.setattr(
+        "drbrain.rag.sql_snapshot.resolve_sql_vector_index", lambda cfg_arg, generation: "idx"
+    )
+    monkeypatch.setattr("drbrain.rag.zvec_index.query_zvec_evidence", fake_evidence)
+    conn = sqlite3.connect(rag_db)
+    try:
+        hits = sql_retrie._tree_leg(cfg, conn, "kagome", "gen-1", 10)
+    finally:
+        conn.close()
+    assert hits == [("pA:0000", 0.9)]
 
 
 def test_diversity_guarantee_respects_top_k(rag_db, cfg, monkeypatch):
     _patch_embed(monkeypatch, [1.0] * DIM)
-    cfg.llamaindex.retrievers = ["bm25", "vector", "raptor"]
+    cfg.llamaindex.retrievers = ["bm25", "vector"]
     rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=1)
     assert len(rows) == 1
     rows = sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
     assert len(rows) <= 2
-    raptor_rows = [r for r in rows if "raptor" in r["legs"]]
-    assert raptor_rows, "raptor leg must surface via guarantee"
-    assert raptor_rows[0]["node_id"].startswith("raptor_")
-    assert "summary" in raptor_rows[0]["text"]  # text resolved from tree_summaries
 
 
 def test_graph_leg_rows(rag_db, cfg, monkeypatch):

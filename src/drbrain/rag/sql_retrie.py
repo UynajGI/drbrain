@@ -8,9 +8,11 @@ reciprocal-rank fusion (each gated by ``llamaindex.retrievers``):
 * BM25:   FTS5 ``MATCH`` with ``bm25()`` ranking (recall stage)
 * vector: Zvec HNSW ANN over PageIndex vectors (or SQLite cosine rerank in
   compatibility mode)
-* raptor: paper-scoped KNN over hierarchical-summary vectors
-* pageindex: section-heading/tree-text recall from PageIndex nodes
-* graph:  KG concept seeds + 1-hop neighbours
+* tree:   pinned ANN recall verified against the ``node_texts`` evidence row
+  (same node id and content hash — same revision).  The retired SQL LIKE
+  heading scan and the legacy RAPTOR pool are no longer legs (T43): the
+  legacy names fold into this one tree leg.
+* graph:  KG concept seeds + 1-hop neighbours (live extra)
 
 Rows match the shape of :func:`drbrain.rag.agent._retrieval_rows` so the loop's
 evidence machinery (``build_evidence_record``) works unchanged.
@@ -38,6 +40,7 @@ from drbrain.rag.contracts import (
     matches_scope,
 )
 from drbrain.rag.evidence import build_evidence_record
+from drbrain.rag.legs import normalize_legs
 from drbrain.rag.status import RetrievalUnavailableError
 from drbrain.utils.rrf import DEFAULT_K as _RRF_K
 from drbrain.utils.rrf import rrf_fuse_scores
@@ -182,37 +185,56 @@ def _bm25_leg(
     return [(r[0], float(r[1])) for r in rows]
 
 
-def _pageindex_leg(
+def _same_revision(left: str, right: str) -> bool:
+    """True when two content hashes identify the same text revision."""
+    a = str(left or "").strip().lower()
+    b = str(right or "").strip().lower()
+    if not a or not b:
+        return False
+    # Legacy stores keep sha256[:16]; canonical stores keep the full hash.
+    return a[:16] == b[:16]
+
+
+def _tree_leg(
+    cfg: Any,
     conn: sqlite3.Connection,
     query: str,
+    generation: str | None,
     k: int,
     *,
-    categories_filter: tuple[str, list[str]] = ("", []),
+    allowed_papers: set[str] | None = None,
 ) -> list[tuple[str, float]]:
-    """Recall PageIndex sections independently from the BM25 full-text leg.
+    """Unified tree recall: pinned ANN, verified against ``node_texts``.
 
-    PageIndex node text is stored with the section heading first.  Restricting
-    matching to that heading/tree prefix gives the structure-first leg a
-    distinct signal while preserving the same node provenance for fusion.
+    The retired SQL LIKE heading scan is gone.  The leg recalls from the
+    shared ANN sidecar and keeps only hits whose node id maps to a
+    ``node_texts`` row whose content hash agrees with the vector's (same
+    evidence id, same revision); stale or unrlocatable hits are dropped.
     """
-    words = _WORD_RE.findall(query)[:_MAX_TERMS]
-    if not words:
-        return []
-    clause, params = categories_filter
-    predicates = ["substr(nt.text, 1, 320) LIKE ? ESCAPE '\\'" for _ in words]
-    like_params = [f"%{w.replace('%', '\\%').replace('_', '\\_')}%" for w in words]
-    rows = conn.execute(
-        "SELECT nt.node_key, ("
-        + " + ".join("CASE WHEN " + p + " THEN 1 ELSE 0 END" for p in predicates)
-        + ") AS hits "
-        "FROM node_texts nt WHERE ("
-        + " OR ".join(predicates)
-        + ")"
-        + clause
-        + " ORDER BY hits DESC, length(nt.text) ASC LIMIT ?",
-        (*like_params, *like_params, *params, k),
-    ).fetchall()
-    return [(row[0], float(row[1])) for row in rows]
+    if generation is None:
+        raise RetrievalUnavailableError("tree retrieval requires a pinned SQL generation")
+    from drbrain.rag.sql_snapshot import resolve_sql_vector_index
+    from drbrain.rag.zvec_index import configured_vector_top_k, query_zvec_evidence
+    from drbrain.services.embedding import _embed_batch
+
+    qvec = _embed_batch([query], cfg.embed)[0]
+    requested = max(int(k), configured_vector_top_k(cfg), 100)
+    raw = query_zvec_evidence(resolve_sql_vector_index(cfg, generation), qvec, requested)
+    out: list[tuple[str, float]] = []
+    for node_id, score, paper_id, content_hash in raw:
+        if allowed_papers is not None and paper_id not in allowed_papers:
+            continue
+        row = conn.execute(
+            "SELECT node_key, content_hash FROM node_texts WHERE paper_id = ? AND node_id = ?",
+            (paper_id, node_id),
+        ).fetchone()
+        if row is None:
+            continue
+        node_key, expected = str(row[0]), str(row[1] or "")
+        if not _same_revision(expected, content_hash):
+            continue
+        out.append((node_key, score))
+    return out[:k]
 
 
 def _rerank_with_vectors(
@@ -323,55 +345,6 @@ def _get_reranker(cfg: Any) -> Any:
             log.warning("[rag-sql] reranker init failed ({}); rerank disabled", exc)
             _RERANKER_CACHE[cache_key] = None
     return _RERANKER_CACHE[cache_key]
-
-
-def _raptor_leg(
-    cfg: Any,
-    conn: sqlite3.Connection,
-    query: str,
-    papers: list[str],
-    k: int,
-) -> list[tuple[str, float]]:
-    """RAPTOR hierarchical-summary leg, scoped to the BM25 candidate papers.
-
-    Same two-stage logic as :func:`_rerank_with_vectors`: point reads via the
-    ``(tree_layer, paper_id)`` index, cosine rank in numpy — milliseconds, not
-    a whole-library vec0 scan.
-    """
-    if not papers:
-        return []
-    try:
-        from drbrain.services.embedding import _embed_batch
-
-        qvec = _embed_batch([query], cfg.embed)[0]
-    except Exception as exc:  # noqa: BLE001 - embedding must not raise here
-        log.warning("[rag-sql] raptor leg embedding failed: {}", exc)
-        raise
-    import numpy as np
-
-    from drbrain.storage import vector_index as vi
-
-    q = np.asarray(qvec, dtype=np.float32)
-    q /= max(float(np.linalg.norm(q)), 1e-12)
-    scored: list[tuple[str, float]] = []
-    batch = 200
-    for s in range(0, len(papers), batch):
-        chunk = papers[s : s + batch]
-        ph = ",".join("?" * len(chunk))
-        rows = conn.execute(
-            "SELECT node_id, embedding FROM tree_vectors "
-            f"WHERE tree_layer = 'raptor_L1' AND paper_id IN ({ph}) "
-            "AND length(embedding) = ?",
-            (*chunk, vi.embedding_byte_len(conn)),
-        ).fetchall()
-        for node_id, blob in rows:
-            v = np.frombuffer(blob, dtype=np.float32).copy()
-            norm = float(np.linalg.norm(v))
-            if norm <= 0.0:
-                continue
-            scored.append((node_id, float(q @ (v / norm))))
-    scored.sort(key=lambda kv: kv[1], reverse=True)
-    return scored[:k]
 
 
 def _graph_neighbors(
@@ -543,8 +516,11 @@ def retrieve_documents_sql(
 
     li = get_llamaindex_config(cfg)
     vector_backend = configured_vector_backend(cfg)
-    wanted = list(dict.fromkeys(li.retrievers or ["bm25", "vector"]))
-    if generation is None and vector_backend == "zvec" and "vector" in wanted:
+    normalized = normalize_legs(li.retrievers)
+    for note in normalized.notes:
+        log.info("[rag-sql] retriever config: {}", note)
+    wanted = normalized.as_list()
+    if generation is None and vector_backend == "zvec" and {"vector", "tree"} & set(wanted):
         # Direct callers (the research loop and low-level API) may omit the
         # generation. Resolve the active immutable snapshot before opening the
         # database so the ANN sidecar and SQLite text always share an epoch.
@@ -554,9 +530,6 @@ def retrieve_documents_sql(
         if generation is None:
             raise RetrievalUnavailableError("no active SQL generation for Zvec retrieval")
     request = RetrievalRequest(query, top_k, generation, filters or {}, acl_filter or {})
-    unsupported = set(wanted) - {"bm25", "vector", "pageindex", "tree", "raptor", "graph", "claims"}
-    if unsupported:
-        raise ValueError(f"unsupported SQL retrieval legs: {sorted(unsupported)}")
     if generation is not None and set(wanted).intersection({"graph", "claims"}):
         raise ValueError("pinned SQL retrieval cannot include live graph/claims sources")
     if set(request.acl_filter) - {"paper_id"}:
@@ -570,7 +543,6 @@ def retrieve_documents_sql(
         "backend": "sql",
         "snapshot": generation is not None,
         "vector_recall": "zvec_ann" if vector_backend == "zvec" else "bm25_pool",
-        "raptor_recall": "bm25_papers",
     }
     try:
         scope_sql, scope_params = _categories_filter(conn, request.filters.get("categories"))
@@ -601,7 +573,7 @@ def retrieve_documents_sql(
             bm25 = (
                 _bm25_leg(conn, query, 1000, categories_filter=(scope_sql, scope_params))
                 if set(wanted).intersection(
-                    {"bm25", "raptor"} | ({"vector"} if vector_backend == "sqlite" else set())
+                    {"bm25"} | ({"vector"} if vector_backend == "sqlite" else set())
                 )
                 else []
             )
@@ -609,14 +581,13 @@ def retrieve_documents_sql(
             pool_error, bm25 = exc, []
         pool_ms = (time.perf_counter() - pool_started) * 1000
         pool = [key for key, _ in bm25]
-        pool_papers = list(dict.fromkeys(key.split(":", 1)[0] for key in pool))
         legs: list[tuple[str, list[dict[str, Any]]]] = []
         entries: list[dict[str, Any]]
         for name in wanted:
             started = time.perf_counter()
             try:
                 if (
-                    name in {"bm25", "raptor"} or (name == "vector" and vector_backend == "sqlite")
+                    name == "bm25" or (name == "vector" and vector_backend == "sqlite")
                 ) and pool_error is not None:
                     raise pool_error
                 if name == "bm25":
@@ -633,16 +604,16 @@ def retrieve_documents_sql(
                     else:
                         vector_entries = _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
                     entries = [{"key": key, "score": score} for key, score in vector_entries]
-                elif name == "raptor":
+                elif name == "tree":
                     entries = [
                         {"key": key, "score": score}
-                        for key, score in _raptor_leg(cfg, conn, query, pool_papers, _KNN_POOL)
-                    ]
-                elif name in {"pageindex", "tree"}:
-                    entries = [
-                        {"key": key, "score": score}
-                        for key, score in _pageindex_leg(
-                            conn, query, _KNN_POOL, categories_filter=(scope_sql, scope_params)
+                        for key, score in _tree_leg(
+                            cfg,
+                            conn,
+                            query,
+                            generation,
+                            _KNN_POOL,
+                            allowed_papers=allowed_papers,
                         )
                     ]
                 elif name == "graph":
@@ -810,7 +781,7 @@ def _diverse_head(candidates, top_k):
         return []
     selected = list(candidates[:top_k])
     protected = {selected[0]["key"]} if selected else set()
-    for name in ("pageindex", "tree", "raptor", "graph", "claims"):
+    for name in ("tree", "graph", "claims"):
         best = next((row for row in candidates if name in row["legs"]), None)
         if best is None:
             continue

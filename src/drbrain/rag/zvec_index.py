@@ -171,6 +171,22 @@ def query_zvec_index(
     top_k: int,
 ) -> list[tuple[str, float, str]]:
     """Query Zvec, returning ``(node_id, cosine_similarity, paper_id)``."""
+    return [
+        (node_id, score, paper_id)
+        for node_id, score, paper_id, _ in query_zvec_evidence(index_path, query_vector, top_k)
+    ]
+
+
+def query_zvec_evidence(
+    index_path: str | Path,
+    query_vector: Iterable[float],
+    top_k: int,
+) -> list[tuple[str, float, str, str]]:
+    """Query Zvec, returning ``(node_id, cosine_similarity, paper_id, content_hash)``.
+
+    The content hash lets a caller verify that an ANN hit still matches the
+    evidence row it claims to be (same node id, same revision) before use.
+    """
 
     zvec = _zvec()
     path = Path(index_path)
@@ -183,9 +199,11 @@ def query_zvec_index(
     try:
         query = zvec.Query(field_name=_VECTOR_FIELD, vector=[float(v) for v in query_vector])
         docs = collection.query(
-            query, topk=max(1, int(top_k)), output_fields=["paper_id", "node_id"]
+            query,
+            topk=max(1, int(top_k)),
+            output_fields=["paper_id", "node_id", "content_hash"],
         )
-        out: list[tuple[str, float, str]] = []
+        out: list[tuple[str, float, str, str]] = []
         for doc in docs:
             # Zvec returns cosine distance (0 = identical), while DrBrain's
             # fusion legs use a higher-is-better similarity score.
@@ -196,6 +214,7 @@ def query_zvec_index(
                     str(fields.get("node_id") or doc.id),
                     1.0 - distance,
                     str(fields.get("paper_id", "")),
+                    str(fields.get("content_hash") or ""),
                 )
             )
         return out
@@ -211,5 +230,6 @@ __all__ = [
     "build_zvec_index",
     "configured_vector_backend",
     "configured_vector_top_k",
+    "query_zvec_evidence",
     "query_zvec_index",
 ]
