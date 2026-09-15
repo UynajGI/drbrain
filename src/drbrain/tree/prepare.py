@@ -111,6 +111,8 @@ def prepare_unified_index(
     summary_model: Any = None,
     config: Any = None,
     builder_config: BuilderConfig | None = None,
+    summary_max_tokens: int | None = None,
+    summary_input_budget: int | None = None,
     seed_nodes: Sequence[str] | None = None,
     force: bool = False,
     publish: bool = True,
@@ -118,6 +120,22 @@ def prepare_unified_index(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> PrepareOutcome:
     """Prepare FTS, shared vectors and the unified hierarchy, then publish."""
+    if builder_config is None and (summary_max_tokens or summary_input_budget):
+        import dataclasses as _dataclasses
+
+        base = BuilderConfig()
+        builder_config = _dataclasses.replace(
+            base,
+            contract=_dataclasses.replace(
+                base.contract,
+                max_output_tokens=max(
+                    1, int(summary_max_tokens or base.contract.max_output_tokens)
+                ),
+                input_budget=max(
+                    1, int(summary_input_budget or base.contract.input_budget)
+                ),
+            ),
+        )
     outcome = PrepareOutcome()
     started = time.perf_counter()
     if embed is None and embed_cfg is not None:
@@ -430,9 +448,9 @@ def _prepare_hierarchy(
 
 def _resolve_index_summary_model(config: Any) -> Any:
     from drbrain.services.index_model import IndexModel
-    from drbrain.services.model_roles import resolve_model_role
+    from drbrain.services.model_roles import ROLE_INDEX, resolve_model_role
 
-    role = resolve_model_role(config, "index")
+    role = resolve_model_role(config, ROLE_INDEX)
     return IndexModelSummary(IndexModel(role=role))
 
 

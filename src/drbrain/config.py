@@ -277,6 +277,14 @@ class LlamaIndexConfig(_ConfigBase):
     #: Unified tree generation root (T45/T47): ``rag prepare --unified``
     #: publishes here and readers resolve the active generation from it.
     tree_storage: str = "data/tree"
+    #: Summary generation cap for the tree builder's contract.  The protocol
+    #: default is 512; reasoning endpoints need headroom beyond their
+    #: reasoning_content or every summary comes back empty/truncated
+    #: (T48 probe: deepseek-flash needed >4096, 8192 works).
+    summary_max_tokens: int = 512
+    #: Summary input budget for the tree builder's contract (protocol default
+    #: 3500 tokens).  Larger groups need a larger prompt budget.
+    summary_input_budget: int = 3500
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000

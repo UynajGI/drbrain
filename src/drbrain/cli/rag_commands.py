@@ -238,6 +238,8 @@ def rag_prepare_cmd(
                 profile=profile_from_config(embed_cfg),
                 embed_cfg=embed_cfg,
                 config=cfg,
+                summary_max_tokens=get_llamaindex_config(cfg).summary_max_tokens,
+                summary_input_budget=get_llamaindex_config(cfg).summary_input_budget,
                 force=force,
             )
         stats = outcome.to_json()
