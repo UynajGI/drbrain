@@ -199,24 +199,146 @@ def profile_affinity(profile: SourceProfile, picture: ClusterPicture) -> float:
     return max(0.0, min(1.0, value / total))
 
 
+def _span_affinity_without(
+    local_id: str,
+    heading_path: tuple[str, ...],
+    picture: ClusterPicture,
+    *,
+    own_total: float,
+    own_doc: float,
+    own_paths: Mapping[tuple[str, ...], float],
+    path_sums: Mapping[tuple[str, ...], float],
+) -> float:
+    """``_span_affinity`` against ``picture`` minus the evaluating row's mass.
+
+    Same formula as :func:`_span_affinity` with the row's own contribution
+    (``own_*``) subtracted from the picture's aggregates.  ``path_sums`` holds
+    the component's per-path weight totals for this document.
+    """
+    total = picture.total_mass - own_total
+    if total <= 0.0:
+        return 0.0
+    doc_mass = picture.doc_mass.get(local_id, 0.0) - own_doc
+    if doc_mass <= 0.0:
+        return 0.0
+    total_weight = 0.0
+    similarity = 0.0
+    for path, weight in path_sums.items():
+        remaining = weight - own_paths.get(path, 0.0)
+        if remaining <= 0.0:
+            continue
+        total_weight += remaining
+        similarity += remaining * path_similarity(heading_path, path)
+    if total_weight <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, (doc_mass / total) * (similarity / total_weight)))
+
+
+def _affinity_without(
+    source: SourceSpan | SourceProfile,
+    picture: ClusterPicture,
+    own_parts: Sequence[tuple[str, tuple[str, ...], float]],
+    path_sums: Mapping[tuple[str, Mapping[tuple[str, ...], float]]],
+) -> float:
+    """Affinity for one row against a picture that excludes the row itself."""
+    own_total = 0.0
+    own_by_doc: dict[str, float] = {}
+    own_paths: dict[tuple[str, tuple[str, ...]], float] = {}
+    for local_id, path, weight in own_parts:
+        own_total += weight
+        own_by_doc[local_id] = own_by_doc.get(local_id, 0.0) + weight
+        own_paths[(local_id, path)] = own_paths.get((local_id, path), 0.0) + weight
+
+    def _value(local_id: str, path: tuple[str, ...]) -> float:
+        return _span_affinity_without(
+            local_id,
+            path,
+            picture,
+            own_total=own_total,
+            own_doc=own_by_doc.get(local_id, 0.0),
+            own_paths={
+                entry_path: weight
+                for (entry_local, entry_path), weight in own_paths.items()
+                if entry_local == local_id
+            },
+            path_sums=path_sums.get(local_id, {}),
+        )
+
+    if isinstance(source, SourceSpan):
+        return _value(source.local_id, source.heading_path)
+    parts = source.merged().parts
+    if not parts:
+        return 0.0
+    total = sum(max(0, tokens) for _local, _path, tokens in parts)
+    if total <= 0:
+        return 0.0
+    value = 0.0
+    for local_id, path, tokens in parts:
+        value += max(0, tokens) * _value(local_id, tuple(path))
+    return max(0.0, min(1.0, value / total))
+
+
 def affinity_matrix(
     stage: PosteriorStage,
     sources: Mapping[str, SourceSpan | SourceProfile],
 ) -> tuple[tuple[float, ...], ...]:
-    """A(i,k) for every row of ``stage`` with per-row self-exclusion."""
-    matrix: list[tuple[float, ...]] = []
-    for row_id in stage.row_ids:
+    """A(i,k) for every row of ``stage`` with per-row self-exclusion.
+
+    Rebuilding the self-excluded picture per row is quadratic in the stage
+    size (the 20k frontier spent tens of minutes in this loop).  The pictures
+    are built once and each row's own contribution — exactly the parts
+    :func:`build_pictures` would have added for it — is subtracted per row
+    instead; rows without mass in a component use the full picture unchanged.
+    """
+    components = stage.component_ids
+    zero_row = tuple(0.0 for _ in components)
+    full = build_pictures(stage, sources)
+    path_sums: dict[str, dict[tuple[str, ...], float]] = {}
+    own_rows: list[dict[str, list[tuple[str, tuple[str, ...], float]]]] = []
+    for row_id, row in zip(stage.row_ids, stage.probs):
         source = sources.get(row_id)
         if source is None:
-            matrix.append(tuple(0.0 for _ in stage.component_ids))
+            own_rows.append({})
             continue
-        pictures = build_pictures(stage, sources, exclude_row=row_id)
-        matrix.append(
-            tuple(
-                structural_affinity(source, pictures[component])
-                if isinstance(source, SourceSpan)
-                else profile_affinity(source, pictures[component])
-                for component in stage.component_ids
-            )
-        )
+        profile = _as_profile(source).merged()
+        if profile.is_empty():
+            own_rows.append({})
+            continue
+        contribution: dict[str, list[tuple[str, tuple[str, ...], float]]] = {}
+        for index, component in enumerate(components):
+            prob = float(row[index])
+            if prob <= 0.0:
+                continue
+            parts = [
+                (local_id, tuple(path), prob * max(int(tokens), 1))
+                for local_id, path, tokens in profile.parts
+            ]
+            contribution[component] = parts
+            per_doc = path_sums.setdefault(component, {})
+            for local_id, path, weight in parts:
+                totals = per_doc.setdefault(local_id, {})
+                totals[path] = totals.get(path, 0.0) + weight
+        own_rows.append(contribution)
+
+    matrix: list[tuple[float, ...]] = []
+    for row_id, row_own in zip(stage.row_ids, own_rows):
+        source = sources.get(row_id)
+        if source is None:
+            matrix.append(zero_row)
+            continue
+        values = []
+        for component in components:
+            picture = full[component]
+            own_parts = row_own.get(component)
+            if own_parts:
+                values.append(
+                    _affinity_without(source, picture, own_parts, path_sums.get(component, {}))
+                )
+            else:
+                values.append(
+                    structural_affinity(source, picture)
+                    if isinstance(source, SourceSpan)
+                    else profile_affinity(source, picture)
+                )
+        matrix.append(tuple(values))
     return tuple(matrix)
