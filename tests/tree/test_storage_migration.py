@@ -29,7 +29,9 @@ def _canonical_paper(db: Database, local_id: str, text: str = "# Sec\n\nbody tex
     db.commit()
 
 
-def _legacy_dir(root: Path, local_id: str, *, raw: str | None = "# Legacy\n\nbody\n", tree=True) -> Path:
+def _legacy_dir(
+    root: Path, local_id: str, *, raw: str | None = "# Legacy\n\nbody\n", tree=True
+) -> Path:
     directory = root / local_id
     directory.mkdir(parents=True, exist_ok=True)
     if raw is not None:

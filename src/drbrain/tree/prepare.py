@@ -131,9 +131,7 @@ def prepare_unified_index(
                 max_output_tokens=max(
                     1, int(summary_max_tokens or base.contract.max_output_tokens)
                 ),
-                input_budget=max(
-                    1, int(summary_input_budget or base.contract.input_budget)
-                ),
+                input_budget=max(1, int(summary_input_budget or base.contract.input_budget)),
             ),
         )
     outcome = PrepareOutcome()

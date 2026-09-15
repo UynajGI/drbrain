@@ -113,12 +113,8 @@ def step_audit(report: dict, root: Path) -> None:
 
 
 def step_plan(report: dict, root: Path) -> None:
-    first = json_tail(
-        drbrain(["storage", "migrate", "--dry-run", "--json"], root=root)
-    )
-    second = json_tail(
-        drbrain(["storage", "migrate", "--dry-run", "--json"], root=root)
-    )
+    first = json_tail(drbrain(["storage", "migrate", "--dry-run", "--json"], root=root))
+    second = json_tail(drbrain(["storage", "migrate", "--dry-run", "--json"], root=root))
     report["plan"] = {
         "plan_id": first.get("plan_id"),
         "deterministic": first == second,
@@ -134,9 +130,7 @@ def step_apply(report: dict, root: Path) -> None:
     # Controlled interruption: pause after one item, then resume to the end,
     # then run once more to prove re-apply is a no-op.
     paused = json_tail(
-        drbrain(
-            ["storage", "migrate", "--apply", "--json", "--max-items", "1"], root=root
-        )
+        drbrain(["storage", "migrate", "--apply", "--json", "--max-items", "1"], root=root)
     )
     resumed = json_tail(drbrain(["storage", "migrate", "--apply", "--json"], root=root))
     noop = json_tail(drbrain(["storage", "migrate", "--apply", "--json"], root=root))

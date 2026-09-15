@@ -221,7 +221,7 @@ class TestLegacyArtifacts:
             tuple(values[key] for key in values),
         )
         if "embedding" not in columns:
-            t.skip("tree_vectors has no embedding column in this schema")
+            pytest.skip("tree_vectors has no embedding column in this schema")
         db.conn.commit()
         db.close()
         report = audit_storage(db_path=path)

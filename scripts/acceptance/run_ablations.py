@@ -37,7 +37,9 @@ def _load_env(root: Path):
     from drbrain.rag.config import get_llamaindex_config
     from drbrain.storage.database import Database
 
-    cfg = Config.from_yaml("config.yaml", local_path="config.local.yaml", overlay_path="config.t48.yaml")
+    cfg = Config.from_yaml(
+        "config.yaml", local_path="config.local.yaml", overlay_path="config.t48.yaml"
+    )
     db = Database(str(root / "data" / "drbrain.db"))
     return cfg, db, get_llamaindex_config(cfg)
 
@@ -188,9 +190,7 @@ def step_build(root: Path, report: dict, names: list[str]) -> None:
         payload = outcome.to_json()
         payload["mechanism"] = ablation(name).mechanism
         if outcome.published:
-            payload["dev"] = evaluate_generation(
-                cfg, db, entries, storage_root=variant_root
-            )
+            payload["dev"] = evaluate_generation(cfg, db, entries, storage_root=variant_root)
         report.setdefault("build_ablations", {})[name] = payload
     db.close()
 

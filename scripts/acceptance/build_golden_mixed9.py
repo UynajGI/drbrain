@@ -175,7 +175,10 @@ ENTRIES: list[dict] = [
         "split": "holdout",
         "evidence": [
             {"paper_id": PDF_ANALYTICS, "quote": "# Analytics"},
-            {"paper_id": PDF_OPENPHASE, "quote": "## 9.1 Introduction to the OpenPhase Software Package"},
+            {
+                "paper_id": PDF_OPENPHASE,
+                "quote": "## 9.1 Introduction to the OpenPhase Software Package",
+            },
         ],
     },
 ]

@@ -217,9 +217,7 @@ def validate_golden_materials(
                     f"{gid}: {paper_id}:{node_id} is not a readable leaf of the pinned revision"
                 )
             elif _normalized_material_text(quote) not in _normalized_material_text(text):
-                problems.append(
-                    f"{gid}: quote not found verbatim in {paper_id}:{node_id}"
-                )
+                problems.append(f"{gid}: quote not found verbatim in {paper_id}:{node_id}")
     if "dev" not in splits:
         problems.append("no dev split entries")
     if "holdout" not in splits:

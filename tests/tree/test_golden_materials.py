@@ -73,7 +73,10 @@ class TestValidator:
                 _entry(id="q1"),  # duplicate id
                 _entry(id="q3", split="test"),
                 _entry(id="q4", kind="unknown"),
-                _multi(id="q5", evidence=[{"paper_id": "p1", "node_id": "nl-1", "quote": "hello world"}]),
+                _multi(
+                    id="q5",
+                    evidence=[{"paper_id": "p1", "node_id": "nl-1", "quote": "hello world"}],
+                ),
                 _entry(id="q6", query=""),
             ],
             _resolve,
@@ -127,14 +130,8 @@ class TestAcceptanceGolden:
     def test_coverage_and_split_are_explicit(self):
         entries = self._entries()
         assert {entry["split"] for entry in entries} == {"dev", "holdout"}
-        assert {"term", "formula", "structure", "multi"} <= {
-            entry["kind"] for entry in entries
-        }
+        assert {"term", "formula", "structure", "multi"} <= {entry["kind"] for entry in entries}
         assert {"pdf", "tex", "md"} <= {entry["material"] for entry in entries}
         papers = {paper for entry in entries for paper in entry["relevant_papers"]}
         assert len(papers) == 9  # the full mixed corpus is covered
-        assert all(
-            evidence["revision"] == 1
-            for entry in entries
-            for evidence in entry["evidence"]
-        )
+        assert all(evidence["revision"] == 1 for entry in entries for evidence in entry["evidence"])
