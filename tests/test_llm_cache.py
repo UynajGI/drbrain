@@ -224,6 +224,7 @@ def _mock_messages_response(text: str):
     resp.choices = [MagicMock()]
     resp.choices[0].message.content = text
     resp.choices[0].message.tool_calls = None
+    resp.choices[0].finish_reason = "stop"
     resp.usage = MagicMock(prompt_tokens=20, completion_tokens=10)
     return resp
 
@@ -248,11 +249,13 @@ class TestCallWithMessagesCache:
         assert r1 == {
             "text": "hi there",
             "tool_calls": None,
+            "finish_reason": "stop",
             "usage": {"in": 20, "out": 10, "cached": 0},
         }
         assert r2 == {
             "text": "hi there",
             "tool_calls": None,
+            "finish_reason": "stop",
             "usage": {"in": 20, "out": 10, "cached": 0},
         }
         assert call_count[0] == 1  # second call hit cache
