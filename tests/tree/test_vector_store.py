@@ -219,3 +219,24 @@ class TestMetadata:
             db.upsert_node_vector(
                 "x", node_revision=1, kind="leafy", profile_id="p", content_hash="h", dimension=1
             )
+
+
+class TestOptimize:
+    """Segment merge before publication (bulk-load hygiene)."""
+
+    def test_optimize_keeps_the_ranking_and_the_deletes(self, store):
+        entries = [_entry(f"nl-{index:03d}", vec=(1.0, 0.02 * index, 0.0)) for index in range(40)]
+        for start in range(0, len(entries), 7):
+            store.upsert(entries[start : start + 7])
+        before = [
+            (hit.node_id, round(hit.score, 6)) for hit in store.query((1.0, 0.4, 0.0), top_k=5)
+        ]
+        store.optimize()
+        after = [
+            (hit.node_id, round(hit.score, 6)) for hit in store.query((1.0, 0.4, 0.0), top_k=5)
+        ]
+        assert after == before
+
+        store.delete(["nl-000"])
+        store.optimize()
+        assert all(hit.node_id != "nl-000" for hit in store.query((1.0, 0.0, 0.0), top_k=40))

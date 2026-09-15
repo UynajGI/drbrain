@@ -217,6 +217,10 @@ def prepare_unified_index(
                     frontier_limit=hierarchy_frontier_limit,
                     summary_workers=hierarchy_summary_workers,
                 )
+            wrote = bool(outcome.vectors.get("embedded")) or bool(outcome.hierarchy.get("created"))
+            outcome.vectors["optimize"] = (
+                _optimize_vectors(store) if wrote else {"status": "skipped", "reason": "unchanged"}
+            )
     except Exception as exc:  # noqa: BLE001 - an unusable collection is a reported state
         logger.warning("[tree] vector store unavailable: {}", exc)
         outcome.vectors = {"status": "failed", "error": f"vector store unavailable: {exc}"}
@@ -455,6 +459,24 @@ def _prepare_vectors(
         "pending": 0,
         "empty": empty,
     }
+
+
+def _optimize_vectors(store: UnifiedVectorStore) -> dict[str, Any]:
+    """Merge the vector index segments before publication.
+
+    Bulk ``upsert`` batches each leave a flat segment behind; until the
+    collection is optimized every query scans them all (measured at 1.62M
+    vectors: 12-27s per query unoptimized, 0.05s optimized, store 21GB →
+    3.5GB).  A failure here degrades query latency, not correctness, so it is
+    recorded instead of failing the stage.
+    """
+    started = time.monotonic()
+    try:
+        store.optimize()
+    except Exception as exc:  # noqa: BLE001 - degraded, recorded, never silent
+        logger.warning("[tree] vector index optimize failed: {}", exc)
+        return {"status": "failed", "error": str(exc)}
+    return {"status": "ok", "duration_s": round(time.monotonic() - started, 3)}
 
 
 def _param_digest(value: Any) -> str:

@@ -181,6 +181,25 @@ class UnifiedVectorStore:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
+    def optimize(self, *, concurrency: int = 0) -> None:
+        """Merge segments and materialize the ANN index (bulk-load hygiene).
+
+        ``upsert`` leaves one flat segment per write batch, and queries must
+        scan every segment until the collection is optimized — measured at
+        1.62M vectors: 12-27s per query before, 0.05s after, with the store
+        shrinking from 21GB to 3.5GB.  Run this after a bulk load and before
+        publication.
+        """
+        zvec = _zvec()
+        if self._collection is None:
+            self.open()
+        collection = self._collection
+        assert collection is not None
+        try:
+            collection.optimize(zvec.OptimizeOption(concurrency=int(concurrency)))
+        except Exception as exc:  # noqa: BLE001 - normalize native errors
+            raise VectorStoreError(f"vector index optimize failed: {exc}") from exc
+
     # ── writes ───────────────────────────────────────────────────
     def upsert(self, entries: Iterable[VectorEntry]) -> int:
         """Write entries idempotently; returns the number of docs written.
