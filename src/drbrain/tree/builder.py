@@ -70,6 +70,9 @@ class RoundMetrics:
     proposals: int = 0
     accepted: int = 0
     rejected: dict[str, int] = field(default_factory=dict)
+    #: Execution failures (model/clustering), kept apart from rejections so a
+    #: broken endpoint can never be reported as a valid stop (T06/T36).
+    failed: dict[str, int] = field(default_factory=dict)
     created_nodes: list[str] = field(default_factory=list)
     prompt_tokens: int = 0
     summary_tokens: int = 0
@@ -84,6 +87,7 @@ class RoundMetrics:
             "proposals": self.proposals,
             "accepted": self.accepted,
             "rejected": dict(self.rejected),
+            "failed": dict(self.failed),
             "created_nodes": list(self.created_nodes),
             "prompt_tokens": self.prompt_tokens,
             "summary_tokens": self.summary_tokens,
@@ -103,6 +107,15 @@ class BuildResult:
     def created_nodes(self) -> list[str]:
         return [node for metrics in self.rounds for node in metrics.created_nodes]
 
+    @property
+    def failed(self) -> dict[str, int]:
+        """Aggregated execution failures across rounds (empty when clean)."""
+        totals: dict[str, int] = {}
+        for metrics in self.rounds:
+            for reason, count in metrics.failed.items():
+                totals[reason] = totals.get(reason, 0) + count
+        return totals
+
     def to_json(self) -> dict[str, Any]:
         return {
             "rounds": [metrics.to_json() for metrics in self.rounds],
@@ -110,6 +123,7 @@ class BuildResult:
             "layers": self.ready_layers,
             "stop_reason": self.stop_reason,
             "created": len(self.created_nodes),
+            "failed": self.failed,
         }
 
 
@@ -316,8 +330,14 @@ class TreeBuilder:
             if not decision.accepted:
                 metrics.rejected[decision.reason] = metrics.rejected.get(decision.reason, 0) + 1
                 continue
-            node_id = self._summarize_and_publish(proposal, layer, metrics)
+            node_id, execution_failed = self._summarize_and_publish(proposal, layer, metrics)
             if node_id is None:
+                if execution_failed:
+                    # A broken endpoint is a state, not a rejected group: stop
+                    # instead of spending one failing call per candidate.  The
+                    # members stay in the frontier (nothing was published).
+                    metrics.stop_reason = "summary_failed"
+                    break
                 metrics.rejected["summary_rejected"] = (
                     metrics.rejected.get("summary_rejected", 0) + 1
                 )
@@ -329,12 +349,16 @@ class TreeBuilder:
 
     def _summarize_and_publish(
         self, proposal: CandidateProposal, layer: int, metrics: RoundMetrics
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
+        """Summarize and publish one candidate; ``(node_id, execution_failed)``."""
         members = [self._summary_member(node_id) for node_id in proposal.member_ids]
         outcome = self.summary.summarize(members, self.config.contract, self._model())
         metrics.prompt_tokens += outcome.prompt_tokens
         if not outcome.ok:
-            return None
+            if outcome.execution_failure:
+                metrics.failed[outcome.reason] = metrics.failed.get(outcome.reason, 0) + 1
+                return None, True
+            return None, False
         metrics.summary_tokens += outcome.summary_tokens
         from drbrain.tree.cost import coverage_for_members
 
@@ -352,7 +376,7 @@ class TreeBuilder:
             count_tokens=self.count_tokens,
         )
         if not decision.accepted:
-            return None
+            return None, False
         children = tuple(
             ChildRef(child_id=node_id, child_revision=self._node_revision(node_id), ordinal=index)
             for index, node_id in enumerate(proposal.member_ids)
@@ -372,7 +396,7 @@ class TreeBuilder:
         self.db.insert_tree_node(record)
         self.db.publish_tree_node(record.node_id)
         self._embed_new_summary(record)
-        return record.node_id
+        return record.node_id, False
 
     # ── helpers ──────────────────────────────────────────────────
     def _model(self):

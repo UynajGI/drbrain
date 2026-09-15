@@ -18,7 +18,7 @@ from drbrain.tree.builder import BuilderConfig
 from drbrain.tree.clustering import ClusteringParams
 from drbrain.tree.cost import CostParams
 from drbrain.tree.embedding_identity import EmbeddingProfile
-from drbrain.tree.prepare import prepare_unified_index
+from drbrain.tree.prepare import HIERARCHY_WATERMARK, prepare_unified_index
 from drbrain.tree.publish import get_active_tree_generation, resolve_tree_generation
 from drbrain.tree.summary import SummaryContract
 
@@ -220,6 +220,45 @@ class TestPrepare:
         assert resumed.ok, resumed.to_json()
         assert resumed.vectors["embedded"] == resumed.vectors["nodes"]
         assert resumed.published
+
+    def test_model_failure_is_not_complete_and_the_same_command_recovers(self, tmp_path):
+        """T36/T42: a broken endpoint is a state, not a finished stage.
+
+        The failing run must not advance the hierarchy watermark nor publish,
+        and it must stop instead of spending one failing call per candidate.
+        The identical command then retries with the recovered model and builds
+        the parents the failure had skipped.
+        """
+        db = _setup(tmp_path)
+
+        class _Faulty:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, prompt: str, *, max_tokens: int):
+                self.calls += 1
+                raise RuntimeError("index endpoint down")
+
+        faulty = _Faulty()
+        first = _prepare(db, tmp_path, embed=_FakeEmbedder(), model=faulty)
+        assert not first.ok
+        assert first.failed_stages == ["hierarchy"]
+        assert first.hierarchy["status"] == "failed"
+        assert first.hierarchy["created"] == 0
+        assert first.hierarchy["reason"] == "summary_failed"
+        assert first.hierarchy["failed"] == {"model_error: RuntimeError": 1}
+        assert faulty.calls == 1  # fail fast, not one call per candidate
+        assert first.published is None
+        assert db.get_vector_metadata(HIERARCHY_WATERMARK) is None
+        assert db.leaves_missing_parent()  # every leaf still awaits a parent
+
+        recovered = _FakeSummaryModel()
+        second = _prepare(db, tmp_path, embed=_FakeEmbedder(), model=recovered)
+        assert second.ok, second.to_json()
+        assert recovered.calls > 0
+        assert second.hierarchy["created"] > 0
+        assert second.published
+        assert db.get_vector_metadata(HIERARCHY_WATERMARK) is not None
 
     def test_fts_drift_is_repaired_by_the_stage(self, tmp_path):
         db = _setup(tmp_path)

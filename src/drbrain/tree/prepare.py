@@ -43,6 +43,10 @@ WORKING_VECTORS_DIR = "vectors"
 #: Watermark key for the hierarchy stage signature.
 HIERARCHY_WATERMARK = "tree.prepare.hierarchy"
 
+#: Builder stop reasons that mean an execution failure (a clustered or a
+#: summarised group could not even be attempted), not a valid stop.
+FAILED_BUILD_REASONS = frozenset({"clustering_failed", "summary_failed"})
+
 DEFAULT_BATCH_SIZE = 256
 
 
@@ -58,6 +62,12 @@ class PrepareOutcome:
 
     @property
     def failed_stages(self) -> list[str]:
+        """Stages that are not in a usable state.
+
+        ``partial`` counts: the frozen protocol keeps unfinished work and
+        errors out of ``ready`` (T06), so a run that only got part way must not
+        be presented as ok.
+        """
         failed = [
             name
             for name, payload in (
@@ -66,7 +76,7 @@ class PrepareOutcome:
                 ("hierarchy", self.hierarchy),
                 ("publish", self.publication),
             )
-            if str(payload.get("status")) == "failed"
+            if str(payload.get("status")) in {"failed", "partial"}
         ]
         return failed
 
@@ -439,6 +449,16 @@ def _prepare_hierarchy(
         logger.warning("[tree] hierarchy stage failed: {}", exc)
         return {"status": "failed", "error": str(exc), "frontier": len(frontier)}
     payload = result.to_json()
+    failures = dict(payload.get("failed") or {})
+    stop_reason = str(payload.get("stop_reason") or "")
+    if failures or stop_reason in FAILED_BUILD_REASONS:
+        # An execution failure is its own state, not a valid stop (T06/T35):
+        # nothing is certified, the leaves stay in the frontier because no
+        # parent was published, and the watermark does not move — so the very
+        # same command retries once the endpoint is healthy again.
+        payload["status"] = "partial" if payload.get("created") else "failed"
+        payload["reason"] = stop_reason or next(iter(failures), "stage-failed")
+        return payload
     payload["status"] = "built" if payload.get("created") else "complete"
     db.set_vector_metadata(HIERARCHY_WATERMARK, signature)
     return payload
@@ -454,6 +474,7 @@ def _resolve_index_summary_model(config: Any) -> Any:
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
+    "FAILED_BUILD_REASONS",
     "HIERARCHY_WATERMARK",
     "IndexModelSummary",
     "PrepareOutcome",

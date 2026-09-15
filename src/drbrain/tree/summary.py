@@ -96,6 +96,12 @@ class SummaryContract:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+#: Outcome reason prefix for a model call that failed (retryable
+#: infrastructure), as opposed to a candidate group the acceptance gate
+#: rejected.  Only the former may hold a stage back from "complete".
+EXECUTION_FAILURE_PREFIX = "model_error"
+
+
 @dataclass(frozen=True)
 class SummaryResponse:
     text: str
@@ -111,6 +117,11 @@ class SummaryOutcome:
     from_cache: bool
     prompt_tokens: int = 0
     reason: str = ""
+
+    @property
+    def execution_failure(self) -> bool:
+        """True when the model call itself failed, not when a group was rejected."""
+        return self.reason.startswith(EXECUTION_FAILURE_PREFIX)
 
 
 class SummaryModel(Protocol):  # pragma: no cover - structural typing
@@ -204,7 +215,7 @@ class SummaryService:
         try:
             response = model.complete(prompt, max_tokens=contract.max_output_tokens)
         except Exception as exc:  # noqa: BLE001 - recorded, then re-raised as outcome
-            reason = f"model_error: {type(exc).__name__}"
+            reason = f"{EXECUTION_FAILURE_PREFIX}: {type(exc).__name__}"
             self._record_failure(key, ordered, contract, reason, prompt_tokens)
             return SummaryOutcome(
                 ok=False,
