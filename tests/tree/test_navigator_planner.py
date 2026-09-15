@@ -120,6 +120,24 @@ def layered(tmp_path):
     return db, leaves, mid_a, mid_b, top
 
 
+@pytest.fixture()
+def soft_multiparent(tmp_path):
+    """Soft multi-parent: region A=[L1, LA] and region B=[L1, LB] share L1."""
+    db = Database(tmp_path / "soft-multiparent.sqlite")
+    blocks_a = _doc(db, "p1", DOC_P1)
+    blocks_b = _doc(db, "p2", DOC_P2)
+    shared = _leaf(blocks_a[1], "p1")
+    only_a = _leaf(blocks_a[3], "p1")
+    only_b = _leaf(blocks_b[1], "p2")
+    for leaf in (shared, only_a, only_b):
+        db.insert_tree_node(leaf, publish=True)
+    region_a = _region([shared, only_a], layer=1, summary="A joint summary")
+    region_b = _region([shared, only_b], layer=1, summary="B joint summary")
+    for region in (region_a, region_b):
+        db.insert_tree_node(region, publish=True)
+    return db, shared, only_a, only_b, region_a, region_b
+
+
 def _role(*, suffix="nav", model="deepseek-flash") -> ModelRole:
     return ModelRole(
         role="chat_model",
@@ -291,6 +309,30 @@ class TestScriptedWalk:
         assert [step.action for step in result.trace][:2] == ["search_nodes", "read"]
         assert {item["node_id"] for item in result.evidence} == {leaves[2].node_id}
         assert result.status == "ok"
+
+
+class TestMultiParentOrigins:
+    def test_a_leaf_reached_through_two_parents_keeps_both_origins(self, soft_multiparent):
+        db, shared, only_a, only_b, region_a, region_b = soft_multiparent
+        planner = ScriptedPlanner(
+            [
+                {"action": "read", "node_id": region_a.node_id},
+                {"action": "expand", "node_id": region_a.node_id},
+                {"action": "read", "node_id": shared.node_id},
+                {"action": "read", "node_id": region_b.node_id},
+                {"action": "expand", "node_id": region_b.node_id},
+                {"action": "read", "node_id": shared.node_id},
+                {"action": "finish"},
+            ]
+        )
+        result = TreeNavigator(db).navigate(
+            "q", [_candidate(region_a), _candidate(region_b, score=0.8)], planner=planner
+        )
+        shared_rows = [item for item in result.evidence if item["node_id"] == shared.node_id]
+        assert len(shared_rows) == 1, "one span must not become two evidence rows"
+        assert shared_rows[0]["via"] == [region_a.node_id, region_b.node_id]
+        # The second read re-confirms the origin without duplicating the span.
+        assert len({receipt.span_key for receipt in result.receipts}) == len(result.receipts)
 
 
 class TestChatPlanner:
