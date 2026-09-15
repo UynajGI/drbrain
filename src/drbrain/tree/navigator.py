@@ -510,6 +510,10 @@ class _Walk:
         self.stop_reason = ""
         self._evidence_by_span: dict[tuple[str, str, int, int], dict[str, Any]] = {}
         self._unresolved: dict[str, dict[str, Any]] = {}
+        #: Every path that reached a node (ordered, deduplicated).  The frontier
+        #: keeps one entry per node, so a leaf shared by two parents accumulates
+        #: both origins here instead of losing the second one.
+        self._origins: dict[str, list[str]] = {}
 
     # ── loop ────────────────────────────────────────────────────────────
     def run(self) -> NavigationResult:
@@ -637,7 +641,7 @@ class _Walk:
         row = self.tools.db.get_tree_node(action.node_id) or {}
         kind = str(row.get("kind") or "leaf")
         layer = int(row.get("layer") or 0)
-        via = self._via_of(action.node_id)
+        via = self._vias_of(action.node_id)
         self.read_nodes.add(action.node_id)
         self.revisions[action.node_id] = receipt.node_revision
         self._unresolved.pop(action.node_id, None)
@@ -701,6 +705,10 @@ class _Walk:
         known = {item.node_id for item in self.frontier} | self.read_nodes
         for child in children:
             child_id = str(child["node_id"])
+            # A child already queued or read through another parent still gains
+            # this origin: the frontier keeps one entry per node, the evidence
+            # keeps every path that reached it.
+            self._note_origin(child_id, action.node_id)
             if child_id in known:
                 continue
             known.add(child_id)
@@ -810,6 +818,7 @@ class _Walk:
         known = {item.node_id for item in self.frontier} | self.read_nodes
         queued = 0
         for candidate in found:
+            self._note_origin(candidate.node_id, f"search:{action.query}")
             if candidate.node_id in known:
                 continue
             known.add(candidate.node_id)
@@ -875,6 +884,27 @@ class _Walk:
             if item.node_id == node_id:
                 return item.via
         return ""
+
+    def _note_origin(self, node_id: str, via: str) -> None:
+        """Remember one more path that reached a node (soft multi-parent leaves)."""
+        if not node_id or not via:
+            return
+        origins = self._origins.setdefault(node_id, [])
+        if via not in origins:
+            origins.append(via)
+
+    def _vias_of(self, node_id: str) -> list[str]:
+        """Every distinct origin that reached this node, in recording order.
+
+        A child already queued or read through another parent is not queued a
+        second time, so the frontier alone would drop its second origin; the
+        per-node origin list keeps all of them for the evidence record.
+        """
+        origins = list(self._origins.get(node_id) or [])
+        for item in self.frontier:
+            if item.node_id == node_id and item.via and item.via not in origins:
+                origins.append(item.via)
+        return origins
 
     def _add_unresolved(self, node_id: str, reason: str, *, drop_if_read: bool = False) -> None:
         if not node_id:
@@ -945,15 +975,24 @@ class _Walk:
         source: str,
         text: str,
         receipt: ReadReceipt,
-        via: str,
+        via: str | Sequence[str],
         revision: int | None = None,
     ) -> dict[str, Any]:
+        """Record one span once, with every origin that reached it.
+
+        ``via`` may be a single origin (region/scope readers) or the full list
+        of paths a soft multi-parent leaf was reached through; re-reading the
+        same span appends the new origins to the existing row instead of
+        creating a second one.
+        """
+        origins = [via] if isinstance(via, str) else [str(item) for item in via]
         key = receipt.span_key
         existing = self._evidence_by_span.get(key)
         if existing is not None:
-            origins = existing.setdefault("via", [])
-            if via and via not in origins:
-                origins.append(via)
+            recorded = existing.setdefault("via", [])
+            for origin in origins:
+                if origin and origin not in recorded:
+                    recorded.append(origin)
             return existing
         item = {
             "node_id": node_id,
@@ -964,7 +1003,7 @@ class _Walk:
             "score": self._score_of(node_id),
             "source": source,
             "text": text,
-            "via": [via] if via else [],
+            "via": [origin for origin in origins if origin],
             "receipt": {
                 "block_id": receipt.block_id,
                 "char_start": receipt.char_start,
