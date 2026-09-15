@@ -225,11 +225,13 @@ def _tree_leg(
     if generation is None:
         raise RetrievalUnavailableError("tree retrieval requires a pinned SQL generation")
     from drbrain.rag.sql_snapshot import resolve_sql_vector_index
-    from drbrain.rag.zvec_index import configured_vector_top_k, query_zvec_evidence
+    from drbrain.rag.zvec_index import query_zvec_evidence
     from drbrain.services.embedding import _embed_batch
 
     qvec = _embed_batch([query], cfg.embed)[0]
-    requested = max(int(k), configured_vector_top_k(cfg), 100)
+    # The caller supplies the configured tree candidate cap (T44); expansion
+    # never over-reads it.
+    requested = max(int(k), 1)
     raw = query_zvec_evidence(resolve_sql_vector_index(cfg, generation), qvec, requested)
     out: list[tuple[str, float]] = []
     for node_id, score, paper_id, content_hash in raw:

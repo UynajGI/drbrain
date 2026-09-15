@@ -41,7 +41,10 @@ API notes (llama-index-core 0.14.23, verified against the installed wheel):
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from drbrain.config import Config
@@ -50,6 +53,7 @@ from drbrain.rag.evidence import (
     INSUFFICIENT_EVIDENCE_MESSAGE,
     evidence_ids_from_records,
 )
+from drbrain.rag.legs import NormalizedLegs, normalize_legs
 from drbrain.rag.status import RetrievalError, RetrievalStatus
 
 try:
@@ -82,6 +86,7 @@ __all__ = [
     "ENGINE_LLAMAINDEX",
     "ENGINES",
     "INSUFFICIENT_EVIDENCE_MESSAGE",
+    "AskIndexNotPreparedError",
     "SimilarityCutoffPostprocessor",
     "ask_llamaindex",
     "build_hybrid_retriever",
@@ -110,6 +115,74 @@ _NO_RESULTS_MSG = "当前知识库中没有找到相关信息"
 _DEGRADED_MSG = "部分检索路径不可用，当前证据不足"
 #: Stable refusal text when result nodes cannot be tied to auditable evidence.
 _INSUFFICIENT_EVIDENCE_MSG = INSUFFICIENT_EVIDENCE_MESSAGE
+#: Abstention message when synthesis returned no text (T46): an empty answer
+#: is a reported state, never a success.
+_EMPTY_ANSWER_MSG = "模型未返回可用的回答（可能被截断），请重试或缩小问题范围"
+
+
+class AskIndexNotPreparedError(RuntimeError):
+    """The ask path needs a prepared index; it never builds one implicitly.
+
+    Carries the engine name and an actionable hint so the CLI can report a
+    structured ``source_unavailable`` result (T46) instead of silently
+    falling back to a legacy engine or calling ``submit_document`` /
+    ``IndexModel`` during a query.
+    """
+
+    def __init__(self, engine: str, hint: str) -> None:
+        super().__init__(f"index not prepared for engine {engine!r}: {hint}")
+        self.engine = str(engine)
+        self.hint = str(hint)
+
+
+def ask_prepare_hint(cfg: Any) -> str:
+    """The command that prepares the index for the configured engine (T46)."""
+    if get_llamaindex_config(cfg).rag_engine == "sql":
+        return "drbrain rag prepare --unified"
+    return "drbrain rag index"
+
+
+def _config_with_route(cfg: Any, normalized: NormalizedLegs) -> Any:
+    """A cfg copy whose ``llamaindex.retrievers`` is the resolved route."""
+    from drbrain.rag.config import LlamaIndexConfig
+
+    li = get_llamaindex_config(cfg)
+    route_list = [*normalized.legs, *normalized.extras]
+    if dataclasses.is_dataclass(li):
+        new_li = dataclasses.replace(li, retrievers=route_list)
+    else:  # pragma: no cover - dict-style configs
+        new_li = LlamaIndexConfig.from_dict({**dict(li), "retrievers": route_list})
+    if dataclasses.is_dataclass(cfg):
+        return dataclasses.replace(cfg, llamaindex=new_li)
+    new_cfg = copy.copy(cfg)
+    setattr(new_cfg, "llamaindex", new_li)
+    return new_cfg
+
+
+def _route_info(cfg: Any, legs: Sequence[str] | None) -> tuple[Any, dict[str, Any]]:
+    """Resolve the per-query route: requested names → canonical legs (T43)."""
+    li = get_llamaindex_config(cfg)
+    requested = [str(item) for item in (legs if legs is not None else (li.retrievers or []))]
+    normalized = normalize_legs(requested)
+    route = {
+        "requested": requested,
+        "legs": list(normalized.legs),
+        "extras": list(normalized.extras),
+        "notes": list(normalized.notes),
+    }
+    if legs is not None:
+        cfg = _config_with_route(cfg, normalized)
+    return cfg, route
+
+
+def _last_finish_reason() -> str:
+    """finish_reason of the most recent chat call (T46 truncation reporting)."""
+    try:
+        from llama_index.core import Settings
+
+        return str(getattr(Settings.llm, "last_finish_reason", "") or "")
+    except Exception:  # noqa: BLE001 - observability must never break an answer
+        return ""
 
 
 # ── engine resolution (CLI fallback rule, design §4.6) ──────────────────────
@@ -403,6 +476,7 @@ def ask_llamaindex(
     top_k: int = 5,
     streaming: bool = True,
     acl_filter: dict[str, str] | None = None,
+    legs: Sequence[str] | None = None,
 ):
     """Legacy-``ask``-compatible query through the LlamaIndex engine.
 
@@ -422,12 +496,19 @@ def ask_llamaindex(
     result abstains with ``status: "no_results"``. Neither path is handed to
     the LLM, so a broken vector store can't turn into a hallucinated answer.
 
-    Raises :class:`RuntimeError` when the engine cannot be built (disabled,
-    llama-index missing, or no index yet) — the CLI catches this and falls
-    back to the legacy engine.
+    ``legs`` overrides the configured route for this query only (resolved
+    through :func:`drbrain.rag.legs.normalize_legs`); the response carries the
+    effective route plus per-leg statuses so the caller can report what ran.
+
+    Raises :class:`AskIndexNotPreparedError` when nothing is prepared for the
+    configured engine: ask only reads indexes and never builds one implicitly
+    (T46) — no ``submit_document`` and no ``IndexModel`` call happens here.
     """
+    cfg, route = _route_info(cfg, legs)
     if streaming:
-        return _ask_llamaindex_stream(cfg, db, question, top_k=top_k, acl_filter=acl_filter)
+        return _ask_llamaindex_stream(
+            cfg, db, question, top_k=top_k, acl_filter=acl_filter, route=route
+        )
     # Pass ``acl_filter`` only when present so pre-ACL callers (and test mocks)
     # that wrap ``build_query_engine`` with a narrower signature keep working.
     if acl_filter:
@@ -435,7 +516,7 @@ def ask_llamaindex(
     else:
         engine = build_query_engine(cfg, db, streaming=False, top_k=top_k)
     if engine is None:
-        raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
+        raise AskIndexNotPreparedError(get_llamaindex_config(cfg).rag_engine, ask_prepare_hint(cfg))
     try:
         response = engine.query(question)
     except RetrievalError:
@@ -444,6 +525,7 @@ def ask_llamaindex(
             RetrievalStatus.RETRIEVAL_FAILURE,
             _RETRIEVAL_FAILURE_MSG,
             telemetry=_engine_telemetry(engine),
+            route=route,
         )
     sources = _response_sources(response)
     if not sources:
@@ -454,6 +536,7 @@ def ask_llamaindex(
             RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
             _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
             telemetry=telemetry,
+            route=route,
         )
     if not _evidence_ids_from_sources(sources):
         return _abstain_answer(
@@ -461,10 +544,30 @@ def ask_llamaindex(
             RetrievalStatus.INSUFFICIENT_EVIDENCE,
             _INSUFFICIENT_EVIDENCE_MSG,
             telemetry=_engine_telemetry(engine),
+            route=route,
         )
     answer = _response_text(response)
+    truncated = _last_finish_reason() == "length"
+    if not answer.strip():
+        # T46: an empty synthesis is a reported state, never a success.
+        result = _abstain_answer(
+            question,
+            RetrievalStatus.EMPTY_ANSWER,
+            _EMPTY_ANSWER_MSG,
+            telemetry=_engine_telemetry(engine),
+            route=route,
+        )
+        result["answer_truncated"] = truncated
+        return result
     _record_answer(cfg, db, question, answer, sources)
-    return _assemble_answer(question, answer, sources, telemetry=_engine_telemetry(engine))
+    return _assemble_answer(
+        question,
+        answer,
+        sources,
+        telemetry=_engine_telemetry(engine),
+        route=route,
+        answer_truncated=truncated,
+    )
 
 
 def _ask_llamaindex_stream(
@@ -473,6 +576,7 @@ def _ask_llamaindex_stream(
     question: str,
     top_k: int,
     acl_filter: dict[str, str] | None = None,
+    route: dict[str, Any] | None = None,
 ):
     """Streaming ask: yields ``{"chunk": str}`` items, then the final dict."""
     if acl_filter:
@@ -480,7 +584,7 @@ def _ask_llamaindex_stream(
     else:
         engine = build_query_engine(cfg, db, streaming=True, top_k=top_k)
     if engine is None:
-        raise RuntimeError(_ENGINE_UNAVAILABLE_MSG)
+        raise AskIndexNotPreparedError(get_llamaindex_config(cfg).rag_engine, ask_prepare_hint(cfg))
     try:
         response = engine.query(question)
     except RetrievalError:
@@ -489,6 +593,7 @@ def _ask_llamaindex_stream(
             RetrievalStatus.RETRIEVAL_FAILURE,
             _RETRIEVAL_FAILURE_MSG,
             telemetry=_engine_telemetry(engine),
+            route=route,
         )
         return
     sources = _response_sources(response)
@@ -500,6 +605,7 @@ def _ask_llamaindex_stream(
             RetrievalStatus.DEGRADED if degraded else RetrievalStatus.NO_RESULTS,
             _DEGRADED_MSG if degraded else _NO_RESULTS_MSG,
             telemetry=telemetry,
+            route=route,
         )
         return
     if not _evidence_ids_from_sources(sources):
@@ -508,12 +614,20 @@ def _ask_llamaindex_stream(
             RetrievalStatus.INSUFFICIENT_EVIDENCE,
             _INSUFFICIENT_EVIDENCE_MSG,
             telemetry=_engine_telemetry(engine),
+            route=route,
         )
         return
-    yield from _iter_ask_results(cfg, db, question, response, engine=engine)
+    yield from _iter_ask_results(cfg, db, question, response, engine=engine, route=route)
 
 
-def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any, engine: Any = None):
+def _iter_ask_results(
+    cfg: Config,
+    db: Any,
+    question: str,
+    response: Any,
+    engine: Any = None,
+    route: dict[str, Any] | None = None,
+):
     """Consume a (possibly streaming) response into chunk + final dict yields."""
     sources = _response_sources(response)
     if not _evidence_ids_from_sources(sources):
@@ -522,6 +636,7 @@ def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any, engine
             RetrievalStatus.INSUFFICIENT_EVIDENCE,
             _INSUFFICIENT_EVIDENCE_MSG,
             telemetry=_engine_telemetry(engine),
+            route=route,
         )
         return
     if isinstance(response, StreamingResponse):
@@ -535,8 +650,42 @@ def _iter_ask_results(cfg: Config, db: Any, question: str, response: Any, engine
             answer = _response_text(response)
     else:
         answer = _response_text(response)
+    truncated = _last_finish_reason() == "length"
+    if not answer.strip():
+        result = _abstain_answer(
+            question,
+            RetrievalStatus.EMPTY_ANSWER,
+            _EMPTY_ANSWER_MSG,
+            telemetry=_engine_telemetry(engine),
+            route=route,
+        )
+        result["answer_truncated"] = truncated
+        yield result
+        return
     _record_answer(cfg, db, question, answer, sources)
-    yield _assemble_answer(question, answer, sources, telemetry=_engine_telemetry(engine))
+    yield _assemble_answer(
+        question,
+        answer,
+        sources,
+        telemetry=_engine_telemetry(engine),
+        route=route,
+        answer_truncated=truncated,
+    )
+
+
+def _route_with_status(
+    route: dict[str, Any] | None, telemetry: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Attach per-leg statuses from the retrieval trace to the route (T46)."""
+    if not route:
+        return route
+    legs = ((telemetry or {}).get("retrieval") or {}).get("legs") or []
+    merged = dict(route)
+    if legs:
+        merged["leg_status"] = {
+            str(leg.get("source")): str(leg.get("status")) for leg in legs if isinstance(leg, dict)
+        }
+    return merged
 
 
 def _assemble_answer(
@@ -544,6 +693,8 @@ def _assemble_answer(
     answer: str,
     sources: list[dict[str, Any]],
     telemetry: dict[str, Any] | None = None,
+    route: dict[str, Any] | None = None,
+    answer_truncated: bool = False,
 ) -> dict[str, Any]:
     """Shape the compat-layer output dict."""
     result: dict[str, Any] = {
@@ -555,6 +706,9 @@ def _assemble_answer(
     }
     if telemetry:
         result["telemetry"] = telemetry
+    if route is not None:
+        result["route"] = _route_with_status(route, telemetry)
+    result["answer_truncated"] = bool(answer_truncated)
     return result
 
 
@@ -596,6 +750,7 @@ def _abstain_answer(
     status: RetrievalStatus,
     message: str,
     telemetry: dict[str, Any] | None = None,
+    route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shape a refusal-to-answer dict for a failed or empty retrieval.
 
@@ -615,6 +770,8 @@ def _abstain_answer(
     }
     if telemetry:
         result["telemetry"] = telemetry
+    if route is not None:
+        result["route"] = _route_with_status(route, telemetry)
     return result
 
 
