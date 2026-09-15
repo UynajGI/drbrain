@@ -4,6 +4,36 @@
 
 The RAG layer is a retrieval service over stored papers and derived evidence units. It is independent of the CLI and loop orchestration and can be used directly from Python.
 
+## Unified write path and compatibility
+
+New papers have exactly one text fact: the canonical store in the main
+database. `ingest` writes the revision, its contiguous blocks and one published
+leaf per block; the original material (plus attachments) is copied under
+`data/papers/<id>/`; no `raw.md` or `tree.json` is generated, and a canonical
+write failure rolls the whole paper back and reports it as failed instead of
+publishing a record without its body. (`ingest-link` still writes its
+extracted markdown as `raw.md`; that flow is a known remaining writer until it
+is migrated too.)
+
+`drbrain rag prepare` defaults to the unified index (canonical FTS, shared
+vectors, hierarchy, one published tree generation). `--legacy-sql` keeps the
+deprecated derived `drbrain_rag.db` working copy available for deployments
+whose readers have not migrated yet; it is opt-in, and `--unified` remains
+accepted as a compatibility alias. Existing SQL working copies and published
+generations stay readable and are never deleted by a prepare run.
+
+The tree leg reads the published unified generation (search → navigation →
+read receipts → leaf text). When a SQL corpus exists, every leaf is verified
+against the same node id and content revision in its `node_texts` projection,
+so BM25/vector/tree cannot mix revisions. When no SQL corpus exists (the
+default unified deployment), a tree-only request is served from the generation
+alone and every other requested leg is reported `source_unavailable`; a
+missing generation is fail-closed (ask reports `source_unavailable` with the
+prepare hint). The older readers (`query --paper`, `embed --tree`, the
+per-paper PageIndex/RAPTOR retrievers, `translate`, the legacy tree/raw
+inspection helpers) remain read-only compatibility paths for papers ingested
+before this change; they simply have no input for new papers.
+
 ## Retrieval path
 
 1. The indexer reads stored paper sections, PageIndex nodes, RAPTOR summaries, concepts, and arguments.
