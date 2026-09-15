@@ -201,6 +201,40 @@ class TestSoftAssignment:
         assert coverage["assigned_rows"] >= 2
         assert coverage["multi_parent_rows"] >= 1  # soft membership is preserved
 
+    def test_lambda_crosses_the_membership_threshold(self):
+        """The prior must be able to move a row, not only keep rows together.
+
+        ``r1`` starts in ``g1`` alone (0.09 stays under the strict 0.1 on the
+        g0 side); with same-document evidence for g0 and a cross-document
+        picture for g1 the reweighted posterior puts it into ``g0`` alone.  An
+        assertion on already-member rows cannot observe this — the lambda term
+        would be inert and still pass.
+        """
+        stage = PosteriorStage(
+            stage="global",
+            row_ids=("r1", "r2", "r3"),
+            component_ids=("g0", "g1"),
+            probs=((0.09, 0.91), (0.9, 0.0), (0.0, 0.5)),
+        )
+        profiles = {
+            "r1": SourceProfile(parts=(("p1", ("Methods",), 100),)),
+            "r2": SourceProfile(parts=(("p1", ("Methods",), 100),)),
+            "r3": SourceProfile(parts=(("p2", ("Methods",), 100),)),
+        }
+        raw = {
+            candidate.component_id: set(candidate.member_ids())
+            for candidate in soft_assignment(stage, profiles, lam=0.0)
+        }
+        assert "r1" in raw["g1"] and "r1" not in raw["g0"]
+
+        corrected = {
+            candidate.component_id: dict(candidate.members)
+            for candidate in soft_assignment(stage, profiles, lam=6.0)
+        }
+        assert "r1" not in corrected["g1"]
+        assert corrected["g0"]["r1"] == pytest.approx(0.9756, abs=5e-4)
+        assert "r3" in corrected["g1"]  # cross-document picture is unchanged
+
     def test_empty_assignment_is_carried(self):
         stage = PosteriorStage(
             stage="global",

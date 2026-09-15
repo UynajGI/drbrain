@@ -240,6 +240,50 @@ class UnifiedVectorStore:
         collection.delete(list(ids))
 
     # ── reads ────────────────────────────────────────────────────
+    def get(self, node_ids: Sequence[str]) -> dict[str, VectorEntry]:
+        """Read stored vectors by node id; absent ids are omitted.
+
+        The payload carries the identity fields (revision, content hash,
+        profile), so a caller can check a stored vector against the node it is
+        about to reuse it for instead of recomputing the text.
+        """
+        if self._collection is None:
+            self.open()
+        collection = self._collection
+        assert collection is not None
+        ids = list(dict.fromkeys(_doc_id(node_id) for node_id in node_ids))
+        if not ids:
+            return {}
+        try:
+            docs = collection.fetch(ids, include_vector=True)
+        except Exception as exc:  # noqa: BLE001 - normalize native errors
+            raise VectorStoreError(f"vector read failed: {exc}") from exc
+        entries: dict[str, VectorEntry] = {}
+        for doc in (docs or {}).values():
+            fields = doc.fields or {}
+            vectors = getattr(doc, "vectors", None) or {}
+            vector = vectors.get(VECTOR_FIELD) if isinstance(vectors, dict) else None
+            if vector is None:
+                vector = getattr(doc, "vector", None)
+            if not vector:
+                continue
+            try:
+                entry = VectorEntry(
+                    node_id=str(fields.get("node_id") or doc.id),
+                    node_revision=int(fields.get("node_revision") or 0),
+                    kind=str(fields.get("kind") or ""),
+                    local_id=str(fields.get("local_id") or ""),
+                    layer=int(fields.get("layer") or 0),
+                    content_hash=str(fields.get("content_hash") or ""),
+                    profile_id=str(fields.get("profile_id") or ""),
+                    vector=tuple(float(value) for value in vector),
+                )
+            except ValueError as exc:
+                logger.warning("[vector] skipping unreadable stored vector: {}", exc)
+                continue
+            entries[entry.node_id] = entry
+        return entries
+
     def query(
         self,
         vector: Sequence[float],

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections import Counter
 from types import SimpleNamespace
 from unittest import mock
 
@@ -12,6 +13,7 @@ import typer
 
 from drbrain.services.canonical_content import write_canonical_content
 from drbrain.storage.database import Database
+from drbrain.storage.node_projection import read_node_text
 from drbrain.tree.builder import BuilderConfig
 from drbrain.tree.clustering import ClusteringParams
 from drbrain.tree.cost import CostParams
@@ -103,6 +105,69 @@ class TestPrepare:
             "SELECT COUNT(*) FROM tree_nodes WHERE state = 'ready'"
         ).fetchone()[0]
         assert resolved["manifest"]["vector_count"] == ready_nodes > nodes
+
+    def test_no_text_is_embedded_twice_by_the_pipeline(self, tmp_path):
+        """T34/T45: the hierarchy reuses the vectors the stages already stored.
+
+        The builder must read back the vector the vector stage stored for a
+        leaf, and the region vector the previous round embedded, instead of
+        recomputing the same text.  Counting from the prepare entry is the
+        point: a builder-only count cannot see the duplicate.  The fixture
+        keeps every node's text unique (headings carry the paper id) so a text
+        identifies exactly one node.
+        """
+        db = Database(tmp_path / "db.sqlite")
+
+        def _unique_doc(local_id: str, sections: int = 4) -> None:
+            text = "".join(
+                f"# {local_id} Section {index}\n\n"
+                + " ".join([f"{local_id}body{index}"] * 30)
+                + "\n\n"
+                for index in range(sections)
+            )
+            if db.get_paper(local_id) is None:
+                db.insert_paper(local_id, "T", 2024, "uploaded")
+                db.commit()
+            result = write_canonical_content(db, local_id, text, media_type="md", parser="test")
+            assert result["ok"]
+
+        _unique_doc("p1")
+        _unique_doc("p2")
+
+        class _Recording:
+            def __init__(self) -> None:
+                self.seen: list[str] = []
+
+            def __call__(self, texts):
+                texts = list(texts)
+                self.seen.extend(texts)
+                return [[float(len(text) % 7), float(len(text) % 5), 0.5] for text in texts]
+
+        class _UniqueSummaryModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, prompt: str, *, max_tokens: int):
+                self.calls += 1
+                # One distinct text per call, so a text identifies one node.
+                return SimpleNamespace(text=f"summary-{self.calls}", finish_reason="stop")
+
+        embedder, model = _Recording(), _UniqueSummaryModel()
+        outcome = _prepare(db, tmp_path, embed=embedder, model=model)
+        assert outcome.ok, outcome.to_json()
+        assert outcome.hierarchy["created"] > 0 and model.calls > 0
+
+        counts = Counter(embedder.seen)
+        leaf_texts = {
+            str(read_node_text(db.conn, str(node_id)))
+            for (node_id,) in db.conn.execute(
+                "SELECT node_id FROM tree_nodes WHERE kind = 'leaf' AND state = 'ready'"
+            ).fetchall()
+        }
+        assert leaf_texts
+        assert all(counts[text] == 1 for text in leaf_texts)
+        repeated = {text: count for text, count in counts.items() if count > 1}
+        assert not repeated, f"texts embedded more than once: {sorted(repeated)[:2]}"
 
     def test_second_prepare_does_zero_model_and_embedding_work(self, tmp_path):
         db = _setup(tmp_path)

@@ -74,6 +74,27 @@ class TestWrites:
         assert store.query((1.0, 0.0, 0.0), top_k=5) == []
 
 
+class TestFetchById:
+    def test_get_returns_stored_vectors_with_identity(self, store):
+        store.upsert(
+            [
+                _entry("nl-a", revision=2, vec=(1.0, 0.0, 0.0)),
+                _entry("nr-b", kind="region", layer=1, vec=(0.0, 1.0, 0.0)),
+            ]
+        )
+        got = store.get(["nl-a", "nl-missing"])
+        assert set(got) == {"nl-a"}  # absent ids are omitted, not invented
+        entry = got["nl-a"]
+        assert entry.node_revision == 2
+        assert entry.kind == "leaf"
+        assert entry.content_hash == "h-nl-a"
+        assert entry.profile_id == "emb-test"
+        assert tuple(entry.vector) == pytest.approx((1.0, 0.0, 0.0))
+
+    def test_get_without_ids_reads_nothing(self, store):
+        assert store.get([]) == {}
+
+
 class TestViews:
     def test_leaf_view_excludes_regions_and_all_view_keeps_them(self, store):
         store.upsert(

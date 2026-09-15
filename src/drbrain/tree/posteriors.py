@@ -130,6 +130,19 @@ class PosteriorStage:
             for row_id, members in self.membership().items()
         }
 
+    def label_indices(self) -> dict[str, tuple[int, ...]]:
+        """Membership as component positions, i.e. the fitted-label form.
+
+        The two-stage protocol keeps upstream integer labels for subset
+        selection; a reweighted stage has to hand its corrected membership
+        back in that same form.
+        """
+        positions = {component: index for index, component in enumerate(self.component_ids)}
+        return {
+            row_id: tuple(positions[component] for component, _ in members)
+            for row_id, members in self.membership().items()
+        }
+
     def component_subsets(self) -> dict[str, tuple[str, ...]]:
         """Row ids per component under this stage's membership (order kept)."""
         subsets: dict[str, list[str]] = {component: [] for component in self.component_ids}

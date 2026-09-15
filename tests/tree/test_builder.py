@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 import pytest
 
 from drbrain.storage.database import Database
+from drbrain.tree.affinity import SourceProfile
 from drbrain.tree.blocks import build_content_blocks
 from drbrain.tree.builder import BuilderConfig, BuilderError, TreeBuilder
-from drbrain.tree.clustering import ClusteringParams
+from drbrain.tree.clustering import ClusteringParams, FittedStage
 from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 from drbrain.tree.cost import CostParams
 from drbrain.tree.summary import SummaryContract, SummaryResponse
@@ -164,6 +166,56 @@ class TestSingleRound:
         for later in calls[1:]:
             assert not (set(later) & leaf_texts)
         assert result.created_nodes
+
+
+def _global_fixture() -> tuple[FittedStage, dict[str, SourceProfile]]:
+    """One global stage where the prior moves a row across the threshold."""
+    fitted = FittedStage(
+        stage="global",
+        row_ids=("nl-a", "nl-b", "nl-c", "nl-d"),
+        component_ids=("g0", "g1"),
+        probs=((0.09, 0.91), (0.9, 0.0), (0.0, 0.5), (0.0, 0.5)),
+        labels=((1,), (0,), (1,), (1,)),
+        n_components=2,
+        threshold=0.1,
+    )
+    profiles = {
+        "nl-a": SourceProfile(parts=(("p0", ("Methods",), 100),)),
+        "nl-b": SourceProfile(parts=(("p0", ("Methods",), 100),)),
+        "nl-c": SourceProfile(parts=(("p1", ("Methods",), 100),)),
+        "nl-d": SourceProfile(parts=(("p1", ("Methods",), 100),)),
+    }
+    return fitted, profiles
+
+
+class TestTwoLevelConditioning:
+    """T04/T28/T30: the structural prior enters at both stages, not just local."""
+
+    def test_corrected_global_membership_seeds_the_local_subsets(self, tmp_path):
+        """A row the prior moves globally must move with it into the local split.
+
+        ``local_stages`` selects each local fit's rows from the global labels;
+        feeding it the raw upstream labels would leave the prior inert at the
+        global level.
+        """
+        db = Database(tmp_path / "db.sqlite")
+        builder = _builder(db)
+        builder.config = dataclasses.replace(builder.config, lam=6.0)
+        fitted, profiles = _global_fixture()
+        conditioned = builder._conditioned_global(fitted, profiles)
+        assert fitted.labels == ((1,), (0,), (1,), (1,))
+        # same-document evidence pushes nl-a past the 0.1 threshold into g0
+        # alone (at lam=4 it would still hold both components)
+        assert conditioned.labels == ((0,), (0,), (1,), (1,))
+        assert conditioned.probs == fitted.probs  # raw posterior is untouched
+
+    def test_lambda_zero_keeps_the_upstream_labels(self, tmp_path):
+        """The documented ablation must hand the raw stage straight through."""
+        db = Database(tmp_path / "db.sqlite")
+        builder = _builder(db)
+        fitted, profiles = _global_fixture()
+        builder.config = dataclasses.replace(builder.config, lam=0.0)
+        assert builder._conditioned_global(fitted, profiles) is fitted
 
 
 class TestBoundsAndReachability:

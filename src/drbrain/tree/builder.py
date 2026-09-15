@@ -22,16 +22,17 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from loguru import logger
 
 from drbrain.tree.assign import (
     node_source_profile,
+    reweighted_stage,
     soft_assignment,
 )
-from drbrain.tree.clustering import ClusteringParams, two_stage_posteriors
+from drbrain.tree.clustering import ClusteringParams, global_stage, local_stages
 from drbrain.tree.contracts import ChildRef, NodeRecord, region_node_id
 from drbrain.tree.cost import CostParams, proposal_post_check, proposal_pre_screen
 from drbrain.tree.proposals import (
@@ -41,6 +42,7 @@ from drbrain.tree.proposals import (
     proposals_from_structure,
 )
 from drbrain.tree.summary import SummaryContract, SummaryMember, SummaryService
+from drbrain.tree.vector_store import needs_write_meta
 
 
 class BuilderError(RuntimeError):
@@ -192,8 +194,12 @@ class TreeBuilder:
         proposals: list[CandidateProposal] = []
         if self.embed is not None and len(frontier) >= 3:
             try:
-                global_stage, local_map = two_stage_posteriors(
-                    embeddings, frontier, self.config.clustering
+                fitted_global = global_stage(embeddings, frontier, self.config.clustering)
+                local_map = local_stages(
+                    embeddings,
+                    frontier,
+                    self._conditioned_global(fitted_global, profiles),
+                    self.config.clustering,
                 )
             except Exception as exc:  # noqa: BLE001 - clustering failure is a state
                 logger.warning("[tree] clustering failed in round {}: {}", round_index, exc)
@@ -230,6 +236,22 @@ class TreeBuilder:
                 soft_assignment(raw, profiles, lam=self.config.lam, with_affinity=True)
             )
         return candidates
+
+    def _conditioned_global(self, fitted_global, profiles):
+        """Global stage with the structural prior already applied (T04/T30).
+
+        Each stage reweights its own posterior before the strict threshold; at
+        the global level the corrected membership is what decides which rows
+        share a local fit, so ``local_stages`` must see it rather than the raw
+        upstream labels.
+        """
+        raw = fitted_global.posterior_stage()
+        corrected = reweighted_stage(raw, profiles, lam=self.config.lam)
+        if corrected is raw:
+            return fitted_global
+        indices = corrected.label_indices()
+        labels = tuple(indices.get(row_id, ()) for row_id in fitted_global.row_ids)
+        return replace(fitted_global, labels=labels)
 
     def _structure_proposals(self, frontier: Sequence[str]) -> list[CandidateProposal]:
         """Structure hints over the frontier's documents -> candidate proposals."""
@@ -403,8 +425,57 @@ class TreeBuilder:
     def _embeddings(self, frontier: Sequence[str]) -> list[list[float]]:
         if self.embed is None:
             return []
-        texts = [self._node_text(node_id) for node_id in frontier]
-        return [list(vector) for vector in self.embed(texts)]
+        reused, missing = self._stored_vectors(frontier)
+        if missing:
+            texts = [self._node_text(node_id) for node_id in missing]
+            fresh = [list(vector) for vector in self.embed(texts)]
+            if len(fresh) != len(missing):
+                raise BuilderError(
+                    f"embedder returned {len(fresh)} vectors for {len(missing)} nodes"
+                )
+            for node_id, vector in zip(missing, fresh):
+                reused[node_id] = vector
+        return [list(reused[node_id]) for node_id in frontier]
+
+    def _stored_vectors(self, frontier: Sequence[str]) -> tuple[dict[str, list[float]], list[str]]:
+        """Vectors already stored for exactly this revision/hash/profile.
+
+        T34: only new summaries get embedded.  A frontier node whose vector the
+        prepare stage (leaves) or an earlier round (regions) already computed is
+        read back instead of embedded again; anything with missing or stale
+        metadata falls through to the embedder.
+        """
+        reuse: dict[str, list[float]] = {}
+        missing: list[str] = []
+        if self.vectors is None:
+            return reuse, list(frontier)
+        candidates: list[str] = []
+        for node_id in frontier:
+            row = self.db.get_tree_node(node_id)
+            if row is None:
+                raise BuilderError(f"unknown node {node_id!r}")
+            if needs_write_meta(
+                self.db.get_node_vector(node_id),
+                node_revision=int(row["revision"]),
+                content_hash=str(row["content_hash"]),
+                profile_id=self.profile_id,
+            ):
+                missing.append(node_id)
+            else:
+                candidates.append(node_id)
+        if candidates:
+            try:
+                stored = self.vectors.get(candidates)
+            except Exception as exc:  # noqa: BLE001 - recomputing beats failing the round
+                logger.warning("[tree] stored vectors unavailable: {}", exc)
+                stored = {}
+            for node_id in candidates:
+                entry = stored.get(node_id)
+                if entry is None:
+                    missing.append(node_id)
+                else:
+                    reuse[node_id] = [float(value) for value in entry.vector]
+        return reuse, missing
 
     def _summary_member(self, node_id: str) -> SummaryMember:
         row = self.db.get_tree_node(node_id)

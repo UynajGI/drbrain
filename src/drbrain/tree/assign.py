@@ -214,6 +214,37 @@ def row_affinity(
     return tuple(values)
 
 
+def reweighted_stage(
+    stage: PosteriorStage,
+    profiles: Mapping[str, SourceProfile | SourceSpan],
+    *,
+    lam: float,
+    with_affinity: bool = True,
+) -> PosteriorStage:
+    """Apply the frozen structural prior to one stage (T04/T29/T30).
+
+    Every stage reweights its own raw posterior before the strict threshold, so
+    the prior enters here and nowhere else — the global stage included, where
+    the corrected membership decides which rows share a local fit.  ``lam=0``
+    (or ``with_affinity=False``, the documented ablation) returns the stage
+    unchanged, keeping the raw posterior measurable.
+    """
+    effective_lambda = check_lambda(lam)
+    if not with_affinity or effective_lambda == 0.0:
+        return stage
+    matrix = stage_affinities(stage, profiles)
+    return PosteriorStage(
+        stage=stage.stage,
+        row_ids=stage.row_ids,
+        component_ids=stage.component_ids,
+        probs=stage.probs,
+        threshold=stage.threshold,
+        lam=effective_lambda,
+        affinity=matrix,
+        subset_of=stage.subset_of,
+    ).reweighted()
+
+
 def soft_assignment(
     stage: PosteriorStage,
     profiles: Mapping[str, SourceProfile | SourceSpan],
@@ -227,19 +258,7 @@ def soft_assignment(
     documented ablation condition; the returned candidates always cover every
     row of the stage (empty membership is explicit).
     """
-    effective_lambda = check_lambda(lam)
-    if with_affinity and effective_lambda != 0.0:
-        matrix = stage_affinities(stage, profiles)
-        stage = PosteriorStage(
-            stage=stage.stage,
-            row_ids=stage.row_ids,
-            component_ids=stage.component_ids,
-            probs=stage.probs,
-            threshold=stage.threshold,
-            lam=effective_lambda,
-            affinity=matrix,
-            subset_of=stage.subset_of,
-        )
+    stage = reweighted_stage(stage, profiles, lam=lam, with_affinity=with_affinity)
     membership = stage.membership()
     by_component: dict[str, list[tuple[str, float]]] = {
         component: [] for component in stage.component_ids
