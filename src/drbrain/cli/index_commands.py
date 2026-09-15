@@ -19,7 +19,6 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -117,32 +116,11 @@ def _vector_backlog(db: Any, profile: Any) -> dict[str, Any]:
 # ── the historical incremental BM25 stage (bare ``drbrain index``) ───────────
 
 
-@contextmanager
-def _open_database(cfg: Any, db_path: str = ""):
-    """Open the configured database, or an explicit shard override.
-
-    The shard pipelines keep their per-shard databases; ``index build --db``
-    targets one exactly like the historical ``embed --tree --db`` did.
-    """
-    if str(db_path or "").strip():
-        from drbrain.storage.database import Database
-
-        db = Database(db_path)
-        try:
-            yield db
-        finally:
-            db.close()
-        return
-    with open_db(cfg) as db:
-        yield db
-
-
 def rebuild_lexical_index(
     cfg: Any,
     *,
     rebuild: bool = False,
     notify: Callable[[str], None] | None = None,
-    db_path: str = "",
 ) -> dict[str, Any]:
     """Rebuild the lexical BM25 index (the pre-``index build`` behavior).
 
@@ -150,9 +128,8 @@ def rebuild_lexical_index(
     last successful run.  Returns the historical JSON shape — ``{"documents",
     "indexed"}`` (plus ``"up_to_date": True`` on the skip path) — so both the
     legacy command and ``index build`` report the same lexical stage result.
-    ``db_path`` overrides the configured database (shard pipelines).
     """
-    with _open_database(cfg, db_path) as db:
+    with open_db(cfg) as db:
         from drbrain.query.bm25 import build_bm25_index
 
         if not rebuild:
@@ -216,49 +193,6 @@ def index_callback(
 # ── index build ─────────────────────────────────────────────────────────────
 
 
-def _prepare_llamaindex_generation(
-    cfg: Any,
-    db: Any,
-    *,
-    force: bool,
-    notify: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    """Prepare the LlamaIndex generation when that engine is selected.
-
-    Mirrors ``rag index`` semantics so the remedy command really prepares what
-    ``search``/``ask`` read: only ``rag_engine: llamaindex`` prepares this
-    generation (the deprecated SQL snapshot path is never republished), and a
-    missing llama-index stack or a build error is a reported *stage failure*
-    rather than a silent skip.  The unified store stages are engine
-    independent and always run.
-    """
-    from drbrain.rag.config import get_llamaindex_config
-
-    li = get_llamaindex_config(cfg)
-    engine = str(getattr(li, "rag_engine", "") or "").strip().lower()
-    if engine != "llamaindex":
-        return {"status": "skipped", "reason": f"rag_engine={engine or 'sql'}"}
-    try:
-        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
-    except ImportError as exc:  # pragma: no cover - defensive
-        return {"status": "failed", "error": safe_error(exc)}
-    if not _LLAMA_INDEX_AVAILABLE:
-        return {
-            "status": "failed",
-            "error": (
-                "llama-index is not installed; run: "
-                "uv add llama-index-core llama-index-retrievers-bm25"
-            ),
-        }
-    if notify is not None:
-        notify("Preparing the LlamaIndex generation...")
-    try:
-        stats = build_index(cfg, db, force=bool(force), max_node_tokens=li.max_node_tokens)
-    except Exception as exc:  # noqa: BLE001 - a failed stage is a reported state
-        return {"status": "failed", "error": safe_error(exc)}
-    return {"status": "ok", **dict(stats)}
-
-
 @index_app.command("build")
 def index_build_cmd(
     ctx: typer.Context,
@@ -268,32 +202,31 @@ def index_build_cmd(
         "--tree-storage",
         help="Storage root for unified tree generations (default: data/tree)",
     ),
-    db_path: str = typer.Option(
-        "", "--db", help="Override db path (shard databases; default cfg db.path)"
-    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ) -> None:
     """Prepare every enabled retrieval leg and publish a queryable generation.
 
     The lexical BM25 index, canonical FTS, the shared vector collection and the
     unified tree hierarchy are filled incrementally from the canonical store;
-    when ``llamaindex.rag_engine: llamaindex`` the LlamaIndex generation is
-    prepared in the same run (the deprecated SQL snapshot path is not
-    republished).  A tree generation is published only when something changed.
-    Exit code 1 when any stage failed — an unfinished or failed stage is never
-    reported as ready.
+    a tree generation is published only when something changed.  Exit code 1
+    when any stage failed — an unfinished or failed stage is never reported as
+    ready.
+
+    This command serves the main corpus.  A persisted LlamaIndex generation
+    (``llamaindex.rag_engine: llamaindex``) is still prepared by the
+    compatibility command ``drbrain rag index``, which the missing-index hint
+    names for that engine; the shard pipelines keep their own legacy stage
+    until the merge path understands the unified tables.
     """
     cfg = ctx.obj["config"]
     _force = bool(_runtime_option(force, False))
     _json = bool(_runtime_option(json_output, False))
     tree_storage = str(_runtime_option(tree_storage, "") or "")
-    db_path = str(_runtime_option(db_path, "") or "")
 
     lexical = rebuild_lexical_index(
         cfg,
         rebuild=_force,
         notify=None if _json else typer.echo,
-        db_path=db_path,
     )
 
     from drbrain.rag.config import get_llamaindex_config
@@ -311,7 +244,7 @@ def index_build_cmd(
 
     root = _tree_storage_root(ctx, cfg, tree_storage)
     started = time.monotonic()
-    with _open_database(cfg, db_path) as db:
+    with open_db(cfg) as db:
         outcome = prepare_unified_index(
             db,
             storage_dir=root,
@@ -322,38 +255,26 @@ def index_build_cmd(
             summary_input_budget=li.summary_input_budget,
             force=_force,
         )
-        llamaindex_stage = _prepare_llamaindex_generation(
-            cfg,
-            db,
-            force=_force,
-            notify=None if _json else typer.echo,
-        )
     payload = outcome.to_json()
     payload["lexical"] = lexical
-    payload["llamaindex"] = llamaindex_stage
-    if llamaindex_stage.get("status") in {"failed", "partial"}:
-        payload["failed_stages"] = [*payload["failed_stages"], "llamaindex"]
-        payload["ok"] = False
     payload["duration_ms"] = round((time.monotonic() - started) * 1000, 3)
     if _json:
         typer.echo(json.dumps(redact_sensitive(payload), indent=2, ensure_ascii=False, default=str))
     else:
         typer.echo(
             f"Index build ({'full' if _force else 'incremental'}): "
-            f"{'ok' if payload['ok'] else 'FAILED'}"
+            f"{'ok' if outcome.ok else 'FAILED'}"
         )
         typer.echo(f"  lexical:    {lexical['documents']} documents, indexed={lexical['indexed']}")
         for stage in ("fts", "vectors", "hierarchy", "publication"):
             typer.echo(f"  {stage + ':':<12} {payload[stage].get('status', '')}")
-        if llamaindex_stage.get("status") != "skipped":
-            typer.echo(f"  {'llamaindex:':<12} {llamaindex_stage.get('status', '')}")
         typer.echo(
             f"  changed={payload['changed']} published={payload['published'] or 'none'} "
             f"duration_ms={payload['duration_ms']}"
         )
         if payload["failed_stages"]:
             typer.echo(f"Failed stages: {', '.join(payload['failed_stages'])}", err=True)
-    if not payload["ok"]:
+    if not outcome.ok:
         raise typer.Exit(code=1)
 
 

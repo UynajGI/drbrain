@@ -138,12 +138,15 @@ class AskIndexNotPreparedError(RuntimeError):
 def ask_prepare_hint(cfg: Any) -> str:
     """The command that prepares the index for the configured engine (T46).
 
-    Both engines are covered by the same remedy: ``drbrain index build`` fills
-    the unified store (lexical + FTS + shared vectors + tree) and, when
-    ``llamaindex.rag_engine: llamaindex``, prepares the LlamaIndex generation
-    in the same run.
+    Engine aware on purpose: the SQL engine's unified store is prepared by the
+    main line (``drbrain index build``), while a persisted LlamaIndex
+    generation is still prepared by the hidden compatibility command
+    ``drbrain rag index``.  The hint must name the command that really
+    prepares that engine's artifacts, not the one that looks canonical.
     """
-    return "drbrain index build"
+    if get_llamaindex_config(cfg).rag_engine == "sql":
+        return "drbrain index build"
+    return "drbrain rag index"
 
 
 def _config_with_route(cfg: Any, normalized: NormalizedLegs) -> Any:

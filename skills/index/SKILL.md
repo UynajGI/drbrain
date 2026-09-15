@@ -31,11 +31,12 @@ drbrain search "attention mechanism"   # verify retrieval end to end
 - Lexical stage: rebuilds the BM25 index over concepts and arguments (incremental by default).
 - Unified stage: fills canonical FTS, the shared leaf/region vectors and the tree hierarchy
   incrementally, then publishes a tree generation only when something changed.
-- Engine stage: when `llamaindex.rag_engine: llamaindex`, prepares the LlamaIndex generation
-  in the same run (the deprecated SQL snapshot path is not republished); a missing
-  llama-index stack or a build error is reported as a failed stage.
+- Main corpus only: a persisted LlamaIndex generation (`rag_engine: llamaindex`) is still
+  prepared by the compatibility command `drbrain rag index`, which the missing-index hint
+  names for that engine; the shard pipelines keep their legacy `embed --tree --db` stage
+  until the merge path understands the unified tables.
 - `--force`/`-f` forces a full rebuild of every stage; `--tree-storage PATH` overrides the
-  generation root; `--db PATH` targets a shard database.
+  generation root.
 - Exit code 1 when any stage failed (`failed_stages` in `--json`) — a failed stage is never
   reported as ready.
 

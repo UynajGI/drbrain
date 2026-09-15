@@ -62,10 +62,9 @@ def _write_config(tmp_path: Path, *, retrievers=None, rag_engine: str = "sql") -
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
 
-def _write_corpus(tmp_path: Path, *local_ids: str, db_path: Path | None = None) -> None:
+def _write_corpus(tmp_path: Path, *local_ids: str) -> None:
     """Register canonical content so the corpus counts as *ingested*."""
-    if db_path is None:
-        db_path = tmp_path / "data" / "drbrain.db"
+    db_path = tmp_path / "data" / "drbrain.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db = Database(db_path)
     try:
@@ -184,8 +183,6 @@ class TestIndexStatus:
             "storage_dir": str(tmp_path / "data" / "llamaindex"),
         }
         with (
-            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
-            mock.patch("drbrain.rag.indexer.build_index", return_value={"generation": "gen-li-1"}),
             mock.patch("drbrain.rag.indexer.get_index_health", return_value=backend),
         ):
             build = _invoke(tmp_path, "index", "build", "--json")
@@ -264,105 +261,42 @@ class TestIndexBuild:
         for stage in ("lexical", "fts", "vectors", "hierarchy", "publication"):
             assert stage in result.stdout
 
-    def test_build_db_override_targets_a_shard_database(self, tmp_path, monkeypatch):
-        """``index build --db`` keeps the per-shard pipelines on the main line."""
+    def test_build_has_no_shard_db_override(self, tmp_path, monkeypatch):
+        """``index build`` serves the main corpus only — no shard override.
+
+        The shard pipelines keep their legacy ``embed --tree --db`` stage until
+        the merge path understands the unified tables, so no ``--db`` flag is
+        offered here.
+        """
         _write_config(tmp_path)
-        shard = tmp_path / "shards" / "shard0.db"
-        _write_corpus(tmp_path, "s1", db_path=shard)
-        _patch_build(monkeypatch)
-
-        result = _invoke(tmp_path, "index", "build", "--db", str(shard), "--json")
-
-        assert result.exit_code == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["fts"]["blocks"] == 8
-        assert payload["lexical"]["documents"] == 1
-        # The configured database was not the target.
-        db = Database(tmp_path / "data" / "drbrain.db")
-        try:
-            assert db.get_last_run("index") is None
-        finally:
-            db.close()
-
-    def test_build_prepares_the_llamaindex_generation_when_selected(self, tmp_path, monkeypatch):
-        """`rag_engine: llamaindex` builds its own generation in the same run."""
-        _write_config(tmp_path, rag_engine="llamaindex")
         _write_corpus(tmp_path)
         _patch_build(monkeypatch)
-        stats = {"papers": 2, "nodes": 8, "generation": "gen-li-1"}
-        with (
-            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
-            mock.patch("drbrain.rag.indexer.build_index", return_value=stats) as build,
-        ):
-            result = _invoke(tmp_path, "index", "build", "--json")
 
-        assert result.exit_code == 0, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["llamaindex"]["status"] == "ok"
-        assert payload["llamaindex"]["generation"] == "gen-li-1"
-        assert payload["ok"] is True and payload["failed_stages"] == []
-        assert build.call_args.kwargs["force"] is False
+        result = _invoke(tmp_path, "index", "build", "--db", str(tmp_path / "shard.db"), "--json")
 
-    def test_build_force_flows_into_the_llamaindex_stage(self, tmp_path, monkeypatch):
+        assert result.exit_code == 2
+        assert "--db" in result.output
+
+    def test_build_does_not_touch_the_llamaindex_engine_path(self, tmp_path, monkeypatch):
+        """`index build` serves the main corpus; `rag index` owns that engine.
+
+        The LlamaIndex generation is prepared by the compatibility command the
+        missing-index hint names for that engine, so a build must not
+        half-publish it (or, worse, republish the deprecated SQL snapshot).
+        """
         _write_config(tmp_path, rag_engine="llamaindex")
-        _write_corpus(tmp_path)
-        _patch_build(monkeypatch)
-        with (
-            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
-            mock.patch("drbrain.rag.indexer.build_index", return_value={"nodes": 0}) as build,
-        ):
-            result = _invoke(tmp_path, "index", "build", "--force", "--json")
-
-        assert result.exit_code == 0, result.stderr
-        assert build.call_args.kwargs["force"] is True
-
-    def test_llamaindex_stage_failure_exits_one_and_is_never_ready(self, tmp_path, monkeypatch):
-        _write_config(tmp_path, rag_engine="llamaindex")
-        _write_corpus(tmp_path)
-        _patch_build(monkeypatch)
-        with (
-            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
-            mock.patch(
-                "drbrain.rag.indexer.build_index",
-                side_effect=RuntimeError("llama index publish failed"),
-            ),
-        ):
-            result = _invoke(tmp_path, "index", "build", "--json")
-
-        assert result.exit_code == 1, result.stderr
-        payload = json.loads(result.stdout)
-        assert payload["ok"] is False
-        assert "llamaindex" in payload["failed_stages"]
-        assert "llama index publish failed" in payload["llamaindex"]["error"]
-
-    def test_missing_llamaindex_stack_is_a_failed_stage(self, tmp_path, monkeypatch):
-        _write_config(tmp_path, rag_engine="llamaindex")
-        _write_corpus(tmp_path)
-        _patch_build(monkeypatch)
-        with mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", False):
-            result = _invoke(tmp_path, "index", "build", "--json")
-
-        assert result.exit_code == 1
-        payload = json.loads(result.stdout)
-        assert payload["llamaindex"]["status"] == "failed"
-        assert "llama-index is not installed" in payload["llamaindex"]["error"]
-        assert "llamaindex" in payload["failed_stages"]
-
-    def test_sql_engine_never_republishes_the_legacy_snapshot(self, tmp_path, monkeypatch):
-        _write_config(tmp_path)
         _write_corpus(tmp_path)
         _patch_build(monkeypatch)
         with mock.patch(
             "drbrain.rag.indexer.build_index",
-            side_effect=AssertionError("the SQL snapshot path must stay opt-in"),
+            side_effect=AssertionError("index build must not prepare the llamaindex generation"),
         ):
             result = _invoke(tmp_path, "index", "build", "--json")
 
         assert result.exit_code == 0, result.stderr
-        assert json.loads(result.stdout)["llamaindex"] == {
-            "status": "skipped",
-            "reason": "rag_engine=sql",
-        }
+        payload = json.loads(result.stdout)
+        assert "llamaindex" not in payload
+        assert payload["failed_stages"] == []
 
     def test_build_without_an_embedding_profile_fails_closed(self, tmp_path):
         _write_config(tmp_path)
@@ -505,8 +439,16 @@ class TestBareIndexContract:
 
 
 class TestAskRemedyHint:
-    @pytest.mark.parametrize("engine", ["sql", "llamaindex"])
-    def test_ask_prepare_hint_points_at_a_command_that_prepares_the_index(self, engine):
+    @pytest.mark.parametrize(
+        ("engine", "expected"),
+        [
+            ("sql", "drbrain index build"),
+            # The persisted LlamaIndex generation is still prepared by the
+            # compatibility command, so its hint must name that one.
+            ("llamaindex", "drbrain rag index"),
+        ],
+    )
+    def test_ask_prepare_hint_names_the_command_that_prepares_the_index(self, engine, expected):
         from drbrain.config import Config
         from drbrain.rag.engine import ask_prepare_hint
 
@@ -514,4 +456,16 @@ class TestAskRemedyHint:
         config.llamaindex.enabled = True
         config.llamaindex.rag_engine = engine
 
-        assert ask_prepare_hint(config) == "drbrain index build"
+        assert ask_prepare_hint(config) == expected
+
+    def test_llamaindex_hint_is_a_registered_command(self):
+        """The hint must name a command that exists (hidden aliases count)."""
+        import typer.main
+
+        from drbrain.cli.main import app
+
+        group = typer.main.get_command(app)
+        assert "rag" in group.commands
+        sub = group.commands["rag"]
+        assert "index" in sub.commands
+        assert sub.commands["index"].hidden is True
