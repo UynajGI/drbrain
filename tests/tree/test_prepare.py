@@ -402,6 +402,74 @@ class TestPrepare:
         }
         assert len(ready_contracts) == 1  # one contract in the published tree
 
+    def test_rolling_back_to_a_previous_contract_is_not_certified_as_unchanged(self, tmp_path):
+        """T36: a rolled-back deployment must still heal a mixed-contract tree.
+
+        Sequence: contract A completes, contract B fails part way (A's regions
+        retired, one B region built, the watermark still holds A's signature),
+        then the deployment rolls back to A.  The signature matches the watermark
+        again, but B's region is ready while its leaves have no ready parent —
+        the stage must retire it and rebuild, not answer "signature-unchanged".
+        """
+        from drbrain.services.model_roles import ROLE_INDEX, resolve_model_role
+        from drbrain.tree.prepare import IndexModelSummary
+
+        class _FailingIndex(_StubIndex):
+            def __init__(self, role, ok_calls: int) -> None:
+                super().__init__(role)
+                self.ok_calls = ok_calls
+
+            def call_text(self, prompt: str, max_tokens: int = 0) -> SimpleNamespace:
+                if self.calls >= self.ok_calls:
+                    self.calls += 1
+                    raise RuntimeError("index endpoint down")
+                return super().call_text(prompt, max_tokens=max_tokens)
+
+        db = _setup(tmp_path)
+        embedder = _FakeEmbedder()
+
+        def _index(name: str, ok_calls: int | None = None):
+            role = resolve_model_role(_role_config(name), ROLE_INDEX)
+            stub = _StubIndex(role) if ok_calls is None else _FailingIndex(role, ok_calls)
+            return IndexModelSummary(stub)
+
+        complete = _prepare(db, tmp_path, embed=embedder, model=_index("index-a"))
+        assert complete.ok, complete.to_json()
+        watermark_a = db.get_vector_metadata(HIERARCHY_WATERMARK)
+        assert watermark_a
+
+        partial = _prepare(db, tmp_path, embed=embedder, model=_index("index-b", ok_calls=1))
+        assert not partial.ok
+        b_regions = [
+            node_id
+            for round_payload in partial.hierarchy["rounds"]
+            for node_id in round_payload["created_nodes"]
+        ]
+        assert b_regions
+        assert db.get_vector_metadata(HIERARCHY_WATERMARK) == watermark_a
+
+        rolled_back = _prepare(db, tmp_path, embed=embedder, model=_index("index-a"))
+        assert rolled_back.ok, rolled_back.to_json()
+        assert rolled_back.hierarchy.get("reason") != "signature-unchanged"
+        assert rolled_back.hierarchy["created"] > 0
+        placeholders = ",".join("?" for _ in b_regions)
+        states = {
+            str(state)
+            for (state,) in db.conn.execute(
+                f"SELECT state FROM tree_nodes WHERE node_id IN ({placeholders})",
+                tuple(b_regions),
+            ).fetchall()
+        }
+        assert states == {"stale"}, f"the other contract's regions must be retired: {states}"
+        ready_contracts = {
+            str(contract)
+            for (contract,) in db.conn.execute(
+                "SELECT DISTINCT contract_json FROM tree_nodes "
+                "WHERE state = 'ready' AND kind = 'region'"
+            ).fetchall()
+        }
+        assert len(ready_contracts) == 1
+
     def test_fts_drift_is_repaired_by_the_stage(self, tmp_path):
         db = _setup(tmp_path)
         db.conn.execute("INSERT INTO content_fts(content_fts) VALUES('delete-all')")
