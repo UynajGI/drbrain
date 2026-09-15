@@ -178,3 +178,81 @@ def test_parser_strips_thinking_header():
         result = parser.extract("/tmp/test.pdf")
         assert not result.raw_md.startswith("Thinking...")
         assert "# Title" in result.raw_md
+
+
+def _make_pdf(path: Path, pages: int) -> None:
+    import fitz
+
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page()
+    doc.save(str(path))
+    doc.close()
+
+
+_META_STUB = {
+    "title": "Long Paper",
+    "year": 2024,
+    "doi": None,
+    "s2_id": None,
+    "openalex_id": None,
+    "journal": "",
+    "publisher": "",
+    "citation_count": 0,
+}
+
+
+def test_chunked_pdf_uses_pdf_inspector_per_chunk(tmp_path):
+    """A >max_pages PDF splits; each chunk goes through pdf-inspector and merges as text."""
+    pdf = tmp_path / "long.pdf"
+    _make_pdf(pdf, pages=3)
+
+    def fake_inspector(path):
+        return {"markdown": f"BODY {Path(path).name}"}
+
+    with (
+        unittest.mock.patch(
+            "drbrain.parser.mineru.parser.extract_pdf_inspector",
+            side_effect=fake_inspector,
+        ),
+        unittest.mock.patch(
+            "drbrain.parser.mineru.parser._resolve_metadata", return_value=dict(_META_STUB)
+        ),
+        unittest.mock.patch("drbrain.extractor.openalex.search_authors_by_work", return_value=[]),
+    ):
+        parser = MinerUParser(token="", max_retries=1, retry_delay=0.01)
+        result = parser.extract(str(pdf), max_pages=2)
+
+    assert isinstance(result.raw_md, str)
+    assert result.raw_md.count("BODY chunk_") == 2
+    assert "---" in result.raw_md
+
+
+def test_chunked_pdf_fallback_dict_is_unwrapped(tmp_path):
+    """Chunk fallback merges the chain's markdown string (old code crashed with dict += str)."""
+    pdf = tmp_path / "long.pdf"
+    _make_pdf(pdf, pages=3)
+
+    with (
+        unittest.mock.patch(
+            "drbrain.parser.mineru.parser.extract_pdf_inspector", return_value=None
+        ),
+        unittest.mock.patch.object(MinerUParser, "_try_mineru_open_api", return_value=(None, None)),
+        unittest.mock.patch.object(
+            MinerUParser,
+            "_fallback_chain",
+            side_effect=lambda p: {
+                "markdown": f"FB {Path(p).name}",
+                "backend": "pymupdf4llm",
+            },
+        ),
+        unittest.mock.patch(
+            "drbrain.parser.mineru.parser._resolve_metadata", return_value=dict(_META_STUB)
+        ),
+        unittest.mock.patch("drbrain.extractor.openalex.search_authors_by_work", return_value=[]),
+    ):
+        parser = MinerUParser(token="", max_retries=1, retry_delay=0.01)
+        result = parser.extract(str(pdf), max_pages=2)
+
+    assert isinstance(result.raw_md, str)
+    assert result.raw_md.count("FB chunk_") == 2

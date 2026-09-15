@@ -30,22 +30,22 @@ STEPS = {
     "build": StepDef(
         name="build",
         scope="papers",
-        desc="5-stage LLM extraction: ontology → entities → relations → coref → refine",
+        desc="5-stage LLM extraction (drbrain graph build): ontology → entities → relations → coref → refine",
     ),
     "embed": StepDef(
         name="embed",
         scope="global",
-        desc="Train TransE graph embeddings + tree text embeddings",
+        desc="Train TransE graph embeddings (drbrain graph embed)",
     ),
     "closure": StepDef(
         name="closure",
         scope="global",
-        desc="Rule-based inference (8 symbolic + 4 embedding rules)",
+        desc="Rule-based inference (drbrain graph closure; 8 symbolic + 4 embedding rules)",
     ),
     "rag": StepDef(
         name="rag",
         scope="global",
-        desc="Materialize and publish the configured SQL/LlamaIndex RAG backend",
+        desc="Prepare and publish the searchable index (drbrain index build)",
     ),
 }
 

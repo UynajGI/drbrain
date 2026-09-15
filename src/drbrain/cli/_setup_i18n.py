@@ -136,8 +136,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "zh": "── 嵌入模型（树搜索 + RAPTOR）──",
     },
     "embed_desc": {
-        "en": "Used by 'drbrain embed --tree' for section-level retrieval.",
-        "zh": "用于 'drbrain embed --tree' 章节级检索。",
+        "en": "Used by 'drbrain index build' for section-level retrieval.",
+        "zh": "用于 'drbrain index build' 章节级检索。",
     },
     "embed_provider": {
         "en": "Provider (local/openai-compat/none)",
@@ -300,8 +300,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "zh": "已就绪。",
     },
     "next_steps": {
-        "en": "Next:    drbrain ingest   (see paper-ingest skill)\n  Then:    drbrain build    (see kg-build skill)\n  Then:    drbrain embed --tree && drbrain closure\n  Explore: drbrain query / drbrain ask / drbrain reason\n  Edit config.local.yaml to adjust settings.",
-        "zh": "下一步： drbrain ingest   （参见 paper-ingest 技能）\n  然后：   drbrain build    （参见 kg-build 技能）\n  然后：   drbrain embed --tree && drbrain closure\n  探索：   drbrain query / drbrain ask / drbrain reason\n  编辑 config.local.yaml 来调整设置。",
+        "en": "Next:    drbrain ingest   (see paper-ingest skill)\n  Then:    drbrain graph build   (see kg-build skill)\n  Then:    drbrain index build && drbrain graph closure\n  Explore: drbrain search / drbrain ask / drbrain reason\n  Edit config.local.yaml to adjust settings.",
+        "zh": "下一步： drbrain ingest   （参见 paper-ingest 技能）\n  然后：   drbrain graph build   （参见 kg-build 技能）\n  然后：   drbrain index build && drbrain graph closure\n  探索：   drbrain search / drbrain ask / drbrain reason\n  编辑 config.local.yaml 来调整设置。",
     },
     "setup_warnings": {
         "en": "Setup complete with {count} warning(s).",

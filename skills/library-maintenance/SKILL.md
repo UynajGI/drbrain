@@ -130,7 +130,7 @@ drbrain audit && drbrain stats
 
 **Backup before major operation:**
 ```bash
-drbrain backup && drbrain build --all
+drbrain backup && drbrain graph build --all
 ```
 
 **Full reset:**

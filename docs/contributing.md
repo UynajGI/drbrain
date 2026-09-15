@@ -168,7 +168,7 @@ skills/                   # AgentSkills.io skills (27 total)
 # Clone and install
 git clone https://github.com/UynajGI/DrBrain.git
 cd DrBrain
-uv sync
+uv sync --extra full
 uv pip install -e .
 
 # Set up DrBrain config

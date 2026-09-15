@@ -1,68 +1,83 @@
 ---
 name: index
 description: >
-  Rebuild the BM25 search index over all concepts and arguments. Use this skill whenever the user
-  says "rebuild the index", "update the search index", "search isn't finding papers", "reindex my
-  library", "fix search", or when papers have been recently ingested or concepts modified and search
-  results seem stale or incomplete. Also use when the user notices that `drbrain query` returns empty
-  or unexpected results for terms they know should match, after running `drbrain build`, after
-  running `drbrain repair`, or when search suddenly stops working. Trigger proactively whenever the
-  user reports search problems or has just completed operations that change the concept database.
+  Prepare, inspect and verify the searchable index. Use this skill whenever the user
+  says "build the index", "rebuild the index", "update the search index", "search isn't finding
+  papers", "reindex my library", "fix search", "is the index ready", or when papers have been
+  recently ingested and search results seem stale or incomplete. Also use when the user notices
+  that `drbrain search` returns empty or unexpected results for terms they know should match
+  (after running `drbrain ingest`, `drbrain graph build` or `drbrain repair`), or asks why
+  `ask`/`search` cannot read the index. Trigger proactively whenever the user reports search
+  problems or has just completed operations that change the corpus.
 ---
 
-# Rebuild Search Index
+# Build, inspect and verify the search index
 
-Rebuild the BM25 full-text search index over all concepts and arguments in the library. The index
-powers `drbrain query` — if papers are not appearing in search results after ingest/build, the
-index likely needs rebuilding.
+`drbrain index build` prepares every enabled retrieval leg from the canonical store and
+publishes one queryable generation; `drbrain index status` reports what is ready and what is
+still pending; `drbrain index verify` re-checks exactly what `search`/`ask` read.
 
-## Quick Start
+## Quick start
 
 ```bash
-drbrain index --rebuild
+drbrain index build                 # lexical BM25 + FTS + vectors + tree, publish a generation
+drbrain index status                # ingested / indexed / retrievable, per leg
+drbrain index verify                # what search/ask read: FTS, vectors, generation, profile
+drbrain search "attention mechanism"   # verify retrieval end to end
 ```
 
-## What It Does
+## What it does
 
-- Reads all concept labels, types, sections, arguments, and paper metadata from the database
-- Tokenizes text and builds a BM25 inverted index with TF-IDF-like weighting
-- Stores the index for fast retrieval by `drbrain query`
-- Without `--rebuild`, loads the existing index (if available)
-- `--json` outputs document count for verification
+- Lexical stage: rebuilds the BM25 index over concepts and arguments (incremental by default).
+- Unified stage: fills canonical FTS, the shared leaf/region vectors and the tree hierarchy
+  incrementally, then publishes a tree generation only when something changed.
+- Main corpus only: a persisted LlamaIndex generation (`rag_engine: llamaindex`) is still
+  prepared by the compatibility command `drbrain rag index`, which the missing-index hint
+  names for that engine; the shard pipelines keep their legacy `embed --tree --db` stage
+  until the merge path understands the unified tables.
+- `--force`/`-f` forces a full rebuild of every stage; `--tree-storage PATH` overrides the
+  generation root.
+- Exit code 1 when any stage failed (`failed_stages` in `--json`) — a failed stage is never
+  reported as ready.
 
-## When to rebuild
+## When to build
 
-- After `drbrain ingest` or `drbrain build` — new concepts need indexing
-- After `drbrain repair` — updated metadata changes searchable fields
-- When `drbrain query` returns empty or irrelevant results for known terms
-- When `drbrain query` doesn't surface recently added papers
+- After `drbrain ingest` — new canonical content needs to be indexed
+- After `drbrain graph build` / `drbrain repair` — new concepts or metadata change the index
+- When `drbrain search`/`ask` reports that no index is prepared
+- When `drbrain index status` shows pending vectors, missing parents or a stale generation
 
 ## Examples
 
 **Standard post-ingest workflow:**
 ```bash
 drbrain ingest ~/Downloads/new-papers/
-drbrain build
-drbrain index --rebuild
-drbrain query "attention mechanism"   # verify new papers appear
+drbrain index build                   # prepare + publish in one incremental run
+drbrain search "attention mechanism"  # evidence rows with locators
+drbrain index verify                  # confirm what search will read
 ```
 
 **Diagnose search failures:**
 ```bash
 drbrain list                          # confirm papers exist
-drbrain index --rebuild --json        # {"documents": 1234, "indexed": true}
-drbrain query "known term"            # re-test
+drbrain index status --json           # per-leg ready + reasons + pending backlog
+drbrain index build                   # fix whatever is not ready
+drbrain search "known term"           # re-test
 ```
 
-**Verify rebuild succeeded:**
+**Inspect a published generation:**
 ```bash
-drbrain index --rebuild --json | jq '.documents'
+drbrain index status --json | jq '.generation, .legs.tree'
+drbrain index verify --json | jq '.checks[] | select(.ok == false)'
 ```
 
-## CLI Reference
+## CLI reference
 
 | Command | What it does |
 |---------|--------------|
-| `drbrain index` | Load existing index (no rebuild) |
-| `drbrain index --rebuild` | Force full rebuild from database |
-| `drbrain index --rebuild --json` | JSON output with document count |
+| `drbrain index build` | Incremental prepare (lexical + FTS + vectors + hierarchy) and publish |
+| `drbrain index build --force` | Full rebuild of every stage |
+| `drbrain index build --json` | Stage payload: `{"ok","changed","published","failed_stages","fts","vectors","hierarchy","publication","duration_ms","lexical"}` |
+| `drbrain index status` | Ready/pending/reasons per leg; exit 0 |
+| `drbrain index verify` | Retrieval-readiness checks; exit 1 on any error |
+| `drbrain index --rebuild --json` | Legacy lexical-only rebuild (hidden compatibility alias; still supported) |

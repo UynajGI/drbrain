@@ -84,6 +84,35 @@ if traversal misses).
 All tree nodes (PageIndex + all RAPTOR layers) flattened into a single pool for
 brute-force cosine similarity search. Used as fallback and for cross-paper queries.
 
+**Unified Tree Generation**
+One published tree for the whole corpus, written by `rag prepare` (the default path) under
+`data/tree/generations/<generation>/`: `manifest.json` (watermarks, vector count/dimension)
+plus a read-only SQLite snapshot carrying `node_texts`. The production tree leg resolves the
+active generation, verifies every hit against the same node id and content revision, and fails
+closed when no generation exists.
+
+**Leaf / Region**
+The two node kinds of the unified tree. A **leaf** is one published content block of a paper
+(`char_start`/`char_end` bound the exact span). A **region** is a summary node the builder
+creates over a member group; its node id embeds the member refs and the summary-contract
+digest, so changing the contract creates a new node and retires the old one.
+
+**Structural Weighting (λ)**
+The frozen two-stage assignment reweights each stage's posterior with a structural
+compatibility score `A(i,k)` (document + heading-path affinity) before the strict `>0.1`
+threshold: `p ∝ p·exp(λ·A)`. `λ=0` is the documented ablation and an exact identity.
+
+**ReadReceipt**
+The record a navigator `read` returns (block id, span, content hash, token count). Evidence
+items can only be built from receipts, so a model-invented node id or page number never becomes
+evidence; a walk that ends with summaries but no leaf receipts is reported as `partial`.
+
+**Tree Leg (unified)**
+The production tree retrieval leg (`src/drbrain/tree/leg.py`): resolve the active generation →
+search all layers through the shared vector store → walk with the navigator → validate every
+candidate against its `ReadReceipt` → return leaf text. It never reads the retired
+`tree_vectors.tree_layer='pageindex'` ANN.
+
 ---
 
 ## Reasoning
@@ -121,7 +150,11 @@ with composite difficulty scoring. `drbrain difficulty`.
 ## Pipeline
 
 **Ingest**
-Phase 1: PDF → Markdown + Metadata + tree.json. Lightweight, no concept extraction.
+Phase 1: PDF → Markdown + Metadata + **canonical body** (a document revision plus its
+contiguous content blocks and one published leaf per block). The canonical write is
+required: a failure rolls the paper back instead of leaving a record without its body.
+Papers ingested after 2026-09 have no per-paper `raw.md`/`tree.json` (legacy papers keep
+theirs read-only, never regenerated). Hierarchy is built later by `rag prepare`.
 Paper status: `uploaded`.
 
 **Build**
@@ -152,7 +185,10 @@ quality. Log warnings but never block.
 ## Embedding (Text)
 
 **Tree Node Embedding**
-SBERT vector for a PageIndex/RAPTOR tree node. Stored in `tree_vectors` table as BLOB.
+Embedding of a unified-tree node (a leaf or a region summary). New vectors live in the
+shared Zvec store, identified by `node_vectors` metadata (node revision + content hash +
+embedding profile); each vector is computed once per content and reused by both the vector
+leg and the tree builder. The legacy `tree_vectors` BLOB table is read-only for old papers.
 Used for cosine similarity search.
 
 **Content Hash**

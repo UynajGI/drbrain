@@ -39,6 +39,12 @@ from typing import Any
 
 from drbrain.config import Config
 from drbrain.rag.config import get_llamaindex_config
+from drbrain.rag.legs import (
+    CANONICAL_LEGS,
+    LEG_ALIASES,
+    LegConfigError,
+    normalize_legs,
+)
 from drbrain.rag.status import RetrievalError, RetrievalStatus, classify_failure
 from drbrain.utils.rrf import DEFAULT_K  # RRF 收敛（R-I7）：常量单一来源
 
@@ -314,12 +320,31 @@ if _LLAMA_INDEX_AVAILABLE:
 
 
 def _iter_custom_retrievers(custom):
-    """Normalize ``custom_retrievers`` to ``[(source, retriever), ...]``."""
+    """Normalize ``custom_retrievers`` to ``[(source, retriever), ...]`` (T43).
+
+    Legacy source names (``pageindex``/``raptor``) are folded into the single
+    ``tree`` leg and registering the same leg twice is refused: the old pairs
+    would otherwise fuse overlapping content under two RRF votes.
+    """
     if not custom:
         return []
-    if isinstance(custom, dict):
-        return list(custom.items())
-    return list(custom)  # already a list of (source, retriever) tuples
+    items = list(custom.items()) if isinstance(custom, dict) else list(custom)
+    out: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for source, retriever in items:
+        name = str(source).strip().lower()
+        leg = LEG_ALIASES.get(name, name)
+        if leg in CANONICAL_LEGS:
+            if leg in seen:
+                raise LegConfigError(
+                    f"{name!r} duplicates the {leg!r} leg; "
+                    f"legacy names are aliases, not separate RRF sources"
+                )
+            seen.add(leg)
+            out.append((leg, retriever))
+        else:
+            out.append((name, retriever))
+    return out
 
 
 def build_fusion_retriever(
@@ -388,46 +413,77 @@ def get_retrievers(
 ) -> dict[str, Any]:
     """Assemble named retrievers per the ``llamaindex.retrievers`` config list.
 
-    Legs: ``bm25`` (persisted ``BM25Retriever``), ``vector``
-    (``index.as_retriever``), ``tree`` (:class:`DrbrainTreeRetriever`),
-    ``raptor`` (:class:`DrbrainRAPTORRetriever`), ``graph``
-    (:class:`DrbrainGraphRetriever`). Only legs present in the
-    config list AND available on disk are returned. T5's query engine combines
-    the result with :func:`build_fusion_retriever` for fused retrieval.
+    Outer layer (T43): only ``bm25`` (persisted ``BM25Retriever``), ``vector``
+    (``index.as_retriever``) and ``tree`` (:class:`UnifiedTreeRetriever` over
+    the published unified generation).  The legacy names
+    ``pageindex``/``raptor`` fold into the single tree leg (see
+    :mod:`drbrain.rag.legs`); ``graph`` remains an explicit live extra.
+    Only legs present in the config list AND available on disk are returned.
+    T5's query engine combines the result with :func:`build_fusion_retriever`.
 
     ``generation`` is an additive snapshot selector for the persisted BM25 and
     vector legs.  With ``generation_backed_only=True`` mutable filesystem/DB
     legs are omitted, so a durable caller cannot accidentally blend a pinned
-    index with newer tree, RAPTOR, or graph state.
+    index with newer tree or graph state.
     """
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError("llama-index is not installed; cannot build retrievers")
     from drbrain.rag.indexer import load_index
-    from drbrain.rag.retrievers import (
-        DrbrainGraphRetriever,
-        DrbrainRAPTORRetriever,
-        DrbrainTreeRetriever,
-    )
+    from drbrain.rag.retrievers import DrbrainGraphRetriever
 
     li = get_llamaindex_config(cfg)
-    wanted = [str(x).strip() for x in (li.retrievers or ["bm25", "vector"])]
-    top_k = int(cfg.embed.top_k or 10)
+    normalized = normalize_legs(li.retrievers)
+    wanted = set(normalized.legs)
+    for note in normalized.notes:
+        log.info("[rag] retriever config: %s", note)
+    # T44 per-leg recall caps: BM25 ≈1000, vector ≈100, tree ≤100 candidates.
+    caps = {
+        "bm25": _candidate_cap(li, "bm25_candidates", 1000),
+        "vector": _candidate_cap(li, "vector_candidates", 100),
+        "tree": _candidate_cap(li, "tree_candidates", 100),
+    }
 
     out: dict[str, Any] = {}
-    if "bm25" in wanted or "vector" in wanted:
+    if wanted & {"bm25", "vector"}:
         index, bm25 = load_index(cfg, generation=generation)
         if "bm25" in wanted and bm25 is not None:
+            bm25.similarity_top_k = caps["bm25"]
             out["bm25"] = bm25
         if "vector" in wanted and index is not None:
-            out["vector"] = index.as_retriever(similarity_top_k=top_k)
+            out["vector"] = index.as_retriever(similarity_top_k=caps["vector"])
 
     if generation_backed_only:
         return out
 
     if "tree" in wanted:
-        out["tree"] = DrbrainTreeRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
-    if "graph" in wanted:
-        out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=top_k)
-    if "raptor" in wanted:
-        out["raptor"] = DrbrainRAPTORRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
+        # T43/T45: the tree leg reads the published unified generation.  A
+        # missing generation is fail-closed — the legacy per-paper PageIndex
+        # navigation is not a fallback (its raw.md/tree.json inputs stop being
+        # produced once ingest converges on the canonical store).
+        from drbrain.runtime import runtime_scoped_path
+        from drbrain.tree.leg import DEFAULT_TREE_STORAGE
+        from drbrain.tree.publish import get_active_tree_generation
+
+        tree_root = runtime_scoped_path(
+            getattr(li, "tree_storage", "") or DEFAULT_TREE_STORAGE, label="tree storage"
+        )
+        if get_active_tree_generation(tree_root):
+            from drbrain.rag.retrievers import UnifiedTreeRetriever
+
+            out["tree"] = UnifiedTreeRetriever(cfg, top_k=caps["tree"])
+        else:
+            log.warning(
+                "[rag] no active unified tree generation under %s; tree leg omitted "
+                "(fail-closed, no legacy fallback)",
+                tree_root,
+            )
+    if "graph" in normalized.extras:
+        out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=int(cfg.embed.top_k or 10))
     return out
+
+
+def _candidate_cap(li: Any, name: str, default: int) -> int:
+    try:
+        return max(1, int(getattr(li, name, default) or default))
+    except (TypeError, ValueError):
+        return default

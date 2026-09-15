@@ -1129,6 +1129,30 @@ def call_text_with_fallback(
     max_tokens: int = 4096,
 ) -> str | None:
     """Sync text call with fallback. Returns raw text (not JSON)."""
+    result = call_text_with_meta(prompt, models, system_prompt=system_prompt, max_tokens=max_tokens)
+    return None if result is None else str(result.get("text") or "")
+
+
+def _finish_reason(response) -> str:
+    """Best-effort finish reason from a chat/completions response (T46)."""
+    try:
+        return str(getattr(response.choices[0], "finish_reason", "") or "")
+    except Exception:  # pragma: no cover - responses-API shim and odd clients
+        return str(getattr(response, "finish_reason", "") or "")
+
+
+def call_text_with_meta(
+    prompt: str,
+    models: list[dict],
+    system_prompt: str = "",
+    max_tokens: int = 4096,
+) -> dict | None:
+    """Sync text call with fallback; returns ``{"text", "finish_reason"}``.
+
+    ``finish_reason == "length"`` is how a truncated answer is reported to
+    callers (T46): the answer budget must be large enough for reasoning
+    endpoints, and a truncation must not be mistaken for a complete answer.
+    """
 
     for i, model_cfg in enumerate(models):
         name = f"{model_cfg['provider']}/{model_cfg['model']}"
@@ -1158,7 +1182,7 @@ def call_text_with_fallback(
                         _RATE_LIMIT_SM.on_success(model_cfg, api_key)
                     if content is None:
                         raise ValueError("empty LLM response content")
-                    return content.strip()
+                    return {"text": content.strip(), "finish_reason": _finish_reason(_resp)}
                 except Exception as e:
                     if _is_rate_limit(e):
                         # 只把失败的 key 打入冷却，继续尝试池里下一个 key。
@@ -1335,6 +1359,7 @@ def call_with_messages(
                     result = {
                         "text": msg.content or "",
                         "tool_calls": _extract_tool_calls(msg),
+                        "finish_reason": _finish_reason(response),
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,
@@ -1467,6 +1492,7 @@ async def acall_with_messages(
                     result = {
                         "text": msg.content or "",
                         "tool_calls": _extract_tool_calls(msg),
+                        "finish_reason": _finish_reason(response),
                         "usage": {
                             "in": usage.prompt_tokens if usage else 0,
                             "out": usage.completion_tokens if usage else 0,

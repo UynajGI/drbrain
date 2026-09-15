@@ -969,11 +969,13 @@ def test_insert_edge_dedup(tmp_db):
 
 
 def test_save_paper_artifacts():
-    """_save_paper_artifacts writes raw.md, source.pdf, and images into per-paper dir."""
+    """_save_paper_artifacts keeps source.pdf; the body is canonical, not a file."""
     import tempfile
     from types import SimpleNamespace
 
-    from drbrain.cli.commands import _save_paper_artifacts
+    from drbrain.cli._helpers.db_ingest import _save_paper_artifacts, _write_canonical_content
+    from drbrain.storage.content import read_text
+    from drbrain.storage.database import Database
 
     with tempfile.TemporaryDirectory() as td:
         paper_dir = Path(td) / "papers" / "p1"
@@ -986,15 +988,23 @@ def test_save_paper_artifacts():
             raw_md="# Title\n\nAbstract text here.",
             images_dir=None,
         )
-        _save_paper_artifacts(parsed, "p1", paper_dir, src_pdf)
-        assert (paper_dir / "raw.md").exists()
-        assert (paper_dir / "source.pdf").exists()
-        content = (paper_dir / "raw.md").read_text()
-        assert "Title" in content
+        db = Database(str(Path(td) / "db.sqlite"))
+        try:
+            db.insert_paper("p1", "Title", 2024, "uploaded")
+            # Ingest registers the body canonically (T22) before the artifacts.
+            _write_canonical_content(db, "p1", parsed, src_pdf)
+            _save_paper_artifacts(parsed, "p1", paper_dir, src_pdf)
+            assert (paper_dir / "source.pdf").exists()
+            # No per-paper markdown is generated; the parsed text is read back
+            # from the canonical store instead.
+            assert not (paper_dir / "raw.md").exists()
+            assert "Title" in read_text(db, "p1")
+        finally:
+            db.close()
 
 
 def test_save_paper_artifacts_copies_images():
-    """_save_paper_artifacts copies images into per-paper dir."""
+    """_save_paper_artifacts copies images into per-paper dir (no raw.md)."""
     import tempfile
     from types import SimpleNamespace
 
@@ -1018,8 +1028,9 @@ def test_save_paper_artifacts_copies_images():
         _save_paper_artifacts(parsed, "p1", paper_dir, src_pdf)
 
         assert (paper_dir / "images" / "abc.jpg").exists()
-        content = (paper_dir / "raw.md").read_text()
-        assert "images/abc.jpg" in content
+        # T22: image references live in the canonical body, so no raw.md copy
+        # is materialized next to the copied images.
+        assert not (paper_dir / "raw.md").exists()
 
 
 def test_save_paper_artifacts_rejects_symlinked_image_destination(tmp_path):

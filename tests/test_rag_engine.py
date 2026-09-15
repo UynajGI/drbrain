@@ -176,11 +176,14 @@ def test_build_query_engine_assembles_engine(monkeypatch):
     assert isinstance(engine, RetrieverQueryEngine)
     # refine synthesizer with the requested streaming flag
     assert engine._response_synthesizer._streaming is False
-    # similarity cutoff postprocessor attached
-    assert len(engine._node_postprocessors) == 1
+    # cutoff + the T44 context-budget tail
+    assert len(engine._node_postprocessors) == 2
     pp = engine._node_postprocessors[0]
     assert isinstance(pp, SimilarityCutoffPostprocessor)
     assert pp.similarity_cutoff == 0.7
+    from drbrain.rag.context import ContextBudgetPostprocessor
+
+    assert isinstance(engine._node_postprocessors[1], ContextBudgetPostprocessor)
 
 
 def test_build_query_engine_streaming_default_from_config(monkeypatch):
@@ -191,13 +194,17 @@ def test_build_query_engine_streaming_default_from_config(monkeypatch):
     assert engine._response_synthesizer._streaming is True
 
 
-def test_build_query_engine_no_postprocessor_when_cutoff_none(monkeypatch):
+def test_build_query_engine_mounts_context_budget_when_cutoff_none(monkeypatch):
     monkeypatch.setattr(
         "drbrain.rag.fusion.get_retrievers", lambda cfg, db: {"vector": _FakeRetriever()}
     )
     engine = build_query_engine(_cfg(enabled=True, cutoff=None), db=None)
-    # RetrieverQueryEngine normalizes None → [], so no postprocessors attached.
-    assert engine._node_postprocessors == []
+    # No cutoff, but the T44 context-budget tail is always mounted (defaults on).
+    from drbrain.rag.context import ContextBudgetPostprocessor
+
+    pps = engine._node_postprocessors
+    assert len(pps) == 1 and isinstance(pps[0], ContextBudgetPostprocessor)
+    assert pps[0].max_docs == 10 and pps[0].token_budget == 8000
 
 
 def test_build_hybrid_retriever_returns_fusion(monkeypatch):

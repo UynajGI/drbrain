@@ -11,23 +11,36 @@ import typer
 
 from drbrain.cli._common import open_db
 from drbrain.config import AutoresearchConfig
-from drbrain.loop import (
-    BranchOutcome,
-    BranchSpec,
-    BranchStatus,
-    DoneContract,
-    EvidenceRef,
-    ResearchDirector,
-    ResearchObjective,
-    RunGovernance,
-    run_frontier_benchmark,
-)
-from drbrain.loop.policy import ToolPolicy
-from drbrain.loop.preflight import preflight_mcp_servers
-from drbrain.loop.store import RunLedger
+
+try:
+    from drbrain.loop import (
+        BranchOutcome,
+        BranchSpec,
+        BranchStatus,
+        DoneContract,
+        EvidenceRef,
+        ResearchDirector,
+        ResearchObjective,
+        RunGovernance,
+        run_frontier_benchmark,
+    )
+    from drbrain.loop.policy import ToolPolicy
+    from drbrain.loop.preflight import preflight_mcp_servers
+    from drbrain.loop.store import RunLedger
+
+    _LOOP_IMPORT_ERROR: ImportError | None = None
+except ImportError as exc:  # keep the lightweight CLI usable without full RAG deps
+    _LOOP_IMPORT_ERROR = exc
 from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 autoresearch_app = typer.Typer(help="Durable autoresearch operations")
+
+
+def _require_loop() -> None:
+    if _LOOP_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "autoresearch commands require the full profile; install with `uv sync --extra full`"
+        ) from _LOOP_IMPORT_ERROR
 
 
 def _configured_secrets(cfg: Any) -> tuple[str, ...]:
@@ -61,6 +74,7 @@ def _settings(cfg: Any) -> AutoresearchConfig:
 
 def _control(cfg: Any) -> RunGovernance:
     """Open an existing ledger without creating a misleading empty operator view."""
+    _require_loop()
     settings = _settings(cfg)
     ledger_path = Path(settings.run_dir) / "ledger.sqlite3"
     if not ledger_path.is_file():
@@ -112,6 +126,7 @@ def run_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit the run summary as JSON"),
 ) -> None:
     """Run or resume the durable autoresearch loop for one topic."""
+    _require_loop()
     cfg = ctx.obj["config"]
     try:
         settings = _settings(cfg)
@@ -198,6 +213,7 @@ def adaptive_run_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit the frontier result as JSON"),
 ) -> None:
     """Run the adaptive Supervisor while keeping ``autoresearch run`` unchanged."""
+    _require_loop()
     cfg = ctx.obj["config"]
     try:
         settings = _settings(cfg)
@@ -270,6 +286,7 @@ def adaptive_benchmark_cmd(
     """
     if branches < 1:
         raise typer.BadParameter("branches must be positive")
+    _require_loop()
 
     specs = [
         BranchSpec(
@@ -412,6 +429,7 @@ def preflight_cmd(
     json_output: bool = typer.Option(False, "--json", help="Emit the static diagnostics as JSON"),
 ) -> None:
     """Diagnose static durable MCP visibility without contacting MCP servers."""
+    _require_loop()
     try:
         settings = _settings(ctx.obj["config"])
         payload = preflight_mcp_servers(

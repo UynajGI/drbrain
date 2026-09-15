@@ -1,151 +1,181 @@
-# RAG 层实现与验收记录
+# RAG layer
 
-本阶段按模块完成度收敛 RAG，不运行真实模型、外部服务、GPU 或大语料集成评测。
-代码与局部契约可独立验收；召回效果、答案质量和生产规模性能仍需另行验证。
+## Current contract
 
-## 模块边界
+The RAG layer is a retrieval service over stored papers and derived evidence units. It is independent of the CLI and loop orchestration and can be used directly from Python.
 
-| 职责 | 实现 | 约束 |
-| --- | --- | --- |
-| 请求、结果、范围与逐路状态 | `rag/contracts.py` | 不依赖 agent、会话和 loop |
-| 检索服务 | `rag/retrieval.py` | 统一请求；保留历史列表入口 |
-| SQL 检索 / 查询引擎适配 | `rag/sql_retrie.py`、`rag/sql_adapter.py` | 明示两阶段召回；遵守快照与过滤约束 |
-| 节点与物理片段 | `rag/index_nodes.py` | 章节是逻辑证据单元，片段有精确父文本位置 |
-| SQL 工作库重建与发布 | `rag/preparation.py`（`storage/rag_database.py`、`storage/node_projection.py`） | 单命令原子重建派生库并发布固定版本；文本走共享投影 |
-| 版本与保留 | `rag/index_generations.py`、`rag/sql_snapshot.py` | 原子发布、固定版本读取、按运行保留 |
-| 嵌入执行 | `rag/index_embeddings.py` | 缓存复用与计算执行；失败恢复进程 GC 设置 |
-| Agent 适配 | `rag/agent_llm.py`、`rag/agent_tools.py`、`rag/agent_sessions.py` | 模型、工具装配与会话分离；`agent.py` 保留编排和兼容导出 |
-| 评估 | `rag/eval_data.py`、`rag/eval_metrics.py`、`rag/eval_judges.py`、`rag/eval_report.py` | 数据、确定性指标、模型裁判和报告分离；`eval.py` 保留运行入口 |
+## Unified write path and compatibility
 
-`rag/config.py` 负责映射配置到类型化配置，保留所有已知配置节，拒绝未知配置节。
-包级 agent 导出改为惰性加载，核心检索和 SQL 快照操作不因导入 RAG 包而加载 agent SDK。
+New papers have exactly one text fact: the canonical store in the main
+database. `ingest` writes the revision, its contiguous blocks and one published
+leaf per block; the original material (plus attachments) is copied under
+`data/papers/<id>/`; no `raw.md` or `tree.json` is generated, and a canonical
+write failure rolls the whole paper back and reports it as failed instead of
+publishing a record without its body. `ingest-link` follows the same rule: the
+extracted markdown is registered through the same canonical write path, no
+`raw.md` is written, and a failed link reports `status=error` and makes the
+command exit non-zero.
 
-## PageIndex、向量与 SQL RAG 的真实调用链
+`drbrain index build` defaults to the unified index (canonical FTS, shared
+vectors, hierarchy, one published tree generation). `--legacy-sql` keeps the
+deprecated derived `drbrain_rag.db` working copy available for deployments
+whose readers have not migrated yet; it is opt-in. The historical entry points
+(`rag prepare`, `rag prepare --unified`, `rag index`, `embed --tree`) remain
+hidden compatibility aliases of `index build`. Existing SQL working copies and
+published generations stay readable and are never deleted by a build run.
 
-这几类数据不是同一个索引：
+The tree leg reads the published unified generation (search → navigation →
+read receipts → leaf text). When a SQL corpus exists, every leaf is verified
+against the same node id and content revision in its `node_texts` projection,
+so BM25/vector/tree cannot mix revisions. When no SQL corpus exists (the
+default unified deployment), all three legs are served from that one store —
+bm25 over the canonical FTS (block hits resolved to their published leaf),
+vector over the shared leaf ANN and tree over the same generation — and only
+legs the store cannot answer (graph/claims) are reported `source_unavailable`; a
+missing generation is fail-closed (ask reports `source_unavailable` with the
+prepare hint). The older readers (`search --paper` replaces the removed
+`query --paper`; `embed --tree`, the per-paper PageIndex/RAPTOR retrievers,
+`translate` and the legacy tree/raw inspection helpers) remain read-only
+compatibility paths for papers ingested
+before this change; they simply have no input for new papers.
 
-1. `drbrain ingest` 的解析阶段把 PDF 写成 `papers/<id>/raw.md`，随后调用
-   `parser.pageindex.md_to_tree`，把章节层级、`node_id`、行定位和可选摘要写成
-   `papers/<id>/tree.json`。标准 CLI 关闭了节点正文和摘要生成，正文仍以 `raw.md`
-   为准；`drbrain build` 读取这棵树做知识图谱抽取，并在缺树时重试生成。
-2. `drbrain embed --tree` 调用 `services.embedding.build_paper_tree_vectors`：先由
-   `_collect_tree_nodes` 根据 `tree.json + raw.md` 重建节点文本，写入
-   `tree_vectors(tree_layer='pageindex')`；随后 `extractor.raptor.build_raptor_tree`
-   读取这些向量聚类，生成 `tree_summaries` 的父子链接和 `raptor_L*` 摘要向量。
-   这条标准 CLI 路径写的是 `cfg.db.path`，通常为 `data/drbrain.db`。
-3. SQL 引擎读取的是派生工作库 `data/drbrain_rag.db`。本地/桌面规模下，`drbrain rag prepare`
-   （SQL 模式）一条命令完成重建与发布：`storage/node_projection.collect_tree_node_records`
-   从磁盘树重建 `node_texts` 与 FTS5，主库 `tree_vectors`/`tree_summaries` 和
-   `papers.categories` 一并写入（`storage/rag_database.py` 原子替换），随后发布不可变
-   SQL generation。大语料管线仍用 `scripts/pipeline/ragdb_fill.py extract/load`（分片并行、
-   哈希对齐主库向量）与 `scripts/pipeline/ragdb_sync.py`（增量同步向量/摘要），之后
-   `drbrain rag index` 才把这份工作库复制成带 manifest 的 SQL generation。
-4. SQL 查询先在 `node_texts_fts` 做 BM25 候选，再用 `tree_vectors` 的 PageIndex 向量
-   和 `raptor_L1` 向量做候选池内重排；结果正文来自 `node_texts`，图谱和 claims 是可选
-   的实时腿。固定 generation 会禁止这些实时腿。
-5. `llamaindex` 引擎是另一条路径：`rag.indexer.build_index` 直接从磁盘的
-   `tree.json + raw.md` 生成持久化 VectorStore/BM25；自定义 tree/RAPTOR retriever
-   仍分别读取磁盘树和 SQLite 向量表，再由 FusionRetriever 合并。
+## Scale-out build
 
-因此，兼容性保留的 `pipeline --preset full` 内置顺序仍是
-`ingest → build → embed --tree → closure`；需要可服务固定 generation 时，应使用
-`pipeline --preset full-rag`，它在向量阶段之后自动执行 `rag prepare`。也可以单独运行
-`drbrain rag prepare`（SQL 模式；大语料仍走分片脚本 + `rag index`）。SQL 准备是完整语料
-快照，不能用 `--paper` 发布会丢失其他论文的子集；LlamaIndex 后端继续支持按论文增量索引。
-树正文重建也已收敛为单一投影：`storage/node_projection.collect_tree_node_records`
-是唯一实现，`services.embedding`、`rag/index_nodes`、`rag/preparation` 以及 `build` 的
-节点计数都调用它；哈希回归对齐保留为测试，防止树格式演进时主库向量、`node_texts`
-与 LlamaIndex 索引发生漂移。
+`index build` is bounded and parallelisable at corpus scale:
 
-## 统一检索契约
+- **Vectors** — with more than one embedding device configured
+  (`embed.device` plus `embed.extra_gpus` and/or `embed.cpu_workers`) the
+  vectors stage spools on one worker process per device and loads through the
+  serial write contract (`staging` → `store.upsert` → `ready`). The spool is
+  resumable, a spool directory is bound to one pending set (manifest), and a
+  mismatch fails closed. (Measured on the 10k corpus: 650,631 vectors spooled in
+  369 s on 3 GPUs; the single-writer load runs at the Zvec insert rate, ~176/s.)
+- **Hierarchy** — `llamaindex.hierarchy_frontier_limit` caps how many ready
+  seeds one run processes: the remainder stay roots and re-enter the next run's
+  frontier, and the stage records `frontier.{total,processed}` and
+  `frontier_remaining`. `llamaindex.hierarchy_summary_workers` keeps that many
+  summary calls in flight while prescreen, coverage filtering and publish stay
+  strictly sequential (a determinism test pins `workers=1` ≡ `3`). Both are
+  scheduling knobs: they are excluded from the hierarchy signature and the
+  deployment identity, so changing them never retires published regions.
+- Bounded batches are an **approximation** of the whole-frontier fit
+  (cross-batch frontier merging and its quality measurement are still open,
+  plan T59); per-round phase timings (`profiles`/`clustering`/`gates+summaries`)
+  are logged to keep the cost visible.
 
-新调用者使用 `RetrievalRequest` 和 `retrieval.retrieve(cfg, db, graph, request)`，获得
-`RetrievalResult`：记录、版本、逐路状态与能力说明。结果状态为 `ok`、`empty` 或 `degraded`；
-全部检索路径不可用时抛出 `RetrievalError`，索引不可用时抛出 `RetrievalUnavailableError`。
-权限拒绝不得作为普通检索腿降级后继续检索。
+## Retrieval path
 
-历史 `agent.retrieve_documents` 和 `sql_retrie.retrieve_documents_sql` 保留列表返回行为；
-列表子类上的 `.result` 提供同一份诊断，空结果也不会丢掉降级信息。
+1. The indexer reads stored paper sections, PageIndex nodes, RAPTOR summaries, concepts, and arguments.
+2. Independent retrievers produce ranked candidates: BM25, vector, tree/PageIndex, RAPTOR, and graph-aware retrieval.
+3. `FusionRetriever` combines legs with reciprocal-rank fusion or weighted fusion.
+4. Optional ACL post-filtering removes candidates without matching scope metadata.
+5. Optional reranking refines the fused candidate set.
+6. The result preserves source, paper, section, node, and score provenance for synthesis and audit.
 
-- `top_k` 是结果上限；SQL 多路保底在此上限内安排，不再追加超额结果。
-- 内容过滤支持 `paper_ids` 和 `categories`；未知条件报错，空允许列表返回空结果。
-- 分类按完整名称或点分层前缀匹配；缺少分类元数据不得扩大范围。
-- 访问范围单独通过 `acl_filter` 传入。SQL 当前仅支持 `paper_id`；其他访问字段显式拒绝。
-- SQL vector 是 BM25 候选池内的向量重排，RAPTOR 限于候选论文；能力信息明确记录这种差异。
-- 底层检索异常传到融合层；单路失败保留诊断，全部失败拒绝继续生成。
-- 重排分数缺失、数量不符、NaN 或无穷值时保留粗排顺序；SQL 查询引擎不重复执行重排。
-- 新结果区分 `score_kind=rrf/rerank`：RRF 排名分数不套用相似度阈值；重排成功后使用重排分数，避免仍按旧贡献分数过滤。
-- Agent 的 SQL 搜索工具保留完整 JSON 结构与固定版本，不再按字符截断序列化结果。
+Each leg is isolated. A degraded or unavailable leg is recorded in retrieval trace and does not invalidate candidates returned by other legs.
 
-## SQL 快照与迁移
+## Complete CLI pipeline
 
-设置 `llamaindex.rag_engine: sql` 后，`drbrain rag index` 将现有 `drbrain_rag.db`
-通过 SQLite backup 复制成独立快照，包含已提交的 WAL 内容。它不运行嵌入，也不重建语料。
-发布会占用额外磁盘并读取整个库，不能视为轻量查询操作。
+The current production path is a text RAG path; knowledge-graph construction is
+an optional branch and is not required to prepare or query the SQL RAG index.
 
-`drbrain rag prepare` 在发布前先重建工作库（见上节），把 `ragdb_fill`（文本/FTS5/分类）、
-`ragdb_sync`（向量/摘要）与 `rag index` 的快照发布收敛为一次显式操作；它同样不运行嵌入，
-也不替代大语料管线的分片与校验步骤。
+```mermaid
+flowchart TD
+    A[PDF / Markdown / LaTeX / URL] --> B[drbrain ingest]
+    B --> B1[Material adapter + generic candidate IDs\nDOI / arXiv / ISBN / URL / file hash]
+    B1 --> B2[PDF parser chain\npdf-inspector → MinerU → anydoc/OCRmyPDF\n→ pymupdf4llm → plain text]
+    B2 --> B3[raw.md + parser metadata]
+    B3 --> B4[PageIndex SDK tree build\nSpark 4B index endpoint]
+    B4 --> B5[tree.json + provenance\nsource PDF remains untouched]
+    B5 --> D[drbrain index build]
+    D --> C1[BGE CPU node embeddings\nshared leaf/region vectors]
+    D --> C2[RAPTOR-style region summaries\noptional index-model calls]
+    C1 --> D1[Corpus-wide consistent read\nfrom primary data/drbrain.db]
+    C2 --> D1
+    B5 --> D1
+    D1 --> D2[Canonical FTS + node projection\nmain store, one text fact]
+    D2 --> D3[Immutable generation publish\ntree.sqlite3 + zvec/ + manifest.json]
+    D3 --> E[drbrain search / ask]
+    E --> E1[Resolve active generation]
+    E1 --> E2[BM25 FTS5 recall]
+    E1 --> E3[Zvec HNSW ANN recall]
+    E1 --> E4[PageIndex node-prefix recall]
+    E1 --> E5[Optional RAPTOR / tree / graph / claims legs]
+    E2 --> F[RRF fusion]
+    E3 --> F
+    E4 --> F
+    E5 --> F
+    F --> G[ACL + category filters\noptional BGE rerank]
+    G --> H[Evidence materialization\nsection / node / page provenance]
+    H --> I[DeepSeek chat endpoint\nanswer synthesis]
+    I --> J[answer + sources + telemetry]
 
-快照沿用 `llamaindex.storage_dir/generations/<generation>/`、`active.json` 和运行保留记录。
-发布清单记录全部普通源表内容的指纹（包括向量字节）及嵌入配置身份。
-内容指纹在发布时计算，不在每次查询时扫描全库。复制、验证或发布失败保持旧活动版本；
-有运行引用的版本不会被正常保留清理删除。
+    K[Optional: drbrain graph build] -. KG extraction .-> L[drbrain graph embed\nTransE entity/relation vectors]
+    L -. graph query / closure .-> E5
 
-固定版本查询必须找到对应快照并满足嵌入配置；不接受工作库指纹冒充可恢复版本。
-固定 SQL 版本不允许混入实时 graph/claims；这些来源可用于显式的非固定版本查询。
-历史 `sql-...` 指纹不再被解释为可复现快照，需要重新发布索引并创建新的运行。
+    N[Alternate: rag_engine=llamaindex] -. drbrain index build .-> N1[Settings.embed_model\nDrbrainEmbedding → BGE CPU]
+    N1 --> N2[VectorStoreIndex + BM25Retriever\nincremental LlamaIndex store]
+    N2 -. same search/ask contract .-> E
+```
 
-SQL 列表入口省略 `generation` 时保留读取工作库的能力，返回 `working-...` 请求标识，
-能力信息中的 `snapshot` 为 false。它不承诺跨请求恢复。Agent 的固定运行与查询引擎使用已发布版本。
-`drbrain rag health` 对 SQL 检查活动快照与必要表，不调用模型、不生成嵌入、不创建快照。
+The critical commands are therefore:
 
-## 片段与文献定位
+```bash
+uv run drbrain ingest <material>
+uv run drbrain index build
+uv run drbrain search "your question" --json   # evidence, no synthesis
+uv run drbrain ask "your question"             # evidence + answer
+```
 
-逻辑证据单元仍为 PageIndex 章节或 RAPTOR 摘要。超过输入长度限制的章节可以生成物理索引片段：
+`drbrain graph embed` trains TransE entity/relation vectors in the
+`embeddings` table; it does not populate the shared tree vectors or the Zvec
+index. The historical `embed --tree` (tree text vectors, now `index build`) and
+bare `embed`/`--graph` (`graph embed`) remain hidden compatibility aliases.
+`index build` in SQL mode embeds the ready leaves/regions itself and does not
+require a separate embedding run.
 
-- 每个片段有独立 `node_id`，同时记录 `parent_node_id` 和 `parent_document_id`。
-- `char_start/char_end` 是构造出的父 Document（标题＋正文）中的 Python 字符偏移。
-- 片段文本严格等于该父文本切片；保留父文本校验和，不对每个片段重复添加标题。
-- 父章节行号移入 `parent_line_start/parent_line_end`，不冒充片段的精确行号。
-- 定位信息进入证据标识计算与查询结果；节点级评估使用逻辑父节点匹配标签。
+When `llamaindex.rag_engine=llamaindex`, `drbrain index build` (or the legacy
+`rag index`) uses LlamaIndex's `VectorStoreIndex` and `BM25Retriever`. Its
+`Settings.embed_model` is `DrbrainEmbedding`, which delegates to the same
+configured BGE provider. That mode embeds PageIndex documents while building the
+LlamaIndex store; it is an alternate publication path, not a second embedding
+model in the SQL+Zvec path.
 
-新 LlamaIndex 清单标记 `fragment_format=2` 与片段长度设置。旧格式或长度策略改变时需要全量
-索引构建，不能用部分论文构建混合新旧片段格式；旧已发布版本仍保留用于历史读取。
-字符数换算是已有输入长度估计，不是对所有 tokenizer 的精确 token 上限保证。
+## Storage architecture
 
-## 局部验收
+SQLite is the authoritative store for paper metadata, projected PageIndex text,
+FTS5, claims, and the immutable `corpus.sqlite3` generation.  Vector search is a
+derived sidecar selected with `retrieval.vector_backend`.  Production configs use
+`zvec`: `index build` builds an HNSW index from the generation's node vectors
+and publishes it under the same generation directory as the SQLite snapshot.  A
+query therefore pins text and ANN results to one generation.  `sqlite` remains
+available for small fixtures and compatibility, where the vector leg reranks the
+BM25 candidate pool in process.  Zvec load or query failures are surfaced in the
+vector leg trace; they are never silently replaced by a different backend.
 
-`tests/test_rag_layer_contracts.py` 提供专门的离线回归：非首节点/向量变更、旧版本重读、
-固定版本禁止实时来源、范围过滤、全部/部分故障、发布失败、长文本脱敏、精确片段定位、
-异常重排分数、双后端契约、SQL 查询引擎路由、分数类型、工具 JSON 完整性、依赖方向与 GC 状态恢复。
+```text
+primary SQLite (papers, KG, artifacts)
+            │  index build
+            ▼
+derived generation/
+├── corpus.sqlite3       authoritative text + FTS snapshot
+├── zvec/                optional HNSW PageIndex ANN sidecar
+└── manifest.json        generation + embedding + vector backend identity
+```
 
-常规验证使用受控模型替身和临时 SQLite。运行相关 pytest 用例时排除 `integration`，
-并在整组验证中禁止网络连接。
+## Evidence semantics
 
-2026-09-12（Asia/Shanghai）最终验收结果：
+PageIndex sections and RAPTOR summaries are logical evidence units. Long documents may have physical fragments with parent checksums and character offsets. A response must cite the logical unit and retain enough provenance to locate the source artifact.
 
-| 检查 | 范围 | 结果 |
-| --- | --- | --- |
-| 离线 pytest | 17 个 RAG / SQL / security 测试文件，加上受影响的 checkpointing、tool broker、durable execution 三个测试文件 | **353 passed，7 deselected**；24.44 秒，272 条 warning |
-| Ruff lint | `ruff check src/ tests/` | 通过 |
-| Ruff format | `ruff format --check src/ tests/` | 455 个文件符合格式 |
-| mypy | `mypy src/drbrain` | 245 个源文件无类型错误 |
+## Agent boundary
 
-pytest 选择排除了 `test_rag_smoke.py`，使用 `-m "not integration" --timeout=8`，
-并设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，在执行进程中禁用 socket 连接。
-测试没有调用真实模型或外部服务；SQLite 使用临时库。类型检查同时覆盖模块拆分后的兼容导出。
+The RAG agent exposes retrieval and knowledge validation tools. MCP tools are not special-cased in the agent; they enter through the shared capability catalog and return the standard invocation envelope.
 
-## 可恢复的阶段状态
+## Verification
 
-主库的 `paper_artifacts` 表为每篇论文记录 `raw/tree/kg/pageindex/raptor/rag_text/rag_snapshot`
-各阶段的 `pending/running/ready/degraded/failed/skipped` 状态、指纹、错误和尝试次数。
-阶段写入遵循“先持久化输入，再推进派生物”：树或图谱失败不会删除已保存的原始材料，
-批量 ingest 与 `pipeline --continue-on-error` 会隔离单篇或单阶段失败，并在最后汇总失败项。
-PDF 继续使用 MinerU → PyMuPDF fallback；Markdown、纯文本和 LaTeX 直接保留原文进入同一
-`raw.md` 投影，避免把可读素材再次送进 PDF 解析器。RAG 文本、向量和快照均从共享投影生成，
-工作库采用临时文件 + 原子替换，发布失败时保留上一代 generation。
-当没有任何可用 PageIndex 树时，准备步骤只记录 `degraded` 状态并保留旧 generation，
-不会用空库覆盖可用索引。
+```bash
+uv run pytest tests/test_rag* tests/test_retrieval* -q
+uv run ruff check src/drbrain/rag
+```
 
-本阶段不启动真实语料发布，不进行检索效果或性能集成验收；这些结果不能从单元测试通过推导。
+For a new retriever, implement the retriever contract, add a source label, emit trace data for success and degradation, and test provenance and ACL behavior.

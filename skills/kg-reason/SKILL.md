@@ -23,7 +23,7 @@ graph exploration, section reading, hypothesis validation).
 The knowledge graph must be built (`kg-build` skill). Best results with embeddings and closure:
 
 ```bash
-drbrain embed --tree && drbrain closure --mode hybrid
+drbrain index build && drbrain graph closure --mode hybrid
 ```
 
 ## Operations

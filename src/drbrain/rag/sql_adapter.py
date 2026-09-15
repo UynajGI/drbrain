@@ -15,10 +15,27 @@ def build_sql_retriever(cfg, db, *, top_k, acl_filter=None):
 
     generation = capture_index_generation(cfg)
     if generation is None:
-        return None
+        # The default ``drbrain index build`` publishes the unified tree generation
+        # without copying the SQL working database.  A tree request can still
+        # be served from that generation; anything else stays not-prepared.
+        from drbrain.rag.legs import normalize_legs
+        from drbrain.tree.leg import active_tree_generation
+
+        li = getattr(cfg, "llamaindex", None)
+        wanted = normalize_legs(getattr(li, "retrievers", None) if li is not None else None)
+        if "tree" not in wanted.legs or active_tree_generation(cfg) is None:
+            return None
 
     class SQLRetriever(BaseRetriever):
         _trace: dict = PrivateAttr(default_factory=dict)
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            # Pydantic leaves an unassigned ``PrivateAttr`` as the class
+            # descriptor on this subclass, so a failed retrieval used to hand
+            # the descriptor to the telemetry code and crash the abstain path.
+            # Initialize explicitly: an error path must still expose a trace.
+            self._trace = {}
 
         def _retrieve(self, query_bundle):
             rows = retrieve_documents_sql(

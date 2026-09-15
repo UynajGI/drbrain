@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +18,8 @@ from drbrain.cli._common import (
     _apply_mined_rules,
     _fetch_citations_interested,
     _ingest_single_paper,
+    _input_identity,
+    _record_spool_state,
     _resolve_workspace_papers,
     open_db,
     runtime_data_path,
@@ -33,28 +34,9 @@ from drbrain.services.fetch import (  # noqa: F401
     resolve_pdf_url,
 )
 from drbrain.storage.inbox import first_symlink_component, scan_materials
-from drbrain.storage.paths import paper_dir as resolve_paper_dir_path
-from drbrain.storage.paths import paper_fs_key, writable_artifact_path
+from drbrain.storage.paths import paper_fs_key
 
 console = Console()
-
-
-def _write_paper_text_atomically(paper_path: Path, filename: str, content: str) -> Path:
-    """Publish a paper text artifact without following a stale symlink."""
-    destination = writable_artifact_path(paper_path, filename)
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{filename}.", dir=str(paper_path), text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_name, destination)
-    finally:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-    return destination
 
 
 def _runtime_data_path(ctx: typer.Context, value: str | Path, *, label: str) -> Path:
@@ -153,7 +135,7 @@ def _runtime_value(runtime, *names):
             value = runtime.get(name)
         else:
             value = getattr(runtime, name, None)
-        if isinstance(value, (str, Path)) and str(value):
+        if isinstance(value, str | Path) and str(value):
             return str(value)
     return None
 
@@ -359,15 +341,24 @@ def ingest_cmd(
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
     ),
+    reprocess: bool = typer.Option(
+        False,
+        "--reprocess",
+        help="Process directory inputs even when the spool ledger marks them done/failed.",
+    ),
 ):
     """Ingest pipeline: parse -> identify -> tree -> paper record.
 
     Accepts PDF, Markdown, text and LaTeX files, or a directory of them.
     Defaults to data/spool/inbox/ when no paths provided.
+
+    Input materials are never moved or deleted: the spool ledger records
+    processed content, and ``--reprocess`` forces directory inputs to be
+    processed again even when the ledger already lists them.
     """
     cfg = ctx.obj["config"]
     with _scoped_deepxiv_token(cfg):
-        return _ingest_cmd_impl(ctx, paths, json_output)
+        return _ingest_cmd_impl(ctx, paths, json_output, reprocess)
 
 
 def _ingest_cmd_impl(
@@ -379,15 +370,24 @@ def _ingest_cmd_impl(
     json_output: bool = typer.Option(
         False, "--json", help="Output machine-readable JSON to stdout"
     ),
+    reprocess: bool = typer.Option(
+        False,
+        "--reprocess",
+        help="Process directory inputs even when the spool ledger marks them done/failed.",
+    ),
 ):
     """Implementation for :func:`ingest_cmd` under the scoped token context."""
     cfg = ctx.obj["config"]
     config_secrets = configured_secret_values(cfg)
+    if isinstance(reprocess, typer.models.OptionInfo):  # direct-call normalization
+        reprocess = bool(reprocess.default)
     if not paths:
         inbox_path = cfg.get("dirs", {}).get("inbox", "data/spool/inbox")
         paths = [inbox_path]
 
-    pdf_files: list[Path] = []
+    # (path, came_from_directory_scan): ledger skipping applies to scans only,
+    # while an explicit file path is a deliberate retry.
+    pdf_files: list[tuple[Path, bool]] = []
     for p in paths:
         lexical_path = _runtime_lexical_path(ctx, p)
         symlink_component = first_symlink_component(lexical_path)
@@ -398,9 +398,9 @@ def _ingest_cmd_impl(
 
         path = _runtime_path(ctx, p)
         if path.is_dir():
-            pdf_files.extend(scan_materials(path))
+            pdf_files.extend((item, True) for item in scan_materials(path))
         elif path.is_file():
-            pdf_files.append(path)
+            pdf_files.append((path, False))
         else:
             if not json_output:
                 typer.echo(f"File not found: {p}", err=True)
@@ -417,7 +417,19 @@ def _ingest_cmd_impl(
 
         logger.info("[ingest] batch start — %d source file(s)", len(pdf_files))
         results = []
-        for i, pdf_path in enumerate(pdf_files, 1):
+        skipped = 0
+        for i, (pdf_path, from_scan) in enumerate(pdf_files, 1):
+            if from_scan and not reprocess:
+                content_hash, _size = _input_identity(pdf_path)
+                getter = getattr(db, "get_spool_input", None)
+                entry = getter(content_hash) if (content_hash and getter) else None
+                if entry and entry.get("status") in {"done", "failed", "duplicate"}:
+                    skipped += 1
+                    if not json_output:
+                        typer.echo(f"Skipping {pdf_path.name} (spool ledger: {entry['status']})")
+                    logger.info("[ingest] skip %s — ledger status=%s", pdf_path, entry["status"])
+                    continue
+
             if not json_output and len(pdf_files) > 1:
                 typer.echo(f"\n{'=' * 60}")
                 typer.echo(f"[{i}/{len(pdf_files)}] {pdf_path}")
@@ -455,6 +467,7 @@ def _ingest_cmd_impl(
                         secrets=config_secrets,
                     ),
                 }
+                _record_spool_state(db, pdf_path, "failed", reason=str(result.get("error", "")))
             results.append(result)
 
         if json_output:
@@ -463,9 +476,10 @@ def _ingest_cmd_impl(
                 "successful": sum(1 for r in results if r.get("ok")),
                 "failed": sum(1 for r in results if not r.get("ok")),
                 "partial": sum(1 for r in results if r.get("status") == "partial"),
+                "skipped": skipped,
                 "papers": [r.get("report", {}) for r in results if r.get("ok")],
                 "errors": [
-                    r.get("error", str(pdf_files[i]))
+                    r.get("error", str(pdf_files[i][0]))
                     for i, r in enumerate(results)
                     if not r.get("ok")
                 ],
@@ -484,6 +498,8 @@ def _ingest_cmd_impl(
                 typer.echo(f"Batch complete: {len(results)} papers ingested")
                 success = sum(1 for r in results if r.get("ok"))
                 typer.echo(f"  Successful: {success}, Failed: {len(results) - success}")
+                if skipped:
+                    typer.echo(f"  Skipped (already processed): {skipped}")
                 partial = sum(1 for r in results if r.get("status") == "partial")
                 if partial:
                     typer.echo(f"  Partial (raw kept, derived stage pending): {partial}")
@@ -538,7 +554,7 @@ def fetch_cmd(
 
     if ingest_result.get("ok"):
         typer.echo(f"  Ingested: {ingest_result.get('local_id')}")
-        typer.echo(f"  Next: drbrain build {ingest_result.get('local_id')}")
+        typer.echo(f"  Next: drbrain graph build {ingest_result.get('local_id')}")
     else:
         typer.echo(
             "  Ingest failed: "
@@ -1086,7 +1102,6 @@ def ingest_link_cmd(
 
     cfg = ctx.obj["config"]
     config_secrets = configured_secret_values(cfg)
-    papers_dir = Path(cfg.get("dirs", {}).get("papers", "data/papers"))
     with open_db(cfg) as db:
         results: list[dict] = []
         for i, url in enumerate(u for u in urls if u.strip()):
@@ -1115,7 +1130,6 @@ def ingest_link_cmd(
                 title=title,
                 source_key=canonical_web_url(url),
             )
-            paper_dir = resolve_paper_dir_path(papers_dir, local_id)
 
             # A pre-existing DB row means this URL was already ingested.  Do
             # not mint a suffix based on the current title: that made retries
@@ -1126,37 +1140,76 @@ def ingest_link_cmd(
                 )
                 continue
 
-            paper_dir.mkdir(parents=True, exist_ok=True)
-
-            # Write markdown
+            # URL ingest registers the extracted body through the same
+            # canonical write path as file ingest (T22): identity rows, the
+            # document revision/blocks/leaves and the artifact states commit as
+            # one unit per URL, and no per-paper MD/tree/pages file is written.
             md_content = _render_extracted_markdown(title, url, text)
-            _write_paper_text_atomically(paper_dir, "raw.md", md_content)
+            try:
+                from drbrain.services.canonical_content import write_canonical_content
 
-            # Register in DB
-            db.insert_paper(
-                local_id=local_id,
-                title=title or url,
-                year=None,
-                status="uploaded",
-            )
-            db.insert_paper_ids(
-                local_id,
-                doi=ids.doi,
-                arxiv=ids.arxiv,
-                s2_id=ids.s2_id,
-                openalex_id=ids.openalex_id,
-                strict=True,
-            )
+                db.insert_paper(
+                    local_id=local_id,
+                    title=title or url,
+                    year=None,
+                    status="uploaded",
+                )
+                db.insert_paper_ids(
+                    local_id,
+                    doi=ids.doi,
+                    arxiv=ids.arxiv,
+                    s2_id=ids.s2_id,
+                    openalex_id=ids.openalex_id,
+                    strict=True,
+                )
+                revision = write_canonical_content(
+                    db,
+                    local_id,
+                    md_content,
+                    media_type="md",
+                    # The extractor's own text is the source material; the
+                    # rendered markdown is the canonical revision.
+                    source_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    parser="web-extractor",
+                )
+                if not revision.get("ok"):
+                    raise RuntimeError(
+                        str(revision.get("reason") or "canonical content write failed")
+                    )
+            except Exception as exc:  # noqa: BLE001 - isolation per URL
+                # A URL that cannot register its body fails as a whole: roll
+                # back its (still uncommitted) rows so a retry starts clean.
+                db.conn.rollback()
+                message = safe_error(exc, secrets=config_secrets)
+                typer.echo(f"  Canonical content failed: {message}", err=True)
+                results.append(
+                    {"url": url, "local_id": local_id, "status": "error", "error": message}
+                )
+                continue
+
             db.upsert_paper_artifact(
                 local_id,
                 "raw",
                 "ready",
-                fingerprint=hashlib.sha256(md_content.encode("utf-8")).hexdigest(),
-                metadata_json=json.dumps({"source": "url", "url": canonical_web_url(url)}),
+                fingerprint=str(revision.get("hash") or ""),
+                metadata_json=json.dumps(
+                    {
+                        "source": "url",
+                        "url": canonical_web_url(url),
+                        "revision": int(revision.get("revision") or 0),
+                        "blocks": int(revision.get("blocks") or 0),
+                    }
+                ),
             )
+            # Ingest registers the body and its leaves only; the hierarchy is
+            # built by ``drbrain index build`` (T20/T21/T45).
             db.upsert_paper_artifact(
-                local_id, "tree", "pending", error="run build to structure URL"
+                local_id,
+                "tree",
+                "skipped",
+                error="no per-paper tree: hierarchy is built by 'drbrain index build'",
             )
+            db.commit()
 
             results.append(
                 {
@@ -1172,6 +1225,8 @@ def ingest_link_cmd(
 
         db.commit()
 
+    ok_count = sum(1 for r in results if r["status"] == "ok")
+    err_count = sum(1 for r in results if r["status"] == "error")
     if json_output:
         typer.echo(
             json.dumps(
@@ -1180,11 +1235,14 @@ def ingest_link_cmd(
                 indent=2,
             )
         )
-        return
-
-    ok_count = sum(1 for r in results if r["status"] == "ok")
-    err_count = sum(1 for r in results if r["status"] == "error")
-    typer.echo(f"\nIngested {ok_count} link(s)" + (f", {err_count} error(s)" if err_count else ""))
+    else:
+        typer.echo(
+            f"\nIngested {ok_count} link(s)" + (f", {err_count} error(s)" if err_count else "")
+        )
+    # Mirror ``ingest``: independent URLs keep their own result, but callers
+    # must be able to detect that at least one link failed.
+    if err_count:
+        raise typer.Exit(1)
 
 
 def patent_search_cmd(
@@ -1343,11 +1401,14 @@ def pipeline_cmd(
 ):
     """Chain multiple processing steps in sequence (ingest → build → embed → closure).
 
+    Each step runs the main-line command it now belongs to: ``graph build``
+    (LLM extraction), ``graph embed`` (TransE), ``graph closure`` and
+    ``index build`` (the ``rag`` step: lexical + FTS + vectors + tree).
     By default each step runs in incremental mode: build only touches papers
     not yet extracted (or touched since last build), closure only scans the
     neighborhood of recently-changed concepts, embed only trains on new edges.
     Use --full to force a complete rebuild across every step. The ``full-rag``
-    preset also materializes and publishes the configured RAG generation.
+    preset also prepares and publishes the searchable index generation.
     """
     from drbrain.services.pipeline import list_steps_info, resolve_steps
 
@@ -1405,23 +1466,22 @@ def pipeline_cmd(
         elif name == "build":
             # Incremental (default): no --all → builds only dirty papers.
             # Full: --all → rebuilds every paper.
-            args = child_command("build")
+            args = child_command("graph", "build")
             if full:
                 args.append("--all")
         elif name == "embed":
-            # Pipeline runs tree-embedding (PageIndex/RAPTOR) which is already
-            # content-hash incremental. Standalone 'drbrain embed' (no --tree)
-            # does TransE and has its own incremental path; pipeline does not
-            # invoke TransE to match prior behavior.
-            args = child_command("embed", "--tree")
+            # The graph namespace owns TransE training.  Tree text embeddings
+            # are part of `drbrain index build` (the `rag` step), so this step
+            # no longer trains them.
+            args = child_command("graph", "embed")
         elif name == "closure":
             # Incremental (default): --incremental → 2-hop neighborhood.
             # Full: --full flag on closure_cmd → whole-graph scan.
-            args = child_command("closure")
+            args = child_command("graph", "closure")
             if full:
                 args.append("--full")
         elif name == "rag":
-            args = child_command("rag", "prepare")
+            args = child_command("index", "build")
             if full:
                 args.append("--force")
         else:  # resolve_steps currently prevents this; keep the invariant local.

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -197,10 +199,193 @@ CREATE TABLE IF NOT EXISTS paper_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status ON paper_artifacts(stage, status);
 
+-- ── Spool ledger (v23) ─────────────────────────────────────────
+-- Queue state is separate from material retention: spool inputs are never
+-- moved or deleted, and this ledger records which content hashes were
+-- already processed so directory scans stay finite.
+CREATE TABLE IF NOT EXISTS spool_ledger (
+    content_hash TEXT PRIMARY KEY,
+    path TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('done','failed','duplicate')),
+    local_id TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_spool_ledger_status ON spool_ledger(status, updated_at);
+
+-- ── Canonical content store (v24) ──────────────────────────────
+-- ONE normalized body per document revision.  content_blocks are
+-- contiguous, ordered, half-open char ranges: concatenating ``text`` in
+-- ``ordinal`` order reproduces the canonical text verbatim.  Nodes and
+-- FTS both reference this table instead of keeping another body copy.
+CREATE TABLE IF NOT EXISTS document_revisions (
+    local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL,
+    source_hash TEXT NOT NULL,
+    canonical_hash TEXT NOT NULL,
+    backend TEXT NOT NULL DEFAULT '',
+    media_type TEXT NOT NULL CHECK(media_type IN ('pdf','tex','md')),
+    parser_revision TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','stale','failed')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (local_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS content_blocks (
+    block_id TEXT PRIMARY KEY,
+    local_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    char_start INTEGER NOT NULL,
+    char_end INTEGER NOT NULL,
+    page_start INTEGER,
+    page_end INTEGER,
+    line_start INTEGER,
+    line_end INTEGER,
+    heading_path TEXT NOT NULL DEFAULT '[]',
+    anchor TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'paragraph',
+    parser TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (local_id, revision)
+        REFERENCES document_revisions(local_id, revision) ON DELETE CASCADE,
+    UNIQUE (local_id, revision, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_content_blocks_doc
+    ON content_blocks(local_id, revision, ordinal);
+CREATE INDEX IF NOT EXISTS idx_content_blocks_hash
+    ON content_blocks(text_hash);
+
+-- ── Unified tree nodes (v25) ───────────────────────────────────
+-- ONE node registry and ONE membership table for the whole tree: leaves
+-- reference canonical blocks, regions reference children plus a generated
+-- summary.  Layer strictly increases parent-ward, which makes cycles
+-- impossible and keeps every origin range reachable.
+CREATE TABLE IF NOT EXISTS tree_nodes (
+    node_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+    state TEXT NOT NULL DEFAULT 'staging'
+        CHECK(state IN ('staging','ready','failed','stale')),
+    layer INTEGER NOT NULL DEFAULT 0,
+    local_id TEXT NOT NULL DEFAULT '',
+    doc_revision INTEGER NOT NULL DEFAULT 1,
+    block_id TEXT,
+    char_start INTEGER,
+    char_end INTEGER,
+    title TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    heading_path TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    contract_json TEXT NOT NULL DEFAULT '{}',
+    origin TEXT NOT NULL DEFAULT '',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tree_nodes_kind_state ON tree_nodes(kind, state);
+CREATE INDEX IF NOT EXISTS idx_tree_nodes_doc ON tree_nodes(local_id, state);
+
+CREATE TABLE IF NOT EXISTS tree_node_children (
+    parent_id TEXT NOT NULL REFERENCES tree_nodes(node_id) ON DELETE CASCADE,
+    child_id TEXT NOT NULL REFERENCES tree_nodes(node_id) ON DELETE RESTRICT,
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    weight REAL,
+    origin TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (parent_id, child_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tree_children_child ON tree_node_children(child_id);
+
+-- ── Canonical content FTS (v26) ────────────────────────────────
+-- External-content FTS5 over content_blocks: the index is a derived view,
+-- never another body copy.  Triggers keep it transactionally consistent
+-- (a rolled-back block write leaves no index rows) and a rebuild command
+-- is available if the index is ever damaged.
+CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
+    text,
+    content='content_blocks',
+    content_rowid='rowid',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ai AFTER INSERT ON content_blocks BEGIN
+    INSERT INTO content_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ad AFTER DELETE ON content_blocks BEGIN
+    INSERT INTO content_fts(content_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+CREATE TRIGGER IF NOT EXISTS content_blocks_fts_au AFTER UPDATE ON content_blocks BEGIN
+    INSERT INTO content_fts(content_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO content_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
 CREATE TABLE IF NOT EXISTS schema_versions (
     version INTEGER PRIMARY KEY,
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ── Node vector metadata (v27) ─────────────────────────────────
+-- Metadata ONLY: the float vectors live in the shared Zvec index.  A node
+-- vector is usable when this row says ready and matches the node revision,
+-- content hash and embedding profile id.
+CREATE TABLE IF NOT EXISTS node_vectors (
+    node_id TEXT PRIMARY KEY,
+    node_revision INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+    local_id TEXT NOT NULL DEFAULT '',
+    layer INTEGER NOT NULL DEFAULT 0,
+    profile_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    dimension INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'staging'
+        CHECK(state IN ('staging','ready','failed')),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_node_vectors_profile ON node_vectors(profile_id, state);
+CREATE INDEX IF NOT EXISTS idx_node_vectors_doc ON node_vectors(local_id, kind);
+
+-- ── Summary cache and build jobs (v28) ─────────────────────────
+-- Summary reuse is keyed by members+contract (never by text similarity):
+-- a different member set, order, prompt or model revision must miss.  Only
+-- validated summaries are stored as ``ready``; failures are recorded so a
+-- retry can see them without ever treating them as success.
+CREATE TABLE IF NOT EXISTS tree_summary_cache (
+    cache_key TEXT PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','failed')),
+    summary TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    summary_tokens INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    contract_json TEXT NOT NULL DEFAULT '{}',
+    members_json TEXT NOT NULL DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tree_summary_state ON tree_summary_cache(state, updated_at);
+
+CREATE TABLE IF NOT EXISTS tree_build_jobs (
+    job_id TEXT PRIMARY KEY,
+    scope_key TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'build',
+    state TEXT NOT NULL DEFAULT 'pending'
+        CHECK(state IN ('pending','running','paused','done','failed')),
+    owner TEXT NOT NULL DEFAULT '',
+    claim_expires_at TIMESTAMP,
+    checkpoint_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT NOT NULL DEFAULT '{}',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_tree_jobs_state ON tree_build_jobs(state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_tree_jobs_scope ON tree_build_jobs(scope_key, kind);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
     session_id TEXT PRIMARY KEY,
@@ -621,6 +806,12 @@ class Database:
             (20, "embedding_revision", self._migrate_add_embedding_revision),
             (21, "project_scope", self._migrate_add_project_scope),
             (22, "paper_artifacts", self._migrate_add_paper_artifacts),
+            (23, "spool_ledger", self._migrate_add_spool_ledger),
+            (24, "content_store", self._migrate_add_content_store),
+            (25, "tree_nodes", self._migrate_add_tree_nodes),
+            (26, "content_fts", self._migrate_add_content_fts),
+            (27, "node_vectors", self._migrate_add_node_vectors),
+            (28, "summary_cache_jobs", self._migrate_add_summary_cache_jobs),
         ]
 
         for version, name, fn in migrations:
@@ -1108,6 +1299,213 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_paper_artifacts_status
                 ON paper_artifacts(stage, status);
+            """
+        )
+
+    def _migrate_add_spool_ledger(self) -> None:
+        """Create the spool ledger that decouples queue state from materials."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS spool_ledger (
+                content_hash TEXT PRIMARY KEY,
+                path TEXT NOT NULL DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL CHECK(status IN ('done','failed','duplicate')),
+                local_id TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_spool_ledger_status
+                ON spool_ledger(status, updated_at);
+            """
+        )
+
+    def _migrate_add_content_store(self) -> None:
+        """Create the canonical content store (one body per document revision)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS document_revisions (
+                local_id TEXT NOT NULL REFERENCES papers(local_id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL,
+                source_hash TEXT NOT NULL,
+                canonical_hash TEXT NOT NULL,
+                backend TEXT NOT NULL DEFAULT '',
+                media_type TEXT NOT NULL CHECK(media_type IN ('pdf','tex','md')),
+                parser_revision TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL DEFAULT 'ready'
+                    CHECK(state IN ('ready','stale','failed')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (local_id, revision)
+            );
+
+            CREATE TABLE IF NOT EXISTS content_blocks (
+                block_id TEXT PRIMARY KEY,
+                local_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                ordinal INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                text_hash TEXT NOT NULL,
+                char_start INTEGER NOT NULL,
+                char_end INTEGER NOT NULL,
+                page_start INTEGER,
+                page_end INTEGER,
+                line_start INTEGER,
+                line_end INTEGER,
+                heading_path TEXT NOT NULL DEFAULT '[]',
+                anchor TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'paragraph',
+                parser TEXT NOT NULL DEFAULT '',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                FOREIGN KEY (local_id, revision)
+                    REFERENCES document_revisions(local_id, revision) ON DELETE CASCADE,
+                UNIQUE (local_id, revision, ordinal)
+            );
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_doc
+                ON content_blocks(local_id, revision, ordinal);
+            CREATE INDEX IF NOT EXISTS idx_content_blocks_hash
+                ON content_blocks(text_hash);
+            """
+        )
+
+    def _migrate_add_tree_nodes(self) -> None:
+        """Create the unified node registry and membership table."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tree_nodes (
+                node_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1,
+                kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+                state TEXT NOT NULL DEFAULT 'staging'
+                    CHECK(state IN ('staging','ready','failed','stale')),
+                layer INTEGER NOT NULL DEFAULT 0,
+                local_id TEXT NOT NULL DEFAULT '',
+                doc_revision INTEGER NOT NULL DEFAULT 1,
+                block_id TEXT,
+                char_start INTEGER,
+                char_end INTEGER,
+                title TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                heading_path TEXT NOT NULL DEFAULT '[]',
+                content_hash TEXT NOT NULL,
+                fingerprint TEXT NOT NULL DEFAULT '',
+                contract_json TEXT NOT NULL DEFAULT '{}',
+                origin TEXT NOT NULL DEFAULT '',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_nodes_kind_state
+                ON tree_nodes(kind, state);
+            CREATE INDEX IF NOT EXISTS idx_tree_nodes_doc
+                ON tree_nodes(local_id, state);
+
+            CREATE TABLE IF NOT EXISTS tree_node_children (
+                parent_id TEXT NOT NULL REFERENCES tree_nodes(node_id) ON DELETE CASCADE,
+                child_id TEXT NOT NULL REFERENCES tree_nodes(node_id) ON DELETE RESTRICT,
+                ordinal INTEGER NOT NULL DEFAULT 0,
+                weight REAL,
+                origin TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (parent_id, child_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_children_child
+                ON tree_node_children(child_id);
+            """
+        )
+
+    def _migrate_add_content_fts(self) -> None:
+        """Create the external-content FTS index over content_blocks (T12)."""
+        self.conn.executescript(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
+                text,
+                content='content_blocks',
+                content_rowid='rowid',
+                tokenize='porter unicode61'
+            );
+            CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ai
+                AFTER INSERT ON content_blocks BEGIN
+                INSERT INTO content_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS content_blocks_fts_ad
+                AFTER DELETE ON content_blocks BEGIN
+                INSERT INTO content_fts(content_fts, rowid, text)
+                VALUES ('delete', old.rowid, old.text);
+            END;
+            CREATE TRIGGER IF NOT EXISTS content_blocks_fts_au
+                AFTER UPDATE ON content_blocks BEGIN
+                INSERT INTO content_fts(content_fts, rowid, text)
+                VALUES ('delete', old.rowid, old.text);
+                INSERT INTO content_fts(rowid, text) VALUES (new.rowid, new.text);
+            END;
+            """
+        )
+        # Existing blocks (pre-v26 databases) must be indexed too.
+        self.conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
+
+    def _migrate_add_node_vectors(self) -> None:
+        """Create the node-vector metadata table (vectors live in Zvec)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS node_vectors (
+                node_id TEXT PRIMARY KEY,
+                node_revision INTEGER NOT NULL DEFAULT 1,
+                kind TEXT NOT NULL CHECK(kind IN ('leaf','region')),
+                local_id TEXT NOT NULL DEFAULT '',
+                layer INTEGER NOT NULL DEFAULT 0,
+                profile_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                dimension INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'staging'
+                    CHECK(state IN ('staging','ready','failed')),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_node_vectors_profile
+                ON node_vectors(profile_id, state);
+            CREATE INDEX IF NOT EXISTS idx_node_vectors_doc
+                ON node_vectors(local_id, kind);
+            """
+        )
+
+    def _migrate_add_summary_cache_jobs(self) -> None:
+        """Create the summary cache and build-job tables (T26/T36)."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tree_summary_cache (
+                cache_key TEXT PRIMARY KEY,
+                state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','failed')),
+                summary TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                summary_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT '',
+                contract_json TEXT NOT NULL DEFAULT '{}',
+                members_json TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_summary_state
+                ON tree_summary_cache(state, updated_at);
+
+            CREATE TABLE IF NOT EXISTS tree_build_jobs (
+                job_id TEXT PRIMARY KEY,
+                scope_key TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'build',
+                state TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(state IN ('pending','running','paused','done','failed')),
+                owner TEXT NOT NULL DEFAULT '',
+                claim_expires_at TIMESTAMP,
+                checkpoint_json TEXT NOT NULL DEFAULT '{}',
+                metrics_json TEXT NOT NULL DEFAULT '{}',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tree_jobs_state
+                ON tree_build_jobs(state, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_tree_jobs_scope
+                ON tree_build_jobs(scope_key, kind);
             """
         )
 
@@ -1732,6 +2130,1117 @@ class Database:
         rows = cursor.fetchall()
         columns = [item[0] for item in cursor.description or ()]
         return [dict(zip(columns, row, strict=False)) for row in rows]
+
+    # ── Spool ledger (T07) ────────────────────────────────────────
+    SPOOL_STATUSES = ("done", "failed", "duplicate")
+
+    def record_spool_input(
+        self,
+        content_hash: str,
+        *,
+        path: str = "",
+        size: int = 0,
+        status: str,
+        local_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """Record queue state for one input content hash.
+
+        Materials are never moved or deleted; this ledger is the queue-side
+        state that lets directory scans skip already-processed inputs.
+        """
+        content_hash = str(content_hash).strip()
+        if not content_hash:
+            raise ValueError("spool ledger requires a content hash")
+        if status not in self.SPOOL_STATUSES:
+            raise ValueError(f"invalid spool status {status!r}")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO spool_ledger
+                   (content_hash, path, size, status, local_id, reason, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(content_hash) DO UPDATE SET
+                     path=excluded.path,
+                     size=excluded.size,
+                     status=excluded.status,
+                     local_id=excluded.local_id,
+                     reason=excluded.reason,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    content_hash,
+                    str(path),
+                    int(size),
+                    status,
+                    str(local_id),
+                    str(reason),
+                ),
+            )
+
+    def get_spool_input(self, content_hash: str) -> dict | None:
+        """Return the ledger row for one content hash, or ``None``."""
+        row = self.conn.execute(
+            "SELECT content_hash, path, size, status, local_id, reason, first_seen, updated_at "
+            "FROM spool_ledger WHERE content_hash = ?",
+            (str(content_hash),),
+        ).fetchone()
+        if row is None:
+            return None
+        columns = (
+            "content_hash",
+            "path",
+            "size",
+            "status",
+            "local_id",
+            "reason",
+            "first_seen",
+            "updated_at",
+        )
+        return dict(zip(columns, row, strict=False))
+
+    def list_spool_inputs(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        """List ledger rows, newest first, optionally filtered by status."""
+        if status is not None and status not in self.SPOOL_STATUSES:
+            raise ValueError(f"invalid spool status {status!r}")
+        sql = (
+            "SELECT content_hash, path, size, status, local_id, reason, first_seen, updated_at "
+            "FROM spool_ledger"
+        )
+        params: tuple = ()
+        if status is not None:
+            sql += " WHERE status = ?"
+            params = (status,)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params = (*params, max(1, int(limit)))
+        cursor = self.conn.execute(sql, params)
+        columns = [item[0] for item in cursor.description or ()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+
+    # ── Canonical content store (T08) ─────────────────────────────
+    _REVISION_COLUMNS = (
+        "local_id",
+        "revision",
+        "source_hash",
+        "canonical_hash",
+        "backend",
+        "media_type",
+        "parser_revision",
+        "state",
+        "created_at",
+        "updated_at",
+    )
+    _BLOCK_COLUMNS = (
+        "block_id",
+        "local_id",
+        "revision",
+        "ordinal",
+        "text",
+        "text_hash",
+        "char_start",
+        "char_end",
+        "page_start",
+        "page_end",
+        "line_start",
+        "line_end",
+        "heading_path",
+        "anchor",
+        "kind",
+        "parser",
+        "provenance_json",
+    )
+
+    def upsert_document_revision(
+        self,
+        local_id: str,
+        revision: int,
+        *,
+        source_hash: str,
+        canonical_hash: str,
+        backend: str = "",
+        media_type: str,
+        parser_revision: str = "",
+        state: str = "ready",
+    ) -> None:
+        """Record one normalized document revision.
+
+        Re-recording the *same* revision with different hashes is an error:
+        changed content must be published as a new revision so old nodes,
+        evidence and vectors stay traceable.
+        """
+        local_id = self._validate_local_id(local_id)
+        revision = int(revision)
+        if revision < 1:
+            raise ValueError("document revision must be >= 1")
+        if media_type not in ("pdf", "tex", "md"):
+            raise ValueError(f"unsupported media_type {media_type!r}")
+        if state not in ("ready", "stale", "failed"):
+            raise ValueError(f"unsupported document state {state!r}")
+        with self._write_scope():
+            existing = self.conn.execute(
+                "SELECT source_hash, canonical_hash FROM document_revisions "
+                "WHERE local_id = ? AND revision = ?",
+                (local_id, revision),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] != source_hash or existing[1] != canonical_hash:
+                    raise ValueError(
+                        f"document revision {local_id}@{revision} already exists with "
+                        "different hashes; allocate a new revision"
+                    )
+                self.conn.execute(
+                    "UPDATE document_revisions SET state = ?, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE local_id = ? AND revision = ?",
+                    (state, local_id, revision),
+                )
+                return
+            self.conn.execute(
+                """INSERT INTO document_revisions
+                   (local_id, revision, source_hash, canonical_hash, backend,
+                    media_type, parser_revision, state)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    local_id,
+                    revision,
+                    str(source_hash),
+                    str(canonical_hash),
+                    str(backend),
+                    media_type,
+                    str(parser_revision),
+                    state,
+                ),
+            )
+
+    def get_document_revision(self, local_id: str, revision: int | None = None) -> dict | None:
+        """Return one revision row; ``revision=None`` selects the latest."""
+        local_id = self._validate_local_id(local_id)
+        if revision is None:
+            row = self.conn.execute(
+                f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+                "WHERE local_id = ? ORDER BY revision DESC LIMIT 1",
+                (local_id,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+                "WHERE local_id = ? AND revision = ?",
+                (local_id, int(revision)),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._REVISION_COLUMNS, row, strict=False))
+
+    def list_document_revisions(self, local_id: str) -> list[dict]:
+        local_id = self._validate_local_id(local_id)
+        cursor = self.conn.execute(
+            f"SELECT {', '.join(self._REVISION_COLUMNS)} FROM document_revisions "
+            "WHERE local_id = ? ORDER BY revision",
+            (local_id,),
+        )
+        return [dict(zip(self._REVISION_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def set_document_revision_state(self, local_id: str, revision: int, state: str) -> None:
+        """Mark a revision ready/stale/failed without touching its content."""
+        if state not in ("ready", "stale", "failed"):
+            raise ValueError(f"unsupported document state {state!r}")
+        local_id = self._validate_local_id(local_id)
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "UPDATE document_revisions SET state = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE local_id = ? AND revision = ?",
+                (state, local_id, int(revision)),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"unknown document revision {local_id}@{revision}")
+
+    def next_document_revision(self, local_id: str) -> int:
+        local_id = self._validate_local_id(local_id)
+        row = self.conn.execute(
+            "SELECT MAX(revision) FROM document_revisions WHERE local_id = ?", (local_id,)
+        ).fetchone()
+        return int(row[0]) + 1 if row and row[0] is not None else 1
+
+    def insert_content_blocks(self, blocks: list) -> int:
+        """Insert one revision's blocks atomically; returns blocks written.
+
+        Blocks must be ordered, contiguous, and hash-consistent with their
+        revision's ``canonical_hash``.  Re-inserting identical blocks is a
+        no-op; conflicting content for an existing ``block_id`` is an error.
+        """
+        from drbrain.tree.contracts import ContentBlock  # local: keep storage import-light
+
+        blocks = list(blocks)
+        if not blocks:
+            raise ValueError("insert_content_blocks requires at least one block")
+        for block in blocks:
+            if not isinstance(block, ContentBlock):
+                raise TypeError(f"expected ContentBlock, got {type(block)!r}")
+        local_id = blocks[0].local_id
+        revision = blocks[0].revision
+        for block in blocks:
+            if (block.local_id, block.revision) != (local_id, revision):
+                raise ValueError("all blocks must share one document revision")
+        ordered = sorted(blocks, key=lambda item: item.ordinal)
+        for expected_ordinal, block in enumerate(ordered):
+            if block.ordinal != expected_ordinal:
+                raise ValueError(f"ordinals must be contiguous from 0 (got {block.ordinal})")
+        if ordered[0].char_start != 0:
+            raise ValueError("first block must start at char 0")
+        for previous, current in zip(ordered, ordered[1:]):
+            if previous.char_end != current.char_start:
+                raise ValueError("blocks must be contiguous (gap or overlap found)")
+        revision_row = self.get_document_revision(local_id, revision)
+        if revision_row is None:
+            raise ValueError(f"document revision {local_id}@{revision} does not exist")
+        canonical = "".join(block.text for block in ordered)
+        actual_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if actual_hash != revision_row["canonical_hash"]:
+            raise ValueError("blocks do not reproduce the revision's canonical text hash")
+
+        written = 0
+        with self._write_scope():
+            for block in ordered:
+                existing = self.conn.execute(
+                    "SELECT text_hash, char_start, char_end, ordinal FROM content_blocks "
+                    "WHERE block_id = ?",
+                    (block.block_id,),
+                ).fetchone()
+                if existing is not None:
+                    if (
+                        existing[0] != block.text_hash
+                        or existing[1] != block.char_start
+                        or existing[2] != block.char_end
+                        or existing[3] != block.ordinal
+                    ):
+                        raise ValueError(f"block id conflict for {block.block_id}")
+                    continue
+                self.conn.execute(
+                    """INSERT INTO content_blocks
+                       (block_id, local_id, revision, ordinal, text, text_hash,
+                        char_start, char_end, page_start, page_end, line_start, line_end,
+                        heading_path, anchor, kind, parser, provenance_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        block.block_id,
+                        block.local_id,
+                        block.revision,
+                        block.ordinal,
+                        block.text,
+                        block.text_hash,
+                        block.char_start,
+                        block.char_end,
+                        block.page_start,
+                        block.page_end,
+                        block.line_start,
+                        block.line_end,
+                        json.dumps(list(block.heading_path), ensure_ascii=False),
+                        block.anchor,
+                        block.kind,
+                        block.parser,
+                        json.dumps(block.provenance, ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+                written += 1
+        return written
+
+    def get_content_blocks(self, local_id: str, revision: int | None = None) -> list[dict]:
+        """Return a revision's blocks in reading order."""
+        local_id = self._validate_local_id(local_id)
+        if revision is None:
+            row = self.get_document_revision(local_id)
+            if row is None:
+                return []
+            revision = int(row["revision"])
+        cursor = self.conn.execute(
+            f"SELECT {', '.join(self._BLOCK_COLUMNS)} FROM content_blocks "
+            "WHERE local_id = ? AND revision = ? ORDER BY ordinal",
+            (local_id, int(revision)),
+        )
+        return [dict(zip(self._BLOCK_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def count_content_blocks(self, local_id: str | None = None, revision: int | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM content_blocks"
+        clauses: list[str] = []
+        params: list = []
+        if local_id is not None:
+            clauses.append("local_id = ?")
+            params.append(self._validate_local_id(local_id))
+        if revision is not None:
+            clauses.append("revision = ?")
+            params.append(int(revision))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0]) if row else 0
+
+    # ── Unified tree nodes (T11) ──────────────────────────────────
+    _NODE_COLUMNS = (
+        "node_id",
+        "revision",
+        "kind",
+        "state",
+        "layer",
+        "local_id",
+        "doc_revision",
+        "block_id",
+        "char_start",
+        "char_end",
+        "title",
+        "summary",
+        "heading_path",
+        "content_hash",
+        "fingerprint",
+        "contract_json",
+        "origin",
+        "provenance_json",
+        "created_at",
+        "updated_at",
+    )
+
+    def insert_tree_node(self, node: Any, *, publish: bool = False) -> int:
+        """Insert or refresh one node plus its children edges.
+
+        Returns the written revision.  A node whose identity (``node_id``)
+        already exists with an identical fingerprint is a no-op; changed
+        content for the same identity increments the revision and returns it
+        to ``staging`` so readers never see a half-updated node.
+        """
+        from drbrain.tree.contracts import NodeRecord  # local: keep storage import-light
+
+        if not isinstance(node, NodeRecord):
+            raise TypeError(f"expected NodeRecord, got {type(node)!r}")
+        if node.kind == "leaf" and node.leaf is not None and node.leaf.char_end is None:
+            raise ValueError("leaf references must be resolved (char_end set) before insert")
+        state = "ready" if publish else node.state
+        if publish:
+            self._validate_node_publishable(node)
+        with self._write_scope():
+            existing = self.conn.execute(
+                "SELECT revision, fingerprint, state FROM tree_nodes WHERE node_id = ?",
+                (node.node_id,),
+            ).fetchone()
+            revision = node.revision
+            if existing is not None:
+                if existing[1] == node.fingerprint and existing[2] == state:
+                    return int(existing[0])
+                revision = (
+                    int(existing[0]) + 1 if existing[1] != node.fingerprint else int(existing[0])
+                )
+                self.conn.execute(
+                    "DELETE FROM tree_node_children WHERE parent_id = ?", (node.node_id,)
+                )
+                self.conn.execute(
+                    """UPDATE tree_nodes SET
+                         revision = ?, state = ?, layer = ?, local_id = ?, doc_revision = ?,
+                         block_id = ?, char_start = ?, char_end = ?, title = ?, summary = ?,
+                         heading_path = ?, content_hash = ?, fingerprint = ?,
+                         contract_json = ?, origin = ?, provenance_json = ?,
+                         updated_at = CURRENT_TIMESTAMP
+                       WHERE node_id = ?""",
+                    (
+                        revision,
+                        state,
+                        node.layer,
+                        node.leaf.local_id if node.leaf else "",
+                        node.leaf.revision if node.leaf else 1,
+                        node.leaf.block_id if node.leaf else None,
+                        node.leaf.char_start if node.leaf else None,
+                        node.leaf.resolved_char_end(self._block_len(node.leaf.block_id))
+                        if node.leaf
+                        else None,
+                        node.title,
+                        node.summary,
+                        json.dumps(list(node.heading_path), ensure_ascii=False),
+                        node.content_hash,
+                        node.fingerprint,
+                        json.dumps(dict(node.contract), ensure_ascii=False, sort_keys=True),
+                        node.origin,
+                        json.dumps(dict(node.provenance), ensure_ascii=False, sort_keys=True),
+                        node.node_id,
+                    ),
+                )
+            else:
+                self.conn.execute(
+                    """INSERT INTO tree_nodes
+                       (node_id, revision, kind, state, layer, local_id, doc_revision,
+                        block_id, char_start, char_end, title, summary, heading_path,
+                        content_hash, fingerprint, contract_json, origin, provenance_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        node.node_id,
+                        revision,
+                        node.kind,
+                        state,
+                        node.layer,
+                        node.leaf.local_id if node.leaf else "",
+                        node.leaf.revision if node.leaf else 1,
+                        node.leaf.block_id if node.leaf else None,
+                        node.leaf.char_start if node.leaf else None,
+                        node.leaf.resolved_char_end(self._block_len(node.leaf.block_id))
+                        if node.leaf
+                        else None,
+                        node.title,
+                        node.summary,
+                        json.dumps(list(node.heading_path), ensure_ascii=False),
+                        node.content_hash,
+                        node.fingerprint,
+                        json.dumps(dict(node.contract), ensure_ascii=False, sort_keys=True),
+                        node.origin,
+                        json.dumps(dict(node.provenance), ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+            for child in node.children:
+                self.conn.execute(
+                    """INSERT INTO tree_node_children
+                       (parent_id, child_id, ordinal, weight, origin)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        node.node_id,
+                        child.child_id,
+                        child.ordinal,
+                        child.weight,
+                        node.origin,
+                    ),
+                )
+        return revision
+
+    def _block_len(self, block_id: str | None) -> int:
+        if not block_id:
+            raise ValueError("leaf requires a block id")
+        row = self.conn.execute(
+            "SELECT char_end, char_start FROM content_blocks WHERE block_id = ?",
+            (str(block_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"leaf references unknown block {block_id!r}")
+        return int(row[0]) - int(row[1])
+
+    def _validate_node_publishable(self, node: Any) -> None:
+        if node.kind == "leaf":
+            row = self.conn.execute(
+                "SELECT text_hash, char_start, char_end FROM content_blocks WHERE block_id = ?",
+                (node.leaf.block_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"leaf references unknown block {node.leaf.block_id!r}")
+            block_len = int(row[2]) - int(row[1])
+            end = node.leaf.resolved_char_end(block_len)
+            if end > block_len:
+                raise ValueError("leaf range exceeds its block")
+            return
+        # Region: members must exist, be ready, and sit strictly below.
+        for child in node.children:
+            child_row = self.conn.execute(
+                "SELECT layer, state, revision FROM tree_nodes WHERE node_id = ?",
+                (child.child_id,),
+            ).fetchone()
+            if child_row is None:
+                raise ValueError(f"region references unknown child {child.child_id!r}")
+            if str(child_row[1]) != "ready":
+                raise ValueError(f"child {child.child_id} is {child_row[1]!r}; publish it first")
+            if int(child_row[0]) >= node.layer:
+                raise ValueError(
+                    f"child {child.child_id} layer {child_row[0]} must be below {node.layer}"
+                )
+
+    def publish_tree_node(self, node_id: str) -> None:
+        """Flip a staged node to ready after validating its references."""
+        row = self.get_tree_node(node_id)
+        if row is None:
+            raise ValueError(f"unknown tree node {node_id!r}")
+        children = self.get_tree_children(node_id)
+        from drbrain.tree.contracts import ChildRef, LeafRef, NodeRecord
+
+        if row["kind"] == "leaf":
+            record = NodeRecord(
+                node_id=row["node_id"],
+                revision=int(row["revision"]),
+                kind="leaf",
+                state="staging",
+                layer=int(row["layer"]),
+                content_hash=row["content_hash"],
+                fingerprint=row["fingerprint"],
+                leaf=LeafRef(
+                    local_id=row["local_id"],
+                    revision=int(row["doc_revision"]),
+                    block_id=str(row["block_id"]),
+                    char_start=int(row["char_start"] or 0),
+                    char_end=int(row["char_end"]) if row["char_end"] is not None else None,
+                ),
+            )
+        else:
+            record = NodeRecord(
+                node_id=row["node_id"],
+                revision=int(row["revision"]),
+                kind="region",
+                state="staging",
+                layer=int(row["layer"]),
+                content_hash=row["content_hash"],
+                fingerprint=row["fingerprint"],
+                summary=row["summary"],
+                children=tuple(
+                    ChildRef(
+                        child_id=child["child_id"],
+                        child_revision=int(child["child_revision"]),
+                        ordinal=int(child["ordinal"]),
+                        weight=child["weight"],
+                    )
+                    for child in children
+                ),
+                contract=json.loads(row["contract_json"] or "{}"),
+            )
+        self._validate_node_publishable(record)
+        with self._write_scope():
+            self.conn.execute(
+                "UPDATE tree_nodes SET state = 'ready', updated_at = CURRENT_TIMESTAMP "
+                "WHERE node_id = ?",
+                (node_id,),
+            )
+
+    def get_tree_node(self, node_id: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._NODE_COLUMNS)} FROM tree_nodes WHERE node_id = ?",
+            (str(node_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._NODE_COLUMNS, row, strict=False))
+
+    def list_tree_nodes(
+        self,
+        *,
+        kind: str | None = None,
+        state: str | None = None,
+        local_id: str | None = None,
+        layer: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        sql = f"SELECT {', '.join(self._NODE_COLUMNS)} FROM tree_nodes"
+        clauses: list[str] = []
+        params: list = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        if local_id is not None:
+            clauses.append("local_id = ?")
+            params.append(self._validate_local_id(local_id))
+        if layer is not None:
+            clauses.append("layer = ?")
+            params.append(int(layer))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY layer, node_id LIMIT ?"
+        params.append(max(1, int(limit)))
+        cursor = self.conn.execute(sql, tuple(params))
+        return [dict(zip(self._NODE_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+
+    def update_tree_node_state(self, node_id: str, state: str) -> None:
+        if state not in ("staging", "ready", "failed", "stale"):
+            raise ValueError(f"unsupported node state {state!r}")
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "UPDATE tree_nodes SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE node_id = ?",
+                (state, str(node_id)),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"unknown tree node {node_id!r}")
+
+    def get_tree_children(self, parent_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT c.child_id, c.ordinal, c.weight, c.origin, "
+            "       n.revision AS child_revision, n.kind, n.state, n.layer "
+            "FROM tree_node_children c JOIN tree_nodes n ON n.node_id = c.child_id "
+            "WHERE c.parent_id = ? ORDER BY c.ordinal, c.child_id",
+            (str(parent_id),),
+        )
+        columns = [item[0] for item in cursor.description or ()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+
+    def get_tree_parents(self, child_id: str) -> list[dict]:
+        cursor = self.conn.execute(
+            "SELECT c.parent_id, c.ordinal, c.weight, c.origin, "
+            "       n.revision AS parent_revision, n.state, n.layer "
+            "FROM tree_node_children c JOIN tree_nodes n ON n.node_id = c.parent_id "
+            "WHERE c.child_id = ? ORDER BY c.parent_id",
+            (str(child_id),),
+        )
+        columns = [item[0] for item in cursor.description or ()]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+
+    def tree_node_ancestors(self, node_id: str, max_depth: int = 64) -> list[str]:
+        """Walk parents upward; bounded to stay finite on damaged data."""
+        seen: list[str] = []
+        frontier = [str(node_id)]
+        for _ in range(max_depth):
+            next_frontier: list[str] = []
+            for current in frontier:
+                for parent in self.get_tree_parents(current):
+                    parent_id = str(parent["parent_id"])
+                    if parent_id not in seen:
+                        seen.append(parent_id)
+                        next_frontier.append(parent_id)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+        return seen
+
+    def count_tree_nodes(self, kind: str | None = None, state: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM tree_nodes"
+        clauses: list[str] = []
+        params: list = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0]) if row else 0
+
+    def retire_regions_with_other_contract(self, contract_json: str | None) -> list[str]:
+        """Mark ready regions built under a different contract as stale (T36).
+
+        A region node id embeds its contract digest, so a changed summary
+        contract produces new nodes instead of overwriting the old ones; the
+        superseded nodes must stop being servable.  Returns the retired ids so
+        the caller can drop their vectors from the shared index too.
+        """
+        # None explicitly retires the complete working hierarchy for an
+        # algorithm/profile change or --force; published snapshots are retained.
+        sql = "SELECT node_id FROM tree_nodes WHERE kind='region' AND state='ready'"
+        params: tuple[str, ...] = ()
+        if contract_json is not None:
+            sql += " AND contract_json != ?"
+            params = (str(contract_json),)
+        rows = self.conn.execute(sql, params).fetchall()
+        retired = [str(row[0]) for row in rows]
+        if not retired:
+            return []
+        with self._write_scope():
+            placeholders = ",".join("?" for _ in retired)
+            self.conn.execute(
+                f"UPDATE tree_nodes SET state = 'stale', updated_at = CURRENT_TIMESTAMP "
+                f"WHERE node_id IN ({placeholders})",
+                tuple(retired),
+            )
+        return retired
+
+    def retire_node_vectors(self, node_ids: Sequence[str]) -> int:
+        """Take the listed nodes' vector metadata out of the ready set (T36).
+
+        The vector table's state vocabulary is ``staging|ready|failed``, so a
+        retired vector is recorded as ``failed``: what matters is that it can
+        never be counted as ready again.
+        """
+        ids = [str(node_id) for node_id in node_ids]
+        if not ids:
+            return 0
+        with self._write_scope():
+            placeholders = ",".join("?" for _ in ids)
+            cursor = self.conn.execute(
+                f"UPDATE node_vectors SET state = 'failed', updated_at = CURRENT_TIMESTAMP "
+                f"WHERE node_id IN ({placeholders})",
+                tuple(ids),
+            )
+            return int(cursor.rowcount or 0)
+
+    def leaves_missing_parent(self, local_id: str | None = None) -> list[str]:
+        """Ready leaves without a *ready* parent (T35 reachability audit).
+
+        A parent that was retired — its summary contract changed, say — does
+        not count as a parent: that leaf has to be re-parented, not treated as
+        reachable.
+        """
+        sql = (
+            "SELECT n.node_id FROM tree_nodes n "
+            "WHERE n.kind = 'leaf' AND n.state = 'ready' AND NOT EXISTS ("
+            "  SELECT 1 FROM tree_node_children c "
+            "  JOIN tree_nodes p ON p.node_id = c.parent_id "
+            "  WHERE c.child_id = n.node_id AND p.state = 'ready'"
+            ") "
+        )
+        params: tuple = ()
+        if local_id is not None:
+            sql += " AND n.local_id = ?"
+            params = (self._validate_local_id(local_id),)
+        return [str(row[0]) for row in self.conn.execute(sql, params).fetchall()]
+
+    # ── Canonical content FTS (T12) ───────────────────────────────
+    def search_content(
+        self,
+        query: str,
+        *,
+        local_id: str | None = None,
+        local_ids: list[str] | None = None,
+        limit: int = 50,
+        snippet_tokens: int = 24,
+    ) -> list[dict]:
+        """BM25 search over canonical blocks through the external-content index.
+
+        ``query`` is an FTS5 MATCH expression; malformed expressions raise
+        ``ValueError`` (callers sanitize user input upstream).  Results are
+        ordered by relevance (lower bm25 score = better, FTS5 convention) and
+        include the exact block locators so evidence can be tied back.
+        """
+        from drbrain.storage.content_search import search_content
+
+        return search_content(
+            self.conn,
+            query,
+            local_id=local_id,
+            local_ids=local_ids,
+            limit=limit,
+            snippet_tokens=snippet_tokens,
+        )
+
+    def content_fts_status(self, sample: int = 20) -> dict:
+        """Verify the FTS index by querying it, not by counting rows.
+
+        ``content_fts`` is an external-content FTS5 table: ``SELECT COUNT(*)``
+        delegates to ``content_blocks`` and would always agree, so integrity is
+        established by matching a distinctive token of sampled blocks and
+        confirming the index finds them.
+        """
+        import re as _re
+
+        blocks = int(self.conn.execute("SELECT COUNT(*) FROM content_blocks").fetchone()[0])
+        rows = self.conn.execute(
+            "SELECT block_id, text FROM content_blocks ORDER BY block_id LIMIT ?",
+            (max(1, int(sample)),),
+        ).fetchall()
+        verified = 0
+        for block_id, text in rows:
+            tokens = sorted(_re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", text or ""), key=len)
+            if not tokens:
+                verified += 1  # nothing indexable (punctuation-only block)
+                continue
+            probe = tokens[-1]
+            try:
+                found = self.conn.execute(
+                    "SELECT 1 FROM content_fts WHERE content_fts MATCH ? AND rowid = "
+                    "(SELECT rowid FROM content_blocks WHERE block_id = ?) LIMIT 1",
+                    (f'"{probe}"', str(block_id)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                found = None
+            if found is not None:
+                verified += 1
+        return {
+            "indexed": verified,
+            "blocks": blocks,
+            "sampled": len(rows),
+            "consistent": verified == len(rows),
+        }
+
+    def rebuild_content_fts(self) -> int:
+        """Rebuild the derived index from content_blocks (damage recovery)."""
+        self.conn.execute("INSERT INTO content_fts(content_fts) VALUES('rebuild')")
+        self.conn.commit()
+        return self.content_fts_status()["indexed"]
+
+    # ── Node vector metadata (T24/T25) ────────────────────────────
+    _NODE_VECTOR_COLUMNS = (
+        "node_id",
+        "node_revision",
+        "kind",
+        "local_id",
+        "layer",
+        "profile_id",
+        "content_hash",
+        "dimension",
+        "state",
+        "updated_at",
+    )
+
+    def upsert_node_vector(
+        self,
+        node_id: str,
+        *,
+        node_revision: int,
+        kind: str,
+        profile_id: str,
+        content_hash: str,
+        dimension: int,
+        local_id: str = "",
+        layer: int = 0,
+        state: str = "staging",
+    ) -> None:
+        """Record vector metadata; the float vector lives in the shared index."""
+        if kind not in ("leaf", "region"):
+            raise ValueError(f"unsupported node kind {kind!r}")
+        if state not in ("staging", "ready", "failed"):
+            raise ValueError(f"unsupported vector state {state!r}")
+        if not str(profile_id).strip():
+            raise ValueError("profile_id is required")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO node_vectors
+                   (node_id, node_revision, kind, local_id, layer, profile_id,
+                    content_hash, dimension, state, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(node_id) DO UPDATE SET
+                     node_revision=excluded.node_revision,
+                     kind=excluded.kind,
+                     local_id=excluded.local_id,
+                     layer=excluded.layer,
+                     profile_id=excluded.profile_id,
+                     content_hash=excluded.content_hash,
+                     dimension=excluded.dimension,
+                     state=excluded.state,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    str(node_id),
+                    max(1, int(node_revision)),
+                    kind,
+                    str(local_id),
+                    int(layer),
+                    str(profile_id),
+                    str(content_hash),
+                    int(dimension),
+                    state,
+                ),
+            )
+
+    def get_node_vector(self, node_id: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._NODE_VECTOR_COLUMNS)} FROM node_vectors WHERE node_id = ?",
+            (str(node_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False))
+
+    def list_node_vectors(
+        self,
+        *,
+        state: str | None = None,
+        profile_id: str | None = None,
+        kind: str | None = None,
+        local_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        sql = f"SELECT {', '.join(self._NODE_VECTOR_COLUMNS)} FROM node_vectors"
+        clauses: list[str] = []
+        params: list = []
+        for column, value in (
+            ("state", state),
+            ("profile_id", profile_id),
+            ("kind", kind),
+            ("local_id", local_id),
+        ):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY node_id LIMIT ?"
+        params.append(max(1, int(limit)))
+        cursor = self.conn.execute(sql, tuple(params))
+        return [
+            dict(zip(self._NODE_VECTOR_COLUMNS, row, strict=False)) for row in cursor.fetchall()
+        ]
+
+    def count_node_vectors(self, *, state: str | None = None, kind: str | None = None) -> int:
+        sql = "SELECT COUNT(*) FROM node_vectors"
+        clauses: list[str] = []
+        params: list = []
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        row = self.conn.execute(sql, tuple(params)).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_node_vector(self, node_id: str) -> None:
+        with self._write_scope():
+            self.conn.execute("DELETE FROM node_vectors WHERE node_id = ?", (str(node_id),))
+
+    # ── Summary cache (T26) ───────────────────────────────────────
+    _SUMMARY_COLUMNS = (
+        "cache_key",
+        "state",
+        "summary",
+        "reason",
+        "prompt_tokens",
+        "summary_tokens",
+        "model",
+        "contract_json",
+        "members_json",
+        "created_at",
+        "updated_at",
+    )
+
+    def get_summary_cache(self, cache_key: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._SUMMARY_COLUMNS)} FROM tree_summary_cache "
+            "WHERE cache_key = ?",
+            (str(cache_key),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._SUMMARY_COLUMNS, row, strict=False))
+
+    def put_summary_cache(
+        self,
+        cache_key: str,
+        *,
+        state: str,
+        summary: str = "",
+        reason: str = "",
+        prompt_tokens: int = 0,
+        summary_tokens: int = 0,
+        model: str = "",
+        contract_json: str = "{}",
+        members_json: str = "[]",
+    ) -> None:
+        """Store a validated summary, or a recorded failure (never a success)."""
+        if state not in ("ready", "failed"):
+            raise ValueError(f"unsupported summary cache state {state!r}")
+        if state == "ready" and not str(summary).strip():
+            raise ValueError("ready summaries must be non-empty")
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO tree_summary_cache
+                   (cache_key, state, summary, reason, prompt_tokens, summary_tokens,
+                    model, contract_json, members_json, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(cache_key) DO UPDATE SET
+                     state=excluded.state,
+                     summary=excluded.summary,
+                     reason=excluded.reason,
+                     prompt_tokens=excluded.prompt_tokens,
+                     summary_tokens=excluded.summary_tokens,
+                     model=excluded.model,
+                     contract_json=excluded.contract_json,
+                     members_json=excluded.members_json,
+                     updated_at=CURRENT_TIMESTAMP""",
+                (
+                    str(cache_key),
+                    state,
+                    str(summary),
+                    str(reason),
+                    int(prompt_tokens),
+                    int(summary_tokens),
+                    str(model),
+                    str(contract_json),
+                    str(members_json),
+                ),
+            )
+
+    def count_summary_cache(self, state: str | None = None) -> int:
+        if state is None:
+            row = self.conn.execute("SELECT COUNT(*) FROM tree_summary_cache").fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM tree_summary_cache WHERE state = ?", (str(state),)
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    # ── Tree build jobs (T36) ─────────────────────────────────────
+    _JOB_COLUMNS = (
+        "job_id",
+        "scope_key",
+        "kind",
+        "state",
+        "owner",
+        "claim_expires_at",
+        "checkpoint_json",
+        "metrics_json",
+        "reason",
+        "created_at",
+        "updated_at",
+    )
+
+    def insert_tree_job(self, job_id: str, scope_key: str, *, kind: str = "build") -> None:
+        with self._write_scope():
+            self.conn.execute(
+                """INSERT INTO tree_build_jobs (job_id, scope_key, kind, state)
+                   VALUES (?, ?, ?, 'pending')""",
+                (str(job_id), str(scope_key), str(kind)),
+            )
+
+    def claim_tree_job(self, job_id: str, owner: str, *, ttl_seconds: int = 900) -> bool:
+        """Claim a pending (or lease-expired) job; one winner per claim."""
+        lease = f"+{max(1, int(ttl_seconds))} seconds"
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs
+                   SET state = 'running', owner = ?,
+                       claim_expires_at = datetime('now', ?),
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ?
+                     AND (state IN ('pending', 'paused')
+                          OR (state = 'running'
+                              AND (claim_expires_at IS NULL
+                                   OR claim_expires_at < CURRENT_TIMESTAMP)))""",
+                (str(owner), lease, str(job_id)),
+            )
+            return cursor.rowcount == 1
+
+    def checkpoint_tree_job(
+        self, job_id: str, *, checkpoint: str, metrics: str | None = None, owner: str = ""
+    ) -> None:
+        if not str(checkpoint).strip():
+            raise ValueError("checkpoint payload is required")
+        with self._write_scope():
+            if owner:
+                cursor = self.conn.execute(
+                    """UPDATE tree_build_jobs SET checkpoint_json = ?,
+                       metrics_json = COALESCE(?, metrics_json),
+                       updated_at = CURRENT_TIMESTAMP
+                       WHERE job_id = ? AND owner = ?""",
+                    (str(checkpoint), metrics, str(job_id), str(owner)),
+                )
+            else:
+                cursor = self.conn.execute(
+                    """UPDATE tree_build_jobs SET checkpoint_json = ?,
+                       metrics_json = COALESCE(?, metrics_json),
+                       updated_at = CURRENT_TIMESTAMP
+                       WHERE job_id = ?""",
+                    (str(checkpoint), metrics, str(job_id)),
+                )
+            if cursor.rowcount == 0:
+                raise ValueError(f"job {job_id!r} is not claimed by {owner!r}")
+
+    def finish_tree_job(self, job_id: str, state: str, *, reason: str = "") -> None:
+        if state not in ("done", "failed", "paused"):
+            raise ValueError(f"unsupported job state {state!r}")
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs SET state = ?, reason = ?,
+                   claim_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ?""",
+                (state, str(reason), str(job_id)),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"unknown tree job {job_id!r}")
+
+    def get_tree_job(self, job_id: str) -> dict | None:
+        row = self.conn.execute(
+            f"SELECT {', '.join(self._JOB_COLUMNS)} FROM tree_build_jobs WHERE job_id = ?",
+            (str(job_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._JOB_COLUMNS, row, strict=False))
+
+    def list_tree_jobs(self, state: str | None = None, limit: int = 100) -> list[dict]:
+        sql = f"SELECT {', '.join(self._JOB_COLUMNS)} FROM tree_build_jobs"
+        params: tuple = ()
+        if state is not None:
+            sql += " WHERE state = ?"
+            params = (str(state),)
+        sql += " ORDER BY updated_at DESC LIMIT ?"
+        params = (*params, max(1, int(limit)))
+        cursor = self.conn.execute(sql, params)
+        return [dict(zip(self._JOB_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
 
     def clear_raptor_artifacts(self, paper_id: str) -> int:
         """Remove derived RAPTOR rows before rebuilding one paper.
@@ -2711,6 +4220,20 @@ class Database:
         ).fetchone()
         return row[0] if row else None
 
+    def get_vector_metadata(self, key: str) -> str | None:
+        """Raw vector_metadata value for ``key`` (stage watermarks, T45)."""
+        row = self.conn.execute(
+            "SELECT value FROM vector_metadata WHERE key = ?", (str(key),)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_vector_metadata(self, key: str, value: str) -> None:
+        """Store a raw vector_metadata ``key``→``value`` pair (sole write surface)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO vector_metadata (key, value) VALUES (?, ?)",
+            (str(key), str(value)),
+        )
+
     def set_last_run(self, name: str, ts: str | None = None) -> None:
         """Record the timestamp of a successful run of a named stage.
 
@@ -2955,6 +4478,31 @@ class Database:
             "confidence",
         ]
         return [dict(zip(cols, row)) for row in rows]
+
+    def list_paper_ids_by_raw_source(self, source: str) -> list[str]:
+        """Return local_ids whose ``raw`` artifact came from a given material kind.
+
+        The raw artifact metadata records the source kind and filename
+        (``{"source": "tex", "path": "tex_00001_....tex"}``).  Bulk re-ingest
+        flows use this to select a whole material family for re-processing.
+        """
+        wanted = (source or "").strip().lower()
+        if not wanted:
+            return []
+        selected: list[str] = []
+        rows = self.conn.execute(
+            "SELECT paper_id, metadata_json FROM paper_artifacts WHERE stage = 'raw'"
+        ).fetchall()
+        for paper_id, metadata_json in rows:
+            if not metadata_json:
+                continue
+            try:
+                meta = json.loads(metadata_json)
+            except (TypeError, ValueError):
+                continue
+            if str((meta or {}).get("source", "")).strip().lower() == wanted:
+                selected.append(str(paper_id))
+        return sorted(selected)
 
     def delete_paper(self, local_id: str) -> dict:
         """Delete a paper and all associated data. Returns counts of deleted items.

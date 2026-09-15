@@ -652,3 +652,23 @@ def runtime_root() -> Path:
     # unambiguous namespace and avoids splitting config/DB resolution between
     # CWD and the package checkout.
     return Path.cwd().resolve()
+
+
+def runtime_scoped_path(value: str | Path, *, label: str = "path") -> Path:
+    """Resolve a config-relative path under the selected runtime root.
+
+    Config values stay relative; the CLI resolves them against the runtime
+    root when a selector is published.  Standalone callers (eval entries,
+    retrieval legs) must do the same or they read the repository directory
+    instead of the runtime's.  Without a selector the value is returned as-is
+    so direct library callers keep their explicit paths.
+    """
+    path = Path(str(value or "")).expanduser()
+    if str(value or "") == "":
+        return path
+    if "DRBRAIN_ROOT" not in os.environ and "DRBRAIN_RUNTIME_ROOT" not in os.environ:
+        return path
+    return RuntimeContext.create().assert_within_root(path, label=label)
+
+
+__all__ = ["RuntimeContext", "runtime_root", "runtime_scoped_path"]

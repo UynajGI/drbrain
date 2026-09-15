@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if not legs:
         print(
             "no retrieval legs found — build an index first "
-            f"(storage_dir={li.storage_dir!r}; see 'drbrain rag index')",
+            f"(storage_dir={li.storage_dir!r}; see 'drbrain index build')",
             file=sys.stderr,
         )
         return 2

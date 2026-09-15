@@ -22,7 +22,9 @@ def test_adapt_sdk_tree_to_drbrain_nodes():
             }
         ]
     )
-    assert result == [{"title": "Methods", "node_id": "0001", "text": "Methods body"}]
+    assert result == [
+        {"title": "Methods", "node_id": "0001", "line_num": 1, "text": "Methods body"}
+    ]
 
 
 def test_markdown_temp_pdf_paginates_long_documents(tmp_path):
@@ -49,7 +51,7 @@ def test_sdk_backend_accepts_markdown_without_source_pdf(tmp_path, monkeypatch):
         def __init__(self, **kwargs):
             pass
 
-        def submit_document(self, path, wait=True):
+        def submit_document(self, path, wait=True, mode=None):
             return {"doc_id": "x"}
 
         def get_tree(self, doc_id, **kwargs):

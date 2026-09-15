@@ -1142,27 +1142,69 @@ class ResearchDirector:
     # the model knows the list is truncated, not exhaustive.
     PRIOR_CHAMPION_MAX = 20
     PRIOR_REJECTED_MAX = 20
+    PRIOR_PENDING_MAX = 10
+    PRIOR_ITEM_CHAR_LIMIT = 500
+    PRIOR_CONTEXT_CHAR_BUDGET = 12_000
 
     @classmethod
     def _build_prior_context(cls, state: dict[str, Any]) -> str:
         parts: list[str] = []
+        section_chars: dict[str, int] = {}
+        truncated: list[str] = []
+
+        def add_section(name: str, text: str) -> None:
+            remaining = cls.PRIOR_CONTEXT_CHAR_BUDGET - sum(section_chars.values())
+            if remaining <= 0:
+                truncated.append(name)
+                return
+            if len(text) > remaining:
+                text = text[:remaining].rstrip() + "…"
+                truncated.append(name)
+            section_chars[name] = len(text)
+            parts.append(text)
+
         champion = state.get("champion") or []
         if champion:
             omitted = len(champion) - cls.PRIOR_CHAMPION_MAX
             tail = champion[-cls.PRIOR_CHAMPION_MAX :]
             prefix = f"（另有 {omitted} 条更早结论未列出）" if omitted > 0 else ""
-            parts.append("已确认结论" + prefix + "：" + "；".join(c["statement"] for c in tail))
+            statements = [
+                str(item.get("statement", ""))[: cls.PRIOR_ITEM_CHAR_LIMIT]
+                for item in tail
+                if isinstance(item, dict) and item.get("statement")
+            ]
+            if statements:
+                add_section("champion", "已确认结论" + prefix + "：" + "；".join(statements))
         rejected = state.get("rejected") or []
         if rejected:
             omitted = len(rejected) - cls.PRIOR_REJECTED_MAX
             tail = rejected[-cls.PRIOR_REJECTED_MAX :]
             prefix = f"（另有 {omitted} 条更早假设未列出）" if omitted > 0 else ""
-            parts.append("已否定假设（不要重复提出）" + prefix + "：" + "；".join(tail))
-        if state.get("pending"):
-            parts.append(
-                "上轮提出但未讨论完的假设（本轮 critic 需重新独立评审）："
-                + "；".join(state["pending"])
+            rejected_items = [str(item)[: cls.PRIOR_ITEM_CHAR_LIMIT] for item in tail if item]
+            if rejected_items:
+                add_section(
+                    "rejected",
+                    "已否定假设（不要重复提出）" + prefix + "：" + "；".join(rejected_items),
+                )
+        pending = state.get("pending") or []
+        if pending:
+            pending_tail = [
+                str(item)[: cls.PRIOR_ITEM_CHAR_LIMIT]
+                for item in pending[-cls.PRIOR_PENDING_MAX :]
+                if item
+            ]
+            pending_prefix = (
+                f"（另有 {len(pending) - len(pending_tail)} 条更早假设未列出）"
+                if len(pending) > len(pending_tail)
+                else ""
             )
+            if pending_tail:
+                add_section(
+                    "pending",
+                    "上轮提出但未讨论完的假设（本轮 critic 需重新独立评审）："
+                    + pending_prefix
+                    + "；".join(pending_tail),
+                )
         # L-I2: the critic's counter-arguments must reach the next analyst —
         # hypotheses were previously only *filtered* by the discussion gate,
         # never *revised*, because the veto reasons never left the board. The
@@ -1172,7 +1214,14 @@ class ResearchDirector:
         if flaws:
             lines = ["## 上一轮批评要点（修订假设时先对照，不要原样重提被否决的假设）"]
             lines.extend(f"- [cycle {e['cycle']}] {e['text']}" for e in flaws)
-            parts.append("\n".join(lines))
+            add_section("critic_flaws", "\n".join(lines))
+        state["prior_context_telemetry"] = {
+            "char_budget": cls.PRIOR_CONTEXT_CHAR_BUDGET,
+            "chars": sum(section_chars.values()),
+            "approx_tokens": (sum(section_chars.values()) + 3) // 4,
+            "sections": section_chars,
+            "truncated_sections": truncated,
+        }
         return "\n".join(parts)
 
     @staticmethod

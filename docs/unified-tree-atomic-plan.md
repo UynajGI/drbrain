@@ -1,0 +1,579 @@
+# 统一 Tree RAG 原子化实施计划
+
+日期：2026-09-15。依据：[统一算法设计](unified-tree-rag-design.md)、[RAPTOR 源码审阅](research/raptor-source-audit-2026-09-14.md)、[PageIndex 源码审阅](research/pageindex-source-audit-2026-09-14.md)及两份算法反向审查。
+
+状态：**进行中** — T01–T13、T17–T22、T23–T42、T49/T50 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e/70e3edd/370b5a1/27ad515/a288190；T22 的“不再新增 per-paper MD/tree 文件”随 T14–T16/T45 切换消费者后收口）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
+
+**2026-09-15 按审阅发现 8 更正验收记录**：T48 的 pass 记录自证 `ask.route = "bm25 ok; vector/tree unavailable until T61"`，回答未经统一索引的 vector/tree 路，不能算通过 → 任务重新打开（`acceptance.jsonl` 已追加更正记录）；T56/T57 中标注为 RAPTOR 的对照臂实际检索统一树构建产物 → 该臂改名为统一树检索消融（`unified_tree_flat`），`raptor_collapsed` 改为来源指纹门控（缺指纹即 fail-closed），真实 RAPTOR 对照建立前两项均不勾选（详见 T56/T57/T62 记录）。G5 门（T43–T48）随 T48 重新打开，标记待复核。
+
+**2026-09-15 下午（CLI/RAG 使用方式重构轮，`phy`=`e5b7a09`）**：四项遗留收口——统一 store 三路检索（`6f7324e`：无 SQL corpus 时 bm25 规范 FTS / vector 叶 ANN / tree 同一 generation 全部从主库出，同一证据身份）、skills 全量迁移（`acbf223`）、`merge_shards` 携带统一表（`ba3cd13`）、模型导航两处真实缺陷修复（`e5b7a09`：多 tool_calls 漏应答致严格端 400；推理端点预算 512→2048）。真实 index 模型（本机 8010 起 Spark-X2.5-4B）小语料验收跑通：`index build` 成功发布 → `index status` ready → `search`/`ask` 三路 ok、模型导航 `planner=chat_model`；复现与交付见 `docs/handoff-cli-rag-usage-2026-09-15.md`（未跟踪）。
+
+**2026-09-15 晚（审阅修复 + 规模化构建轮；`phy`=`5267aea`…`780cc99`，已 push 并开 PR #76，base `main`）**：① 审阅发现读路径修复全部落地并有契约测试（tests/test_rag_production_contracts.py）：scoped tree reads、融合保留实读范围与逐 hit 定位、预算耗尽=partial、BM25 在 FTS 查询内作用域、发布失败恢复且以 last-build 为门、`--force`/算法变更 retire 全部 region；② 规模化：`tree/embed_parallel.py`（多设备 spool→单写 load，可恢复、manifest 绑定、fail-closed）、`hierarchy_frontier_limit`（T59 有界批次：单次构建处理上限，其余 seeds 保持 roots 并在后续运行续批；`frontier.{total,processed}`/`frontier_remaining` 如实记录）与 `hierarchy_summary_workers`（摘要并行、prescreen/覆盖过滤/publish 严格串行，确定性测试钉住 workers=1≡3），两者为调度参数、不进 hierarchy 签名与部署身份；cost-gate 叶查询批量化（一条递归 CTE 取代逐叶重取全文）+ local 分量并行拟合；`_round` 逐相计时日志。③ 旧式宏包裹 LaTeX 修复（`\def\bd{\begin{document}}` 前导不再把正文截为空）。④ 设计/交接/审阅文档入库（`docs/cli-pipeline-redesign.md`、`docs/post-rag-layers.md`、`docs/reviews/`、handoff）。10k 语料实测：canonical 9,932 篇正文（9,933 记录）、1,622,131 叶 100% 有向量；有界层级构建进行中（20k 叶/批），三路验收待发布后执行；证据见 `data/integration/rag-10k/RUN-NOTES.md` 与 `acceptance.jsonl`（2026-09-15 迁移记录）。**T59 仍 open**：跨批 frontier 合并、与完整聚类的质量对照未做（本轮的批处理仅是有界调度，approximation 已记录）。
+
+**2026-09-15 Round 2：审阅 8 条发现全部修复并合入 `phy`（`51c6507`→`f6ddd50`）**。每条都有"先失败后通过"的负向对照，另有四轮独立对抗复核（报告 `/tmp/unified-tree-fix-audit.md`：V1/V2/V3 + 二次复核），其中两条真洞（水位为空不 retire、早返回在 retire 之前）由复核发现并修掉。据此更新门状态：
+- **T43/T46 复核通过**：生产 tree 路读统一 generation（旧 PageIndex ANN 经 mock 实验确认零访问），三路同 node_id/同 content_revision，缺 generation fail-closed；无 SQL corpus 时三路统一从主库出（`6f7324e`），仅 graph/claims 报 `source_unavailable`。
+- **T29/T30/T34/T35/T36/T40/T42** 的契约测试复跑通过、且经对抗复核（结构重权真的改变成员、向量只算一次、失败不再算 complete、身份变化失效重建、region→真叶 evidence、多父叶 via 完整）——真实模型 CLI 验收已于 2026-09-15 下午补跑小语料（成功路径见上），语料级门复验仍待接手方按门执行，故仍记 partial。
+- **T22/T48 保持未通过**：T48 需活 index 模型重验（端点现在可本机自起，语料级复验仍待执行）；ingest 的"不再写 per-paper MD/tree"已落地（含 ingest-link），但 T14–T16 消费方切换未完成（清单见 `docs/rag-layer-completion.md` 与 memory 的下一轮工作单）。
+- **T47 待复验**（index 端点本机可自起：`scripts/serve_transformers_llm.py 8010` + Spark 快照路径 env，本轮未按 T47 清单逐项执行）；**T56 真 RAPTOR 对照未建**（`raptor_collapsed` 现在只接受带来源指纹的独立产物，缺指纹即 fail-closed）。
+- 详细的下一轮清单（P0 audit 误报 → P1 T14–T16 → P2 读路径内容完整性/ablations 保真 → P3 规模）见项目 memory（`project/unified-tree-plan-progress.md`，跨会话可读）；对抗复核的原始报告是会话产物（`/tmp/unified-tree-fix-audit.md`，重启可能丢，结论已进 memory）。
+
+## 执行规则
+
+- 一个任务对应一个可观察的行为变化，先写能失败的契约测试，再实现，再保存验收证据；默认一个独立提交。不能以“主体完成”勾选任务。
+- 单元测试可以隔离模型和网络；阶段验收必须走实际 `drbrain` CLI、真实 SQLite/Zvec 和指定模型。不得用自写 ingestion 脚本代替 CLI。
+- 依赖完成后才能合入依赖它的任务。独立任务可并行开发；每个验收门通过后才开展下一阶段的真实运行或数据迁移。
+- 验收不通过，修复对应任务并重新验证；不自动切换旧 parser、旧树、另一个模型或 SQL LIKE 后宣称通过。
+- 64个任务共享一份验收记录 `data/integration/unified-tree/acceptance.jsonl`：任务ID、代码版本、命令/测试、退出码、关键指标、结论、日志位置。原有日志继续使用项目日志设施。
+- 新模块路径为拟议路径，不表示文件已经存在。下文 `tree/` 指拟新增 `src/drbrain/tree/`；`storage/`、`services/`、`cli/` 指对应现有包。SQL 写入统一经 `storage/database.py` 的 Database API。
+
+## 不可改变的验收约束
+
+1. 外层只有 `bm25 / vector / tree`；tree 只有一套节点、成员关系、构建器、摘要服务与导航器。
+2. PageIndex 结构只提供位置/标题属性和分组候选；不得另外保存或维护第二套 PageIndex 父子关系。
+3. 原材料不删除；规范化正文在主库只存一次；新流程不为每篇生成 MD、tree/pages JSON、SDK 文献目录或 pickle。
+4. vector 与 tree 复用原文向量；新向量只持久化在共享 Zvec，主库保存标识、模型、修订和校验信息。
+5. 所有构建 LLM 调用使用 `index_model`；在线导航/回答使用 `chat_model`。不能仅凭 model 名称判断端点配置正确。
+6. 返回的原文证据必须有实际读取记录、准确来源和内容校验；跨篇摘要不能冒充单篇原文。
+7. 新算法效果尚未证明。质量阈值、lambda 和成本参数用开发集确定，再冻结后评测；不凭观感宣布优于基线。
+
+## 验收门
+
+| 门 | 任务 | 通过后允许的动作 |
+| --- | --- | --- |
+| G0 契约冻结 | T01–T06 | 按确定的接口和公式实施 |
+| G1 统一存储 | T07–T16 | 写入隔离验收库，验证旧消费者兼容 |
+| G2 模型与入库 | T17–T22 | 实际PDF/TeX/MD的CLI入库和index端点调用 |
+| G3 联合建树 | T23–T36 | 小集合生成统一语义—结构索引 |
+| G4 统一检索 | T37–T42 | 独立运行tree、验证证据和预算 |
+| G5 三路CLI | T43–T48 | 完整CLI三路问答与故障验收 |
+| G6 小样本迁移 | T49–T54 | 将迁移方案用于既有10k |
+| G7 算法与规模准备 | T55–T59 | 执行有界10k构建 |
+| G8 10k验收与切换 | T60–T64 | 将统一流程设为本地正式默认 |
+
+## P0 — 固定来源、模型与算法契约
+
+### [x] T01 — 固定两份上游源码及复用边界
+
+- 依赖：无。
+- 范围：`vendor/pageindex`、`vendor/raptor`、`.gitmodules`及来源说明；固定到设计记录的两个commit，不跟随main。
+- 先写测试：离线检查commit、许可证、所需函数存在；错误版本给出明确错误。
+- 完成标准：干净检出可复现源码；列明直接复用、修改适配和自研部分；没有导入SDK文档库或pickle持久化路径。
+
+### [x] T02 — 隔离新增算法依赖
+
+- 依赖：T01。
+- 范围：`pyproject.toml`、`uv.lock`、拟新增上游加载适配；沿用最小安装到完整安装的分层。
+- 先写测试：最小安装运行CLI help；tree安装可加载所需聚类/结构函数；缺失可选依赖得到可操作错误。
+- 完成标准：不覆盖项目依赖为上游requirements；不因RAPTOR顶层import强行引入FAISS/T5等无关运行时；检出和打包后的所需源码均可定位。
+
+### [x] T03 — 冻结正文、节点和修订协议
+
+- 依赖：无。
+- 范围：`tree/contracts.py`、存储契约与测试fixture；定义block、leaf、region、children、来源范围及修订ID。
+- 先写测试：相同输入ID稳定；不同出处不因同文合并；父子页范围重叠不重复正文；跨篇region无伪造page。
+- 完成标准：字符/行/页坐标基准、区间端点、分隔符重建、ID碰撞处理、内容与模型修订均有无歧义定义；所有后续模块使用此协议。
+
+### [x] T04 — 冻结结构相容性与两级概率协议
+
+- 依赖：T03。
+- 范围：算法设计附录、`tests/tree/fixtures/`；定义A(i,k)、暂定簇画像、排除自身、来源分布及global/local坐标。
+- 先写测试：手工可核对的小矩阵覆盖同篇、跨篇、无标题、上层多来源和自身排除；lambda=0的阶段成员关系可核对。
+- 完成标准：相容性公式、空画像规则、每一级阈值、标签映射、参数选择范围写定；明确跨篇偏置，禁止将global/local概率相乘后冒称上游等价。
+
+### [x] T05 — 冻结父节点接受与成本协议
+
+- 依赖：T03。
+- 范围：算法设计附录、成本fixture；定义唯一来源覆盖、读取/路由成本单位、预估/实际两次判断和拒绝原因。
+- 先写测试：同页重叠、跨篇、多个证据目标、长单成员和摘要变长等手工案例；拒绝父节点后原成员仍存在。
+- 完成标准：可执行公式及参数来源确定；单目标假设与多目标成本分开；不是靠摘要更短就判定质量合格。
+
+### [x] T06 — 冻结阶段状态和对外返回协议
+
+- 依赖：T03。
+- 范围：`tree/contracts.py`、现有artifact/retrieval状态协议与CLI JSON契约。
+- 先写测试：未构建、有效多根停止、partial、failed、过期修订、无结果分别可辨；错误不计为ready。
+- 完成标准：ingest/prepare/ask职责及退出码明确；同一tree结果只含一份排名、读取凭证和预算信息；确定待新增CLI参数，标明兼容方式。
+
+## P1 — 一份正文与一个节点库
+
+### [x] T07 — 阻止ingest移动或删除原输入
+
+- 依赖：T03。
+- 范围：`cli/_helpers/db_ingest.py`、spool消费边界。
+- 先写测试：直接输入、spool输入、已托管source及失败重试，输入文件存在且hash不变；同路径复制安全。
+- 完成标准：任务成功、失败或中断均不unlink原材料；队列状态更新与素材保留分开。
+
+### [x] T08 — 增加规范化正文与文献修订存储
+
+- 依赖：T03、T06。
+- 范围：`storage/database.py`中的schema migration及Database方法。
+- 先写测试：旧库升级、重复写入幂等、事务失败回滚、同篇多修订和同文不同出处。
+- 完成标准：content_blocks为唯一规范化正文；主库写入有事务边界；版本表与来源映射可查询。
+
+### [x] T09 — 实现边界保真的block生成
+
+- 依赖：T03。
+- 范围：`tree/blocks.py`，消费已有ParsedPaper与文本材料解析产物。
+- 先写测试：公式、表格、标题前正文、附录、空白分隔及多页内容；重建正文与规范化输入逐字符一致。
+- 完成标准：无正文遗漏或重叠计入；按真实token预算细分，不能静默截断或编造页码。
+
+### [x] T10 — 提供统一正文读取API
+
+- 依赖：T08、T09。
+- 范围：`storage/content.py`；按文献修订、block、范围及结构锚点读取。
+- 先写测试：跨block范围、边界值、旧修订、错误范围和不存在的来源；相同读取结果hash稳定。
+- 完成标准：可从主库重建正文、章节和准确摘录；不依赖content.md或pages.json。
+
+### [x] T11 — 增加统一nodes/children存储
+
+- 依赖：T03、T08。
+- 范围：`storage/database.py`的节点/成员API，复用现有artifact信息。
+- 先写测试：多父、多根、跨篇region、重复children、悬空引用、循环与事务中断。
+- 完成标准：一个节点注册表与一个成员关系；leaf引用正文，region仅保存新增摘要；循环/错误修订不能发布。
+
+### [x] T12 — 将BM25接到正文外部内容索引
+
+- 依赖：T08、T10。
+- 范围：主库FTS schema与Database写入方法。
+- 先写测试：新增/更正/删除后MATCH立即一致，回滚不留下索引；重建前后命中与排序契约一致。
+- 完成标准：FTS引用content_blocks，不再物化一份node_texts正文；索引损坏能从主库重建。
+
+### [x] T13 — 实现旧文件的只读兼容适配
+
+- 依赖：T03、T10。
+- 范围：`storage/legacy_content.py`、`storage/paths.py`现有安全路径接口。
+- 先写测试：raw.md/tree.json、SDK pages、嵌套ID目录、路径歧义、symlink与坏JSON。
+- 完成标准：旧数据能转成统一读取协议；默认读取不写新文件或库，不自动选择冲突副本。
+
+### [x] T14 — 切换展示与导出的正文读取
+
+- 依赖：T10、T13。
+- 范围：show、报告、导出及WebUI正文读取调用点，仅更换数据提供者。
+- 先写测试：只有主库正文、没有raw.md/tree.json的文献仍可展示与显式导出；旧数据结果不变。
+- 完成标准：展示不为工作正常而偷偷创建持久化MD/JSON；显式导出仍可使用。
+
+### [x] T15 — 切换嵌入与检索的节点投影
+
+- 依赖：T10、T11、T13。
+- 范围：`storage/node_projection.py`、embedding与RAG正文读取调用点。
+- 先写测试：父正文与子片段不会重复作为原文叶；同一block在各调用方取得同一ID/hash。
+- 完成标准：共同消费canonical节点，既有文件只走兼容入口；禁止为每个检索器重切一遍正文。
+
+### [x] T16 — 保持现有抽取消费者的读取兼容
+
+- 依赖：T10、T13。
+- 范围：build/抽取等已有正文消费者，仅调整读取接口，不改知识图谱算法。
+- 先写测试：无MD文件时能构造与旧输入一致的抽取上下文；测试不启动KG构建。
+- 完成标准：统一存储不会使现有命令因找不到文件而破坏；KG仍不是新RAG流程的前置条件。
+
+## P2 — 角色配置和CLI入库
+
+### [x] T17 — 统一解析index/chat模型角色
+
+- 依赖：T06。
+- 范围：`config.py`、`services/model_roles.py`及check配置展示。
+- 先写测试：同model不同URL、不同角色同endpoint、旧配置冲突、缺少角色；日志不含密钥。
+- 完成标准：角色解析只有一个入口；明确兼容/冲突规则，不由PageIndex/RAPTOR调用点各拼地址；不会静默使用通用models覆盖index。
+
+### [x] T18 — 实现共享IndexModel客户端与调度
+
+- 依赖：T02、T17。
+- 范围：`services/index_model.py`，复用已有LLM客户端，统一预算、超时和并发。
+- 先写测试：结构任务与摘要任务到同一index endpoint；并发上限跨任务生效；超长、空响应、取消及重试状态准确。
+- 完成标准：Spark 4B角色可完成一条真实CLI连通性探测；不会使用全局环境变量切换端点，不接管GPU0/1服务。
+
+### [x] T19 — 实现显式绑定端点的ChatModel适配
+
+- 依赖：T02、T17。
+- 范围：在线模型实例/Agent适配；明确Chat Completions协议。
+- 先写测试：base_url/api_key随模型实例传递，工具往返可用，缺少凭据快速报错；没有隐式Responses调用。
+- 完成标准：DeepSeek角色真实探测通过；导航与回答可分别计量，但均不落入index endpoint。
+
+### [x] T20 — 复用PDF结构提取为瞬态提示
+
+- 依赖：T01、T02、T09、T18。
+- 范围：`tree/outline.py`的PDF适配；复用PageIndex所需源码函数。
+- 先写测试：注入已解析page_list与原PDF页面一致；正文残余保留；不再生成临时伪PDF或SDK文献库。
+- 完成标准：输出结构锚点/候选范围，不持久化独立PageIndex树；Flash若仍需读几何数据如实计量，不假定有block注入接口。
+- **实现记录（2026-09-15，与原始假设的差异）**：原任务描述假定 classic 管线可"无LLM"复用，实测不成立——
+  `page_index_main` 的 `tree_parser` → `check_toc` → `find_toc_pages` 第一步就调用 `llm_completion`，
+  `opt` 只能关闭摘要类工作。因此落地为：PDF 默认路径只复用 classic 的**真实页提取**（`utils.get_page_tokens`，
+  1-based 真实页，不伪造），输出页级覆盖提示；章节树仅在调用方显式注入 index_model 时走 `page_index_main`。
+  两者都不持久化 PageIndex 树、不生成临时伪 PDF，也不使用上游 `JsonLogger`（它会写 `./logs`）。
+
+### [x] T21 — 复用MD/TeX结构提取为瞬态提示
+
+- 依赖：T01、T02、T09、T18。
+- 范围：`tree/outline.py`的文本适配及现有材料parser接口。
+- 先写测试：标题层级、代码块中的井号、公式、TeX规范化行映射；不会走PDF/OCR接口。
+- 完成标准：在内存正文上得到可靠锚点和候选范围，必要临时适配文件有生命周期且不成为事实存储。
+
+### [x] T22 — 将ingest写入统一正文和叶节点
+
+- 依赖：T07、T08、T09、T10、T11、T17、T20、T21。
+- 范围：`cli/_helpers/db_ingest.py`、现有ingest CLI和artifact状态。
+- 先写测试：PDF、TeX、MD各一条真实CLI契约；重复输入、中断和parser失败不重复正文或丢源文件。
+- 完成标准：主库保存正文、锚点、叶与来源；每篇零个自动生成的MD/tree/pages文件；ingest不冒称语义层已经ready。
+
+## P3 — 共享计算和统一建树算法
+
+### [x] T23 — 固定嵌入身份与缓存协议
+
+- 依赖：T03、T17。
+- 范围：`services/embedding.py`及向量修订元数据。
+- 先写测试：文本不变但模型、预处理或维度改变不能误复用；同配置稳定命中；相同文字不同出处身份保留。
+- 完成标准：查询、原文和摘要使用一致且可追踪的embedding profile；不只按model字符串或短hash判定兼容。
+
+### [x] T24 — 统一Zvec向量写入
+
+- 依赖：T11、T23。
+- 范围：现有vector_index/Zvec接口及Database中的索引元数据API。
+- 先写测试：重复写入幂等、中断可恢复、模型维度拒绝混用；主库没有新增浮点向量副本。
+- 完成标准：原文/摘要使用同一写入服务和共享索引，只有node kind不同；既有向量可按明确版本导入。
+
+### [x] T25 — 提供有范围和修订的ANN读取
+
+- 依赖：T24。
+- 范围：ANN查询服务，区分leaf-only与all-nodes视图。
+- 先写测试：与小集合精确余弦结果对照；修订、文献范围和node kind过滤正确；错误修订不能混读。
+- 完成标准：vector路可只取原文，tree可取所有层；不依赖BM25候选文献。
+
+### [x] T26 — 实现统一摘要服务和缓存
+
+- 依赖：T03、T10、T11、T18。
+- 范围：`tree/summary.py`及Database缓存/任务API。
+- 先写测试：相同成员/契约只调用一次；不同范围、顺序、prompt、模型修订不误命中；异常对象、空响应和截断不缓存为成功。
+- 完成标准：所有结构/语义候选走同一摘要服务；缓存使用主库，不新增每篇摘要文件。
+
+### [x] T27 — 暴露RAPTOR全局后验
+
+- 依赖：T01、T02、T04、T23。
+- 范围：`tree/clustering.py`中的global UMAP/GMM窄适配。
+- 先写测试：固定种子和输入下，与上游global步骤对照BIC选择、后验、阈值成员；处理簇标签置换。
+- 完成标准：取得真正posterior及映射，而非伪造由label产生的概率；数据/参数相同的阶段结果可核验。
+
+### [x] T28 — 暴露局部后验并保持正确映射
+
+- 依赖：T27。
+- 范围：local UMAP/GMM、局部到canonical节点映射。
+- 先写测试：多global归属、不同local子集、lambda=0阶段对照和递归参数传递。
+- 完成标准：各global子集独立保留local后验与阈值；不以概率相乘后统一阈值改变上游语义却声称等价。
+
+### [x] T29 — 计算结构相容性
+
+- 依赖：T04、T10、T11。
+- 范围：`tree/affinity.py`，实现已冻结的A(i,k)。
+- 先写测试：固定画像、排除自身、无结构信息、多来源region、唯一来源token加权；重复软路径不增加结构权重。
+- 完成标准：所有手工fixture通过；没有用最终分配反过来循环定义先验。
+
+### [x] T30 — 实现结构条件化软分配
+
+- 依赖：T28、T29。
+- 范围：联合后验修正、归一和软阈值。
+- 先写测试：lambda=0还原对应阶段；数值稳定、无效参数、空分配；同篇增强可能压低跨篇概率的案例。
+- 完成标准：公式与设计一致，输出多父候选；空分配显式携带原节点，不能丢失可达性。
+
+### [x] T31 — 合并结构与语义分组候选
+
+- 依赖：T20、T21、T30。
+- 范围：`tree/proposals.py`；两类提示进入同一候选集合。
+- 先写测试：相同成员候选去重；不同契约不误合并；结构提示不生成另一份children树。
+- 完成标准：规范化候选具有稳定ID/成员/契约；相同候选最多进入一次摘要生成。
+
+### [x] T32 — 实现覆盖检查和成本预筛
+
+- 依赖：T05、T10、T31。
+- 范围：`tree/cost.py`中的来源覆盖、读取成本与模型调用前检查。
+- 先写测试：跨篇、重叠、residual、长单成员、重复组、输入超预算及没有收益。
+- 完成标准：明显不合适的组不调用LLM；拒绝原因可追踪，所有原成员保留。
+
+### [x] T33 — 实现摘要后的父节点接受检查
+
+- 依赖：T26、T32。
+- 范围：实际摘要长度、覆盖与成本复核；只写staging节点。
+- 先写测试：预筛通过但实际摘要超预算/无收益/来源引用无效；拒绝后无悬空children。
+- 完成标准：按“预筛→生成→复核”发布候选父节点；不因缩短文本就断言摘要事实正确。
+
+### [x] T34 — 实现一轮统一建树
+
+- 依赖：T24、T31、T33。
+- 范围：`tree/builder.py`单轮处理，调用共同摘要/向量服务。
+- 先写测试：同一轮同时包含结构和跨篇分组；父节点共用类型/表，原文向量不重算，新增摘要才嵌入。
+- 完成标准：只有一个构建器和一个节点模型；产出父节点、未提升frontier和阶段指标。
+
+### [x] T35 — 实现停止与全叶可达校验
+
+- 依赖：T34。
+- 范围：层次循环、循环/无收缩检测、预算与root/frontier处理。
+- 先写测试：小输入、多根、多父、重复组、父子数不收缩、预算耗尽、孤立叶和模型失败。
+- 完成标准：循环有界，所有原文仍可达；有效停止与失败分开；缺失成员不能发布完整状态。
+
+### [x] T36 — 实现构建任务的恢复与幂等
+
+- 依赖：T06、T08、T11、T26、T35。
+- 范围：artifact/job checkpoint、任务claim及恢复控制。
+- 先写测试：摘要完成/向量写入/父节点入库等边界中断；重复worker竞争；模型或prompt改变后失效。
+- 完成标准：已确认完成的产物复用，落库幂等，旧成功修订保留；承认外部LLM不确定失败可能重试，不承诺网络调用exactly-once。
+
+## P4 — 一个检索器与一致的索引修订
+
+### [x] T37 — 原子发布主库与Zvec修订
+
+- 依赖：T24、T25、T36。
+- 范围：统一索引revision发布、当前版本指针、现有generation接口。
+- 先写测试：向量构建中断、文件完成但主库未切换、读请求与发布并发；旧正文配新ANN必须被拒绝。
+- 完成标准：读请求捕获同一修订；未完成的staging不暴露；旧成功版本仍可读；默认不再复制一份drbrain_rag.db。
+
+### [x] T38 — 实现统一节点读取工具
+
+- 依赖：T10、T11、T37。
+- 范围：`tree/tools.py`的expand/read/parents/read_scope。
+- 先写测试：未知ID、越界、未授权范围、旧修订、同页重叠、MD行范围、多来源region；返回大小受限。
+- 完成标准：parents来自同一children关系，邻域来自正文顺序；每次原文读取产生可验证凭证；不使用SDK文献store。
+
+### [x] T39 — 实现tree的全层独立入口
+
+- 依赖：T25、T37、T38。
+- 范围：`tree/search.py`的search_nodes及query embedding复用。
+- 先写测试：BM25返回空仍可命中；叶/中层/高层可分别进入；同一query不重复计算embedding；与精确搜索比较召回。
+- 完成标准：直接在完整授权scope内搜索，不限raptor_L1、不先接受BM25 paper池；小树没有摘要时仍能进入真实叶。
+
+### [x] T40 — 实现单个有状态导航器
+
+- 依赖：T06、T19、T38、T39。
+- 范围：`tree/navigator.py`，一个Agent/Runner驱动统一工具。
+- 先写测试：主题→原文→父节点→另一篇、文内邻域补证、重复动作、无效工具参数、超时和取消。
+- 完成标准：只有一个查询状态机；工具历史保持在本次请求中，预算真实生效；不串联两个独立答案或固定SDK chat。
+
+### [x] T41 — 校验并归并tree证据排名
+
+- 依赖：T40。
+- 范围：`tree/evidence.py`与既有`rag/evidence.py`契约。
+- 先写测试：模型捏造ID/页码、没有读过的叶、摘要假冒原文、多个父路径命中同叶、多个出处同文。
+- 完成标准：输出ID是已读集合的子集，hash/范围正确；每个证据只有一个tree名次，同时保留路径和全部合法出处。
+
+### [x] T42 — 贯通tree状态与可观测性
+
+- 依赖：T06、T35、T37、T41。
+- 范围：retrieval status、artifact状态、rag health与日志/metrics。
+- 先写测试：有效多根、部分预算、模型故障、ANN过期、成员缺失分别产生明确状态；日志脱敏。
+- 完成标准：能看到入口层、展开/读取次数、模型角色、token、未解决分支和失败原因；失败不被计为完整成功。
+
+## P5 — 三路生产CLI接入
+
+### [x] T43 — 注册唯一tree路并迁移检索名
+
+- 依赖：T12、T25、T41、T42。
+- 范围：`rag/sql_retrie.py`、`rag/fusion.py`、retriever注册及配置校验。
+- 先写测试：外层只有bm25/vector/tree；旧pageindex+raptor配置被明确归并/报冲突；多层不产生额外RRF权重。
+- 完成标准：不再调用SQL LIKE来实现tree，不再注册旧RAPTOR候选池；三路使用统一证据ID和同一修订。
+
+### [x] T44 — 固定融合后的重排与上下文预算
+
+- 依赖：T43。
+- 范围：现有RRF、BGE rerank、证据去重及上下文选择。
+- 先写测试：不同分数空间仅按排名融合；BGE负logit不是余弦阈值；重复出处、多样性和长片段预算正确。
+- 完成标准：三路候选上限、20–50头部重排和最终8–10上下文配置有实际作用；返回数与实际token预算一致。
+
+### [x] T45 — 由rag prepare增量编排统一索引
+
+- 依赖：T12、T22、T36、T37、T42。
+- 范围：`rag/preparation.py`、`cli/rag_commands.py`及现有embed服务桥接。
+- 先写测试：只补失效阶段；再次prepare零新增模型/嵌入工作；改变模型只重建对应依赖；失败后恢复。
+- 完成标准：一个CLI可准备FTS、共享向量和统一层次；无KG build/closure依赖，不重新解析已验证正文，不再复制旧检索事实库。
+
+### [x] T46 — 将ask接到三路且禁止隐式建树
+
+- 依赖：T19、T41、T43、T44、T45。
+- 范围：ask入口、每次查询的检索器选择、最终答案与JSON。
+- 先写测试：只开tree也可查询；缺失索引报未准备，不调用submit_document或IndexModel；用户选择的路由确实生效。
+- 完成标准：ask只读索引并调用chat角色；证据、状态、路由遥测进入CLI响应，最终答案不混用来源不可核验的摘要。
+- **实现记录（2026-09-15）**：`deepseek-flash` 是 reasoning 端点——实测 16 token 预算会被 `reasoning_content`
+  吃光而返回空答案（`finish_reason=length`）；ask 的答案预算必须 ≥128 且把 `truncated` 当作可报告状态，
+  不能把空答案当成功。真实 chat 探针已验证可达（`drbrain check`，~0.7–1.0s，脱敏输出）。
+
+### [ ] T47 — 准备隔离的本地验收配置
+
+- 依赖：T17、T18、T19、T42、T46。
+- 范围：`data/integration/unified-tree/`的本地配置和`drbrain check`；不提交密钥或运行数据。
+- 先写测试：DRBRAIN_ROOT隔离正确；已有.env/命名endpoint生效；check区分index/chat/embed/rerank，输出不含key。
+- 完成标准：使用项目内本地验收目录，不用/tmp存验收语料；Spark、DeepSeek和两种BGE通过真实探测，实际请求端点有脱敏证据。
+- **实现记录（2026-09-15）**：本地验收配置落在 `data/integration/unified-tree/config.yaml`（gitignored，不含密钥：
+  命名 endpoint `spark_local`/`deepseek` + 角色路由 + `bge_embed_cpu`/`bge_rerank_cpu`，`${DEEPSEEK_API_KEY}` 走环境/.env）。
+  真实探测证据：DeepSeek chat `probe ok`（952ms，finish=stop）；BGE embed 在 T45 真实 CLI 中加载并嵌入；BGE rerank
+  首次从 ModelScope 下载（1.11G）后加载并打分（相关 0.996 / 不相关 0.000），探测同时暴露并修好 `_resolve_rerank_model_path`
+  未向 `snapshot_download` 传 `cache_dir`、漏掉嵌套缓存布局导致 on-disk reranker 不可见的真实缺陷。**Spark（127.0.0.1:8010）
+  未启动**：`index_model` probe = connection error——本任务作为外部阻塞保留（与 G2/G5/G7/G8 同因），端点可达后重跑
+  `drbrain check` 即可复核，故此处暂不勾选。
+
+### [ ] T48 — 通过单篇CLI全流程验收
+
+- 依赖：T22、T45、T46、T47。
+- 范围：真实PDF、TeX、SciBase MD各一篇的spool→ingest→prepare→ask。
+- 先写测试：CLI契约覆盖无DOI/arXiv的材料、重复输入、模型不可达、摘要失败与源文件保护。
+- 完成标准：三类都产生主库正文、统一索引及可核验回答；无额外MD/JSON文献文件；逐阶段日志证明先通过再进入下一步。
+- **记录更正（2026-09-15，验收核对）**：原勾选（提交 c4f1e27，`acceptance.jsonl`）自证 `ask.route = "bm25 ok; vector/tree unavailable until T61"`——
+  三类材料的回答只由 bm25 一路产出，统一索引的 vector/tree 路没有参与，因此这条记录不能算“统一索引 + 可核验回答”的通过证据，任务重新打开。
+  已保留的进展：提交 `51c6507` 让无 ID 字节重复入库时复用内容寻址 ID（重复输入不再新增文献）。
+  重新勾选的条件：tree 路接通（T43/T46 的生产接线 + T61）后重跑三类材料 CLI 全流程，并保留真实的 vector/tree 路由证据。
+  本任务重新打开后 G5 门（T43–T48）标记为待复核。
+
+## P6 — 非破坏迁移
+
+### [x] T49 — 增加只读storage audit
+
+- 依赖：T06、T10、T11、T13、T23、T37。
+- 范围：拟新增`cli/storage_commands.py`和`services/storage_audit.py`。
+- 先写测试：单/双正文副本、hash冲突、缺源文件、坏树、短ID冲突、旧向量未知模型和不可解析证据。
+- 完成标准：只读枚举来源、正文、节点、索引及旧副本；输出可对账的分类和样本清单，不触发数据库自动升级或网络修复。
+
+### [x] T50 — 增加确定性的迁移dry-run
+
+- 依赖：T49。
+- 范围：迁移计划生成及`storage migrate --dry-run --json`。
+- 先写测试：两次扫描同输入计划一致；目录/DB hash和mtime不变；歧义记录不会擅自选一份。
+- 完成标准：计划逐条列出导入、复用、冲突、待重算及原因；包含期望源修订，用于apply时检测并发改动。
+
+### [x] T51 — 实现逐文献迁移与恢复
+
+- 依赖：T08、T11、T22、T36、T50。
+- 范围：Database迁移事务、内容校验与逐项checkpoint。
+- 先写测试：apply前源变动、事务中断、重复apply、旧数据残缺；旧文件均保留。
+- 完成标准：按已校验计划导入canonical正文/节点，幂等恢复；冲突或来源不明明确隔离，不以删除旧数据完成迁移。
+
+### [x] T52 — 迁移可确认的旧向量
+
+- 依赖：T23、T24、T25、T51。
+- 范围：旧tree_vectors/node_id到统一向量目录的转换。
+- 先写测试：文本一致但模型未知、ID错配、维度不同和规范化不同；确认兼容的旧向量无需重新嵌入。
+- 完成标准：只复用有完整身份依据的向量，其他列为待计算；新路径不继续双写SQLite浮点向量。
+
+### [x] T53 — 保留旧证据与显式导出兼容
+
+- 依赖：T14、T16、T37、T51。
+- 范围：旧snapshot/evidence解析、别名映射和按需导出。
+- 先写测试：迁移前已发布证据仍读到原修订；导出的MD/树可使用；日常读取不生成导出文件。
+- 完成标准：默认事实仍只有主库；旧发布版本按需兼容，不为所有新文献自动保留第二个检索库。
+
+### [ ] T54 — 用9篇混合样本验收迁移
+
+- 依赖：T48、T50、T51、T52、T53。
+- 范围：由audit选择的PDF/TeX/MD各3篇，使用真实storage/ingest/prepare/ask CLI。
+- 先写测试：兼容路径、重复apply、一次受控中断、迁移前后来源hash/检索证据一致。
+- 完成标准：9篇逐项可对账，无丢文件、重复正文或伪ready；不通过则停留本门，不执行10k apply。
+
+## P7 — 算法验证与规模准备
+
+### [x] T55 — 建立固定评测材料与题集
+
+- 依赖：T03、T48、T54。
+- 范围：现有RAG eval数据协议与CLI；固定文献修订、问题、证据范围及开发/保留集划分。
+- 先写测试：gold引用能从原文读取；题目不引用生成摘要作为事实；评测结果不会混用另一版语料。
+- 完成标准：覆盖术语/公式、文内结构、跨篇多证据及三种材料；来源人工核对，开发和保留集用途明确。
+
+### [ ] T56 — 接入真实对照算法
+
+- 依赖：T01、T02、T25、T46、T55。
+- 范围：评测专用适配器：BM25+vector、真实PageIndex、RAPTOR collapsed、简单串联。
+- 先写测试：记录实际算法来源；RAPTOR保留全层检索，PageIndex不用SQL LIKE；统一模型/上下文配置。
+- 完成标准：CLI能复现各对照结果和成本；基线仅存在于评测入口，不作为生产额外路由。
+- **记录更正（2026-09-15，审阅发现 8）**：已提交的 `raptor_collapsed` 臂（提交 daeeeee）实际打开统一树 active generation，在含结构候选、
+  条件化分组与父节点成本门的产物上做全层平面 ANN——它测的是统一树的平面检索变体，不能使用原始 RAPTOR 的算法标签。处理：
+  该臂改名 `unified_tree_flat`（统一树检索消融，函数/常量/报告字段同步改名，`notes`/`details.source` 明示其读取的产物且声明“not an independent RAPTOR baseline”）；
+  `raptor_collapsed` 改为只接受独立 RAPTOR 构建，并校验来源指纹（算法名+版本、构建参数快照、资料来源、生成时间、内容/成员哈希、
+  generation 与 manifest fingerprint 绑定）；缺失或不匹配时以 `BaselineProvenanceError` fail-closed（报告形态：`status=unavailable`、`details.fail_closed=true`），
+  不再静默回落到统一树。真实 RAPTOR 对照尚未建立，T56 暂不勾选。
+
+### [ ] T57 — 完成开发集消融并冻结参数
+
+- 依赖：T04、T05、T30、T35、T41、T44、T55、T56。
+- 范围：结构先验、结构候选、成本门、根入口限制、父/邻域跳转的消融配置。
+- 先写测试：每次仅改变声明机制，lambda=0范围解释正确，指标计算可复核。
+- 完成标准：开发集选定lambda/成本参数、候选与读取预算、重排阈值；在看保留集结果前记录质量/成本验收阈值，结果差时不宣称算法更好。
+- **记录更正（2026-09-15）**：①`data/integration/unified-tree/ablation-thresholds.json` 已冻结文件里的 `baseline.raptor_collapsed` 与
+  `observed_default`（hit_rate_paper 0.4286）来自上文被改名的统一树平面检索臂；该文件按冻结规则不覆盖，读取时应按 `unified_tree_flat` 解释，
+  后续重冻结改用 `scripts/acceptance/run_ablations.py` 中的新标签（真实 RAPTOR 行留空）。②提交 `9b946be` 修复了结构先验只计算不生效的问题
+  （`soft_assignment()` 阈值化的是未加权的原始概率，lambda 对分配没有作用）——修复前跑出的 lambda 消融对分配无效，因此冻结参数应在修复后的
+  构建上重跑开发集消融再确认。在重跑并给出证据前 T57 不勾选。
+
+### [ ] T58 — 完成100篇CLI运行与故障验收
+
+- 依赖：T48、T54、T57。
+- 范围：三类材料混合100篇，真实CLI、真实模型和受控并发。
+- 先写测试：中断恢复、重复prepare、配置变更、并发任务竞争；验证记录可汇总而不是只看进程退出。
+- 完成标准：来源、正文、有效节点、失败/去重均可对账；有P50/P95、内存、模型token及额外磁盘实测；所有故障关闭后进入规模构建。
+
+### [ ] T59 — 实现有界分批构建与跨批frontier
+
+- 依赖：T35、T36、T37、T57、T58。
+- 范围：同一构建器的批处理调度、跨批摘要frontier及版本记录。
+- 先写测试：同配置分批可复现、跨批多来源、节点全覆盖、一个批次失败不发布完整版本；与小集合完整构建比较。
+- 完成标准：没有第二个语义树引擎；批大小/并发由实测资源确定；记录相对完整聚类的近似差异与质量损失，不假定等价。
+
+## P8 — 既有10k验收和默认切换
+
+### [ ] T60 — 对既有10k审计并执行可恢复迁移
+
+- 依赖：T49、T50、T51、T52、T53、T54、T59。
+- 范围：现有`data/integration/rag-10k`运行库与原输入台账，执行storage CLI。
+- 先写测试：先完整dry-run与样本复核；正式apply支持中断续跑；原文件清单/hash不变。
+- 完成标准：10000条输入与成功/去重/失败/缺失去向逐条对账，不能仅靠paper数量或空inbox判定成功；旧结果保留，不全量重跑ingest。
+
+### [ ] T61 — 通过10k增量prepare与一致性验收
+
+- 依赖：T45、T59、T60。
+- 范围：缺失或失效的FTS、向量、联合节点与索引修订，实际CLI后台任务。
+- 先写测试：按阶段观察日志，受控暂停/恢复，模型失败可定位到任务；查询读取与发布一致。
+- 完成标准：每阶段有输入/复用/新增/失败账目和耗时资源；构建只用index_model，无重复正文/向量副本；不以其他路可用掩盖tree失败。
+
+### [ ] T62 — 通过保留集与10k三路检索验收
+
+- 依赖：T56、T57、T61。
+- 范围：独立tree与完整三路、保留集问题和实际CLI证据核验。
+- 先写测试：保留集来源/参数未变化；原文引用和指标自动校验；人工核对多证据答案的可支持性。
+- 完成标准：硬契约全过，质量/成本达到T57已冻结标准；报告全部基线和失败例，不达标则回到对应算法任务，不能修改保留集掩盖差异。
+- **落点（2026-09-15，审阅发现 8 要求）**：真实 RAPTOR 对照产物的构建不在本轮完成（需要活模型）。**由后续轮次的算法验证开发者（T56/T57/T62 的 owner）
+  在进入 T62 之前**完成：用活模型在独立目录（默认 `data/raptor`，`llamaindex.raptor_storage` 可覆盖，非统一树 `tree_storage`）构建并发布 RAPTOR 产物，
+  同时写入 `raptor-provenance.json`（算法名+版本、构建参数快照、资料来源、生成时间、内容/成员哈希、generation 与 manifest fingerprint）。
+  只有 `drbrain rag baselines --name raptor_collapsed` 通过 `verify_raptor_provenance()` 后产出的结果才可作为 T62 的 RAPTOR 对照数字；
+  校验不通过时该基线以 `status=unavailable`/`fail_closed` 报告，**不得**用统一树产物顶替对照。
+
+### [ ] T63 — 切换本地正式默认配置
+
+- 依赖：T62。
+- 范围：非key配置、三路注册和旧运行路径停用。
+- 先写测试：默认retrievers恰为三路，角色解析正确；ingest/prepare/ask不再写旧文献副本或第二事实库。
+- 完成标准：默认路径使用统一tree；旧pageindex/raptor生产leg、SDK重提交和通用models隐式取用已退出该流程；不修改或提交密钥，不删除旧材料。
+
+### [ ] T64 — 完成回归、文档和可复现交接
+
+- 依赖：T63。
+- 范围：相关测试、必需项目检查、CLI/配置/架构文档和迁移恢复说明。
+- 先写测试：回归集合覆盖路径安全、事务、来源保护、公开CLI兼容及新三路；文档命令在验收配置下可复现。
+- 完成标准：提交与验收记录关联，未解决项为零或明确阻止发布；文档只描述实际能力，保留效果和规模限制；交接者能从CLI重现结果。
+- 10k 验收后的文档归档（用户于 2026-09-15 确认）：入库/迁移、索引、三路检索、引用一致性及故障恢复全部通过并记录证据后，将本轮 RAG 阶段计划、handoff 和历史审阅报告移动到 `docs/archive/rag-10k/`，保留提交、日志与验收记录的关联并修复链接。长期算法契约先归并到当前架构/专题文档；`docs/` 主层只保留当前设计、配置、CLI、运维与验收入口。此门未通过前不执行归档，不删除材料或验收证据。
+
+## CLI验收入口
+
+执行根目录为项目内的 `data/integration/unified-tree`，复用已有命名模型endpoint和密钥引用。下列是验收入口清单，不是本次已经运行的命令：
+
+| CLI入口 | 可执行前提 | 主要观察 |
+| --- | --- | --- |
+| `drbrain check` | T17–T19、T47 | 四类模型实际配置与连通性、脱敏输出 |
+| `drbrain ingest <sample_path> --json` | T22 | 真实素材入主库、原文件保留、阶段状态 |
+| `drbrain index build --json` | T45 | 缺失阶段、缓存命中、联合建树、索引修订（原 `rag prepare` 为隐藏兼容别名） |
+| `drbrain ask <question> --json` | T46 | 实际路由、工具读取、证据、重排和回答 |
+| `drbrain storage audit --json` | T49，拟新增 | 完整存储分类、来源hash与重复/冲突 |
+| `drbrain storage migrate --dry-run --json` | T50，拟新增 | 确定性计划、零写入 |
+| `drbrain storage migrate --json` | T51，拟新增 | 校验后apply、中断恢复、逐条结果 |
+| RAG eval CLI | T55–T57，扩展现有入口 | 固定语料、真实基线、消融、质量和成本 |
+
+`<sample_path>`和`<question>`来自固定样本清单/题集，是模板占位符。实际执行使用项目现有 `uv run drbrain ...`；所有新命令/参数以对应任务的契约测试为准。
+
+## 首批可执行任务
+
+先做T01、T03、T04、T05；T02跟随T01，T06跟随T03。G0通过后，从来源保护T07、正文schema T08与block覆盖T09开始实现。不要从10k重建、修改默认检索名或直接调用SDK chat开始。
+
+## 任务完成记录
+
+只有对应测试与CLI证据通过后，才将任务标题的`[ ]`改为`[x]`。若后续改动使其契约失效，重新打开该任务，并把依赖它的验收门标为待复核。计划文件是工作清单，`acceptance.jsonl`记录运行证据，源码审阅报告不充当运行结果。

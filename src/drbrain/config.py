@@ -47,6 +47,10 @@ class _ConfigBase:
 @dataclass
 class LLMConfig(_ConfigBase):
     models: list[dict] = field(default_factory=list)
+    # Named endpoint registry and role -> endpoint routing.  Legacy chains
+    # below remain supported for older integrations.
+    endpoints: dict[str, dict] = field(default_factory=dict)
+    roles: dict[str, str] = field(default_factory=dict)
     # Role-specific fallback chains. ``models`` remains the legacy default.
     index: list[dict] = field(default_factory=list)
     chat: list[dict] = field(default_factory=list)
@@ -59,6 +63,7 @@ class LLMConfig(_ConfigBase):
 @dataclass
 class MinerUConfig(_ConfigBase):
     token: str = ""
+    api_base_url: str = "https://api.mineru.com/api/v1"
     model: str = "vlm"
     is_ocr: bool = False
     enable_formula: bool = True
@@ -67,6 +72,8 @@ class MinerUConfig(_ConfigBase):
     use_anydoc: bool = True
     ocr_enabled: bool = False
     ocr_language: str = "eng"
+    skip_mineru: bool = False
+    request_timeout: int = 120
 
 
 @dataclass
@@ -96,11 +103,16 @@ class PageIndexConfig(_ConfigBase):
     mode: str = "local"
     model: str = "deepseek-v4-flash"
     chat_model: str = "deepseek-v4-pro"
+    processing_mode: str = "standard"
     storage_path: str = "data/pageindex"
     api_key: str = ""
     base_url: str = ""
     index_backend: dict[str, Any] = field(default_factory=dict)
     chat_backend: dict[str, Any] = field(default_factory=dict)
+    chat_base_url: str = ""
+    chat_api_key: str = ""
+    sdk_timeout: float = 600.0
+    allow_fallback: bool = False
 
 
 @dataclass
@@ -174,6 +186,7 @@ class EmbedConfig(_ConfigBase):
     cache_dir: str = "~/.cache/modelscope/hub/models"
     device: str = "auto"
     extra_gpus: list[int] = field(default_factory=list)  # 大规模嵌入的额外并行卡号
+    cpu_workers: int = 0  # parallel spool 的 CPU worker 进程数（与 extra_gpus 一起启用）
     top_k: int = 10
     source: str = "modelscope"
     hf_endpoint: str = ""
@@ -182,6 +195,21 @@ class EmbedConfig(_ConfigBase):
     batch_size: int = 64
     dim: int = 1024
     max_seq_length: int = 512
+
+
+@dataclass
+class RetrievalConfig(_ConfigBase):
+    """Named retrieval model routing."""
+
+    embed: str = "bge_embed_cpu"
+    rerank: str = "bge_rerank_cpu"
+    # Vector ANN is a derived index; SQLite remains the source of truth for
+    # metadata, text, FTS, and immutable SQL snapshots. ``sqlite`` preserves
+    # the small/legacy two-stage path for programmatic configurations while
+    # production YAML can select ``zvec`` explicitly.
+    vector_backend: str = "sqlite"
+    vector_top_k: int = 100
+    endpoints: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -238,6 +266,32 @@ class LlamaIndexConfig(_ConfigBase):
     rerank: bool = True
     rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
     rerank_top_k: int = 20
+    #: Per-leg recall caps before fusion (T44): BM25 ≈1000, vector ≈100,
+    #: tree ≤100 nodes.
+    bm25_candidates: int = 1000
+    vector_candidates: int = 100
+    tree_candidates: int = 100
+    #: Final context selection (T44): at most ``context_docs`` documents whose
+    #: cumulative estimated tokens fit ``context_token_budget``.
+    context_docs: int = 10
+    context_token_budget: int = 8000
+    #: Unified tree generation root (T45/T47): ``drbrain index build``
+    #: publishes here and readers resolve the active generation from it.
+    tree_storage: str = "data/tree"
+    #: Summary generation cap for the tree builder's contract.  The protocol
+    #: default is 512; reasoning endpoints need headroom beyond their
+    #: reasoning_content or every summary comes back empty/truncated
+    #: (T48 probe: deepseek-flash needed >4096, 8192 works).
+    summary_max_tokens: int = 512
+    #: Summary input budget for the tree builder's contract (protocol default
+    #: 3500 tokens).  Larger groups need a larger prompt budget.
+    summary_input_budget: int = 3500
+    #: Bounded frontier per hierarchy run (T59 scheduling): the first N ready
+    #: leaves enter one run; the rest stay roots and re-enter later runs.
+    #: 0 keeps the unbounded whole-frontier fit.
+    hierarchy_frontier_limit: int = 0
+    #: Concurrent summary calls per hierarchy round (T59 scheduling).
+    hierarchy_summary_workers: int = 1
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000
@@ -351,6 +405,7 @@ class Config(_ConfigBase):
     queue: QueueConfig = field(default_factory=QueueConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
     embed: EmbedConfig = field(default_factory=EmbedConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llamaindex: LlamaIndexConfig = field(default_factory=LlamaIndexConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
     autoresearch: AutoresearchConfig = field(default_factory=AutoresearchConfig)
@@ -432,6 +487,7 @@ class Config(_ConfigBase):
                 "queue",
                 "fetch",
                 "embed",
+                "retrieval",
                 "llamaindex",
                 "backup",
                 "autoresearch",
@@ -466,6 +522,7 @@ class Config(_ConfigBase):
                 queue=QueueConfig(**sections["queue"]),
                 fetch=FetchConfig(**sections["fetch"]),
                 embed=EmbedConfig(**sections["embed"]),
+                retrieval=RetrievalConfig(**sections["retrieval"]),
                 llamaindex=LlamaIndexConfig.from_dict(sections["llamaindex"]),
                 backup=BackupConfig(
                     ssh_bin=backup_raw.get("ssh_bin", "ssh"),
@@ -619,6 +676,19 @@ def load_config(
 
     Returns a typed Config object with full dict-like backward compatibility.
     """
+    # Load deployment secrets from the invoking project directory.  Explicit
+    # shell variables win; the file is never copied into a runtime root.
+    try:
+        from dotenv import load_dotenv
+
+        if (
+            str(base_path) == "config.yaml"
+            or "DRBRAIN_ROOT" in os.environ
+            or "DRBRAIN_RUNTIME_ROOT" in os.environ
+        ):
+            load_dotenv(Path.cwd() / ".env", override=False)
+    except Exception:
+        pass
     # Standalone workers launched with ``DRBRAIN_ROOT`` may have a different
     # current working directory.  Keep the default config lookup in the same
     # runtime namespace while preserving explicit ``base_path`` behavior.

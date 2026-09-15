@@ -21,7 +21,7 @@ temporal evolution, structural patterns, difficulty assessment, and composite fr
 Knowledge graph must be built with embeddings and closure for best results (see `kg-build` skill):
 
 ```bash
-drbrain build && drbrain embed --tree && drbrain closure --mode hybrid
+drbrain graph build && drbrain index build && drbrain graph closure --mode hybrid
 ```
 
 Some commands require closure: `evolve --stats`, `paradigm`, `transfers`, `isomorphism`.

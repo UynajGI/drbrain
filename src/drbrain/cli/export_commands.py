@@ -263,18 +263,138 @@ def queue_resolve_all_cmd(
     typer.echo(f"{result['count']} item(s) {action}ed.")
 
 
+def _delete_papers_by_source(
+    db,
+    cfg: dict,
+    *,
+    source: str,
+    force: bool,
+    rm_files: bool,
+    dry_run: bool,
+    json_output: bool,
+) -> None:
+    """Bulk deletion: drop every paper whose ``raw`` artifact came from ``source``."""
+    import shutil as _shutil
+
+    pids = db.list_paper_ids_by_raw_source(source)
+    if not pids:
+        if json_output:
+            typer.echo(json.dumps({"source": source, "matched": 0, "deleted": 0}))
+        else:
+            typer.echo(f"No papers with raw source '{source}'.")
+        return
+
+    sample = [(pid, (db.get_paper(pid) or {}).get("title", "")) for pid in pids[:10]]
+    if dry_run or not force:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "source": source,
+                        "matched": len(pids),
+                        "deleted": 0,
+                        "dry_run": bool(dry_run),
+                        "requires_force": not force,
+                        "sample": [{"local_id": pid, "title": title} for pid, title in sample],
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            typer.echo(f"{len(pids)} paper(s) with raw source '{source}':")
+            for pid, title in sample:
+                typer.echo(f"  {pid}  {title[:70]}")
+            if not force and not dry_run:
+                typer.echo("Pass --force to delete them (--dry-run shows this preview only).")
+        if dry_run:
+            return
+        raise typer.Exit(1)
+
+    _dvcfg = cfg if isinstance(cfg, dict) else {}
+    papers_dir = Path(_dvcfg.get("dirs", {}).get("papers", "data/papers"))
+    deleted = 0
+    files_deleted = 0
+    for pid in pids:
+        db.delete_paper(pid)
+        deleted += 1
+        if rm_files:
+            pdir = resolve_paper_dir(papers_dir, pid)
+            if pdir.exists():
+                _shutil.rmtree(pdir)
+                files_deleted += 1
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "source": source,
+                    "matched": len(pids),
+                    "deleted": deleted,
+                    "files_deleted": files_deleted,
+                },
+                indent=2,
+            )
+        )
+        return
+    typer.echo(f"Deleted {deleted} paper(s) with raw source '{source}'.")
+    if rm_files:
+        typer.echo(f"  files: removed {files_deleted} paper director(ies)")
+
+
 def delete_cmd(
     ctx: typer.Context,
-    local_id: str,
+    local_id: str = typer.Argument(None, help="Paper local_id"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
     rm_files: bool = typer.Option(False, "--rm-files", help="Also delete paper directory"),
+    source: str = typer.Option(
+        None,
+        "--source",
+        help=(
+            "Bulk mode: delete every paper whose raw artifact came from this "
+            "material kind (e.g. tex, pdf, md)"
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Bulk mode: only preview what would be deleted"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
-    """Delete a paper and all its associated data from the graph."""
+    """Delete a paper and all its associated data from the graph.
+
+    With ``--source`` every paper ingested from that material family is deleted
+    in one pass (pair with ``--dry-run`` first; deletion requires ``--force``).
+    Intended for re-processing a whole material family from scratch.
+    """
     import shutil as _shutil
+
+    # Normalize: direct calls (tests, internal callers) may pass Typer defaults.
+    if isinstance(source, typer.models.OptionInfo):
+        source = source.default
+    if isinstance(dry_run, typer.models.OptionInfo):
+        dry_run = dry_run.default
+    if isinstance(local_id, typer.models.OptionInfo):
+        local_id = local_id.default
 
     cfg = ctx.obj["config"]
     with open_db(cfg) as db:
+        if source:
+            if local_id:
+                typer.echo("Pass either a paper ID or --source, not both.", err=True)
+                raise typer.Exit(2)
+            _delete_papers_by_source(
+                db,
+                cfg,
+                source=source,
+                force=force,
+                rm_files=rm_files,
+                dry_run=dry_run,
+                json_output=json_output,
+            )
+            return
+        if not local_id:
+            typer.echo("Provide a paper ID, or --source for bulk deletion.", err=True)
+            raise typer.Exit(2)
+
         paper = db.get_paper(local_id)
         if paper is None:
             if json_output:

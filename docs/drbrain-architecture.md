@@ -142,7 +142,9 @@ flowchart LR
 
 ### 3.1 Ingest（parser/）
 
-- **MinerU** PDF 解析 + **PageIndex** 树解析器：把 PDF 结构化成章节树（`tree.json`），这是后续 RAG 树检索的语义单元。
+- **MinerU** PDF 解析（`parser/`）→ 正文进 **canonical 正文**（document revision + content blocks + 每块一个 leaf）；
+  `data/papers/<id>/` 只留原件与附件，新文献**不再写** `raw.md`/`tree.json`（层次由 `rag prepare` 统一构建）。
+  旧文献仍可经 PageIndex 解析器生成的 `tree.json` 走只读兼容路径。
 - 5 源元数据归一（arXiv / CrossRef / Semantic Scholar / OpenAlex / DeepXiv）。
 
 ### 3.2 Build（extractor/ + graph/）

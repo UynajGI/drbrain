@@ -816,55 +816,137 @@ name = "drbrain"
 version = "0.1.0a3"
 source = { editable = "." }
 dependencies = [
+    { name = "click" },
+    { name = "loguru" },
+    { name = "networkx" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+analytics = [
+    { name = "duckdb" },
+    { name = "scikit-learn" },
+    { name = "umap-learn" },
+]
+anydoc = [
+    { name = "firecrawl-anydoc" },
+    { name = "ocrmypdf" },
+]
+full = [
     { name = "arxiv" },
     { name = "deepxiv-sdk" },
+    { name = "duckdb" },
     { name = "fastapi" },
+    { name = "firecrawl-anydoc" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "jsonschema" },
     { name = "llama-index-core" },
     { name = "llama-index-llms-openai" },
     { name = "llama-index-retrievers-bm25" },
-    { name = "loguru" },
     { name = "mcp" },
     { name = "modelscope" },
-    { name = "networkx" },
     { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "ocrmypdf" },
     { name = "openai" },
+    { name = "openpyxl" },
     { name = "pageindex" },
+    { name = "pdf-inspector" },
     { name = "pyalex" },
-    { name = "pydantic" },
     { name = "pymupdf" },
     { name = "pymupdf4llm" },
+    { name = "pypdf2" },
+    { name = "pypdfium2" },
+    { name = "python-docx" },
+    { name = "python-dotenv" },
     { name = "python-multipart" },
-    { name = "pyyaml" },
+    { name = "python-pptx" },
     { name = "rank-bm25" },
-    { name = "requests" },
-    { name = "rich" },
+    { name = "regex" },
     { name = "scikit-learn" },
     { name = "sentence-transformers" },
+    { name = "sortedcontainers" },
     { name = "tiktoken" },
-    { name = "typer" },
+    { name = "torch" },
     { name = "umap-learn" },
     { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-analytics = [
-    { name = "duckdb" },
-]
-anydoc = [
-    { name = "firecrawl-anydoc" },
-    { name = "ocrmypdf" },
+    { name = "zvec" },
 ]
 gnn = [
     { name = "torch" },
+]
+ingest = [
+    { name = "arxiv" },
+    { name = "deepxiv-sdk" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "openai" },
+    { name = "pageindex" },
+    { name = "pdf-inspector" },
+    { name = "pyalex" },
+    { name = "pymupdf" },
+    { name = "pymupdf4llm" },
+    { name = "tiktoken" },
+]
+llm = [
+    { name = "openai" },
+    { name = "pageindex" },
+    { name = "tiktoken" },
+]
+models = [
+    { name = "modelscope" },
+    { name = "sentence-transformers" },
 ]
 office = [
     { name = "openpyxl" },
     { name = "python-docx" },
     { name = "python-pptx" },
+]
+pdf = [
+    { name = "pdf-inspector" },
+    { name = "pymupdf" },
+    { name = "pymupdf4llm" },
+]
+plugins = [
+    { name = "jsonschema" },
+    { name = "mcp" },
+]
+providers = [
+    { name = "arxiv" },
+    { name = "deepxiv-sdk" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "pyalex" },
+]
+rag = [
+    { name = "llama-index-core" },
+    { name = "llama-index-llms-openai" },
+    { name = "llama-index-retrievers-bm25" },
+    { name = "rank-bm25" },
+    { name = "zvec" },
+]
+tree = [
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "pypdf2" },
+    { name = "pypdfium2" },
+    { name = "python-dotenv" },
+    { name = "regex" },
+    { name = "scikit-learn" },
+    { name = "sortedcontainers" },
+    { name = "tiktoken" },
+    { name = "umap-learn" },
+]
+web = [
+    { name = "fastapi" },
+    { name = "jinja2" },
+    { name = "python-multipart" },
+    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -884,46 +966,106 @@ materials = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arxiv", specifier = ">=2.0" },
-    { name = "deepxiv-sdk", specifier = ">=0.2.5" },
+    { name = "arxiv", marker = "extra == 'full'", specifier = ">=2.0" },
+    { name = "arxiv", marker = "extra == 'ingest'", specifier = ">=2.0" },
+    { name = "arxiv", marker = "extra == 'providers'", specifier = ">=2.0" },
+    { name = "click", specifier = ">=8.1" },
+    { name = "deepxiv-sdk", marker = "extra == 'full'", specifier = ">=0.2.5" },
+    { name = "deepxiv-sdk", marker = "extra == 'ingest'", specifier = ">=0.2.5" },
+    { name = "deepxiv-sdk", marker = "extra == 'providers'", specifier = ">=0.2.5" },
     { name = "duckdb", marker = "extra == 'analytics'" },
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "duckdb", marker = "extra == 'full'" },
+    { name = "fastapi", marker = "extra == 'full'", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
     { name = "firecrawl-anydoc", marker = "extra == 'anydoc'", specifier = ">=0.1" },
-    { name = "httpx", extras = ["socks"], specifier = ">=0.27" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "llama-index-core", specifier = ">=0.14.23" },
-    { name = "llama-index-llms-openai", specifier = ">=0.6.0" },
-    { name = "llama-index-retrievers-bm25", specifier = ">=0.7.1" },
+    { name = "firecrawl-anydoc", marker = "extra == 'full'", specifier = ">=0.1" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'full'", specifier = ">=0.27" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'ingest'", specifier = ">=0.27" },
+    { name = "httpx", extras = ["socks"], marker = "extra == 'providers'", specifier = ">=0.27" },
+    { name = "jinja2", marker = "extra == 'full'", specifier = ">=3.1" },
+    { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
+    { name = "jsonschema", marker = "extra == 'full'", specifier = ">=4.23" },
+    { name = "jsonschema", marker = "extra == 'plugins'", specifier = ">=4.23" },
+    { name = "llama-index-core", marker = "extra == 'full'", specifier = ">=0.14.23" },
+    { name = "llama-index-core", marker = "extra == 'rag'", specifier = ">=0.14.23" },
+    { name = "llama-index-llms-openai", marker = "extra == 'full'", specifier = ">=0.6.0" },
+    { name = "llama-index-llms-openai", marker = "extra == 'rag'", specifier = ">=0.6.0" },
+    { name = "llama-index-retrievers-bm25", marker = "extra == 'full'", specifier = ">=0.7.1" },
+    { name = "llama-index-retrievers-bm25", marker = "extra == 'rag'", specifier = ">=0.7.1" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mcp", specifier = ">=2.0.0" },
-    { name = "modelscope", specifier = ">=1.39.0" },
+    { name = "mcp", marker = "extra == 'full'", specifier = ">=2.0.0" },
+    { name = "mcp", marker = "extra == 'plugins'", specifier = ">=2.0.0" },
+    { name = "modelscope", marker = "extra == 'full'", specifier = ">=1.39.0" },
+    { name = "modelscope", marker = "extra == 'models'", specifier = ">=1.39.0" },
     { name = "networkx", specifier = ">=3.4" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "numpy", marker = "extra == 'full'", specifier = ">=1.26" },
+    { name = "numpy", marker = "extra == 'tree'", specifier = ">=1.26" },
     { name = "ocrmypdf", marker = "extra == 'anydoc'", specifier = ">=16" },
-    { name = "openai", specifier = ">=2.54" },
+    { name = "ocrmypdf", marker = "extra == 'full'", specifier = ">=16" },
+    { name = "openai", marker = "extra == 'full'", specifier = ">=2.54" },
+    { name = "openai", marker = "extra == 'ingest'", specifier = ">=2.54" },
+    { name = "openai", marker = "extra == 'llm'", specifier = ">=2.54" },
+    { name = "openpyxl", marker = "extra == 'full'", specifier = ">=3.1" },
     { name = "openpyxl", marker = "extra == 'office'", specifier = ">=3.1" },
-    { name = "pageindex", specifier = ">=0.1.0" },
-    { name = "pyalex", specifier = ">=0.21" },
+    { name = "pageindex", marker = "extra == 'full'", specifier = ">=0.1.0" },
+    { name = "pageindex", marker = "extra == 'ingest'", specifier = ">=0.1.0" },
+    { name = "pageindex", marker = "extra == 'llm'", specifier = ">=0.1.0" },
+    { name = "pdf-inspector", marker = "extra == 'full'", specifier = ">=1.19.0" },
+    { name = "pdf-inspector", marker = "extra == 'ingest'", specifier = ">=1.19.0" },
+    { name = "pdf-inspector", marker = "extra == 'pdf'", specifier = ">=1.19.0" },
+    { name = "pyalex", marker = "extra == 'full'", specifier = ">=0.21" },
+    { name = "pyalex", marker = "extra == 'ingest'", specifier = ">=0.21" },
+    { name = "pyalex", marker = "extra == 'providers'", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.10" },
-    { name = "pymupdf", specifier = ">=1.27.2.3" },
-    { name = "pymupdf4llm", specifier = ">=0.0.13" },
+    { name = "pymupdf", marker = "extra == 'full'", specifier = ">=1.27.2.3" },
+    { name = "pymupdf", marker = "extra == 'ingest'", specifier = ">=1.27.2.3" },
+    { name = "pymupdf", marker = "extra == 'pdf'", specifier = ">=1.27.2.3" },
+    { name = "pymupdf4llm", marker = "extra == 'full'", specifier = ">=0.0.13" },
+    { name = "pymupdf4llm", marker = "extra == 'ingest'", specifier = ">=0.0.13" },
+    { name = "pymupdf4llm", marker = "extra == 'pdf'", specifier = ">=0.0.13" },
+    { name = "pypdf2", marker = "extra == 'full'", specifier = ">=3.0" },
+    { name = "pypdf2", marker = "extra == 'tree'", specifier = ">=3.0" },
+    { name = "pypdfium2", marker = "extra == 'full'", specifier = ">=5" },
+    { name = "pypdfium2", marker = "extra == 'tree'", specifier = ">=5" },
+    { name = "python-docx", marker = "extra == 'full'", specifier = ">=1.1" },
     { name = "python-docx", marker = "extra == 'office'", specifier = ">=1.1" },
-    { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "python-dotenv", marker = "extra == 'full'", specifier = ">=1.0" },
+    { name = "python-dotenv", marker = "extra == 'tree'", specifier = ">=1.0" },
+    { name = "python-multipart", marker = "extra == 'full'", specifier = ">=0.0.20" },
+    { name = "python-multipart", marker = "extra == 'web'", specifier = ">=0.0.20" },
+    { name = "python-pptx", marker = "extra == 'full'", specifier = ">=1.0" },
     { name = "python-pptx", marker = "extra == 'office'", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rank-bm25", specifier = ">=0.2" },
+    { name = "rank-bm25", marker = "extra == 'full'", specifier = ">=0.2" },
+    { name = "rank-bm25", marker = "extra == 'rag'", specifier = ">=0.2" },
+    { name = "regex", marker = "extra == 'full'", specifier = ">=2024.0" },
+    { name = "regex", marker = "extra == 'tree'", specifier = ">=2024.0" },
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.9" },
-    { name = "scikit-learn", specifier = ">=1.5" },
-    { name = "sentence-transformers", specifier = ">=5.6.1" },
-    { name = "tiktoken", specifier = ">=0.12" },
+    { name = "scikit-learn", marker = "extra == 'analytics'", specifier = ">=1.5" },
+    { name = "scikit-learn", marker = "extra == 'full'", specifier = ">=1.5" },
+    { name = "scikit-learn", marker = "extra == 'tree'", specifier = ">=1.5" },
+    { name = "sentence-transformers", marker = "extra == 'full'", specifier = ">=5.6.1" },
+    { name = "sentence-transformers", marker = "extra == 'models'", specifier = ">=5.6.1" },
+    { name = "sortedcontainers", marker = "extra == 'full'", specifier = ">=2.4" },
+    { name = "sortedcontainers", marker = "extra == 'tree'", specifier = ">=2.4" },
+    { name = "tiktoken", marker = "extra == 'full'", specifier = ">=0.12" },
+    { name = "tiktoken", marker = "extra == 'ingest'", specifier = ">=0.12" },
+    { name = "tiktoken", marker = "extra == 'llm'", specifier = ">=0.12" },
+    { name = "tiktoken", marker = "extra == 'tree'", specifier = ">=0.12" },
+    { name = "torch", marker = "extra == 'full'", specifier = ">=2.0,<2.14" },
     { name = "torch", marker = "extra == 'gnn'", specifier = ">=2.0,<2.14" },
     { name = "typer", specifier = ">=0.15" },
-    { name = "umap-learn", specifier = ">=0.5" },
-    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "umap-learn", marker = "extra == 'analytics'", specifier = ">=0.5" },
+    { name = "umap-learn", marker = "extra == 'full'", specifier = ">=0.5" },
+    { name = "umap-learn", marker = "extra == 'tree'", specifier = ">=0.5" },
+    { name = "uvicorn", marker = "extra == 'full'", specifier = ">=0.30" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.30" },
+    { name = "zvec", marker = "extra == 'full'", specifier = ">=0.7.0" },
+    { name = "zvec", marker = "extra == 'rag'", specifier = ">=0.7.0" },
 ]
-provides-extras = ["office", "gnn", "analytics", "anydoc"]
+provides-extras = ["pdf", "llm", "models", "rag", "providers", "web", "plugins", "analytics", "tree", "office", "gnn", "anydoc", "ingest", "full"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2893,6 +3035,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pdf-inspector"
+version = "1.19.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/97/ee0db6a82ced448dc565cf9b879c3cfd484b16cfeb8095a5e9a581a8b7dc/pdf_inspector-1.19.0.tar.gz", hash = "sha256:aca8b30d961f46721a53b9f280bd5906a6ddeea0ae8838637ecc747c38a8e9ed", size = 1817361, upload-time = "2026-09-09T17:46:55.195Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1d/f5/bf3b6ab157d33f53268bb3b417e6706035e3d652e39a60767e5f93c432f9/pdf_inspector-1.19.0-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:caee6b12b6a54d6ab5dddd690ae40f35e744cd5a490008c803253fdc8a384082", size = 4978774, upload-time = "2026-09-09T17:46:40.694Z" },
+    { url = "https://files.pythonhosted.org/packages/92/7c/39e8326752356b7fe6681f2d965ac01cd0d281aac9cee76c44f4d83343a3/pdf_inspector-1.19.0-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:1cb358fa2379cffa6aa9d71fe6223a61d49978c89dabda947fc5370160ed4d8c", size = 4700122, upload-time = "2026-09-09T17:46:42.716Z" },
+    { url = "https://files.pythonhosted.org/packages/05/71/b3fa0c0a3bec668bdc23e06541f0c69dcae5b220bcb874548160b4f5f4fc/pdf_inspector-1.19.0-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5f01374e12a14f6318413bef3d9ddf2c476dd4baf47a3163a46713057398bd8d", size = 5241962, upload-time = "2026-09-09T17:46:44.545Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/1d/8a5c31c9ae1e6e6cbbe68dc51f7842cb7fb7cf034d035f4c9ecd5fd9979c/pdf_inspector-1.19.0-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:42c6c9810e9e810f2e3f6c2a8d1cfc270b82412fb7ae4e915a33e71a75fb229a", size = 5513785, upload-time = "2026-09-09T17:46:50.6Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/d5/e538d7f58fbb2c4c4142f10546bce0a473038f0c58e413ddcd042b71bf17/pdf_inspector-1.19.0-cp38-abi3-win_amd64.whl", hash = "sha256:1be0264a64e29e791c622f0fb8ed4bc201af6088dc2737deeef69f91a3787b97", size = 4840592, upload-time = "2026-09-09T17:46:53.511Z" },
+]
+
+[[package]]
 name = "pdfminer-six"
 version = "20260107"
 source = { registry = "https://pypi.org/simple" }
@@ -4815,4 +4970,33 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/30/21/093488dfc7cc8964ded15ab726fad40f25fd3d788fd741cc1c5a17d78ee8/zipp-3.23.1.tar.gz", hash = "sha256:32120e378d32cd9714ad503c1d024619063ec28aad2248dc6672ad13edfa5110", size = 25965, upload-time = "2026-04-13T23:21:46.6Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/08/8a/0861bec20485572fbddf3dfba2910e38fe249796cb73ecdeb74e07eeb8d3/zipp-3.23.1-py3-none-any.whl", hash = "sha256:0b3596c50a5c700c9cb40ba8d86d9f2cc4807e9bedb06bcdf7fac85633e444dc", size = 10378, upload-time = "2026-04-13T23:21:45.386Z" },
+]
+
+[[package]]
+name = "zvec"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'emscripten' or sys_platform == 'win32'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/93/bcd9048bba4490543306c4442e0edcad17a1121952e996c4d0623d4ec37a/zvec-0.7.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:ab0ea8c6ad3a815d366c33c12910ab29330b067fd5d8b298479dbf1a6036cf34", size = 10653019, upload-time = "2026-08-26T04:00:52.778Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/e1/1b2f2805268780708d85a6331eb506f0e026b2cd536ee1d3bc30d6c722ed/zvec-0.7.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:b0d956395c3accc191eb6021532b851aa205e3f8b10db857ba5b255fa27c2956", size = 15151647, upload-time = "2026-08-26T05:04:44.346Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/91/fc52e0834bebcac5ed0bcf9f07196595074d864d340fbf7ff36a0d3f3332/zvec-0.7.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:89aeb42c9318a7a6a69f705ca92af329a5f9a608d25f947ca46045a506a61982", size = 16987010, upload-time = "2026-08-26T06:03:54.69Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/cb/7d685448b6397e8f200416f357a33230ca0985a65ddd20d7dc61aa791b8a/zvec-0.7.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:39b3248583415a5018ebce85a81e3bb2f450988e3c35359fda160ab0ba863808", size = 16247178, upload-time = "2026-08-26T05:04:46.946Z" },
+    { url = "https://files.pythonhosted.org/packages/60/dc/396b4f70f393ed858cf74a08157336e1d282e9f4150e8a84079e248d5edf/zvec-0.7.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:b60aac076629320b2d8ea63e3cf44bd3d7d364e63b9006712c04f0dbf8ec4eda", size = 17818035, upload-time = "2026-08-26T06:03:57.293Z" },
+    { url = "https://files.pythonhosted.org/packages/41/c0/96c1099659eb4fc00ecbf93d0efa72a35597b886abdea493f2c188e4e810/zvec-0.7.0-cp312-cp312-win_amd64.whl", hash = "sha256:4a29a8064875fc55dd8d5a2066f6524c387f04b168182e2edffe0d175c5d358d", size = 11320749, upload-time = "2026-08-26T03:58:00.295Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/44/11e62b9b90908556f3d0b4699b14600637321d4a749e77636d7767803941/zvec-0.7.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:11d7bf36b1db0bbe08270f609990dc007129a96661d9a5ff15c5338f7247c51d", size = 10653127, upload-time = "2026-08-26T04:00:55.055Z" },
+    { url = "https://files.pythonhosted.org/packages/74/f4/5aa84ef97f1e4c21106866827c23da4e643a9ec9ca0e859d460f53035091/zvec-0.7.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:e1a06666c16d9caa4012c82223b7d25b02419e8ed73d3596d0f949b6691df22e", size = 15151556, upload-time = "2026-08-26T05:04:49.749Z" },
+    { url = "https://files.pythonhosted.org/packages/57/86/e9fdb26a04c0bdcdb357b607b36486b320a86efce9df6b3827d0187a25d3/zvec-0.7.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:1316ef51eb85c11836ad6f309ff2546c0f1237883499d629a2ace7ef92aa8641", size = 16987459, upload-time = "2026-08-26T06:03:59.857Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/0e/fd1275c5672dfdc4f98560d55f4671854d058033478946c07a33cd115a86/zvec-0.7.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:f0c2106fe60d3ea5e5fd4841e38a190b2e599d929e90aa8a6e6e758f59b7292e", size = 16246636, upload-time = "2026-08-26T05:04:52.363Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/dd/959e9f0d31049535a5889249b281406ab0df46d11b078e3907508f47cfa0/zvec-0.7.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:d020728e8b9d019b548a36da68e95e01aaff53ebbfa249bf4253c02896f39a8e", size = 17817652, upload-time = "2026-08-26T06:04:02.166Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/30/f1d0334dfda82277ae94c82c215c67a364db00bb003cf048582d5980fbf5/zvec-0.7.0-cp313-cp313-win_amd64.whl", hash = "sha256:d77e8c32f44a21e58c8c8ae66c5fedfd3a378ccd92fe749e251ff6a414257e2f", size = 11320700, upload-time = "2026-08-26T03:58:02.995Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/e9/d51c27fea8bd989c23fe3f1d39879abcf2f1123071ea6451e54fc9b6b84f/zvec-0.7.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:7a8baca94d4533ba4a5492ae13626bb44ff347b1c91b086c3731e11dd18aff6f", size = 10654270, upload-time = "2026-08-26T04:00:56.962Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/fe/4c2c47d925e58cf5f3622e6fbfd9dde9890edc7376ce4150a8a24afeaa2e/zvec-0.7.0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:d3005b6e74527c5ef749c46598b6616701c028d7a7afc324990f5ee3d07871d6", size = 15154171, upload-time = "2026-08-26T05:04:54.925Z" },
+    { url = "https://files.pythonhosted.org/packages/12/61/3db280a75e95638f218443d3bfa5438d79bda7b8075d6972d67c61b83097/zvec-0.7.0-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:41bf392648b9369a5360455fe1a360fa55e3e6cceecc9b5615ba0fdf6545787e", size = 16988594, upload-time = "2026-08-26T06:04:04.357Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/f4/a53f15480e7f0f15e8987af7e0fff6299473b1eed993e7f0fec39c6d360e/zvec-0.7.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:0e58182c06ccc55a3b50ca26502c40d7c8e8009693749538acafccc86b79baf0", size = 16252423, upload-time = "2026-08-26T05:04:57.623Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/7b/6660218fe288af8fd07075c65a9b896d92cc2aea6150dab0eed68a605bb6/zvec-0.7.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:ac021b603c4c0cbebe8db92a1fee4367c3c74d2cf48cf5874b80576e767648af", size = 17819460, upload-time = "2026-08-26T06:04:06.73Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/41/573497f28914f747df84db20067a83aa2c78bdf33e1a3849537d46c95cb1/zvec-0.7.0-cp314-cp314-win_amd64.whl", hash = "sha256:1d1b070e68ffc0670c0833e3f4334ce510e48c9c3a5dd43a624723f3b7b2dbc2", size = 11745529, upload-time = "2026-08-26T03:58:05.774Z" },
 ]

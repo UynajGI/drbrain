@@ -20,7 +20,7 @@ work on the directed graph of concepts and relations extracted from the library.
 
 ## Prerequisites
 
-Knowledge graph must be built (`kg-build` skill). For `query` (TransE complex queries), embeddings must be trained (`drbrain embed`). For `traverse-from`, the PageIndex tree must exist (`drbrain ingest`).
+Knowledge graph must be built (`kg-build` skill). For `query` (TransE complex queries), embeddings must be trained (`drbrain graph embed`). For `traverse-from`, the PageIndex tree must exist (`drbrain ingest`).
 
 ## Operations
 
@@ -70,7 +70,7 @@ drbrain graph describe "Attention Mechanism" --depth 2
 ### query — Complex embedding queries
 
 Execute TransE embedding-based complex queries with ∧ (intersect), ∨ (union), ¬ (negate)
-operators. Requires trained embeddings (`drbrain embed`):
+operators. Requires trained embeddings (`drbrain graph embed`):
 
 ```bash
 drbrain graph query '{"type": "project", "entity": "Attention", "relation": "addresses"}'

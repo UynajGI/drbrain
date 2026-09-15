@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -233,7 +234,7 @@ def reason_cmd(
         if resolve_engine(cfg, "llamaindex") != "llamaindex":
             typer.echo(
                 "[reason] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-                "in config.yaml and run `drbrain rag index` to build the index",
+                "in config.yaml and run `drbrain index build` to build the index",
                 err=True,
             )
             db.close()
@@ -330,14 +331,29 @@ def ask_cmd(
         ..., help="Natural language question about the knowledge graph"
     ),
     top_k: int = typer.Option(5, "--top", "-k", help="Number of sections to retrieve"),
+    legs: str = typer.Option(
+        "",
+        "--legs",
+        help="Override the retrieval route for this query (e.g. bm25,vector,tree)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
+    pageindex_native: bool = typer.Option(
+        False,
+        "--pageindex-native",
+        help="Use PageIndex native local chat (requires --pageindex-paper)",
+    ),
+    pageindex_paper: str | None = typer.Option(
+        None,
+        "--pageindex-paper",
+        help="Paper local_id for PageIndex native document QA",
+    ),
 ):
     """Ask a question in natural language — LlamaIndex retrieval + REFINE synthesis.
 
     Sole engine since T9 (终态清理): the legacy hybrid-search + graph-context
     path and the ``--engine``/``--hyde``/``--rerank``/``--rrf-k`` switches were
     removed (design §1 替换清单). Requires ``llamaindex.enabled: true`` and a
-    built index (``drbrain rag index``); the answer includes structured
+    built index (``drbrain index build``); the answer includes structured
     sources.
 
     Example: drbrain ask "Is attention better than CNN for NLP?"
@@ -347,16 +363,39 @@ def ask_cmd(
         top_k = int(top_k.default or 5)
     if isinstance(json_output, typer.models.OptionInfo):
         json_output = json_output.default
+    if isinstance(legs, typer.models.OptionInfo):
+        legs = str(legs.default or "")
+
+    route: list[str] | None = None
+    if str(legs or "").strip():
+        from drbrain.rag.legs import LegConfigError, normalize_legs
+
+        route = [item.strip() for item in str(legs).split(",") if item.strip()]
+        try:
+            normalize_legs(route)
+        except LegConfigError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--legs") from exc
 
     question_text = " ".join(question)
     cfg = ctx.obj["config"]
 
-    from drbrain.rag.engine import resolve_engine
+    if pageindex_native:
+        if not pageindex_paper:
+            raise typer.BadParameter("--pageindex-native requires --pageindex-paper")
+        _ask_pageindex_native_cli(
+            cfg,
+            question_text,
+            pageindex_paper,
+            json_output=json_output,
+        )
+        return
+
+    from drbrain.rag.engine import AskIndexNotPreparedError, resolve_engine
 
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
             "[ask] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "in config.yaml and run `drbrain rag index` to build the index",
+            "in config.yaml and run `drbrain index build` to prepare the index",
             err=True,
         )
         raise typer.Exit(1)
@@ -364,7 +403,27 @@ def ask_cmd(
     db = Database(cfg["db"]["path"])
     try:
         try:
-            _ask_llamaindex_cli(cfg, db, question_text, top_k=top_k, json_output=json_output)
+            _ask_llamaindex_cli(
+                cfg, db, question_text, top_k=top_k, json_output=json_output, legs=route
+            )
+        except AskIndexNotPreparedError as exc:
+            payload = {
+                "question": question_text,
+                "answer": f"index not prepared for engine {exc.engine!r}: run `{exc.hint}`",
+                "status": "source_unavailable",
+                "engine": exc.engine,
+                "hint": exc.hint,
+                "sources": [],
+                "evidence_ids": [],
+            }
+            if json_output:
+                typer.echo(json.dumps(redact_sensitive(payload), ensure_ascii=False, default=str))
+            else:
+                typer.echo(
+                    f"[ask] index not prepared for {exc.engine}: run `{exc.hint}`",
+                    err=True,
+                )
+            raise typer.Exit(1) from exc
         except Exception as exc:
             typer.echo(
                 f"[ask] llamaindex query failed: "
@@ -377,7 +436,12 @@ def ask_cmd(
 
 
 def _ask_llamaindex_cli(
-    cfg: Any, db: Database, question: str, top_k: int, json_output: bool
+    cfg: Any,
+    db: Database,
+    question: str,
+    top_k: int,
+    json_output: bool,
+    legs: list[str] | None = None,
 ) -> None:
     """Run ``ask --engine llamaindex``: answer + structured sources.
 
@@ -390,7 +454,7 @@ def _ask_llamaindex_cli(
     config_secrets = configured_secret_values(cfg)
     streaming = bool(get_llamaindex_config(cfg).streaming)
     if json_output:
-        result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
+        result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False, legs=legs)
         typer.echo(
             json.dumps(
                 redact_sensitive(result),
@@ -403,13 +467,13 @@ def _ask_llamaindex_cli(
 
     if not streaming:
         _render_ask_llamaindex(
-            ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False),
+            ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False, legs=legs),
             secrets=config_secrets,
         )
         return
 
     typer.echo(f"\nQ: {question}\n")
-    result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=True)
+    result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=True, legs=legs)
     final: dict[str, Any] | None = None
     for item in result:
         if "chunk" in item:
@@ -420,6 +484,40 @@ def _ask_llamaindex_cli(
     if final is None:  # pragma: no cover - defensive: empty stream
         final = {"question": question, "answer": "", "sources": [], "engine": "llamaindex"}
     _render_ask_sources(final, secrets=config_secrets)
+
+
+def _ask_pageindex_native_cli(
+    cfg: Any,
+    question: str,
+    paper_id: str,
+    *,
+    json_output: bool,
+) -> None:
+    """Run native PageIndex local chat through the production ``ask`` CLI."""
+    from drbrain.rag.pageindex_native import chat_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    paper_path = paper_dir(papers_root, paper_id)
+    if not paper_path.is_dir():
+        raise typer.BadParameter(f"unknown paper: {paper_id}", param_hint="--pageindex-paper")
+    native = chat_document(cfg, paper_id, paper_path, question)
+    result = {
+        "question": question,
+        "answer": native["answer"],
+        "sources": [
+            {
+                "paper_id": paper_id,
+                "source": "pageindex_native_chat",
+                "pageindex_doc_id": native["pageindex_doc_id"],
+            }
+        ],
+        "engine": "pageindex_native_chat",
+    }
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        _render_ask_llamaindex(result, secrets=configured_secret_values(cfg))
 
 
 def _render_ask_llamaindex(result: dict[str, Any], *, secrets: tuple[str, ...] = ()) -> None:
@@ -859,7 +957,7 @@ def difficulty_cmd(
     else:
         total = sum(len(v) for v in result.values())
         if total == 0:
-            typer.echo("No gaps found. Run: drbrain build first.")
+            typer.echo("No gaps found. Run: drbrain graph build first.")
         else:
             typer.echo(f"\nDifficulty map ({total} gaps)")
             typer.echo("=" * 50)

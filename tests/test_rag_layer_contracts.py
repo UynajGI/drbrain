@@ -330,14 +330,16 @@ def test_failed_index_build_restores_process_gc_state(tmp_path):
             gc.disable()
 
 
-def test_similarity_cutoff_does_not_misinterpret_rrf_rank_scores():
+def test_similarity_cutoff_does_not_misinterpret_rank_or_logit_scores():
+    """T44: neither RRF ranks nor rerank logits are cosine similarities."""
     from llama_index.core.schema import NodeWithScore, TextNode
 
     from drbrain.rag.engine import SimilarityCutoffPostprocessor
 
     coarse = NodeWithScore(node=TextNode(text="coarse", metadata={"score_kind": "rrf"}), score=0.02)
     ranked = NodeWithScore(
-        node=TextNode(text="ranked", metadata={"score_kind": "rerank"}), score=0.02
+        node=TextNode(text="ranked", metadata={"score_kind": "rerank"}), score=-3.5
     )
     processor = SimilarityCutoffPostprocessor(similarity_cutoff=0.7)
-    assert processor.postprocess_nodes([coarse, ranked]) == [coarse]
+    # No calibrated similarity exists for either node, so both are kept.
+    assert processor.postprocess_nodes([coarse, ranked]) == [coarse, ranked]

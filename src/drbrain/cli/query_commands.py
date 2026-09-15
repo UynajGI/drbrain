@@ -214,35 +214,16 @@ def index_cmd(
 
     By default incremental: skips rebuild if no paper changed since the last
     successful index run. Use --rebuild to force a full rebuild.
+
+    Kept as an importable symbol for the CLI contract tests; the command is
+    registered through the ``index`` sub-app (``drbrain index``), which runs
+    this lexical stage alongside the FTS/vector/tree stages.
     """
+    from drbrain.cli.index_commands import emit_lexical_result, rebuild_lexical_index
+
     cfg = ctx.obj["config"]
-    with open_db(cfg) as db:
-        from drbrain.query.bm25 import build_bm25_index
-
-        # Incremental check: skip if nothing changed since last index run
-        if not rebuild:
-            last_run = db.get_last_run("index")
-            max_ts = db.get_max_paper_timestamp()
-            if last_run is not None and (max_ts is None or max_ts <= last_run):
-                count = db.conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
-                if json_output:
-                    typer.echo(
-                        json.dumps({"documents": count, "indexed": False, "up_to_date": True})
-                    )
-                else:
-                    typer.echo(f"Index up to date ({count} documents, no changes since last run)")
-                return
-
-        typer.echo("Building BM25 index...")
-        index = build_bm25_index(db)
-        doc_count = len(index._documents)
-        db.set_last_run("index")
-        db.commit()
-
-    if json_output:
-        typer.echo(json.dumps({"documents": doc_count, "indexed": True}))
-    else:
-        typer.echo(f"Indexed {doc_count} documents")
+    payload = rebuild_lexical_index(cfg, rebuild=rebuild, notify=typer.echo)
+    emit_lexical_result(payload, json_output=json_output)
 
 
 def query_cmd(
@@ -255,7 +236,7 @@ def query_cmd(
     """Query papers/sections via the LlamaIndex fusion retriever (T9: sole engine).
 
     Section-level hits with paper/node/source back-links. Requires
-    ``llamaindex.enabled: true`` and a built index (``drbrain rag index``).
+    ``llamaindex.enabled: true`` and a built index (``drbrain index build``).
     The legacy BM25 + graph-traversal / PageIndex ``--paper`` paths were
     removed in T9 (终态清理, design §1 替换清单).
     """
@@ -266,7 +247,7 @@ def query_cmd(
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
             "[query] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "in config.yaml and run `drbrain rag index` to build the index",
+            "in config.yaml and run `drbrain index build` to build the index",
             err=True,
         )
         raise typer.Exit(1)
@@ -468,7 +449,7 @@ def hybrid_cmd(
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         typer.echo(
             "[hybrid] llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "in config.yaml and run `drbrain rag index` to build the index",
+            "in config.yaml and run `drbrain index build` to build the index",
             err=True,
         )
         raise typer.Exit(1)

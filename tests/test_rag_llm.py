@@ -108,9 +108,10 @@ def test_complete_sync_delegates(monkeypatch):
     def fake(prompt, models, max_tokens=1024, **kwargs):
         captured["models"] = models
         captured["max_tokens"] = max_tokens
-        return "sync text"
+        return {"text": "sync text", "finish_reason": "stop"}
 
-    monkeypatch.setattr("drbrain.extractor.llm_client.call_text_with_fallback", fake)
+    # T46: complete() goes through the meta form so finish_reason is visible.
+    monkeypatch.setattr("drbrain.extractor.llm_client.call_text_with_meta", fake)
     llm = DrbrainLLM(_cfg())
     resp = llm.complete("hello")
     assert resp.text == "sync text"
@@ -118,6 +119,7 @@ def test_complete_sync_delegates(monkeypatch):
     assert resp.additional_kwargs["model"] == "openai/gpt-4o"
     assert captured["models"] == MODELS  # full fallback chain forwarded
     assert captured["max_tokens"] == llm.max_tokens
+    assert llm.last_finish_reason == "stop"
 
 
 async def test_acomplete_delegates(monkeypatch):

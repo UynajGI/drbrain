@@ -193,7 +193,7 @@ def build_cmd(
     else:
         # Incremental default: build papers that are either (a) not yet
         # extracted (status == 'uploaded') or (b) extracted but touched since
-        # the last build run (e.g. rebuilt via 'drbrain build PID' after a
+        # the last build run (e.g. rebuilt via 'drbrain graph build PID' after a
         # re-ingest). Falls back to pure status filter when no last_run is set
         # or when the db helper is unavailable (keeps test mocks working).
         all_paper_rows = db.get_all_papers()
@@ -298,26 +298,50 @@ def build_cmd(
                 failed += 1
                 continue
         elif not md_path.exists():
-            db.upsert_paper_artifact(pid, "tree", "skipped", error="raw.md missing")
-            db.upsert_paper_artifact(pid, "kg", "skipped", error="raw.md missing")
-            db.commit()
-            typer.echo("  No raw.md — ingest this paper first")
-            failed += 1
-            continue
+            from drbrain.extractor.context import canonical_extraction_inputs
 
-        try:
-            tree = existing_tree or json.loads(tree_path.read_text(encoding="utf-8"))
-            structure = tree.get("structure", []) if isinstance(tree, dict) else []
-            if not isinstance(structure, list):
-                structure = []
-        except (OSError, UnicodeError, ValueError) as exc:
-            message = safe_error(exc, secrets=secrets)
-            db.upsert_paper_artifact(pid, "tree", "failed", error=message)
-            db.upsert_paper_artifact(pid, "kg", "skipped", error="tree.json unreadable")
-            db.commit()
-            typer.echo(f"  Tree read failed: {message}")
-            failed += 1
-            continue
+            canonical = canonical_extraction_inputs(db, pid)
+            if canonical is None:
+                db.upsert_paper_artifact(pid, "tree", "skipped", error="raw.md missing")
+                db.upsert_paper_artifact(pid, "kg", "skipped", error="raw.md missing")
+                db.commit()
+                typer.echo("  No raw.md — ingest this paper first")
+                failed += 1
+                continue
+            section_texts: dict[str, str] | None
+            structure, section_texts = canonical
+            typer.echo(
+                f"  No raw.md — reading canonical content "
+                f"({len(structure)} roots, {len(section_texts)} nodes)"
+            )
+        else:
+            section_texts = None
+            try:
+                tree = existing_tree or json.loads(tree_path.read_text(encoding="utf-8"))
+                structure = tree.get("structure", []) if isinstance(tree, dict) else []
+                if not isinstance(structure, list):
+                    structure = []
+
+                def _ensure_line_nums(nodes, counter=None):
+                    counter = counter or [0]
+                    for node in nodes:
+                        if isinstance(node, dict):
+                            counter[0] += 1
+                            node.setdefault("line_num", counter[0])
+                            _ensure_line_nums(node.get("nodes", []), counter)
+                    return nodes
+
+                structure = _ensure_line_nums(structure)
+                if isinstance(tree, dict):
+                    tree["structure"] = structure
+            except (OSError, UnicodeError, ValueError) as exc:
+                message = safe_error(exc, secrets=secrets)
+                db.upsert_paper_artifact(pid, "tree", "failed", error=message)
+                db.upsert_paper_artifact(pid, "kg", "skipped", error="tree.json unreadable")
+                db.commit()
+                typer.echo(f"  Tree read failed: {message}")
+                failed += 1
+                continue
         if not structure:
             db.upsert_paper_artifact(pid, "tree", "degraded", error="empty tree")
             db.upsert_paper_artifact(pid, "kg", "skipped", error="empty tree")
@@ -331,7 +355,12 @@ def build_cmd(
         try:
             result = asyncio.run(
                 build_graph_from_tree(
-                    md_path, structure, llm_models, skip_refine=skip_refine, cache=cache
+                    md_path,
+                    structure,
+                    llm_models,
+                    skip_refine=skip_refine,
+                    cache=cache,
+                    section_texts=section_texts,
                 )
             )
         except Exception as exc:
@@ -393,11 +422,17 @@ def build_cmd(
 
         # Mark as extracted (set_paper_status also bumps updated_at)
         db.set_paper_status(pid, "extracted")
+        if tree_path.exists():
+            tree_fingerprint = hashlib.sha256(tree_path.read_bytes()).hexdigest()
+        else:
+            tree_fingerprint = str(
+                (db.get_document_revision(pid) or {}).get("canonical_hash") or ""
+            )
         db.upsert_paper_artifact(
             pid,
             "tree",
             "ready",
-            fingerprint=hashlib.sha256(tree_path.read_bytes()).hexdigest(),
+            fingerprint=tree_fingerprint,
             metadata_json=json.dumps({"nodes": len(structure)}),
         )
         db.upsert_paper_artifact(
@@ -465,6 +500,9 @@ def embed_cmd(
     tree: bool = typer.Option(
         False, "--tree", help="Generate tree node text embeddings (PageIndex + RAPTOR)"
     ),
+    graph_mode: bool = typer.Option(
+        False, "--graph", help="Train TransE entity/relation embeddings for the knowledge graph"
+    ),
     papers: str = typer.Option(
         "", "--papers", help="Comma-separated paper IDs to embed (default: all)"
     ),
@@ -472,10 +510,22 @@ def embed_cmd(
         "", "--db", help="Override db path (shard databases; default cfg db.path)"
     ),
 ):
-    """Train TransE graph embeddings. Use --tree for text embeddings."""
+    """Generate text embeddings or train graph embeddings.
+
+    ``--tree`` builds PageIndex/RAPTOR text vectors for RAG.  ``--graph``
+    trains TransE entity/relation vectors for the optional knowledge-graph
+    branch.  A bare invocation remains a backwards-compatible alias for
+    ``--graph``.
+    """
     cfg = ctx.obj["config"]
     db = Database(db_path or cfg["db"]["path"])
     embed_secrets = configured_secret_values(cfg)
+
+    if tree and graph_mode:
+        raise typer.BadParameter("--tree and --graph are mutually exclusive")
+    # Keep existing scripts valid while making the production intent explicit:
+    # callers should use `embed --tree` or `embed --graph`.  With no mode flag,
+    # the historical graph behavior is retained below.
 
     # --tree mode: text embeddings for tree nodes (Layer 2)
     if tree:
@@ -646,7 +696,7 @@ def embed_cmd(
     graph.load_from_db(db)
 
     if graph.graph.number_of_nodes() == 0:
-        typer.echo("No graph data. Run: drbrain build first", err=True)
+        typer.echo("No graph data. Run: drbrain graph build first", err=True)
         db.close()
         raise typer.Exit(1)
 

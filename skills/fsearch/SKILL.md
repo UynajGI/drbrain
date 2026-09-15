@@ -1,38 +1,40 @@
 ---
 name: fsearch
 description: >
-  Federated search across the local DrBrain library and arXiv with ingested annotation.
-  Use when the user wants to search their library plus external sources in a single command,
-  check if arXiv papers are already ingested, or discover new papers. Trigger on
-  "federated search", "search arXiv and my library", "find papers everywhere",
-  "cross-search", "check if paper is in my library".
+  Search local evidence and external sources (arXiv) in one command, with ingested annotation.
+  Use when the user wants to search their library plus external sources, check if arXiv papers
+  are already ingested, or discover new papers. Trigger on "federated search", "search arXiv
+  and my library", "find papers everywhere", "cross-search", "check if paper is in my library".
 ---
 
-# Federated Search
+# Federated search
 
-Search local library + arXiv in one command, with automatic "already ingested" annotation.
+`drbrain search --source` retrieves local evidence rows and/or external rows in one result set,
+with an automatic "already ingested" annotation for external hits.
 
-## Quick Start
+## Quick start
 
 ```bash
-drbrain fsearch "attention mechanism"           # local library only
-drbrain fsearch "graph neural network" --arxiv  # local + arXiv
-drbrain fsearch "transformer" --arxiv-only      # arXiv only
+drbrain search "attention mechanism"                 # local evidence only (default)
+drbrain search "graph neural network" --source all   # local evidence + arXiv
+drbrain search "transformer" --source arxiv          # arXiv only
 ```
 
 ## How it works
 
-- **Local**: full-text search over papers, concepts, and arguments
-- **arXiv**: Atom API search with automatic dedup — results already in your library
-  are annotated with `[ingested]`
-- **Cross-reference**: matches by DOI and normalized arXiv ID
+- **Local** (`--source local`, default): the same retrieval chain as `ask` (bm25/vector/tree),
+  returning evidence rows with sources, text locators, route and index generation.
+- **arXiv** (`--source arxiv|all`): Atom API search with automatic dedup — results already in
+  your library are annotated with `ingested: true`. External rows are marked `source="arxiv"`
+  and carry `url` / `doi` / `arxiv_id`, but deliberately no local locator.
+- **Cross-reference**: matches by DOI and normalized arXiv ID.
 
-## CLI Reference
+## CLI reference
 
 | Command | What it does |
 |---------|--------------|
-| `drbrain fsearch <query>` | Search local library |
-| `drbrain fsearch <query> --arxiv` | Local + arXiv with ingested tags |
-| `drbrain fsearch <query> --arxiv-only` | arXiv only |
-| `drbrain fsearch <query> --limit <n>` | Limit results per source |
-| `drbrain fsearch <query> --json` | JSON output |
+| `drbrain search "<query>"` | Local evidence retrieval |
+| `drbrain search "<query>" --source all` | Local evidence + arXiv rows |
+| `drbrain search "<query>" --source arxiv` | arXiv rows only |
+| `drbrain search "<query>" --limit <n> --json` | JSON payload (`route`, `generations`, `legs`, `evidence`) |
+| `drbrain fsearch "<query>" --arxiv` | Historical federated command (hidden compatibility alias) |

@@ -18,8 +18,9 @@
   <p>当前项目的语料还是空的。先在终端完成导入与抽取，回到这里继续浏览器内的研究路径：</p>
   <ol class="guide-steps">
     <li><code>drbrain ingest</code> — 处理 <code>data/spool/inbox/</code> 中的 PDF</li>
-    <li><code>drbrain build</code> — LLM 抽取概念与论证</li>
-    <li><code>drbrain embed &amp;&amp; drbrain closure</code> — 向量与规则闭环（可选但推荐）</li>
+    <li><code>drbrain graph build</code> — LLM 抽取概念与论证</li>
+    <li><code>drbrain index build</code> — 文本检索索引（词法 + FTS + 向量 + tree）</li>
+    <li><code>drbrain graph embed &amp;&amp; drbrain graph closure</code> — 知识图谱向量与规则闭环（可选）</li>
   </ol>
   <p class="muted small">导入完成后刷新此页即可看到文献与统计。</p>
 </section>
@@ -31,7 +32,7 @@
   <h2 id="avail-title">能力状态</h2>
   <ul class="checklist">
     <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置（设置 llm.models 后会话与运行可用）' }}</li>
-    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用（配置 llamaindex.enabled 并运行 drbrain rag index）' }}</li>
+    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用（配置 llamaindex.enabled 并运行 drbrain index build）' }}</li>
     <li class="{{ 'is-ok' if av.autoresearch else 'is-off' }}">Autoresearch：{{ '已启用' if av.autoresearch else '未启用（autoresearch.enabled: true）' }}</li>
   </ul>
 </section>

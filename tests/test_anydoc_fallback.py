@@ -1,4 +1,9 @@
-"""Tests for the anydoc + OCRmyPDF fallback chain in MinerUParser."""
+"""Tests for the anydoc + OCRmyPDF fallback chain in MinerUParser.
+
+``_fallback_chain`` returns ``{"markdown", "backend", "provenance"}`` (the
+dict contract that the chunked-PDF path relies on); these tests pin that
+shape, the backend labels, and the short-circuit behaviour of the chain.
+"""
 
 import unittest.mock
 from pathlib import Path
@@ -17,10 +22,17 @@ def _parser(**kwargs) -> MinerUParser:
     return MinerUParser(**defaults)
 
 
+def _no_inspector():
+    return unittest.mock.patch(
+        "drbrain.parser.mineru.parser.extract_pdf_inspector", return_value=None
+    )
+
+
 def test_fallback_chain_uses_anydoc_when_available():
     """anydoc success short-circuits the chain; OCR and pymupdf never run."""
     parser = _parser()
     with (
+        _no_inspector(),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser.anydoc_to_markdown",
             return_value=(AnydocStatus.OK, "# Title\n\nBody"),
@@ -28,11 +40,28 @@ def test_fallback_chain_uses_anydoc_when_available():
         unittest.mock.patch("drbrain.parser.mineru.parser.ocr_pdf") as mock_ocr,
         unittest.mock.patch.object(MinerUParser, "_fallback_pymupdf") as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/x.pdf"))
-    assert md == "# Title\n\nBody"
+        result = parser._fallback_chain(Path("/tmp/x.pdf"))
+    assert result["markdown"] == "# Title\n\nBody"
+    assert result["backend"] == "anydoc"
     mock_anydoc.assert_called_once()
     mock_ocr.assert_not_called()
     mock_pymupdf.assert_not_called()
+
+
+def test_fallback_chain_prefers_pdf_inspector():
+    """The CPU-first inspector short-circuits everything before anydoc."""
+    parser = _parser()
+    inspected = {"markdown": "# Inspected", "backend": "pdf-inspector", "provenance": {}}
+    with (
+        unittest.mock.patch(
+            "drbrain.parser.mineru.parser.extract_pdf_inspector", return_value=inspected
+        ),
+        unittest.mock.patch("drbrain.parser.mineru.parser.anydoc_to_markdown") as mock_anydoc,
+    ):
+        result = parser._fallback_chain(Path("/tmp/x.pdf"))
+    assert result["markdown"] == "# Inspected"
+    assert result["backend"] == "pdf-inspector"
+    mock_anydoc.assert_not_called()
 
 
 def test_fallback_chain_ocrs_scanned_pdf():
@@ -43,14 +72,16 @@ def test_fallback_chain_ocrs_scanned_pdf():
         (AnydocStatus.OK, "# Scanned\n\nOCR text"),
     ]
     with (
+        _no_inspector(),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser.anydoc_to_markdown", side_effect=results
         ) as mock_anydoc,
         unittest.mock.patch("drbrain.parser.mineru.parser.ocr_pdf", return_value=True) as mock_ocr,
         unittest.mock.patch.object(MinerUParser, "_fallback_pymupdf") as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/scan.pdf"))
-    assert md == "# Scanned\n\nOCR text"
+        result = parser._fallback_chain(Path("/tmp/scan.pdf"))
+    assert result["markdown"] == "# Scanned\n\nOCR text"
+    assert result["backend"] == "ocrmy_pdf+anydoc"
     assert mock_anydoc.call_count == 2
     mock_ocr.assert_called_once()
     mock_pymupdf.assert_not_called()
@@ -60,6 +91,7 @@ def test_fallback_chain_skips_ocr_when_disabled():
     """Unsupported + ocr_enabled=False drops straight to pymupdf."""
     parser = _parser(ocr_enabled=False)
     with (
+        _no_inspector(),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser.anydoc_to_markdown",
             return_value=(AnydocStatus.UNSUPPORTED, ""),
@@ -69,8 +101,9 @@ def test_fallback_chain_skips_ocr_when_disabled():
             MinerUParser, "_fallback_pymupdf", return_value="plain text"
         ) as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/scan.pdf"))
-    assert md == "plain text"
+        result = parser._fallback_chain(Path("/tmp/scan.pdf"))
+    assert result["markdown"] == "plain text"
+    assert result["backend"] == "pymupdf4llm"
     mock_ocr.assert_not_called()
     mock_pymupdf.assert_called_once()
 
@@ -79,6 +112,7 @@ def test_fallback_chain_without_anydoc_installed():
     """Missing anydoc package degrades to pymupdf without raising."""
     parser = _parser()
     with (
+        _no_inspector(),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser.anydoc_to_markdown",
             return_value=(AnydocStatus.NOT_INSTALLED, ""),
@@ -87,8 +121,8 @@ def test_fallback_chain_without_anydoc_installed():
             MinerUParser, "_fallback_pymupdf", return_value="plain text"
         ) as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/x.pdf"))
-    assert md == "plain text"
+        result = parser._fallback_chain(Path("/tmp/x.pdf"))
+    assert result["markdown"] == "plain text"
     mock_pymupdf.assert_called_once()
 
 
@@ -96,6 +130,7 @@ def test_fallback_chain_ocr_failure_falls_to_pymupdf():
     """OCR failure (e.g. missing tesseract) degrades to pymupdf."""
     parser = _parser(ocr_enabled=True)
     with (
+        _no_inspector(),
         unittest.mock.patch(
             "drbrain.parser.mineru.parser.anydoc_to_markdown",
             return_value=(AnydocStatus.UNSUPPORTED, ""),
@@ -105,8 +140,8 @@ def test_fallback_chain_ocr_failure_falls_to_pymupdf():
             MinerUParser, "_fallback_pymupdf", return_value="plain text"
         ) as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/scan.pdf"))
-    assert md == "plain text"
+        result = parser._fallback_chain(Path("/tmp/scan.pdf"))
+    assert result["markdown"] == "plain text"
     mock_pymupdf.assert_called_once()
 
 
@@ -114,13 +149,14 @@ def test_fallback_chain_disabled_anydoc_uses_pymupdf():
     """use_anydoc=False bypasses anydoc entirely."""
     parser = _parser(use_anydoc=False)
     with (
+        _no_inspector(),
         unittest.mock.patch("drbrain.parser.mineru.parser.anydoc_to_markdown") as mock_anydoc,
         unittest.mock.patch.object(
             MinerUParser, "_fallback_pymupdf", return_value="plain text"
         ) as mock_pymupdf,
     ):
-        md = parser._fallback_chain(Path("/tmp/x.pdf"))
-    assert md == "plain text"
+        result = parser._fallback_chain(Path("/tmp/x.pdf"))
+    assert result["markdown"] == "plain text"
     mock_anydoc.assert_not_called()
     mock_pymupdf.assert_called_once()
 

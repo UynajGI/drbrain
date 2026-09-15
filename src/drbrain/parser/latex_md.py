@@ -67,15 +67,24 @@ def _strip_comments(latex: str) -> str:
     return _COMMENT_RE.sub(r"\1", latex)
 
 
+_BEGIN_DOCUMENT_RE = re.compile(r"\\begin\{document\}(?!\})")
+_END_DOCUMENT_RE = re.compile(r"(?<!\{)\\end\{document\}")
+
+
 def _extract_body(latex: str) -> str:
-    """Return the document body (after ``\\begin{document}`` when present)."""
-    match = re.search(r"\\begin\{document\}", latex)
-    if match:
-        latex = latex[match.end() :]
-    end = re.search(r"\\end\{document\}", latex)
+    """Return the document body (after ``\\begin{document}`` when present).
+
+    Old-style preambles define the pair as macros
+    (``\\def\\bd{\\begin{document}} \\def\\ed{\\end{document}}``); only
+    occurrences outside a macro argument delimit the body, or the document
+    collapses to the brace between the two definitions.
+    """
+    begin = _BEGIN_DOCUMENT_RE.search(latex)
+    start = begin.end() if begin else 0
+    end = _END_DOCUMENT_RE.search(latex, start)
     if end:
-        latex = latex[: end.start()]
-    return latex
+        return latex[start : end.start()]
+    return latex[start:]
 
 
 def _extract_abstract(latex: str) -> tuple[str, str]:

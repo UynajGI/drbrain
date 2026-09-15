@@ -252,6 +252,8 @@ def test_rag_data_contracts_remain_additive_only():
         "timeout",
         "source_unavailable",
         "insufficient_evidence",
+        # T46 addition: an empty synthesis is a reported state, never success.
+        "empty_answer",
         "degraded",
     ]
     assert [field.name for field in fields(ResolvedClaim)][:9] == [

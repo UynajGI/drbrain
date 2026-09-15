@@ -79,12 +79,16 @@ def finish_retrieval(
     capabilities: dict[str, Any] | None = None,
 ) -> RetrievalRows:
     failed = [leg for leg in legs if leg.status not in {"ok", "empty"}]
-    if failed and len(failed) == len(legs):
+    if failed and len(failed) == len(legs) and not records:
         raise RetrievalError(
             "all retrieval legs unavailable",
             failures=[(leg.source, RetrievalStatus(leg.reason)) for leg in failed],
         )
-    status = "degraded" if failed else "ok" if records else "empty"
+    status = (
+        "partial"
+        if records and any(leg.status == "partial" for leg in legs)
+        else ("degraded" if failed else "ok" if records else "empty")
+    )
     return RetrievalRows(RetrievalResult(records, status, generation, legs, capabilities or {}))
 
 
