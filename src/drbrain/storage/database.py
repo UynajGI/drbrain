@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -2799,12 +2800,64 @@ class Database:
         row = self.conn.execute(sql, tuple(params)).fetchone()
         return int(row[0]) if row else 0
 
+    def retire_regions_with_other_contract(self, contract_json: str) -> list[str]:
+        """Mark ready regions built under a different contract as stale (T36).
+
+        A region node id embeds its contract digest, so a changed summary
+        contract produces new nodes instead of overwriting the old ones; the
+        superseded nodes must stop being servable.  Returns the retired ids so
+        the caller can drop their vectors from the shared index too.
+        """
+        rows = self.conn.execute(
+            "SELECT node_id FROM tree_nodes "
+            "WHERE kind = 'region' AND state = 'ready' AND contract_json != ?",
+            (str(contract_json),),
+        ).fetchall()
+        retired = [str(row[0]) for row in rows]
+        if not retired:
+            return []
+        with self._write_scope():
+            placeholders = ",".join("?" for _ in retired)
+            self.conn.execute(
+                f"UPDATE tree_nodes SET state = 'stale', updated_at = CURRENT_TIMESTAMP "
+                f"WHERE node_id IN ({placeholders})",
+                tuple(retired),
+            )
+        return retired
+
+    def retire_node_vectors(self, node_ids: Sequence[str]) -> int:
+        """Take the listed nodes' vector metadata out of the ready set (T36).
+
+        The vector table's state vocabulary is ``staging|ready|failed``, so a
+        retired vector is recorded as ``failed``: what matters is that it can
+        never be counted as ready again.
+        """
+        ids = [str(node_id) for node_id in node_ids]
+        if not ids:
+            return 0
+        with self._write_scope():
+            placeholders = ",".join("?" for _ in ids)
+            cursor = self.conn.execute(
+                f"UPDATE node_vectors SET state = 'failed', updated_at = CURRENT_TIMESTAMP "
+                f"WHERE node_id IN ({placeholders})",
+                tuple(ids),
+            )
+            return int(cursor.rowcount or 0)
+
     def leaves_missing_parent(self, local_id: str | None = None) -> list[str]:
-        """Ready leaves with no parent edge (reachability audit, T35)."""
+        """Ready leaves without a *ready* parent (T35 reachability audit).
+
+        A parent that was retired — its summary contract changed, say — does
+        not count as a parent: that leaf has to be re-parented, not treated as
+        reachable.
+        """
         sql = (
             "SELECT n.node_id FROM tree_nodes n "
-            "LEFT JOIN tree_node_children c ON c.child_id = n.node_id "
-            "WHERE n.kind = 'leaf' AND n.state = 'ready' AND c.child_id IS NULL"
+            "WHERE n.kind = 'leaf' AND n.state = 'ready' AND NOT EXISTS ("
+            "  SELECT 1 FROM tree_node_children c "
+            "  JOIN tree_nodes p ON p.node_id = c.parent_id "
+            "  WHERE c.child_id = n.node_id AND p.state = 'ready'"
+            ") "
         )
         params: tuple = ()
         if local_id is not None:

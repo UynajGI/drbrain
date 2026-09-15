@@ -86,6 +86,34 @@ def _prepare(db, tmp_path, *, profile=PROFILE, embed=None, model=None, **kwargs)
     )
 
 
+def _role_config(model: str) -> SimpleNamespace:
+    """A real role config: ``llm.roles.index_model`` -> one named endpoint."""
+    return SimpleNamespace(
+        llm={
+            "endpoints": {
+                "idx": {
+                    "provider": "openai",
+                    "model": model,
+                    "base_url": "http://127.0.0.1:9/v1",
+                }
+            },
+            "roles": {"index_model": "idx"},
+        }
+    )
+
+
+class _StubIndex:
+    """Duck-typed ``IndexModel``: real resolved role, deterministic output."""
+
+    def __init__(self, role) -> None:
+        self.role = role
+        self.calls = 0
+
+    def call_text(self, prompt: str, max_tokens: int = 0) -> SimpleNamespace:
+        self.calls += 1
+        return SimpleNamespace(text=f"summary-{self.role.model}-{self.calls}", finish_reason="stop")
+
+
 class TestPrepare:
     def test_first_prepare_fills_stages_and_publishes(self, tmp_path):
         db = _setup(tmp_path)
@@ -259,6 +287,61 @@ class TestPrepare:
         assert second.hierarchy["created"] > 0
         assert second.published
         assert db.get_vector_metadata(HIERARCHY_WATERMARK) is not None
+
+    def test_model_identity_change_invalidates_and_rebuilds(self, tmp_path):
+        """T26/T36: a new index deployment must not reuse the old summaries.
+
+        The identity is bound from the resolved role, so the same member sets
+        against a second endpoint are different work: the cached summaries are
+        not reused, the parents the first deployment built are retired instead
+        of served, and the new model is actually called.
+        """
+        from drbrain.services.model_roles import ROLE_INDEX, resolve_model_role
+        from drbrain.tree.prepare import IndexModelSummary
+
+        db = _setup(tmp_path)
+        embedder = _FakeEmbedder()
+
+        def _model(name: str):
+            role = resolve_model_role(_role_config(name), ROLE_INDEX)
+            stub = _StubIndex(role)
+            return IndexModelSummary(stub), stub
+
+        first_model, first_stub = _model("index-a")
+        first = _prepare(db, tmp_path, embed=embedder, model=first_model)
+        assert first.ok, first.to_json()
+        assert first_stub.calls > 0
+        first_regions = [
+            node_id
+            for round_payload in first.hierarchy["rounds"]
+            for node_id in round_payload["created_nodes"]
+        ]
+        assert first_regions
+
+        second_model, second_stub = _model("index-b")
+        second = _prepare(db, tmp_path, embed=embedder, model=second_model)
+        assert second.ok, second.to_json()
+        assert second.hierarchy.get("reason") != "signature-unchanged"
+        assert second_stub.calls > 0  # cached summaries are not reused
+        assert second.hierarchy["created"] > 0
+
+        placeholders = ",".join("?" for _ in first_regions)
+        states = {
+            str(node_id): str(state)
+            for node_id, state in db.conn.execute(
+                f"SELECT node_id, state FROM tree_nodes WHERE node_id IN ({placeholders})",
+                tuple(first_regions),
+            ).fetchall()
+        }
+        assert set(states.values()) == {"stale"}  # retired, not served
+        vector_states = {
+            str(state)
+            for (state,) in db.conn.execute(
+                f"SELECT state FROM node_vectors WHERE node_id IN ({placeholders})",
+                tuple(first_regions),
+            ).fetchall()
+        }
+        assert vector_states == {"failed"}  # never ready again
 
     def test_fts_drift_is_repaired_by_the_stage(self, tmp_path):
         db = _setup(tmp_path)

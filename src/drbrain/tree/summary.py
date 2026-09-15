@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 DEFAULT_TEMPLATE = (
@@ -94,6 +94,29 @@ class SummaryContract:
     def digest(self) -> str:
         payload = json.dumps(self.canonical(), sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def identify_contract(
+    contract: SummaryContract,
+    *,
+    model_identity: str,
+    tokenizer_identity: str,
+) -> SummaryContract:
+    """Bind the resolved deployment identities into one contract (T26/T36).
+
+    The cache key and the region node identity both derive from the contract,
+    so a model or tokenizer change has to land here — otherwise a run on a new
+    endpoint keeps reusing summaries the old one produced.  An empty identity
+    leaves its field alone (nothing to bind).
+    """
+    model_identity = str(model_identity or "").strip()
+    tokenizer_identity = str(tokenizer_identity or "").strip()
+    changes: dict[str, str] = {}
+    if model_identity and contract.model != model_identity:
+        changes["model"] = model_identity
+    if tokenizer_identity and contract.tokenizer != tokenizer_identity:
+        changes["tokenizer"] = tokenizer_identity
+    return replace(contract, **changes) if changes else contract
 
 
 #: Outcome reason prefix for a model call that failed (retryable

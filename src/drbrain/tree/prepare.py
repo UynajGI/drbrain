@@ -23,9 +23,11 @@ store for the next run.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,7 @@ from loguru import logger
 from drbrain.tree.builder import BuilderConfig, TreeBuilder
 from drbrain.tree.embedding_identity import EmbeddingProfile
 from drbrain.tree.publish import publish_tree_generation
+from drbrain.tree.summary import identify_contract
 from drbrain.tree.vector_store import UnifiedVectorStore, VectorEntry, needs_write_meta
 
 #: Working ANN collection under the storage root (published by ``publish_tree_generation``).
@@ -372,22 +375,85 @@ def _prepare_vectors(
     }
 
 
-def _hierarchy_signature(db, config: BuilderConfig) -> str:
+def _param_digest(value: Any) -> str:
+    """Stable digest of one parameter object (contract, dataclass, mapping)."""
+    if value is None:
+        return ""
+    digest = getattr(value, "digest", None)
+    if callable(digest):
+        return str(digest() or "")
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        payload: Any = dataclasses.asdict(value)
+    elif isinstance(value, Mapping):
+        payload = dict(value)
+    else:
+        payload = str(value)
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _hierarchy_signature(db, config: BuilderConfig, profile: EmbeddingProfile | None = None) -> str:
+    """Everything the published hierarchy depends on (T36 invalidation).
+
+    Leaves are the content side; the contract — which now carries the resolved
+    model and tokenizer identity — the embedding profile and the clustering and
+    cost parameters are the deployment side.  A change on either side has to
+    move the signature, otherwise summaries produced by an old deployment keep
+    being certified as current.
+    """
     leaves = db.conn.execute(
         "SELECT node_id, content_hash FROM tree_nodes "
         "WHERE state = 'ready' AND kind = 'leaf' ORDER BY node_id"
     ).fetchall()
-    contract = getattr(config, "contract", None)
+    profile_identity = ""
+    if profile is not None:
+        getter = getattr(profile, "profile_id", None)
+        profile_identity = str(getter() if callable(getter) else (getter or ""))
     payload = "|".join(
         [
             *[f"{node_id}@{content_hash}" for node_id, content_hash in leaves],
-            str(getattr(contract, "digest", lambda: "")() or ""),
+            _param_digest(getattr(config, "contract", None)),
+            _param_digest(getattr(config, "clustering", None)),
+            _param_digest(getattr(config, "cost", None)),
             str(int(getattr(config, "max_layers", 0))),
             str(getattr(config, "lam", "")),
             str(int(getattr(config, "min_frontier", 0))),
+            str(int(getattr(config, "max_new_nodes_per_round", 0))),
+            str(bool(getattr(config, "use_structure_hints", False))),
+            str(int(getattr(config, "structure_hints_per_document", 0))),
+            profile_identity,
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _contract_json(contract: Any) -> str:
+    """Canonical contract JSON, matching how ``tree_nodes`` stores it."""
+    canonical = getattr(contract, "canonical", None)
+    data = canonical() if callable(canonical) else dict(contract or {})
+    return json.dumps(dict(data), ensure_ascii=False, sort_keys=True)
+
+
+def _contract_identities(model: Any, summary_service: Any) -> tuple[str, str]:
+    """Resolved ``(model, tokenizer)`` identities for the summary contract.
+
+    The model identity comes from the bound endpoint role (endpoint name,
+    base URL and model), so two deployments that share a model name never share
+    cached summaries; the tokenizer identity comes from the counter that
+    actually measures the budgets.
+    """
+    inner = getattr(model, "_model", None)
+    role = getattr(inner, "role", None)
+    model_identity = str(getattr(role, "identity", "") or "")
+    if not model_identity:
+        model_identity = str(getattr(model, "identity", "") or "")
+    counter = getattr(summary_service, "_count_tokens", None)
+    tokenizer_identity = ""
+    if counter is not None:
+        module = str(getattr(counter, "__module__", "") or "")
+        name = str(getattr(counter, "__name__", type(counter).__name__))
+        tokenizer_identity = f"{module}.{name}".lstrip(".")
+    return model_identity, tokenizer_identity
 
 
 def _prepare_hierarchy(
@@ -404,21 +470,50 @@ def _prepare_hierarchy(
     force: bool,
 ) -> dict[str, Any]:
     builder_config = builder_config or BuilderConfig()
-    signature = _hierarchy_signature(db, builder_config)
-    frontier = (
-        [str(node) for node in seed_nodes] if seed_nodes is not None else db.leaves_missing_parent()
+    model = summary_model
+    if model is None:
+        try:
+            model = _resolve_index_summary_model(config)
+        except Exception as exc:  # noqa: BLE001 - reported, retried next run
+            return {"status": "failed", "error": str(exc), "reason": "index-model-unavailable"}
+    # Bind the resolved deployment identity before anything derives from the
+    # contract: the cache key and the region node identity both include it, so
+    # the signature has to see the identities the summaries will actually carry.
+    model_identity, tokenizer_identity = _contract_identities(model, summary_service)
+    builder_config = dataclasses.replace(
+        builder_config,
+        contract=identify_contract(
+            builder_config.contract,
+            model_identity=model_identity,
+            tokenizer_identity=tokenizer_identity,
+        ),
     )
+    signature = _hierarchy_signature(db, builder_config, profile)
     previous = db.get_vector_metadata(HIERARCHY_WATERMARK)
-    if not force and not frontier:
-        db.set_vector_metadata(HIERARCHY_WATERMARK, signature)
-        return {"status": "complete", "reason": "no-unassigned-leaves", "created": 0}
     if not force and previous == signature:
         return {
             "status": "complete",
             "reason": "signature-unchanged",
-            "frontier": len(frontier),
+            "frontier": len(db.leaves_missing_parent()),
             "created": 0,
         }
+    if previous is not None and (force or previous != signature):
+        # The identity or a parameter changed: parents built under the old
+        # contract are stale (their node ids embed the contract digest), so
+        # retire them and drop their vectors — this is also what puts their
+        # leaves back into the frontier below.
+        retired = db.retire_regions_with_other_contract(_contract_json(builder_config.contract))
+        if retired:
+            logger.info("[tree] retired {} stale region(s) for the current contract", len(retired))
+            db.retire_node_vectors(retired)
+            if store is not None:
+                store.delete(retired)
+    frontier = (
+        [str(node) for node in seed_nodes] if seed_nodes is not None else db.leaves_missing_parent()
+    )
+    if not force and not frontier:
+        db.set_vector_metadata(HIERARCHY_WATERMARK, signature)
+        return {"status": "complete", "reason": "no-unassigned-leaves", "created": 0}
     if len(frontier) <= int(getattr(builder_config, "min_frontier", 1)):
         return {
             "status": "skipped",
@@ -426,13 +521,6 @@ def _prepare_hierarchy(
             "frontier": len(frontier),
             "created": 0,
         }
-
-    model = summary_model
-    if model is None:
-        try:
-            model = _resolve_index_summary_model(config)
-        except Exception as exc:  # noqa: BLE001 - reported, retried next run
-            return {"status": "failed", "error": str(exc), "reason": "index-model-unavailable"}
 
     builder = TreeBuilder(
         db,
