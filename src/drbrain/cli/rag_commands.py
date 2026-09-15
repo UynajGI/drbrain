@@ -1,9 +1,11 @@
-"""RAG subcommands: ``drbrain rag index`` / ``drbrain rag eval``.
+"""RAG subcommands: ``drbrain rag index`` / ``prepare`` / ``baselines`` / ``eval``.
 
-The ``rag`` Typer sub-app hosts LlamaIndex-driven operations. T3 ships the
-``index`` command (build/persist the vector + BM25 index from PageIndex
-assets); T7 ships the ``eval`` command (golden-set retriever/ragas evaluation,
-baseline report into ``docs/llamaindex-eval-baseline.md``).
+The ``rag`` Typer sub-app hosts LlamaIndex-driven operations: index and
+PageIndex commands, the incremental unified-tree prepare (FTS + shared
+vectors + hierarchy), evaluation-only baselines (``unified_tree_flat`` is the
+unified-tree retrieval ablation; ``raptor_collapsed`` is the provenance-gated
+independent RAPTOR comparison), health checks and golden-set evaluation.
+Baselines never register a production route.
 """
 
 from __future__ import annotations
@@ -296,7 +298,7 @@ def rag_baselines_cmd(
     name: str = typer.Option(
         "all",
         "--name",
-        help="Baseline: bm25_vector|pageindex|raptor_collapsed|concat|all",
+        help="Baseline: bm25_vector|pageindex|unified_tree_flat|raptor_collapsed|concat|all",
     ),
     split: str = typer.Option("dev", "--split", help="Golden split: dev|holdout"),
     k: int = typer.Option(10, "--k", help="Top-k cutoff"),
@@ -306,10 +308,10 @@ def rag_baselines_cmd(
     """Run evaluation-only baselines over a golden split (T56).
 
     Baselines exist solely in this evaluation entry: BM25+vector fusion, the
-    real PageIndex tree search, RAPTOR's collapsed tree, and simple
-    concatenation.  Each reports the algorithm it ran, its cost counters, and
-    HitRate/MRR at paper and node level; none of them is registered as a
-    production route.
+    real PageIndex tree search, the unified tree's flat all-layer retrieval
+    (``unified_tree_flat``), and simple concatenation.  Each reports the
+    algorithm it ran, its cost counters, and HitRate/MRR at paper and node
+    level; none of them is registered as a production route.
     """
     cfg = ctx.obj["config"]
     if isinstance(name, typer.models.OptionInfo):
