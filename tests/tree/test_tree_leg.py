@@ -280,3 +280,54 @@ class TestSqlTreeLeg:
             assert node is not None and node["kind"] == "leaf"
             assert source["paper_id"] in {"p1", "p2"}
         assert result["answer"]
+
+    def test_bm25_vector_and_tree_share_one_content_revision(self, prepared):
+        """T43: the three legs read one revision — the tree hit is the same
+        ``node_texts`` row (same content hash) the BM25 leg indexes, and every
+        row is pinned to the same corpus generation.
+
+        The vector leg has no vectors in this fixture (it reports empty), so
+        the revision binding asserted here is: one pinned SQL generation for
+        every returned row, evidence checksums matching the delivered text,
+        and tree rows resolving to the exact projection revision.
+        """
+        import dataclasses
+        import hashlib
+        import sqlite3
+
+        from drbrain.rag import sql_snapshot
+        from drbrain.rag.sql_retrie import retrieve_documents_sql
+
+        generation = self._generation(prepared)
+        li = prepared.cfg.llamaindex
+        route_cfg = dataclasses.replace(
+            prepared.cfg,
+            llamaindex=dataclasses.replace(li, retrievers=["bm25", "vector", "tree"]),
+        )
+        rows = retrieve_documents_sql(route_cfg, prepared.db, THEME, top_k=5, generation=generation)
+        assert rows, "fused retrieval must return rows"
+        # One pinned generation for every row: no leg may mix epochs.
+        assert {row["generation"] for row in rows} == {generation}
+        for row in rows:
+            assert row["excerpt_checksum"] == hashlib.sha256(row["text"].encode()).hexdigest()
+            assert row["content_length"] >= len(row["text"])
+        conn = sqlite3.connect(
+            sql_snapshot.resolve_sql_snapshot(prepared.cfg, generation).resolve().as_uri()
+            + "?mode=ro",
+            uri=True,
+        )
+        try:
+            tree_rows = [row for row in rows if "tree" in row["legs"]]
+            assert tree_rows, "the tree leg must contribute rows"
+            for row in tree_rows:
+                projection = conn.execute(
+                    "SELECT text, content_hash FROM node_texts WHERE paper_id = ? AND node_id = ?",
+                    (row["paper_id"], row["node_id"]),
+                ).fetchone()
+                assert projection is not None, row
+                full_text, content_hash = str(projection[0]), str(projection[1])
+                # Same revision the BM25 leg reads: the projection's own hash.
+                assert hashlib.sha256(full_text.encode()).hexdigest()[:16] == content_hash[:16]
+                assert row["content_length"] == len(full_text)
+        finally:
+            conn.close()
