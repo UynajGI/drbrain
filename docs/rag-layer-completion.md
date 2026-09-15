@@ -39,6 +39,30 @@ prepare hint). The older readers (`search --paper` replaces the removed
 compatibility paths for papers ingested
 before this change; they simply have no input for new papers.
 
+## Scale-out build
+
+`index build` is bounded and parallelisable at corpus scale:
+
+- **Vectors** — with more than one embedding device configured
+  (`embed.device` plus `embed.extra_gpus` and/or `embed.cpu_workers`) the
+  vectors stage spools on one worker process per device and loads through the
+  serial write contract (`staging` → `store.upsert` → `ready`). The spool is
+  resumable, a spool directory is bound to one pending set (manifest), and a
+  mismatch fails closed. (Measured on the 10k corpus: 650,631 vectors spooled in
+  369 s on 3 GPUs; the single-writer load runs at the Zvec insert rate, ~176/s.)
+- **Hierarchy** — `llamaindex.hierarchy_frontier_limit` caps how many ready
+  seeds one run processes: the remainder stay roots and re-enter the next run's
+  frontier, and the stage records `frontier.{total,processed}` and
+  `frontier_remaining`. `llamaindex.hierarchy_summary_workers` keeps that many
+  summary calls in flight while prescreen, coverage filtering and publish stay
+  strictly sequential (a determinism test pins `workers=1` ≡ `3`). Both are
+  scheduling knobs: they are excluded from the hierarchy signature and the
+  deployment identity, so changing them never retires published regions.
+- Bounded batches are an **approximation** of the whole-frontier fit
+  (cross-batch frontier merging and its quality measurement are still open,
+  plan T59); per-round phase timings (`profiles`/`clustering`/`gates+summaries`)
+  are logged to keep the cost visible.
+
 ## Retrieval path
 
 1. The indexer reads stored paper sections, PageIndex nodes, RAPTOR summaries, concepts, and arguments.
