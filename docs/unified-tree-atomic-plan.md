@@ -385,6 +385,13 @@
 - 范围：`data/integration/unified-tree/`的本地配置和`drbrain check`；不提交密钥或运行数据。
 - 先写测试：DRBRAIN_ROOT隔离正确；已有.env/命名endpoint生效；check区分index/chat/embed/rerank，输出不含key。
 - 完成标准：使用项目内本地验收目录，不用/tmp存验收语料；Spark、DeepSeek和两种BGE通过真实探测，实际请求端点有脱敏证据。
+- **实现记录（2026-09-15）**：本地验收配置落在 `data/integration/unified-tree/config.yaml`（gitignored，不含密钥：
+  命名 endpoint `spark_local`/`deepseek` + 角色路由 + `bge_embed_cpu`/`bge_rerank_cpu`，`${DEEPSEEK_API_KEY}` 走环境/.env）。
+  真实探测证据：DeepSeek chat `probe ok`（952ms，finish=stop）；BGE embed 在 T45 真实 CLI 中加载并嵌入；BGE rerank
+  首次从 ModelScope 下载（1.11G）后加载并打分（相关 0.996 / 不相关 0.000），探测同时暴露并修好 `_resolve_rerank_model_path`
+  未向 `snapshot_download` 传 `cache_dir`、漏掉嵌套缓存布局导致 on-disk reranker 不可见的真实缺陷。**Spark（127.0.0.1:8010）
+  未启动**：`index_model` probe = connection error——本任务作为外部阻塞保留（与 G2/G5/G7/G8 同因），端点可达后重跑
+  `drbrain check` 即可复核，故此处暂不勾选。
 
 ### [ ] T48 — 通过单篇CLI全流程验收
 
