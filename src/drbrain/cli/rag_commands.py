@@ -290,6 +290,76 @@ def rag_prepare_cmd(
         typer.echo("RAG prepared: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
 
 
+@rag_app.command("baselines")
+def rag_baselines_cmd(
+    ctx: typer.Context,
+    name: str = typer.Option(
+        "all",
+        "--name",
+        help="Baseline: bm25_vector|pageindex|raptor_collapsed|concat|all",
+    ),
+    split: str = typer.Option("dev", "--split", help="Golden split: dev|holdout"),
+    k: int = typer.Option(10, "--k", help="Top-k cutoff"),
+    out: str = typer.Option("", "--out", help="Optional JSON report path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Run evaluation-only baselines over a golden split (T56).
+
+    Baselines exist solely in this evaluation entry: BM25+vector fusion, the
+    real PageIndex tree search, RAPTOR's collapsed tree, and simple
+    concatenation.  Each reports the algorithm it ran, its cost counters, and
+    HitRate/MRR at paper and node level; none of them is registered as a
+    production route.
+    """
+    cfg = ctx.obj["config"]
+    if isinstance(name, typer.models.OptionInfo):
+        name = str(name.default or "all")
+    if isinstance(split, typer.models.OptionInfo):
+        split = str(split.default or "dev")
+    if isinstance(k, typer.models.OptionInfo):
+        k = int(k.default or 10)
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = bool(json_output.default)
+    if isinstance(out, typer.models.OptionInfo):
+        out = str(out.default or "")
+
+    from drbrain.rag.baselines import BASELINES, evaluate_baseline
+    from drbrain.rag.eval_data import load_golden
+
+    names = (
+        sorted(BASELINES)
+        if str(name).strip().lower() == "all"
+        else [part.strip().lower() for part in str(name).split(",") if part.strip()]
+    )
+    for baseline in names:
+        if baseline not in BASELINES:
+            raise typer.BadParameter(f"unknown baseline {baseline!r}", param_hint="--name")
+
+    entries = load_golden(cfg, split=split)
+    report: dict[str, Any] = {"split": split, "k": k, "baselines": {}}
+    with open_db(cfg) as db:
+        for baseline in names:
+            payload = evaluate_baseline(baseline, cfg, db, entries, k=k).to_json()
+            report["baselines"][baseline] = payload
+            if not json_output:
+                typer.echo(
+                    f"{baseline}: hit_paper={payload['hit_rate_paper']} "
+                    f"hit_node={payload['hit_rate_node']} mrr_paper={payload['mrr_paper']} "
+                    f"mrr_node={payload['mrr_node']} ({payload['queries']} queries, "
+                    f"{payload['cost'].get('elapsed_ms', 0)} ms)"
+                )
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    if out:
+        target = Path(runtime_data_path(ctx, out, label="baseline report"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(f"Baseline report written to {target}")
+
+
 @rag_app.command("health")
 def rag_health_cmd(
     ctx: typer.Context,
