@@ -435,21 +435,36 @@ def get_retrievers(
     wanted = set(normalized.legs)
     for note in normalized.notes:
         log.info("[rag] retriever config: %s", note)
-    top_k = int(cfg.embed.top_k or 10)
+    # T44 per-leg recall caps: BM25 ≈1000, vector ≈100, tree ≤100 candidates.
+    caps = {
+        "bm25": _candidate_cap(li, "bm25_candidates", 1000),
+        "vector": _candidate_cap(li, "vector_candidates", 100),
+        "tree": _candidate_cap(li, "tree_candidates", 100),
+    }
 
     out: dict[str, Any] = {}
     if wanted & {"bm25", "vector"}:
         index, bm25 = load_index(cfg, generation=generation)
         if "bm25" in wanted and bm25 is not None:
+            bm25.similarity_top_k = caps["bm25"]
             out["bm25"] = bm25
         if "vector" in wanted and index is not None:
-            out["vector"] = index.as_retriever(similarity_top_k=top_k)
+            out["vector"] = index.as_retriever(similarity_top_k=caps["vector"])
 
     if generation_backed_only:
         return out
 
     if "tree" in wanted:
-        out["tree"] = DrbrainTreeRetriever(cfg, top_k=top_k, db_path=getattr(db, "path", None))
+        out["tree"] = DrbrainTreeRetriever(
+            cfg, top_k=caps["tree"], db_path=getattr(db, "path", None)
+        )
     if "graph" in normalized.extras:
-        out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=top_k)
+        out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=int(cfg.embed.top_k or 10))
     return out
+
+
+def _candidate_cap(li: Any, name: str, default: int) -> int:
+    try:
+        return max(1, int(getattr(li, name, default) or default))
+    except (TypeError, ValueError):
+        return default

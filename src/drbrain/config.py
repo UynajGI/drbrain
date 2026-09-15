@@ -265,6 +265,15 @@ class LlamaIndexConfig(_ConfigBase):
     rerank: bool = True
     rerank_model: str = "Qwen/Qwen3-Reranker-0.6B"
     rerank_top_k: int = 20
+    #: Per-leg recall caps before fusion (T44): BM25 ≈1000, vector ≈100,
+    #: tree ≤100 nodes.
+    bm25_candidates: int = 1000
+    vector_candidates: int = 100
+    tree_candidates: int = 100
+    #: Final context selection (T44): at most ``context_docs`` documents whose
+    #: cumulative estimated tokens fit ``context_token_budget``.
+    context_docs: int = 10
+    context_token_budget: int = 8000
     similarity_cutoff: float = 0.7
     streaming: bool = True
     max_node_tokens: int = 4000

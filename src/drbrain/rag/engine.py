@@ -168,9 +168,11 @@ def build_query_engine(
     — T8, when ``llamaindex.rerank`` is enabled — the
     :class:`~drbrain.rag.rerank.RerankPostprocessor` (before the cutoff) and
     the :class:`~drbrain.rag.rerank.DeduplicatePostprocessor` (after it):
-    coarse truncation at ``rerank_top_k`` → rerank 精排 → similarity cutoff →
-    dedup. Rerank is lazy and degrades to Noop, so the engine is safe to
-    build even when the reranker model is missing.
+    coarse truncation at the ``rerank_top_k`` head (clamped to 20–50) →
+    rerank 精排 → similarity cutoff → dedup → context budget (T44, the final
+    ~8–10 documents that fit ``context_token_budget``). Rerank is lazy and
+    degrades to Noop, so the engine is safe to build even when the reranker
+    model is missing.
     """
     if not _engine_ready(cfg):
         return None
@@ -181,11 +183,13 @@ def build_query_engine(
     init_llamaindex_settings(cfg)
 
     li = get_llamaindex_config(cfg)
-    # T8: with rerank on, the coarse fusion truncation must be at least as
-    # wide as rerank_top_k, otherwise the reranker would only ever see the
-    # caller's (smaller) final top-k and reranking would be a no-op.
+    # T8/T44: with rerank on, the coarse fusion truncation must be at least as
+    # wide as the (20–50 bounded) rerank head, otherwise the reranker would
+    # only ever see the caller's (smaller) final top-k and be a no-op.
     if li.rerank:
-        top_k = max(int(top_k or cfg.embed.top_k or 10), int(li.rerank_top_k or 20))
+        from drbrain.rag.rerank import clamp_rerank_head
+
+        top_k = max(int(top_k or cfg.embed.top_k or 10), clamp_rerank_head(li.rerank_top_k))
 
     fusion = _build_fusion(cfg, db, top_k=top_k, acl_filter=acl_filter)
     if fusion is None:
@@ -205,15 +209,26 @@ def build_query_engine(
             DeduplicatePostprocessor,
             RerankPostprocessor,
             build_reranker,
+            clamp_rerank_head,
         )
 
         postprocessors.append(
-            RerankPostprocessor(top_k=int(li.rerank_top_k or 20), reranker=build_reranker(cfg))
+            RerankPostprocessor(
+                top_k=clamp_rerank_head(li.rerank_top_k), reranker=build_reranker(cfg)
+            )
         )
     if li.similarity_cutoff is not None:
         postprocessors.append(SimilarityCutoffPostprocessor(similarity_cutoff=li.similarity_cutoff))
     if li.rerank and li.rag_engine != "sql":
         postprocessors.append(DeduplicatePostprocessor())
+    context_docs = int(getattr(li, "context_docs", 0) or 0)
+    context_budget = int(getattr(li, "context_token_budget", 0) or 0)
+    if context_docs > 0 and context_budget > 0:
+        from drbrain.rag.context import ContextBudgetPostprocessor
+
+        postprocessors.append(
+            ContextBudgetPostprocessor(max_docs=context_docs, token_budget=context_budget)
+        )
 
     engine = RetrieverQueryEngine(
         retriever=fusion,
@@ -710,10 +725,12 @@ if _LLAMA_INDEX_AVAILABLE:
 def _effective_similarity(nws: Any) -> float | None:
     """Resolve the score space before applying a configured threshold.
 
-    RRF ranks themselves cannot be thresholded as similarity, so fused nodes
-    use the best comparable score from their leg contributions. Rerank scores
-    supersede those coarse contributions. Untagged nodes keep the legacy
-    behavior for callers that supplied their own retriever metadata.
+    RRF ranks themselves cannot be thresholded as similarity, and BGE
+    cross-encoder logits are not a cosine similarity either (they are
+    unbounded and routinely negative for good hits — T44), so fused and
+    reranked nodes both evaluate the best comparable score from their leg
+    contributions. Untagged nodes keep the legacy behavior for callers that
+    supplied their own retriever metadata.
     """
     score = getattr(nws, "score", None)
     node = getattr(nws, "node", None)
@@ -721,8 +738,10 @@ def _effective_similarity(nws: Any) -> float | None:
     contributions = meta.get("contributions")
     if meta.get("score_kind") == "rrf" and not isinstance(contributions, dict):
         return None  # rank contributions are not a calibrated similarity scale
-    if meta.get("score_kind") == "rerank":
-        return float(score) if score is not None else None
+    if meta.get("score_kind") == "rerank" and not isinstance(contributions, dict):
+        # A rerank logit is the only score available: it is not a calibrated
+        # similarity scale, so it must not be compared to a cosine cutoff.
+        return None
     if isinstance(contributions, dict) and contributions:
         best: float | None = None
         for info in contributions.values():

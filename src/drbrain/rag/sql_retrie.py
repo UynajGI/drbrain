@@ -185,6 +185,17 @@ def _bm25_leg(
     return [(r[0], float(r[1])) for r in rows]
 
 
+def _leg_cap(cfg: Any, name: str, default: int) -> int:
+    """Configured per-leg candidate cap (T44), bounded to >= 1."""
+    from drbrain.rag.config import get_llamaindex_config
+
+    li = get_llamaindex_config(cfg)
+    try:
+        return max(1, int(getattr(li, f"{name}_candidates", default) or default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _same_revision(left: str, right: str) -> bool:
     """True when two content hashes identify the same text revision."""
     a = str(left or "").strip().lower()
@@ -571,7 +582,12 @@ def retrieve_documents_sql(
         pool_started = time.perf_counter()
         try:
             bm25 = (
-                _bm25_leg(conn, query, 1000, categories_filter=(scope_sql, scope_params))
+                _bm25_leg(
+                    conn,
+                    query,
+                    _leg_cap(cfg, "bm25", 1000),
+                    categories_filter=(scope_sql, scope_params),
+                )
                 if set(wanted).intersection(
                     {"bm25"} | ({"vector"} if vector_backend == "sqlite" else set())
                 )
@@ -598,11 +614,13 @@ def retrieve_documents_sql(
                             cfg,
                             query,
                             generation,
-                            _KNN_POOL,
+                            _leg_cap(cfg, "vector", _KNN_POOL),
                             allowed_papers=allowed_papers,
                         )
                     else:
-                        vector_entries = _rerank_with_vectors(cfg, conn, query, pool, _KNN_POOL)
+                        vector_entries = _rerank_with_vectors(
+                            cfg, conn, query, pool, _leg_cap(cfg, "vector", _KNN_POOL)
+                        )
                     entries = [{"key": key, "score": score} for key, score in vector_entries]
                 elif name == "tree":
                     entries = [
@@ -612,7 +630,7 @@ def retrieve_documents_sql(
                             conn,
                             query,
                             generation,
-                            _KNN_POOL,
+                            _leg_cap(cfg, "tree", _KNN_POOL),
                             allowed_papers=allowed_papers,
                         )
                     ]

@@ -66,15 +66,32 @@ except ImportError:  # pragma: no cover - envs without llama-index
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "RERANK_HEAD_MAX",
+    "RERANK_HEAD_MIN",
     "_LLAMA_INDEX_AVAILABLE",
     "CrossEncoderReranker",
     "DeduplicatePostprocessor",
     "RerankPostprocessor",
     "build_reranker",
+    "clamp_rerank_head",
     "kendall_tau",
     "mean_rank_displacement",
     "top_k_overlap",
 ]
+
+#: The reranked head is bounded to this window (T44): below 20 the reranker
+#: barely sees candidates, above 50 the latency cost outweighs the gain.
+RERANK_HEAD_MIN = 20
+RERANK_HEAD_MAX = 50
+
+
+def clamp_rerank_head(value: Any, default: int = RERANK_HEAD_MIN) -> int:
+    """Bound the rerank head into the 20–50 window (T44)."""
+    try:
+        head = int(value)
+    except (TypeError, ValueError):
+        head = int(default)
+    return min(RERANK_HEAD_MAX, max(RERANK_HEAD_MIN, head))
 
 
 # ── cross-encoder reranker (lazy, offline-safe, degrade-on-failure) ─────────
