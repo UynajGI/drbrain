@@ -21,11 +21,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from drbrain.tree.posteriors import DEFAULT_THRESHOLD, PosteriorStage
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from sklearn.mixture import GaussianMixture
 
 #: Fixed version of the vendored algorithm this adapter targets.
 UPSTREAM_RAPTOR_COMMIT = "7da1d48a7e1d7dec61a63c9d9aae84e2dfaa5767"
@@ -108,24 +111,64 @@ class FittedStage:
         }
 
 
-def _gmm_posterior(
-    embeddings: np.ndarray, threshold: float, params: ClusteringParams
-) -> FittedStage:
-    """Raw GMM posterior + upstream thresholded labels over the BIC choice."""
+def _fit_gmm(embeddings: np.ndarray, params: ClusteringParams) -> tuple[GaussianMixture, int, str]:
+    """BIC cluster count + GMM fit with a numeric-degeneracy ladder.
+
+    Real corpora contain near-duplicate rows (boilerplate blocks, empty
+    sections); under float32 the default ``reg_covar`` then fails with
+    "ill-defined empirical covariance".  Retry on float64 with a larger floor,
+    and only as a last resort collapse the stage to one component — the
+    degradation is recorded, never silent.
+    """
     from sklearn.mixture import GaussianMixture
 
     from drbrain.tree.upstream import load_raptor_module
 
     cluster_utils = load_raptor_module("cluster_utils")
-    n_clusters = int(
-        cluster_utils.get_optimal_clusters(
-            embeddings, params.max_clusters, random_state=params.random_state
+    try:
+        n_clusters = int(
+            cluster_utils.get_optimal_clusters(
+                embeddings, params.max_clusters, random_state=params.random_state
+            )
         )
-    )
-    gm = GaussianMixture(n_components=n_clusters, random_state=params.gmm_random_state)
-    gm.fit(embeddings)
+        gm = GaussianMixture(n_components=n_clusters, random_state=params.gmm_random_state)
+        gm.fit(embeddings)
+        return gm, n_clusters, ""
+    except ValueError:
+        emb64 = np.asarray(embeddings, dtype=np.float64)
+        try:
+            n_clusters = int(
+                cluster_utils.get_optimal_clusters(
+                    emb64, params.max_clusters, random_state=params.random_state
+                )
+            )
+            gm = GaussianMixture(
+                n_components=n_clusters,
+                random_state=params.gmm_random_state,
+                reg_covar=1e-4,
+            )
+            gm.fit(emb64)
+            return gm, n_clusters, "float64_reg_covar"
+        except ValueError:
+            gm = GaussianMixture(n_components=1, random_state=params.gmm_random_state)
+            gm.fit(emb64)
+            return gm, 1, "single_component"
+
+
+def _gmm_posterior(
+    embeddings: np.ndarray, threshold: float, params: ClusteringParams
+) -> FittedStage:
+    """Raw GMM posterior + upstream thresholded labels over the BIC choice."""
+    gm, n_clusters, degraded = _fit_gmm(embeddings, params)
     probs = gm.predict_proba(embeddings)
     labels = tuple(tuple(int(idx) for idx in np.where(prob > threshold)[0]) for prob in probs)
+    fitted: dict[str, object] = {
+        "bic_clusters": n_clusters,
+        "gmm_random_state": params.gmm_random_state,
+        "upstream_commit": UPSTREAM_RAPTOR_COMMIT,
+    }
+    if degraded:
+        fitted["degraded_fit"] = degraded
     return FittedStage(
         stage="global",
         row_ids=tuple(str(index) for index in range(len(embeddings))),
@@ -134,11 +177,7 @@ def _gmm_posterior(
         labels=labels,
         n_components=n_clusters,
         threshold=threshold,
-        fitted={
-            "bic_clusters": n_clusters,
-            "gmm_random_state": params.gmm_random_state,
-            "upstream_commit": UPSTREAM_RAPTOR_COMMIT,
-        },
+        fitted=fitted,
     )
 
 
