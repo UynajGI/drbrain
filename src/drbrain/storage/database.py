@@ -2800,7 +2800,7 @@ class Database:
         row = self.conn.execute(sql, tuple(params)).fetchone()
         return int(row[0]) if row else 0
 
-    def retire_regions_with_other_contract(self, contract_json: str) -> list[str]:
+    def retire_regions_with_other_contract(self, contract_json: str | None) -> list[str]:
         """Mark ready regions built under a different contract as stale (T36).
 
         A region node id embeds its contract digest, so a changed summary
@@ -2808,11 +2808,14 @@ class Database:
         superseded nodes must stop being servable.  Returns the retired ids so
         the caller can drop their vectors from the shared index too.
         """
-        rows = self.conn.execute(
-            "SELECT node_id FROM tree_nodes "
-            "WHERE kind = 'region' AND state = 'ready' AND contract_json != ?",
-            (str(contract_json),),
-        ).fetchall()
+        # None explicitly retires the complete working hierarchy for an
+        # algorithm/profile change or --force; published snapshots are retained.
+        sql = "SELECT node_id FROM tree_nodes WHERE kind='region' AND state='ready'"
+        params = ()
+        if contract_json is not None:
+            sql += " AND contract_json != ?"
+            params = (str(contract_json),)
+        rows = self.conn.execute(sql, params).fetchall()
         retired = [str(row[0]) for row in rows]
         if not retired:
             return []
@@ -2871,6 +2874,7 @@ class Database:
         query: str,
         *,
         local_id: str | None = None,
+        local_ids: list[str] | None = None,
         limit: int = 50,
         snippet_tokens: int = 24,
     ) -> list[dict]:
@@ -2881,33 +2885,16 @@ class Database:
         ordered by relevance (lower bm25 score = better, FTS5 convention) and
         include the exact block locators so evidence can be tied back.
         """
-        query = str(query).strip()
-        if not query:
-            raise ValueError("search query must be non-empty")
-        sql = (
-            "SELECT b.block_id, b.local_id, b.revision, b.ordinal, b.char_start, "
-            "       b.char_end, b.page_start, b.page_end, b.line_start, b.line_end, "
-            "       b.heading_path, b.kind, b.text_hash, "
-            "       bm25(content_fts) AS score, "
-            "       snippet(content_fts, 0, '[', ']', '…', ?) AS snippet "
-            "FROM content_fts JOIN content_blocks b ON b.rowid = content_fts.rowid "
-            "WHERE content_fts MATCH ?"
+        from drbrain.storage.content_search import search_content
+
+        return search_content(
+            self.conn,
+            query,
+            local_id=local_id,
+            local_ids=local_ids,
+            limit=limit,
+            snippet_tokens=snippet_tokens,
         )
-        params: list = [max(1, int(snippet_tokens)), query]
-        if local_id is not None:
-            sql += " AND b.local_id = ?"
-            params.append(self._validate_local_id(local_id))
-        sql += " ORDER BY score, b.local_id, b.ordinal LIMIT ?"
-        params.append(max(1, int(limit)))
-        try:
-            cursor = self.conn.execute(sql, tuple(params))
-        except sqlite3.OperationalError as exc:
-            raise ValueError(f"invalid FTS query {query!r}: {exc}") from exc
-        columns = [item[0] for item in cursor.description or ()]
-        results = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-        for item in results:
-            item["score"] = float(item["score"])
-        return results
 
     def content_fts_status(self, sample: int = 20) -> dict:
         """Verify the FTS index by querying it, not by counting rows.

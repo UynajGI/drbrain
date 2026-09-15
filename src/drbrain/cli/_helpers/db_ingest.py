@@ -288,11 +288,25 @@ def _ingest_single_paper(
     _set_abstract_from_canonical(db, local_id)  # type: ignore[arg-type]
     db.commit()
 
-    llm_models = cfg.get("llm", {}).get("models", [])
-    if not llm_models:
-        echo("Error: no LLM models configured. Run: drbrain setup")
-        _log_error(cfg, "No LLM models configured")
-        raise typer.Exit(1)
+    llm_models = []
+    if os.getenv("DRBRAIN_OFFLINE", "0") != "1":
+        from drbrain.services.model_roles import ROLE_INDEX, ModelRoleError, resolve_model_role
+
+        try:
+            role = resolve_model_role(cfg, ROLE_INDEX)
+        except ModelRoleError:
+            # Classification is optional; CPU ingestion has no chat dependency.
+            echo("  Paper type classification: heuristic (index role not configured)")
+        else:
+            llm_models = [
+                {
+                    "provider": role.provider,
+                    "model": role.model,
+                    "api_base": role.base_url,
+                    "api_key": role.api_key,
+                    "timeout": role.timeout_secs,
+                }
+            ]
 
     # Stage 2.1: Detect paper type
     from drbrain.extractor.detection import detect_paper_type, detect_paper_type_async

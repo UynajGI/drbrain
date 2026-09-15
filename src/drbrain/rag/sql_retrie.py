@@ -656,13 +656,13 @@ def retrieve_documents_sql(
                     )
                     entries = [{"key": key, "score": score} for key, score in tree_entries]
                     capabilities["tree"] = tree_outcome.to_json()
-                    leg_status = "ok" if entries else tree_outcome.status
+                    leg_status = tree_outcome.status
                     if tree_outcome.status != "ok":
                         # A leg's failure reason must be a RetrievalStatus value;
                         # the detailed navigation reason stays in capabilities.
                         leg_reason = (
                             RetrievalStatus.INSUFFICIENT_EVIDENCE.value
-                            if tree_outcome.status == "unavailable"
+                            if tree_outcome.status in {"unavailable", "partial"}
                             else ""
                         )
                 elif name == "graph":
@@ -782,9 +782,9 @@ def _unified_bm25_entries(
     fts = _fts_query(query)
     if not fts:
         return []
-    hits = db.search_content(fts, limit=max(1, int(cap)))
-    if scope is not None:
-        hits = [hit for hit in hits if str(hit.get("local_id") or "") in scope]
+    hits = db.search_content(
+        fts, limit=max(1, int(cap)), local_ids=None if scope is None else sorted(scope)
+    )
     if not hits:
         return []
     leaves: dict[str, tuple[str, str]] = {}
@@ -815,7 +815,12 @@ def _unified_bm25_entries(
 
 
 def _unified_vector_entries(
-    cfg: Any, query_vector: Sequence[float], cap: int, scope: Sequence[str] | None
+    cfg: Any,
+    query_vector: Sequence[float],
+    cap: int,
+    scope: Sequence[str] | None,
+    *,
+    generation: str | None = None,
 ) -> list[tuple[str, float]]:
     """``(paper_id:node_id, score)`` leaf hits from the shared ANN (view=leaf)."""
     from pathlib import Path
@@ -827,7 +832,7 @@ def _unified_vector_entries(
     from drbrain.tree.vector_store import UnifiedVectorStore
 
     root = tree_storage_root(cfg)
-    generation = get_active_tree_generation(root)
+    generation = generation or get_active_tree_generation(root)
     if not generation:
         raise RetrievalUnavailableError(f"no active unified generation under {root}")
     resolved = resolve_tree_generation(root, generation)
@@ -850,6 +855,7 @@ def _unified_materialize(
     membership: dict[str, list[str]],
     request_filters: dict[str, Any],
     acl_filter: dict[str, str] | None,
+    tree_hits: dict[str, list[Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve fused keys against the main store (ready leaf row + canonical text)."""
     keys = [key for key, _score in fused]
@@ -862,12 +868,23 @@ def _unified_materialize(
         placeholders = ",".join("?" for _ in node_ids)
         for row in db.conn.execute(
             "SELECT n.node_id, n.local_id, n.title, n.block_id, n.char_start, n.char_end, "
-            "       n.content_hash, b.text "
+            "       n.content_hash, b.text, n.revision, n.doc_revision "
             "FROM tree_nodes n LEFT JOIN content_blocks b ON b.block_id = n.block_id "
             f"WHERE n.kind = 'leaf' AND n.state = 'ready' AND n.node_id IN ({placeholders})",
             node_ids,
         ):
-            node_id, local_id, title, block_id, char_start, char_end, content_hash, text = row
+            (
+                node_id,
+                local_id,
+                title,
+                block_id,
+                char_start,
+                char_end,
+                content_hash,
+                text,
+                revision,
+                doc_revision,
+            ) = row
             meta[f"{local_id}:{node_id}"] = {
                 "node_id": str(node_id),
                 "paper_id": str(local_id or ""),
@@ -877,6 +894,8 @@ def _unified_materialize(
                 "char_end": char_end,
                 "content_hash": str(content_hash or ""),
                 "text": str(text or ""),
+                "node_revision": int(revision),
+                "doc_revision": int(doc_revision),
             }
     categories: dict[str, str] = {}
     papers = sorted({str(item["paper_id"]) for item in meta.values() if item["paper_id"]})
@@ -898,6 +917,24 @@ def _unified_materialize(
         if item is None:
             continue
         text = str(item["text"])
+        start, end = int(item["char_start"] or 0), int(item["char_end"] or len(text))
+        reads = (tree_hits or {}).get(key, [])
+        receipts = []
+        for hit in reads:
+            if (
+                hit.node_revision == item["node_revision"]
+                and hit.content_hash == item["content_hash"]
+                and hit.block_id == item["block_id"]
+                and start <= hit.char_start < hit.char_end <= end
+                and text[hit.char_start : hit.char_end] == hit.text
+            ):
+                receipts.append(hit)
+        if reads and not receipts:
+            continue
+        if receipts:
+            selected = max(receipts, key=lambda hit: len(hit.text))
+            start, end = selected.char_start, selected.char_end
+        text = text[start:end]
         row: dict[str, Any] = {
             "key": key,
             "paper_id": item["paper_id"],
@@ -910,9 +947,22 @@ def _unified_materialize(
             "categories": categories.get(item["paper_id"], ""),
             "legs": membership.get(key, []),
             "block_id": item["block_id"],
-            "char_start": item["char_start"],
-            "char_end": item["char_end"],
+            "char_start": start,
+            "char_end": end,
             "content_hash": item["content_hash"],
+            "node_revision": item["node_revision"],
+            "doc_revision": item["doc_revision"],
+            "tree_reads": [
+                {
+                    "char_start": hit.char_start,
+                    "char_end": hit.char_end,
+                    "block_id": hit.block_id,
+                    "node_revision": hit.node_revision,
+                    "content_hash": hit.content_hash,
+                    "via": list(hit.via),
+                }
+                for hit in receipts
+            ],
         }
         rows.append(row)
     return [row for row in rows if matches_scope(row, request_filters, acl_filter)]
@@ -928,6 +978,63 @@ def _unified_corpus_retrieval(
     filters: dict[str, Any] | None,
     acl_filter: dict[str, str] | None,
 ) -> RetrievalRows:
+    """Capture one immutable corpus/ANN generation for the entire request."""
+    from drbrain.tree.leg import active_tree_generation, tree_storage_root
+    from drbrain.tree.publish import resolve_tree_generation
+    from drbrain.tree.reading import ReadOnlyTreeStore
+
+    if set(acl_filter or {}) - {"paper_id"}:
+        raise ValueError("unsupported ACL filter")
+    generation = active_tree_generation(cfg)
+    if not generation:
+        raise RetrievalUnavailableError(
+            "no active unified tree generation; run `drbrain index build` to publish one"
+        )
+    resolved = resolve_tree_generation(tree_storage_root(cfg), generation)
+    request_filters = normalize_filters(filters)
+    scope = set(request_filters["paper_ids"]) if "paper_ids" in request_filters else None
+    if acl_filter and "paper_id" in acl_filter:
+        allowed = {acl_filter["paper_id"]}
+        scope = allowed if scope is None else scope & allowed
+    if "categories" in request_filters:
+        with ReadOnlyTreeStore(resolved["snapshot"]) as snapshot:
+            allowed = {
+                str(paper)
+                for paper, categories in snapshot.conn.execute(
+                    "SELECT p.local_id, c.categories FROM papers p "
+                    "LEFT JOIN paper_categories c ON c.paper_id=p.local_id"
+                )
+                if matches_scope(
+                    {"paper_id": paper, "categories": categories or ""}, request_filters, acl_filter
+                )
+            }
+        scope = allowed if scope is None else scope & allowed
+    with ReadOnlyTreeStore(resolved["snapshot"], local_ids=scope) as snapshot:
+        return _retrieve_unified_generation(
+            cfg,
+            snapshot,
+            wanted,
+            query,
+            top_k,
+            filters=filters,
+            acl_filter=acl_filter,
+            generation=generation,
+            scope=None if scope is None else sorted(scope),
+        )
+
+
+def _retrieve_unified_generation(
+    cfg: Any,
+    db: Any,
+    wanted: list[str],
+    query: str,
+    top_k: int,
+    *,
+    filters: dict[str, Any] | None,
+    acl_filter: dict[str, str] | None,
+    generation: str,
+    scope: list[str] | None,
+) -> RetrievalRows:
     """Three-leg retrieval over the unified store when no SQL corpus exists.
 
     ``drbrain index build`` publishes one main-store generation (canonical FTS
@@ -942,18 +1049,11 @@ def _unified_corpus_retrieval(
     """
     from drbrain.rag.config import get_llamaindex_config
     from drbrain.rag.status import RetrievalStatus
-    from drbrain.tree.leg import active_tree_generation, run_tree_leg
+    from drbrain.tree.leg import run_tree_leg
 
     li = get_llamaindex_config(cfg)
     request_filters = normalize_filters(filters)
-    scope = list(request_filters.get("paper_ids") or []) or None
-    scope_set = set(scope) if scope else None
-
-    generation = active_tree_generation(cfg)
-    if not generation:
-        raise RetrievalUnavailableError(
-            "no active unified tree generation; run `drbrain index build` to publish one"
-        )
+    scope_set = set(scope) if scope is not None else None
     capabilities: dict[str, Any] = {
         "backend": "unified",
         "snapshot": True,
@@ -966,15 +1066,23 @@ def _unified_corpus_retrieval(
     embed_texts = _unified_embedder(cfg)
     traces: list[LegResult] = []
     legs: list[tuple[str, list[tuple[str, float]]]] = []
+    tree_hits: dict[str, list[Any]] = {}
     for name in wanted:
         started = time.perf_counter()
         try:
+            if scope == []:
+                traces.append(LegResult(name, "empty", 0))
+                continue
             if name == "bm25":
                 entries = _unified_bm25_entries(db, query, _leg_cap(cfg, "bm25", 1000), scope_set)
             elif name == "vector":
                 query_vector = embed_texts([query])[0]
                 entries = _unified_vector_entries(
-                    cfg, query_vector, _leg_cap(cfg, "vector", _KNN_POOL), scope
+                    cfg,
+                    query_vector,
+                    _leg_cap(cfg, "vector", _KNN_POOL),
+                    scope,
+                    generation=generation,
                 )
             elif name == "tree":
                 outcome = run_tree_leg(
@@ -983,13 +1091,18 @@ def _unified_corpus_retrieval(
                     top_k=max(_leg_cap(cfg, "tree", _KNN_POOL), int(top_k), 1),
                     local_ids=scope,
                     embed=embed_texts,
+                    generation=generation,
                 )
-                entries = [(hit.key, float(hit.score)) for hit in outcome.hits]
+                for hit in outcome.hits:
+                    tree_hits.setdefault(hit.key, []).append(hit)
+                entries = [
+                    (key, max(float(hit.score) for hit in hits)) for key, hits in tree_hits.items()
+                ]
                 capabilities["tree"] = outcome.to_json()
                 traces.append(
                     LegResult(
                         name,
-                        "ok"
+                        ("partial" if outcome.status == "partial" else "ok")
                         if entries
                         else ("empty" if outcome.status == "empty" else "unavailable"),
                         len(entries),
@@ -1026,7 +1139,7 @@ def _unified_corpus_retrieval(
         for key, _score in entries:
             membership.setdefault(key, []).append(name)
     fused = _fuse([[(key, score) for key, score in entries] for _name, entries in legs])
-    candidates = _unified_materialize(db, fused, membership, request_filters, acl_filter)
+    candidates = _unified_materialize(db, fused, membership, request_filters, acl_filter, tree_hits)
     rerank_status = "disabled"
     reranker = _get_reranker(cfg)
     if reranker is not None and candidates:

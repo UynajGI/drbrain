@@ -65,13 +65,45 @@ class TreeSnapshotError(RuntimeError):
 class ReadOnlyTreeStore:
     """The tool-facing read view of one published generation snapshot."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, local_ids=None) -> None:
         target = Path(path)
         if not target.is_file():
             raise TreeSnapshotError(f"tree snapshot is missing: {target}")
         self.path = target
         self.conn = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
         self.conn.execute("PRAGMA query_only = ON")
+        self._scope = None if local_ids is None else frozenset(str(value) for value in local_ids)
+        self._visibility: dict[str, bool] = {}
+
+    def search_content(self, query: str, **kwargs) -> list[dict]:
+        from drbrain.storage.content_search import search_content
+
+        requested = kwargs.pop("local_ids", None)
+        scope = self._scope
+        if requested is not None:
+            scope = set(requested) if scope is None else scope.intersection(requested)
+        return search_content(self.conn, query, local_ids=scope, **kwargs)
+
+    def _allowed(self, row: dict) -> bool:
+        if self._scope is None:
+            return True
+        if row["kind"] == "leaf":
+            return str(row["local_id"]) in self._scope
+        node_id = row["node_id"]
+        if node_id not in self._visibility:
+            # A mixed-scope summary also contains outside evidence. Do not expose
+            # it to the planner, even if final leaf results would be filtered.
+            origins = self.conn.execute(
+                "WITH RECURSIVE members(node_id) AS (SELECT ? UNION "
+                "SELECT c.child_id FROM tree_node_children c JOIN members m "
+                "ON c.parent_id=m.node_id) SELECT DISTINCT n.local_id "
+                "FROM members m JOIN tree_nodes n ON n.node_id=m.node_id WHERE n.kind='leaf'",
+                (node_id,),
+            ).fetchall()
+            self._visibility[node_id] = bool(origins) and all(
+                str(item[0]) in self._scope for item in origins
+            )
+        return self._visibility[node_id]
 
     def close(self) -> None:
         self.conn.close()
@@ -90,7 +122,8 @@ class ReadOnlyTreeStore:
         ).fetchone()
         if row is None:
             return None
-        return dict(zip(_NODE_COLUMNS, row, strict=False))
+        result = dict(zip(_NODE_COLUMNS, row, strict=False))
+        return result if self._allowed(result) else None
 
     def get_tree_children(self, parent_id: str) -> list[dict]:
         cursor = self.conn.execute(
@@ -101,7 +134,11 @@ class ReadOnlyTreeStore:
             (str(parent_id),),
         )
         columns = [item[0] for item in cursor.description or ()]
-        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+        return [
+            dict(zip(columns, row, strict=False))
+            for row in cursor.fetchall()
+            if self.get_tree_node(str(row[0])) is not None
+        ]
 
     def get_tree_parents(self, child_id: str) -> list[dict]:
         cursor = self.conn.execute(
@@ -112,9 +149,15 @@ class ReadOnlyTreeStore:
             (str(child_id),),
         )
         columns = [item[0] for item in cursor.description or ()]
-        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+        return [
+            dict(zip(columns, row, strict=False))
+            for row in cursor.fetchall()
+            if self.get_tree_node(str(row[0])) is not None
+        ]
 
     def get_document_revision(self, local_id: str, revision: int | None = None) -> dict | None:
+        if self._scope is not None and str(local_id) not in self._scope:
+            return None
         if revision is None:
             row = self.conn.execute(
                 "SELECT revision FROM document_revisions WHERE local_id = ? "
@@ -131,6 +174,8 @@ class ReadOnlyTreeStore:
         return {"local_id": str(local_id), "revision": int(row[0])}
 
     def get_content_blocks(self, local_id: str, revision: int | None = None) -> list[dict]:
+        if self._scope is not None and str(local_id) not in self._scope:
+            return []
         if revision is None:
             current = self.get_document_revision(local_id)
             if current is None:
@@ -160,7 +205,8 @@ class ReadOnlyTreeStore:
         sql += " ORDER BY layer, node_id LIMIT ?"
         params.append(max(1, int(limit)))
         cursor = self.conn.execute(sql, tuple(params))
-        return [dict(zip(_NODE_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+        rows = [dict(zip(_NODE_COLUMNS, row, strict=False)) for row in cursor.fetchall()]
+        return [row for row in rows if self._allowed(row)]
 
 
 __all__ = ["ReadOnlyTreeStore", "TreeSnapshotError"]

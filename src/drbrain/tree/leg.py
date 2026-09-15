@@ -92,7 +92,7 @@ class TreeLegHit:
 class TreeLegOutcome:
     """Auditable result of one tree-leg query."""
 
-    status: str  # ok | empty | unavailable
+    status: str  # ok | partial | empty | unavailable
     reason: str = ""
     generation: str = ""
     profile_id: str = ""
@@ -185,6 +185,7 @@ def run_tree_leg(
     verify: Callable[[TreeLegHit], bool] | None = None,
     embed: Callable[[Sequence[str]], list[list[float]]] | None = None,
     local_ids: Sequence[str] | None = None,
+    generation: str | None = None,
 ) -> TreeLegOutcome:
     """Resolve → search → navigate → validate → leaf text (one call, no writes).
 
@@ -193,7 +194,7 @@ def run_tree_leg(
     paper's leaves; ``None`` keeps the corpus-wide search.
     """
     root = _tree_storage_root(cfg, storage_dir)
-    generation = get_active_tree_generation(root)
+    generation = generation or get_active_tree_generation(root)
     if not generation:
         raise TreeLegUnavailableError(f"no active unified tree generation under {root}")
     resolved = resolve_tree_generation(root, generation)
@@ -215,19 +216,26 @@ def run_tree_leg(
             navigation_status="empty",
             navigation_reason="no_candidates",
         )
-        if not candidates:
-            return outcome
-        if planner is None:
-            planner, resolved_label = resolve_navigation_planner(cfg)
-            planner_label = planner_label or resolved_label
-        label = planner_label or type(planner).__name__
-        with ReadOnlyTreeStore(resolved["snapshot"]) as db:
+        with ReadOnlyTreeStore(resolved["snapshot"], local_ids=local_ids) as db:
+            candidates = [
+                candidate for candidate in candidates if db.get_tree_node(candidate.node_id)
+            ]
+            if not candidates:
+                return outcome
+            if planner is None:
+                planner, resolved_label = resolve_navigation_planner(cfg)
+                planner_label = planner_label or resolved_label
+            label = planner_label or type(planner).__name__
             navigator = TreeNavigator(
                 db,
                 budget=budget,
-                search_nodes=lambda text: searcher.search_from_text(
-                    embed_query, text, top_k=top_k, view=view, local_ids=local_ids
-                ),
+                search_nodes=lambda text: [
+                    candidate
+                    for candidate in searcher.search_from_text(
+                        embed_query, text, top_k=top_k, view=view, local_ids=local_ids
+                    )
+                    if db.get_tree_node(candidate.node_id)
+                ],
             )
             result = navigator.navigate(
                 query,
@@ -282,8 +290,8 @@ def _apply_navigation(
     hits.sort(key=lambda hit: (-hit.score, hit.node_id))
     outcome.hits = hits
     if hits:
-        outcome.status = "ok"
-        outcome.reason = ""
+        outcome.status = "partial" if result.status == "partial" else "ok"
+        outcome.reason = result.reason if outcome.status == "partial" else ""
     elif result.status == "empty":
         outcome.status = "empty"
         outcome.reason = result.reason or "nothing_readable"

@@ -214,7 +214,7 @@ class TestPrepare:
         # The active pointer still names the first generation.
         assert get_active_tree_generation(tmp_path / "tree") == first.published
 
-    def test_model_change_rebuilds_only_vectors(self, tmp_path):
+    def test_embedding_model_change_reclusters_and_reuses_matching_summaries(self, tmp_path):
         db = _setup(tmp_path)
         embedder, model = _FakeEmbedder(), _FakeSummaryModel()
         assert _prepare(db, tmp_path, embed=embedder, model=model).ok
@@ -226,7 +226,11 @@ class TestPrepare:
         assert outcome.vectors["embedded"] == outcome.vectors["nodes"] > 0
         assert embedder.calls > 0
         assert outcome.fts["status"] == "ok"  # FTS untouched
-        assert outcome.hierarchy.get("created", 0) == 0  # hierarchy untouched
+        # New embedding coordinates invalidate semantic assignments. This fake
+        # embedder returns the same coordinates, so identical groups can still
+        # reuse their summary cache after clustering is recomputed.
+        assert outcome.hierarchy.get("rounds")
+        assert outcome.hierarchy.get("created", 0) > 0
         assert model.calls == 0
 
     def test_failed_vector_stage_leaves_the_store_resumable(self, tmp_path):
