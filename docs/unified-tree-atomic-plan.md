@@ -4,6 +4,8 @@
 
 状态：**进行中** — T01–T13、T17–T22、T23–T42、T49/T50 已通过契约测试（记录见 `data/integration/unified-tree/acceptance.jsonl`，提交 faac934/5d7a0cf/18ca77a/3f619b6/66085e5/56ca301/41d364e/70e3edd/370b5a1/27ad515/a288190；T22 的“不再新增 per-paper MD/tree 文件”随 T14–T16/T45 切换消费者后收口）。已完成的源码实现不等于验收通过：模型测试、语料迁移与10k重建仍按验收门执行。
 
+**2026-09-15 按审阅发现 8 更正验收记录**：T48 的 pass 记录自证 `ask.route = "bm25 ok; vector/tree unavailable until T61"`，回答未经统一索引的 vector/tree 路，不能算通过 → 任务重新打开（`acceptance.jsonl` 已追加更正记录）；T56/T57 中标注为 RAPTOR 的对照臂实际检索统一树构建产物 → 该臂改名为统一树检索消融（`unified_tree_flat`），`raptor_collapsed` 改为来源指纹门控（缺指纹即 fail-closed），真实 RAPTOR 对照建立前两项均不勾选（详见 T56/T57/T62 记录）。G5 门（T43–T48）随 T48 重新打开，标记待复核。
+
 ## 执行规则
 
 - 一个任务对应一个可观察的行为变化，先写能失败的契约测试，再实现，再保存验收证据；默认一个独立提交。不能以“主体完成”勾选任务。
@@ -393,12 +395,17 @@
   未启动**：`index_model` probe = connection error——本任务作为外部阻塞保留（与 G2/G5/G7/G8 同因），端点可达后重跑
   `drbrain check` 即可复核，故此处暂不勾选。
 
-### [x] T48 — 通过单篇CLI全流程验收
+### [ ] T48 — 通过单篇CLI全流程验收
 
 - 依赖：T22、T45、T46、T47。
 - 范围：真实PDF、TeX、SciBase MD各一篇的spool→ingest→prepare→ask。
 - 先写测试：CLI契约覆盖无DOI/arXiv的材料、重复输入、模型不可达、摘要失败与源文件保护。
 - 完成标准：三类都产生主库正文、统一索引及可核验回答；无额外MD/JSON文献文件；逐阶段日志证明先通过再进入下一步。
+- **记录更正（2026-09-15，验收核对）**：原勾选（提交 c4f1e27，`acceptance.jsonl`）自证 `ask.route = "bm25 ok; vector/tree unavailable until T61"`——
+  三类材料的回答只由 bm25 一路产出，统一索引的 vector/tree 路没有参与，因此这条记录不能算“统一索引 + 可核验回答”的通过证据，任务重新打开。
+  已保留的进展：提交 `51c6507` 让无 ID 字节重复入库时复用内容寻址 ID（重复输入不再新增文献）。
+  重新勾选的条件：tree 路接通（T43/T46 的生产接线 + T61）后重跑三类材料 CLI 全流程，并保留真实的 vector/tree 路由证据。
+  本任务重新打开后 G5 门（T43–T48）标记为待复核。
 
 ## P6 — 非破坏迁移
 
@@ -459,6 +466,12 @@
 - 范围：评测专用适配器：BM25+vector、真实PageIndex、RAPTOR collapsed、简单串联。
 - 先写测试：记录实际算法来源；RAPTOR保留全层检索，PageIndex不用SQL LIKE；统一模型/上下文配置。
 - 完成标准：CLI能复现各对照结果和成本；基线仅存在于评测入口，不作为生产额外路由。
+- **记录更正（2026-09-15，审阅发现 8）**：已提交的 `raptor_collapsed` 臂（提交 daeeeee）实际打开统一树 active generation，在含结构候选、
+  条件化分组与父节点成本门的产物上做全层平面 ANN——它测的是统一树的平面检索变体，不能使用原始 RAPTOR 的算法标签。处理：
+  该臂改名 `unified_tree_flat`（统一树检索消融，函数/常量/报告字段同步改名，`notes`/`details.source` 明示其读取的产物且声明“not an independent RAPTOR baseline”）；
+  `raptor_collapsed` 改为只接受独立 RAPTOR 构建，并校验来源指纹（算法名+版本、构建参数快照、资料来源、生成时间、内容/成员哈希、
+  generation 与 manifest fingerprint 绑定）；缺失或不匹配时以 `BaselineProvenanceError` fail-closed（报告形态：`status=unavailable`、`details.fail_closed=true`），
+  不再静默回落到统一树。真实 RAPTOR 对照尚未建立，T56 暂不勾选。
 
 ### [ ] T57 — 完成开发集消融并冻结参数
 
@@ -466,6 +479,11 @@
 - 范围：结构先验、结构候选、成本门、根入口限制、父/邻域跳转的消融配置。
 - 先写测试：每次仅改变声明机制，lambda=0范围解释正确，指标计算可复核。
 - 完成标准：开发集选定lambda/成本参数、候选与读取预算、重排阈值；在看保留集结果前记录质量/成本验收阈值，结果差时不宣称算法更好。
+- **记录更正（2026-09-15）**：①`data/integration/unified-tree/ablation-thresholds.json` 已冻结文件里的 `baseline.raptor_collapsed` 与
+  `observed_default`（hit_rate_paper 0.4286）来自上文被改名的统一树平面检索臂；该文件按冻结规则不覆盖，读取时应按 `unified_tree_flat` 解释，
+  后续重冻结改用 `scripts/acceptance/run_ablations.py` 中的新标签（真实 RAPTOR 行留空）。②提交 `9b946be` 修复了结构先验只计算不生效的问题
+  （`soft_assignment()` 阈值化的是未加权的原始概率，lambda 对分配没有作用）——修复前跑出的 lambda 消融对分配无效，因此冻结参数应在修复后的
+  构建上重跑开发集消融再确认。在重跑并给出证据前 T57 不勾选。
 
 ### [ ] T58 — 完成100篇CLI运行与故障验收
 
@@ -503,6 +521,11 @@
 - 范围：独立tree与完整三路、保留集问题和实际CLI证据核验。
 - 先写测试：保留集来源/参数未变化；原文引用和指标自动校验；人工核对多证据答案的可支持性。
 - 完成标准：硬契约全过，质量/成本达到T57已冻结标准；报告全部基线和失败例，不达标则回到对应算法任务，不能修改保留集掩盖差异。
+- **落点（2026-09-15，审阅发现 8 要求）**：真实 RAPTOR 对照产物的构建不在本轮完成（需要活模型）。**由后续轮次的算法验证开发者（T56/T57/T62 的 owner）
+  在进入 T62 之前**完成：用活模型在独立目录（默认 `data/raptor`，`llamaindex.raptor_storage` 可覆盖，非统一树 `tree_storage`）构建并发布 RAPTOR 产物，
+  同时写入 `raptor-provenance.json`（算法名+版本、构建参数快照、资料来源、生成时间、内容/成员哈希、generation 与 manifest fingerprint）。
+  只有 `drbrain rag baselines --name raptor_collapsed` 通过 `verify_raptor_provenance()` 后产出的结果才可作为 T62 的 RAPTOR 对照数字；
+  校验不通过时该基线以 `status=unavailable`/`fail_closed` 报告，**不得**用统一树产物顶替对照。
 
 ### [ ] T63 — 切换本地正式默认配置
 
