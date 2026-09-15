@@ -11,7 +11,7 @@ from typing import Any
 from drbrain.rag.sql_retrie import _default_rag_db
 from drbrain.rag.sql_snapshot import publish_sql_snapshot
 from drbrain.storage.database import Database
-from drbrain.storage.node_projection import collect_tree_node_records
+from drbrain.storage.node_projection import NODE_PROJECTION_VERSION, collect_node_records
 from drbrain.storage.paths import paper_dir
 from drbrain.storage.rag_database import rebuild_rag_database
 
@@ -61,7 +61,7 @@ def prepare_sql_rag(
             pid = str(paper["local_id"])
             all_paper_ids.add(pid)
             pdir = paper_dir(papers_root, pid)
-            records = collect_tree_node_records(pdir, paper_id=pid)
+            records = collect_node_records(db.conn, pid, paper_dir=pdir, include_regions=True)
             if not records:
                 db.upsert_paper_artifact(pid, "rag_text", "skipped", error="tree unavailable")
                 continue
@@ -120,7 +120,7 @@ def prepare_sql_rag(
             }
         metadata = {
             "source_db": str(main_path),
-            "node_projection": "storage.node_projection.v1",
+            "node_projection": NODE_PROJECTION_VERSION,
             "paper_count": len(eligible),
         }
         stats = rebuild_rag_database(

@@ -268,11 +268,13 @@ def build_index(
 
     import concurrent.futures as _cf
 
+    conn = getattr(db, "conn", None)  # test doubles may expose a narrower API
+
     def _collect_one(pid: str) -> tuple[str, list[Document] | None]:
         paper_dir = _resolve_paper_dir(papers_root, pid)
         if paper_dir is None:
             return pid, None
-        return pid, collect_tree_nodes(paper_dir, paper_id=pid)
+        return pid, collect_tree_nodes(paper_dir, paper_id=pid, conn=conn)
 
     missing_dirs = 0
     sorted_ids = sorted(str(p) for p in target_ids)
