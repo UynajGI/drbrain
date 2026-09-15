@@ -63,20 +63,20 @@ Configure model and provider credentials in the runtime-local `config.local.yaml
 2. **Build** structured extraction:
 
    ```bash
-   uv run drbrain build
+   uv run drbrain graph build
    ```
 
 3. **Build retrieval indexes** when an embedding provider is available:
 
    ```bash
-   uv run drbrain embed --tree
-   uv run drbrain rag index
+   uv run drbrain index build
+   uv run drbrain index status
    ```
 
 4. **Exercise retrieval and sessions**:
 
    ```bash
-   uv run drbrain query "research question"
+   uv run drbrain search "research question"
    uv run drbrain reason "compare the methods in the corpus"
    uv run drbrain session new --title "integration smoke"
    ```

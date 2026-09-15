@@ -28,8 +28,10 @@ The tree leg reads the published unified generation (search → navigation →
 read receipts → leaf text). When a SQL corpus exists, every leaf is verified
 against the same node id and content revision in its `node_texts` projection,
 so BM25/vector/tree cannot mix revisions. When no SQL corpus exists (the
-default unified deployment), a tree-only request is served from the generation
-alone and every other requested leg is reported `source_unavailable`; a
+default unified deployment), all three legs are served from that one store —
+bm25 over the canonical FTS (block hits resolved to their published leaf),
+vector over the shared leaf ANN and tree over the same generation — and only
+legs the store cannot answer (graph/claims) are reported `source_unavailable`; a
 missing generation is fail-closed (ask reports `source_unavailable` with the
 prepare hint). The older readers (`search --paper` replaces the removed
 `query --paper`; `embed --tree`, the per-paper PageIndex/RAPTOR retrievers,

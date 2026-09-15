@@ -37,7 +37,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/app/` | Local WebUI (`drbrain webui`) — FastAPI + Jinja2/htmx (`web/` routes/templates/static) over the service facade (`service.py`), single-user token auth (`auth.py`); pages: 概览/文献库/会话/研究运行/插件/设置; project→session→run scope, SSE run stream, report download. Contract: `docs/webui-design.md`, visual mockup: `design/webui-v1-mockup.html` |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
-| `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库 |
+| `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库；`merge_shards` 合并分片时同时携带规范正文与已发布叶节点（统一表），ANN/FTS/层次由主库一次 `index build` 重建 |
 | `scripts/serve_embedding.py` | 本地 Qwen3-Embedding-0.6B 常驻服务（openai-compat /v1/embeddings，max_seq_length=512，batch_size=8 防 OOM，GPU 绑卡） |
 | `tests/` | pytest test suite |
 | `skills/` | Project skills (AgentSkills.io standard, canonical source) |
@@ -229,7 +229,7 @@ audit → repair → check-citations → queue resolve-all
 
 ## Architecture
 
-DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses configured BM25/vector/RAPTOR/graph sources. SQL vectors rerank the BM25 pool; LlamaIndex can use independent vector recall. Logical evidence units are tree sections/summaries; bounded physical fragments carry exact parent-text offsets. See `docs/rag-layer-completion.md` for contracts and migration.
+DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses the configured legs — BM25, vector and tree (graph/claims are live extras). Without a legacy SQL corpus the unified store serves all three legs (canonical FTS, shared leaf ANN, tree navigator); a published SQL snapshot keeps serving BM25/vector from its projection. Logical evidence units are tree sections/summaries; bounded physical fragments carry exact parent-text offsets. See `docs/rag-layer-completion.md` for contracts and migration.
 
 ### Pipeline
 

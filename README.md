@@ -27,7 +27,7 @@ relationships through rule-based reasoning.
   **concept-level granularity**.
 - 🧩 Reasoning is **symbol-driven**: closure rules, confidence propagation,
   counterfactuals — not just embedding similarity.
-- ⚡ **Corpus-scale hybrid retrieval**: BM25 + dense vectors + RAPTOR tree
+- ⚡ **Corpus-scale hybrid retrieval**: BM25 + dense vectors + unified-tree
   summaries + graph traversal, fused by RRF and reranked — over hundreds of
   thousands of full-text papers, with vectors on semantically-complete tree
   nodes rather than arbitrary chunks.
