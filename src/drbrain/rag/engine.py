@@ -136,7 +136,13 @@ class AskIndexNotPreparedError(RuntimeError):
 
 
 def ask_prepare_hint(cfg: Any) -> str:
-    """The command that prepares the index for the configured engine (T46)."""
+    """The command that prepares the index for the configured engine (T46).
+
+    Both engines are covered by the same remedy: ``drbrain index build`` fills
+    the unified store (lexical + FTS + shared vectors + tree) and, when
+    ``llamaindex.rag_engine: llamaindex``, prepares the LlamaIndex generation
+    in the same run.
+    """
     return "drbrain index build"
 
 

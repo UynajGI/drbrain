@@ -77,7 +77,7 @@ uv run pytest --cov=drbrain --cov-report=term
 **Index & Retrieval**
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `index build` | `--force/-f`, `--tree-storage PATH`, `--db PATH`, `--json` | Lexical BM25 + canonical FTS + shared vectors + unified tree hierarchy in one incremental run; publishes one generation; exit 1 on a failed stage |
+| `index build` | `--force/-f`, `--tree-storage PATH`, `--db PATH`, `--json` | Lexical BM25 + canonical FTS + shared vectors + unified tree hierarchy in one incremental run (+ the LlamaIndex generation when `rag_engine: llamaindex`); publishes one generation; exit 1 on a failed stage |
 | `index status` | `--json` | Read-only ingested / indexed / retrievable report per leg (ready + reasons + versions + backlog) |
 | `index verify` | `--json` | Read-only check of what `search`/`ask` read (FTS, vector backlog, leaf reachability, generation manifest/freshness/profile) |
 | `search` | `--limit/-n`, `--paper ID...`, `--source local|arxiv|all`, `--json` | Evidence retrieval over the ask chain (bm25/vector/tree), no answer synthesis; rows carry sources, text locators, route and generation |

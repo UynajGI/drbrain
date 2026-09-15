@@ -189,14 +189,17 @@ def index_callback(
     rebuild: bool = typer.Option(False, "--rebuild", help="Force full rebuild"),
     json_output: bool = typer.Option(False, "--json", help="Output JSON"),
 ) -> None:
-    """Rebuild the BM25 search index.
+    """Prepare, inspect and verify the searchable index — the main-line index entry.
 
-    By default incremental: skips rebuild if no paper changed since the last
-    successful index run. Use --rebuild to force a full rebuild.
+    ``drbrain index build`` prepares every enabled retrieval leg (lexical BM25
+    + canonical FTS + shared vectors + unified tree, and the LlamaIndex
+    generation when ``rag_engine: llamaindex``) and publishes what search/ask
+    read; ``drbrain index status`` reports ingested / indexed / retrievable
+    per leg, and ``drbrain index verify`` re-checks exactly that.
 
-    ``drbrain index build`` prepares the full main-line index (lexical + FTS +
-    vectors + tree); ``drbrain index status`` and ``drbrain index verify``
-    report readiness without writing.
+    A bare invocation keeps the historical incremental BM25 rebuild: it skips
+    the rebuild when no paper changed since the last successful run; use
+    --rebuild to force a full rebuild.
     """
     if ctx.invoked_subcommand is not None:
         # Options declared on the group belong to the bare command only.
@@ -211,6 +214,49 @@ def index_callback(
 
 
 # ── index build ─────────────────────────────────────────────────────────────
+
+
+def _prepare_llamaindex_generation(
+    cfg: Any,
+    db: Any,
+    *,
+    force: bool,
+    notify: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Prepare the LlamaIndex generation when that engine is selected.
+
+    Mirrors ``rag index`` semantics so the remedy command really prepares what
+    ``search``/``ask`` read: only ``rag_engine: llamaindex`` prepares this
+    generation (the deprecated SQL snapshot path is never republished), and a
+    missing llama-index stack or a build error is a reported *stage failure*
+    rather than a silent skip.  The unified store stages are engine
+    independent and always run.
+    """
+    from drbrain.rag.config import get_llamaindex_config
+
+    li = get_llamaindex_config(cfg)
+    engine = str(getattr(li, "rag_engine", "") or "").strip().lower()
+    if engine != "llamaindex":
+        return {"status": "skipped", "reason": f"rag_engine={engine or 'sql'}"}
+    try:
+        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
+    except ImportError as exc:  # pragma: no cover - defensive
+        return {"status": "failed", "error": safe_error(exc)}
+    if not _LLAMA_INDEX_AVAILABLE:
+        return {
+            "status": "failed",
+            "error": (
+                "llama-index is not installed; run: "
+                "uv add llama-index-core llama-index-retrievers-bm25"
+            ),
+        }
+    if notify is not None:
+        notify("Preparing the LlamaIndex generation...")
+    try:
+        stats = build_index(cfg, db, force=bool(force), max_node_tokens=li.max_node_tokens)
+    except Exception as exc:  # noqa: BLE001 - a failed stage is a reported state
+        return {"status": "failed", "error": safe_error(exc)}
+    return {"status": "ok", **dict(stats)}
 
 
 @index_app.command("build")
@@ -231,9 +277,11 @@ def index_build_cmd(
 
     The lexical BM25 index, canonical FTS, the shared vector collection and the
     unified tree hierarchy are filled incrementally from the canonical store;
-    a tree generation is published only when something changed.  Exit code 1
-    when any stage failed — an unfinished or failed stage is never reported as
-    ready.
+    when ``llamaindex.rag_engine: llamaindex`` the LlamaIndex generation is
+    prepared in the same run (the deprecated SQL snapshot path is not
+    republished).  A tree generation is published only when something changed.
+    Exit code 1 when any stage failed — an unfinished or failed stage is never
+    reported as ready.
     """
     cfg = ctx.obj["config"]
     _force = bool(_runtime_option(force, False))
@@ -274,26 +322,38 @@ def index_build_cmd(
             summary_input_budget=li.summary_input_budget,
             force=_force,
         )
+        llamaindex_stage = _prepare_llamaindex_generation(
+            cfg,
+            db,
+            force=_force,
+            notify=None if _json else typer.echo,
+        )
     payload = outcome.to_json()
     payload["lexical"] = lexical
+    payload["llamaindex"] = llamaindex_stage
+    if llamaindex_stage.get("status") in {"failed", "partial"}:
+        payload["failed_stages"] = [*payload["failed_stages"], "llamaindex"]
+        payload["ok"] = False
     payload["duration_ms"] = round((time.monotonic() - started) * 1000, 3)
     if _json:
         typer.echo(json.dumps(redact_sensitive(payload), indent=2, ensure_ascii=False, default=str))
     else:
         typer.echo(
             f"Index build ({'full' if _force else 'incremental'}): "
-            f"{'ok' if outcome.ok else 'FAILED'}"
+            f"{'ok' if payload['ok'] else 'FAILED'}"
         )
         typer.echo(f"  lexical:    {lexical['documents']} documents, indexed={lexical['indexed']}")
         for stage in ("fts", "vectors", "hierarchy", "publication"):
             typer.echo(f"  {stage + ':':<12} {payload[stage].get('status', '')}")
+        if llamaindex_stage.get("status") != "skipped":
+            typer.echo(f"  {'llamaindex:':<12} {llamaindex_stage.get('status', '')}")
         typer.echo(
             f"  changed={payload['changed']} published={payload['published'] or 'none'} "
             f"duration_ms={payload['duration_ms']}"
         )
         if payload["failed_stages"]:
             typer.echo(f"Failed stages: {', '.join(payload['failed_stages'])}", err=True)
-    if not outcome.ok:
+    if not payload["ok"]:
         raise typer.Exit(code=1)
 
 
@@ -428,18 +488,29 @@ def build_index_status(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
     }
     backend = _backend_health(cfg)
     indexed_ready = fts_leg["ready"] and vector_leg["ready"] and tree_leg["ready"]
+    # Retrievability follows the *route* the engine will actually run: the
+    # LlamaIndex engine reads its persisted generation for bm25/vector and the
+    # unified generation for the tree leg; the SQL engine reads a pinned SQL
+    # snapshot when one is published and otherwise serves a tree request from
+    # the unified generation alone.
+    engine = str(getattr(li, "rag_engine", "") or "llamaindex").strip().lower()
+    route_legs = set(route["legs"])
     retrievable_reasons: list[str] = []
     if not li.enabled:
         retrievable_reasons.append("llamaindex_disabled")
-    if not tree_leg["ready"]:
+    if "tree" in route_legs and not tree_leg["ready"]:
         retrievable_reasons.append("tree_unavailable")
     if profile is None:
         retrievable_reasons.append("embedding_profile_unavailable")
-    # The SQL engine reads a pinned SQL snapshot when one is published; only
-    # then does that snapshot's health gate retrievability.
-    if str(getattr(li, "rag_engine", "")) == "sql" and backend.get("generation"):
+    if engine == "llamaindex":
+        if not backend.get("ready"):
+            retrievable_reasons.append("llamaindex_generation_not_ready")
+    elif backend.get("generation"):
         if not backend.get("ready"):
             retrievable_reasons.append("sql_snapshot_unavailable")
+    elif "tree" not in route_legs:
+        # No pinned SQL snapshot and no tree leg to fall back to.
+        retrievable_reasons.append("no_published_index")
     retrievable = {
         "ready": not retrievable_reasons,
         "reasons": retrievable_reasons,
@@ -580,11 +651,13 @@ def build_index_verify(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
     """Consistency checks over exactly what ``search``/``ask`` read.
 
     Reuses the storage audit and the publication verifier, then adds the
-    retrieval-readiness checks they do not cover: ready nodes missing their
+    retrieval-readiness checks they do not cover: the engine's own generation
+    (LlamaIndex store or active SQL snapshot), ready nodes missing their
     current vector, leaves that lost their parent, whether the published
     generation still describes the live database, and whether its manifest was
     produced by the embedding profile that is configured now.
     """
+    from drbrain.rag.config import get_llamaindex_config
     from drbrain.services.storage_audit import audit_storage
     from drbrain.tree.publish import (
         compute_watermarks,
@@ -699,6 +772,29 @@ def build_index_verify(ctx: typer.Context, cfg: Any) -> dict[str, Any]:
             "(unpromoted leaves are legal multi-roots; the next index build retries them)",
             severity="warning",
             sample=missing_parent[:5],
+        )
+
+    # The engine's own generation: the LlamaIndex store always serves the
+    # bm25/vector legs in that mode, a pinned SQL snapshot only when published.
+    li = get_llamaindex_config(cfg)
+    engine = str(getattr(li, "rag_engine", "") or "llamaindex").strip().lower()
+    backend = _backend_health(cfg)
+    if engine == "llamaindex" or backend.get("generation"):
+        name = "llamaindex_generation" if engine == "llamaindex" else "sql_snapshot"
+        add(
+            name,
+            bool(backend.get("ready")),
+            f"{name} is not ready: {', '.join(backend.get('reasons') or [])}",
+            status=backend.get("status"),
+            generation=backend.get("generation"),
+        )
+    else:
+        add(
+            "engine_generation",
+            True,
+            "",
+            status=backend.get("status"),
+            note="no pinned engine generation; retrieval is served by the unified tree leg",
         )
 
     audit = audit_storage(db_path=db_path, storage_dir=root)

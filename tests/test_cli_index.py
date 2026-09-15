@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import yaml
@@ -41,7 +42,7 @@ class _FakeSummaryModel:
         return SimpleNamespace(text="summary", finish_reason="stop")
 
 
-def _write_config(tmp_path: Path, **llamaindex) -> None:
+def _write_config(tmp_path: Path, *, retrievers=None, rag_engine: str = "sql") -> None:
     config = {
         "db": {"path": "data/drbrain.db"},
         "dirs": {
@@ -52,10 +53,9 @@ def _write_config(tmp_path: Path, **llamaindex) -> None:
         "llm": {"models": []},
         "llamaindex": {
             "enabled": True,
-            "rag_engine": "sql",
+            "rag_engine": rag_engine,
             "tree_storage": "data/tree",
-            "retrievers": ["bm25", "vector", "tree"],
-            **llamaindex,
+            "retrievers": retrievers or ["bm25", "vector", "tree"],
         },
         "embed": {"provider": "local", "model": "fake-embed", "dim": DIMENSION},
     }
@@ -154,6 +154,47 @@ class TestIndexStatus:
         assert "Indexed:" in result.stdout
         assert "Retrievable:" in result.stdout
 
+    def test_llamaindex_engine_requires_its_own_generation(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        backend = {
+            "ready": False,
+            "status": "not_ready",
+            "reasons": ["index_missing"],
+            "generation": None,
+            "storage_dir": str(tmp_path / "data" / "llamaindex"),
+        }
+        with mock.patch("drbrain.rag.indexer.get_index_health", return_value=backend):
+            report = json.loads(_invoke(tmp_path, "index", "status", "--json").stdout)
+
+        assert report["states"]["retrievable"]["ready"] is False
+        assert "llamaindex_generation_not_ready" in report["states"]["retrievable"]["reasons"]
+
+    def test_llamaindex_engine_ready_when_generation_and_tree_are_healthy(
+        self, tmp_path, monkeypatch
+    ):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        backend = {
+            "ready": True,
+            "status": "ready",
+            "reasons": [],
+            "generation": "gen-li-1",
+            "storage_dir": str(tmp_path / "data" / "llamaindex"),
+        }
+        with (
+            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
+            mock.patch("drbrain.rag.indexer.build_index", return_value={"generation": "gen-li-1"}),
+            mock.patch("drbrain.rag.indexer.get_index_health", return_value=backend),
+        ):
+            build = _invoke(tmp_path, "index", "build", "--json")
+            report = json.loads(_invoke(tmp_path, "index", "status", "--json").stdout)
+
+        assert build.exit_code == 0, build.stderr
+        assert report["states"]["retrievable"]["ready"] is True
+        assert report["status"] == "ready"
+
 
 class TestIndexBuild:
     def test_build_reports_stages_and_publishes_then_status_is_ready(self, tmp_path, monkeypatch):
@@ -243,6 +284,86 @@ class TestIndexBuild:
         finally:
             db.close()
 
+    def test_build_prepares_the_llamaindex_generation_when_selected(self, tmp_path, monkeypatch):
+        """`rag_engine: llamaindex` builds its own generation in the same run."""
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        stats = {"papers": 2, "nodes": 8, "generation": "gen-li-1"}
+        with (
+            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
+            mock.patch("drbrain.rag.indexer.build_index", return_value=stats) as build,
+        ):
+            result = _invoke(tmp_path, "index", "build", "--json")
+
+        assert result.exit_code == 0, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["llamaindex"]["status"] == "ok"
+        assert payload["llamaindex"]["generation"] == "gen-li-1"
+        assert payload["ok"] is True and payload["failed_stages"] == []
+        assert build.call_args.kwargs["force"] is False
+
+    def test_build_force_flows_into_the_llamaindex_stage(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        with (
+            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
+            mock.patch("drbrain.rag.indexer.build_index", return_value={"nodes": 0}) as build,
+        ):
+            result = _invoke(tmp_path, "index", "build", "--force", "--json")
+
+        assert result.exit_code == 0, result.stderr
+        assert build.call_args.kwargs["force"] is True
+
+    def test_llamaindex_stage_failure_exits_one_and_is_never_ready(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        with (
+            mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", True),
+            mock.patch(
+                "drbrain.rag.indexer.build_index",
+                side_effect=RuntimeError("llama index publish failed"),
+            ),
+        ):
+            result = _invoke(tmp_path, "index", "build", "--json")
+
+        assert result.exit_code == 1, result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert "llamaindex" in payload["failed_stages"]
+        assert "llama index publish failed" in payload["llamaindex"]["error"]
+
+    def test_missing_llamaindex_stack_is_a_failed_stage(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        with mock.patch("drbrain.rag.indexer._LLAMA_INDEX_AVAILABLE", False):
+            result = _invoke(tmp_path, "index", "build", "--json")
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["llamaindex"]["status"] == "failed"
+        assert "llama-index is not installed" in payload["llamaindex"]["error"]
+        assert "llamaindex" in payload["failed_stages"]
+
+    def test_sql_engine_never_republishes_the_legacy_snapshot(self, tmp_path, monkeypatch):
+        _write_config(tmp_path)
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        with mock.patch(
+            "drbrain.rag.indexer.build_index",
+            side_effect=AssertionError("the SQL snapshot path must stay opt-in"),
+        ):
+            result = _invoke(tmp_path, "index", "build", "--json")
+
+        assert result.exit_code == 0, result.stderr
+        assert json.loads(result.stdout)["llamaindex"] == {
+            "status": "skipped",
+            "reason": "rag_engine=sql",
+        }
+
     def test_build_without_an_embedding_profile_fails_closed(self, tmp_path):
         _write_config(tmp_path)
         cfg_path = tmp_path / "config.yaml"
@@ -288,6 +409,37 @@ class TestIndexVerify:
         report = json.loads(_invoke(tmp_path, "index", "verify", "--json").stdout)
         assert report["ok"] is False
         assert any("tree_generation" in error for error in report["errors"])
+
+    def test_verify_checks_the_engine_generation(self, tmp_path, monkeypatch):
+        _write_config(tmp_path, rag_engine="llamaindex")
+        _write_corpus(tmp_path)
+        backend = {
+            "ready": False,
+            "status": "not_ready",
+            "reasons": ["index_missing"],
+            "generation": None,
+            "storage_dir": str(tmp_path / "data" / "llamaindex"),
+        }
+        with mock.patch("drbrain.rag.indexer.get_index_health", return_value=backend):
+            report = json.loads(_invoke(tmp_path, "index", "verify", "--json").stdout)
+
+        by_name = {check["name"]: check for check in report["checks"]}
+        assert by_name["llamaindex_generation"]["ok"] is False
+        assert report["ok"] is False
+        assert any("llamaindex_generation" in error for error in report["errors"])
+
+    def test_verify_notes_that_no_engine_generation_is_pinned(self, tmp_path, monkeypatch):
+        _write_config(tmp_path)
+        _write_corpus(tmp_path)
+        _patch_build(monkeypatch)
+        assert _invoke(tmp_path, "index", "build", "--json").exit_code == 0
+
+        report = json.loads(_invoke(tmp_path, "index", "verify", "--json").stdout)
+
+        by_name = {check["name"]: check for check in report["checks"]}
+        assert by_name["engine_generation"]["ok"] is True
+        assert by_name["engine_generation"]["detail"]["status"] == "unavailable"
+        assert report["ok"] is True
 
     def test_verify_detects_vectors_missing_for_ready_nodes(self, tmp_path, monkeypatch):
         _write_config(tmp_path)
