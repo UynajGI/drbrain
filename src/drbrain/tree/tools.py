@@ -123,6 +123,7 @@ class TreeTools:
                     "kind": row["kind"],
                     "title": row["title"],
                     "layer": int(row["layer"]),
+                    "revision": int(row["revision"]),
                     "local_id": row["local_id"],
                     "summary": row["summary"] if row["kind"] == "region" else "",
                     "weight": child["weight"],

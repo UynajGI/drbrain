@@ -75,6 +75,17 @@ class TreeEvidence:
         }
 
 
+def _normalize_via(value: Any) -> tuple[str, ...]:
+    """Accept a single origin or a provenance list (one leaf, many paths)."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, (list, tuple, set)):
+        return tuple(str(item) for item in value if str(item))
+    return ()
+
+
 def evidence_from_navigation(result, *, query: str = "") -> list[TreeEvidence]:
     """Turn a navigator result into evidence, refusing unbacked leaves.
 
@@ -102,7 +113,7 @@ def evidence_from_navigation(result, *, query: str = "") -> list[TreeEvidence]:
         else:
             content_hash = str(receipt_data.get("content_hash") or item.get("content_hash") or "")
             tokens = int(receipt_data.get("tokens") or 0)
-        via = tuple(value for value in (str(item.get("via") or ""),) if value)
+        via = _normalize_via(item.get("via"))
         out.append(
             TreeEvidence(
                 node_id=str(item.get("node_id")),

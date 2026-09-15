@@ -16,6 +16,7 @@ from drbrain.tree.vector_store import UnifiedVectorStore, VectorEntry
 
 DOC_A = "# Methods\n\nalpha beta gamma delta epsilon zeta\n\n# Results\n\neta theta iota kappa\n"
 DOC_B = "# Methods\n\nlambda mu nu xi omicron pi\n"
+DOC_D = "# Methods\n\nnu xi omicron pi rho\n\n# Results\n\nsigma tau upsilon phi\n"
 
 
 def _doc(db: Database, local_id: str, text: str):
@@ -296,6 +297,60 @@ class TestNavigator:
         store.upsert(entries)
         return TreeSearch(store, profile_id="emb-test")
 
+    def _two_layer_corpus(self, tmp_path):
+        """A legal tree two layers deep: layer2 → layer1 regions → 4 leaves."""
+        db = Database(tmp_path / "layered.sqlite")
+        blocks_a = _doc(db, "p1", DOC_A)
+        blocks_b = _doc(db, "p2", DOC_D)
+        leaves = [
+            _leaf(blocks_a[1], "p1"),
+            _leaf(blocks_a[3], "p1"),
+            _leaf(blocks_b[1], "p2"),
+            _leaf(blocks_b[3], "p2"),
+        ]
+        for leaf in leaves:
+            db.insert_tree_node(leaf, publish=True)
+        mid_a = _region(leaves[:2], layer=1, summary="p1 joint summary")
+        mid_b = _region(leaves[2:], layer=1, summary="p2 joint summary")
+        for mid in (mid_a, mid_b):
+            db.insert_tree_node(mid, publish=True)
+        top = _region([mid_a, mid_b], layer=2, summary="cross-paper summary")
+        db.insert_tree_node(top, publish=True)
+        return db, leaves, mid_a, mid_b, top
+
+    def test_two_layer_region_entry_descends_to_real_leaves(self, tmp_path):
+        """Finding 5: a high summary hit must reach the actual leaves.
+
+        Entering from a layer-2 region is the review's isolation repro: the
+        current walker stops at the first non-leaf level, so a legal tree gives
+        summary evidence but zero leaf evidence.
+        """
+        from drbrain.tree.search import TreeCandidate
+
+        db, leaves, mid_a, mid_b, top = self._two_layer_corpus(tmp_path)
+        candidates = [
+            TreeCandidate(
+                node_id=top.node_id,
+                kind="region",
+                layer=2,
+                local_id="",
+                score=0.9,
+                profile_id="emb-test",
+                node_revision=1,
+            )
+        ]
+        result = TreeNavigator(db).navigate("cross-paper topic", candidates)
+        leaf_items = [item for item in result.evidence if item["source"] == "leaf"]
+        assert leaf_items, (
+            result.status,
+            result.reason,
+            [item["node_id"] for item in result.evidence],
+        )
+        assert {item["node_id"] for item in leaf_items} == {leaf.node_id for leaf in leaves}
+        assert {item["via"][0] for item in leaf_items} == {mid_a.node_id, mid_b.node_id}
+        assert len({receipt.span_key for receipt in result.receipts}) == len(result.receipts)
+        assert result.status == "ok"
+
     def test_leaf_hits_produce_evidence(self, tmp_path, corpus):
         db, leaves, top = corpus
         search = self._search(
@@ -342,7 +397,7 @@ class TestNavigator:
         sources = {item["source"] for item in result.evidence}
         assert sources == {"summary", "leaf"}
         leaf_evidence = [item for item in result.evidence if item["source"] == "leaf"]
-        assert leaf_evidence and all(item["via"] == top.node_id for item in leaf_evidence)
+        assert leaf_evidence and all(item["via"] == [top.node_id] for item in leaf_evidence)
 
     def test_same_span_is_never_counted_twice(self, tmp_path, corpus):
         db, leaves, top = corpus
