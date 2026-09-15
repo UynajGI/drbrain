@@ -20,6 +20,14 @@ def build_sql_retriever(cfg, db, *, top_k, acl_filter=None):
     class SQLRetriever(BaseRetriever):
         _trace: dict = PrivateAttr(default_factory=dict)
 
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            # Pydantic leaves an unassigned ``PrivateAttr`` as the class
+            # descriptor on this subclass, so a failed retrieval used to hand
+            # the descriptor to the telemetry code and crash the abstain path.
+            # Initialize explicitly: an error path must still expose a trace.
+            self._trace = {}
+
         def _retrieve(self, query_bundle):
             rows = retrieve_documents_sql(
                 cfg,

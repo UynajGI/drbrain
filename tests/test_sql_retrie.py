@@ -125,9 +125,10 @@ def test_retrieve_sql_two_legs(rag_db, cfg, monkeypatch):
         assert row["text"]
 
 
-def test_retrieve_sql_tree_leg_requires_the_pinned_ann(rag_db, cfg):
-    """T43: 'pageindex' folds into the tree leg; with no pinned ANN snapshot
-    the leg reports unavailable instead of falling back to SQL LIKE recall."""
+def test_retrieve_sql_tree_leg_requires_the_unified_generation(rag_db, cfg):
+    """T43: 'pageindex' folds into the tree leg; without the unified tree
+    generation the leg reports unavailable instead of falling back to the old
+    PageIndex ANN or to SQL LIKE recall."""
     cfg.llamaindex.retrievers = ["pageindex"]
     with pytest.raises(RetrievalError):
         sql_retrie.retrieve_documents_sql(cfg, None, "kagome flat band", top_k=2)
@@ -152,25 +153,45 @@ def test_retrieve_sql_legacy_config_folds_into_tree(rag_db, cfg, monkeypatch):
 
 
 def test_tree_leg_verifies_node_identity_and_revision(rag_db, cfg, monkeypatch):
-    _patch_embed(monkeypatch, [1.0] * DIM)
+    """T43: a unified-tree hit survives only when the SQL projection row
+    carries the same node id and the same content revision."""
+    from drbrain.tree.leg import TreeLegHit, TreeLegOutcome
 
-    def fake_evidence(index_path, qvec, k):
-        return [
-            ("0000", 0.9, "pA", "hA0"),  # matches the node_texts hash
-            ("0001", 0.8, "pA", "STALE"),  # hash mismatch, same revision only
-            ("9999", 0.7, "pA", "hX"),  # no node_texts row at all
+    def _hit(node_id, content_hash, score):
+        return TreeLegHit(
+            node_id=node_id,
+            local_id="pA",
+            node_revision=1,
+            content_hash=content_hash,
+            block_id="b0",
+            char_start=0,
+            char_end=5,
+            tokens=3,
+            score=score,
+            text="leaf text",
+        )
+
+    def fake_run_tree_leg(cfg_arg, *, query, top_k, verify=None, **kwargs):
+        hits = [
+            _hit("0000", "hA0", 0.9),  # matches the node_texts revision
+            _hit("0001", "STALE", 0.8),  # node id exists, revision differs
+            _hit("9999", "hX", 0.7),  # no node_texts row at all
         ]
+        kept = [hit for hit in hits if verify is None or verify(hit)]
+        return TreeLegOutcome(
+            status="ok" if kept else "unavailable",
+            generation="gen-1",
+            hits=kept,
+        )
 
-    monkeypatch.setattr(
-        "drbrain.rag.sql_snapshot.resolve_sql_vector_index", lambda cfg_arg, generation: "idx"
-    )
-    monkeypatch.setattr("drbrain.rag.zvec_index.query_zvec_evidence", fake_evidence)
+    monkeypatch.setattr("drbrain.tree.leg.run_tree_leg", fake_run_tree_leg)
     conn = sqlite3.connect(rag_db)
     try:
-        hits = sql_retrie._tree_leg(cfg, conn, "kagome", "gen-1", 10)
+        entries, outcome = sql_retrie._tree_leg(cfg, conn, "kagome", "gen-1", 10)
     finally:
         conn.close()
-    assert hits == [("pA:0000", 0.9)]
+    assert entries == [("pA:0000", 0.9)]
+    assert outcome.status == "ok"
 
 
 def test_diversity_guarantee_respects_top_k(rag_db, cfg, monkeypatch):

@@ -414,9 +414,10 @@ def get_retrievers(
     """Assemble named retrievers per the ``llamaindex.retrievers`` config list.
 
     Outer layer (T43): only ``bm25`` (persisted ``BM25Retriever``), ``vector``
-    (``index.as_retriever``) and ``tree`` (:class:`DrbrainTreeRetriever`).
-    The legacy names ``pageindex``/``raptor`` fold into the single tree leg
-    (see :mod:`drbrain.rag.legs`); ``graph`` remains an explicit live extra.
+    (``index.as_retriever``) and ``tree`` (:class:`UnifiedTreeRetriever` over
+    the published unified generation).  The legacy names
+    ``pageindex``/``raptor`` fold into the single tree leg (see
+    :mod:`drbrain.rag.legs`); ``graph`` remains an explicit live extra.
     Only legs present in the config list AND available on disk are returned.
     T5's query engine combines the result with :func:`build_fusion_retriever`.
 
@@ -428,7 +429,7 @@ def get_retrievers(
     if not _LLAMA_INDEX_AVAILABLE:
         raise RuntimeError("llama-index is not installed; cannot build retrievers")
     from drbrain.rag.indexer import load_index
-    from drbrain.rag.retrievers import DrbrainGraphRetriever, DrbrainTreeRetriever
+    from drbrain.rag.retrievers import DrbrainGraphRetriever
 
     li = get_llamaindex_config(cfg)
     normalized = normalize_legs(li.retrievers)
@@ -455,9 +456,27 @@ def get_retrievers(
         return out
 
     if "tree" in wanted:
-        out["tree"] = DrbrainTreeRetriever(
-            cfg, top_k=caps["tree"], db_path=getattr(db, "path", None)
+        # T43/T45: the tree leg reads the published unified generation.  A
+        # missing generation is fail-closed — the legacy per-paper PageIndex
+        # navigation is not a fallback (its raw.md/tree.json inputs stop being
+        # produced once ingest converges on the canonical store).
+        from drbrain.runtime import runtime_scoped_path
+        from drbrain.tree.leg import DEFAULT_TREE_STORAGE
+        from drbrain.tree.publish import get_active_tree_generation
+
+        tree_root = runtime_scoped_path(
+            getattr(li, "tree_storage", "") or DEFAULT_TREE_STORAGE, label="tree storage"
         )
+        if get_active_tree_generation(tree_root):
+            from drbrain.rag.retrievers import UnifiedTreeRetriever
+
+            out["tree"] = UnifiedTreeRetriever(cfg, top_k=caps["tree"])
+        else:
+            log.warning(
+                "[rag] no active unified tree generation under %s; tree leg omitted "
+                "(fail-closed, no legacy fallback)",
+                tree_root,
+            )
     if "graph" in normalized.extras:
         out["graph"] = DrbrainGraphRetriever(db=db, graph=graph, top_k=int(cfg.embed.top_k or 10))
     return out

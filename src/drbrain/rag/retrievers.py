@@ -511,6 +511,70 @@ if _LLAMA_INDEX_AVAILABLE:
                 log.warning("[rag] tree navigation failed for %s: %s", paper_dir, exc)
                 return []
 
+    class UnifiedTreeRetriever(BaseRetriever):
+        """The production tree leg over the published unified generation (T43).
+
+        The legacy :class:`DrbrainTreeRetriever` above navigates each paper's
+        ``tree.json`` with its own LLM loop and loads bodies from ``raw.md``.
+        The unified path deliberately replaces it instead of shimming it: the
+        retired per-paper files stop being produced once ingest writes only the
+        canonical store (T14–T16/T22), so keeping that walker would preserve a
+        second, silently rotting fact source.  One generation, one navigator,
+        one evidence contract — and the same leaf text the SQL tree leg reads.
+        """
+
+        def __init__(self, cfg: Config, *, top_k: int = 20) -> None:
+            super().__init__()
+            self._cfg = cfg
+            self.top_k = max(1, int(top_k))
+            self._trace: dict[str, Any] = {}
+
+        def _retrieve(self, query_bundle: QueryBundle) -> list[NodeWithScore]:
+            from drbrain.rag.status import RetrievalUnavailableError
+            from drbrain.tree.leg import TreeLegUnavailableError, run_tree_leg
+
+            try:
+                outcome = run_tree_leg(self._cfg, query=query_bundle.query_str, top_k=self.top_k)
+            except TreeLegUnavailableError as exc:
+                # Fail-closed: no legacy per-paper fallback, a reported state.
+                raise RetrievalUnavailableError(str(exc)) from exc
+            self._trace = {
+                "legs": [
+                    {
+                        "source": "tree",
+                        "status": outcome.status,
+                        "returned": len(outcome.hits),
+                        "duration_ms": float(outcome.budget.get("elapsed_ms") or 0.0),
+                    }
+                ],
+                "tree": outcome.to_json(),
+            }
+            return [
+                NodeWithScore(
+                    node=TextNode(
+                        text=_truncate_for_llm(hit.text),
+                        id_=f"{hit.local_id}:{hit.node_id}",
+                        metadata={
+                            "paper_id": hit.local_id,
+                            "node_id": hit.node_id,
+                            "title": "",
+                            "source": "tree",
+                            "tree_layer": "leaf",
+                            "content_hash": hit.content_hash,
+                            "block_id": hit.block_id,
+                            "char_start": hit.char_start,
+                            "char_end": hit.char_end,
+                            "node_revision": hit.node_revision,
+                        },
+                    ),
+                    score=hit.score,
+                )
+                for hit in outcome.hits
+            ]
+
+        def get_last_trace(self) -> dict[str, Any]:
+            return dict(self._trace)
+
     class DrbrainRAPTORRetriever(BaseRetriever):
         """RAPTOR two-stage tree traversal wrapped as a LlamaIndex retriever.
 

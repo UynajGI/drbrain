@@ -86,11 +86,21 @@ class TestFusionRegistration:
             assert item.node.metadata["source"] == "tree"
             assert item.node.metadata["sources"] == ["tree"]
 
-    def test_get_retrievers_folds_legacy_names(self, tmp_path):
-        from drbrain.rag.retrievers import DrbrainTreeRetriever
+    def test_get_retrievers_folds_legacy_names(self, tmp_path, monkeypatch):
+        from drbrain.rag.retrievers import UnifiedTreeRetriever
 
+        monkeypatch.setattr(
+            "drbrain.tree.publish.get_active_tree_generation", lambda root: "gen-test"
+        )
         cfg = _cfg(str(tmp_path))
         cfg.llamaindex.retrievers = ["pageindex"]
         retrievers = fusion.get_retrievers(cfg)
         assert set(retrievers) == {"tree"}
-        assert isinstance(retrievers["tree"], DrbrainTreeRetriever)
+        assert isinstance(retrievers["tree"], UnifiedTreeRetriever)
+
+    def test_missing_unified_generation_omits_the_tree_leg(self, tmp_path, monkeypatch):
+        """Fail-closed: no generation means no tree leg, never the legacy walker."""
+        monkeypatch.setattr("drbrain.tree.publish.get_active_tree_generation", lambda root: None)
+        cfg = _cfg(str(tmp_path))
+        cfg.llamaindex.retrievers = ["tree"]
+        assert fusion.get_retrievers(cfg) == {}

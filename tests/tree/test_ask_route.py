@@ -151,28 +151,41 @@ class TestNotPrepared:
 class TestTreeOnly:
     def _run(self, tmp_path, monkeypatch, *, legs, tree_candidates=7):
         from drbrain.rag import sql_retrie
+        from drbrain.tree.leg import TreeLegHit, TreeLegOutcome
 
         db_path = _rag_fixture_db(tmp_path)
         calls: dict = {}
 
-        def fake_evidence(index_path, qvec, k):
-            calls["top_k"] = k
-            return [
-                ("0000", 0.9, "pA", "hA0"),
-                ("9999", 0.8, "pA", "hX"),  # no node_texts row → dropped
+        def fake_run_tree_leg(cfg_arg, *, query, top_k, verify=None, **kwargs):
+            # The unified leg is exercised end to end in tests/tree/test_tree_leg.py;
+            # here only the route/cap wiring is under test.
+            calls["top_k"] = top_k
+            hits = [
+                TreeLegHit(
+                    node_id="0000",
+                    local_id="pA",
+                    node_revision=1,
+                    content_hash="hA0",
+                    block_id="b0",
+                    char_start=0,
+                    char_end=5,
+                    tokens=3,
+                    score=0.9,
+                    text="kagome leaf text",
+                )
             ]
+            if verify is not None:
+                hits = [hit for hit in hits if verify(hit)]
+            return TreeLegOutcome(
+                status="ok" if hits else "unavailable",
+                generation="gen-test",
+                hits=hits,
+            )
 
         monkeypatch.setattr(
             "drbrain.rag.sql_snapshot.resolve_sql_snapshot", lambda cfg, generation: db_path
         )
-        monkeypatch.setattr(
-            "drbrain.rag.sql_snapshot.resolve_sql_vector_index",
-            lambda cfg, generation: tmp_path / "zvec",
-        )
-        monkeypatch.setattr("drbrain.rag.zvec_index.query_zvec_evidence", fake_evidence)
-        monkeypatch.setattr(
-            "drbrain.services.embedding._embed_batch", lambda texts, embed_cfg: [[0.5] * DIM]
-        )
+        monkeypatch.setattr("drbrain.tree.leg.run_tree_leg", fake_run_tree_leg)
         cfg = _cfg(legs=legs, tree_candidates=tree_candidates)
         rows = sql_retrie.retrieve_documents_sql(
             cfg, None, "kagome flat band", generation="g-test", top_k=2

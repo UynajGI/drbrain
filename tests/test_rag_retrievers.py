@@ -18,6 +18,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -31,6 +32,7 @@ from drbrain.rag.retrievers import (
     DrbrainGraphRetriever,
     DrbrainRAPTORRetriever,
     DrbrainTreeRetriever,
+    UnifiedTreeRetriever,
     _full_section_body,
     _pageindex_section,
     _parent_and_path,
@@ -972,9 +974,13 @@ def test_get_retrievers_config_list(tmp_path):
     assert set(retrievers) == {"bm25", "vector"}
 
     cfg.llamaindex.retrievers = ["tree"]
-    retrievers = get_retrievers(cfg)
+    # T43: the tree leg needs the published unified generation (fail-closed);
+    # without one the leg is omitted instead of using the legacy walker.
+    assert get_retrievers(cfg) == {}
+    with mock.patch("drbrain.tree.publish.get_active_tree_generation", return_value="gen-test"):
+        retrievers = get_retrievers(cfg)
     assert set(retrievers) == {"tree"}
-    assert isinstance(retrievers["tree"], DrbrainTreeRetriever)
+    assert isinstance(retrievers["tree"], UnifiedTreeRetriever)
 
     cfg.llamaindex.retrievers = ["graph"]
     retrievers = get_retrievers(cfg, db=_PaperDB([PAPER_A]), graph=_FakeGraph())

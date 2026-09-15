@@ -41,7 +41,7 @@ from drbrain.rag.contracts import (
 )
 from drbrain.rag.evidence import build_evidence_record
 from drbrain.rag.legs import normalize_legs
-from drbrain.rag.status import RetrievalUnavailableError
+from drbrain.rag.status import RetrievalStatus, RetrievalUnavailableError
 from drbrain.utils.rrf import DEFAULT_K as _RRF_K
 from drbrain.utils.rrf import rrf_fuse_scores
 
@@ -214,40 +214,39 @@ def _tree_leg(
     k: int,
     *,
     allowed_papers: set[str] | None = None,
-) -> list[tuple[str, float]]:
-    """Unified tree recall: pinned ANN, verified against ``node_texts``.
+):
+    """Unified tree recall over the published generation (T43/T45/T46).
 
-    The retired SQL LIKE heading scan is gone.  The leg recalls from the
-    shared ANN sidecar and keeps only hits whose node id maps to a
-    ``node_texts`` row whose content hash agrees with the vector's (same
-    evidence id, same revision); stale or unrlocatable hits are dropped.
+    The leg resolves the *active unified tree generation* published by
+    ``rag prepare --unified``, searches every published layer through the
+    shared ANN, walks the tree with the stateful navigator, and keeps only
+    leaf text whose receipt validates against the SQL node projection the
+    BM25/vector legs read (same node id, same content revision).  The retired
+    PageIndex ANN (``tree_vectors.tree_layer='pageindex'``) is never read and
+    there is no legacy fallback: a missing generation is fail-closed.
+
+    Returns ``(entries, outcome)``: the key/score pairs for fusion and the
+    auditable navigation outcome (entry layer, reads, planner, unresolved).
     """
-    if generation is None:
-        raise RetrievalUnavailableError("tree retrieval requires a pinned SQL generation")
-    from drbrain.rag.sql_snapshot import resolve_sql_vector_index
-    from drbrain.rag.zvec_index import query_zvec_evidence
-    from drbrain.services.embedding import _embed_batch
+    from drbrain.tree.leg import TreeLegUnavailableError, run_tree_leg
 
-    qvec = _embed_batch([query], cfg.embed)[0]
-    # The caller supplies the configured tree candidate cap (T44); expansion
-    # never over-reads it.
-    requested = max(int(k), 1)
-    raw = query_zvec_evidence(resolve_sql_vector_index(cfg, generation), qvec, requested)
-    out: list[tuple[str, float]] = []
-    for node_id, score, paper_id, content_hash in raw:
-        if allowed_papers is not None and paper_id not in allowed_papers:
-            continue
+    def verify(hit) -> bool:
+        if allowed_papers is not None and hit.local_id not in allowed_papers:
+            return False
         row = conn.execute(
             "SELECT node_key, content_hash FROM node_texts WHERE paper_id = ? AND node_id = ?",
-            (paper_id, node_id),
+            (hit.local_id, hit.node_id),
         ).fetchone()
         if row is None:
-            continue
-        node_key, expected = str(row[0]), str(row[1] or "")
-        if not _same_revision(expected, content_hash):
-            continue
-        out.append((node_key, score))
-    return out[:k]
+            return False
+        return _same_revision(str(row[1] or ""), hit.content_hash)
+
+    try:
+        outcome = run_tree_leg(cfg, query=query, top_k=max(int(k), 1), verify=verify)
+    except TreeLegUnavailableError as exc:
+        raise RetrievalUnavailableError(str(exc)) from exc
+    entries = [(hit.key, hit.score) for hit in outcome.hits]
+    return entries, outcome
 
 
 def _rerank_with_vectors(
@@ -603,6 +602,8 @@ def retrieve_documents_sql(
         entries: list[dict[str, Any]]
         for name in wanted:
             started = time.perf_counter()
+            leg_status: str | None = None
+            leg_reason = ""
             try:
                 if (
                     name == "bm25" or (name == "vector" and vector_backend == "sqlite")
@@ -625,17 +626,25 @@ def retrieve_documents_sql(
                         )
                     entries = [{"key": key, "score": score} for key, score in vector_entries]
                 elif name == "tree":
-                    entries = [
-                        {"key": key, "score": score}
-                        for key, score in _tree_leg(
-                            cfg,
-                            conn,
-                            query,
-                            generation,
-                            _leg_cap(cfg, "tree", _KNN_POOL),
-                            allowed_papers=allowed_papers,
+                    tree_entries, tree_outcome = _tree_leg(
+                        cfg,
+                        conn,
+                        query,
+                        generation,
+                        _leg_cap(cfg, "tree", _KNN_POOL),
+                        allowed_papers=allowed_papers,
+                    )
+                    entries = [{"key": key, "score": score} for key, score in tree_entries]
+                    capabilities["tree"] = tree_outcome.to_json()
+                    leg_status = "ok" if entries else tree_outcome.status
+                    if tree_outcome.status != "ok":
+                        # A leg's failure reason must be a RetrievalStatus value;
+                        # the detailed navigation reason stays in capabilities.
+                        leg_reason = (
+                            RetrievalStatus.INSUFFICIENT_EVIDENCE.value
+                            if tree_outcome.status == "unavailable"
+                            else ""
                         )
-                    ]
                 elif name == "graph":
                     entries = _graph_leg(db, graph, query, max(top_k, 20))
                 else:
@@ -643,9 +652,10 @@ def retrieve_documents_sql(
                 traces.append(
                     LegResult(
                         name,
-                        "ok" if entries else "empty",
+                        leg_status or ("ok" if entries else "empty"),
                         len(entries),
                         pool_ms if name == "bm25" else (time.perf_counter() - started) * 1000,
+                        leg_reason,
                     )
                 )
                 legs.append((name, entries))
