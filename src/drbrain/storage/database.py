@@ -2847,6 +2847,69 @@ class Database:
             )
             return int(cursor.rowcount or 0)
 
+    def delete_content_blocks(self, local_id: str, revision: int) -> int:
+        """Delete one revision's blocks (the FTS mirror follows its triggers).
+
+        Used by the block repack, which re-segments a revision in place: the
+        canonical text and its hash are unchanged, only the boundaries move.
+        """
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "DELETE FROM content_blocks WHERE local_id = ? AND revision = ?",
+                (str(local_id), int(revision)),
+            )
+        return int(cursor.rowcount or 0)
+
+    def delete_tree_nodes(self, node_ids: Sequence[str]) -> int:
+        """Delete tree nodes together with their child references and vectors.
+
+        ``tree_node_children.child_id`` is ``ON DELETE RESTRICT``, so rows
+        referencing a deleted node are removed first; ``node_vectors`` has no
+        foreign key and would otherwise linger as orphans.
+
+        Ancestors go too: a region's identity (``region_node_id``) derives
+        from its full member list, so a parent that referenced a removed node
+        is already invalid — leaving it ``ready`` would be a silently
+        corrupted hierarchy.  Deletion cascades upward until no surviving
+        parent references a removed node.
+        """
+        ids = [str(node_id) for node_id in node_ids if str(node_id)]
+        if not ids:
+            return 0
+        deleted = 0
+        pending = list(dict.fromkeys(ids))
+        removed: set[str] = set()
+        with self._write_scope():
+            while pending:
+                parents: list[str] = []
+                for start in range(0, len(pending), 500):
+                    chunk = pending[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    parents.extend(
+                        str(row[0])
+                        for row in self.conn.execute(
+                            f"SELECT DISTINCT parent_id FROM tree_node_children "
+                            f"WHERE child_id IN ({placeholders})",
+                            tuple(chunk),
+                        )
+                    )
+                    self.conn.execute(
+                        f"DELETE FROM tree_node_children WHERE child_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    self.conn.execute(
+                        f"DELETE FROM node_vectors WHERE node_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    cursor = self.conn.execute(
+                        f"DELETE FROM tree_nodes WHERE node_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    deleted += int(cursor.rowcount or 0)
+                removed.update(pending)
+                pending = [parent for parent in dict.fromkeys(parents) if parent not in removed]
+        return deleted
+
     def leaves_missing_parent(self, local_id: str | None = None) -> list[str]:
         """Ready leaves without a *ready* parent (T35 reachability audit).
 

@@ -10,7 +10,7 @@ import pytest
 
 from drbrain.services.storage_audit import audit_storage, open_readonly, summarize
 from drbrain.storage.database import Database
-from drbrain.tree.blocks import build_content_blocks
+from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 
 
@@ -44,7 +44,13 @@ def _seeded_db(path: Path) -> Database:
     db = Database(path)
     text = "# Sec\n\nbody text for the audit\n"
     db.insert_paper(LONG_ID, "T", 2024, "uploaded")
-    blocks = build_content_blocks(text, local_id=LONG_ID, revision=1, media_type="md")
+    blocks = build_content_blocks(
+        text,
+        local_id=LONG_ID,
+        revision=1,
+        media_type="md",
+        policy=BlockPolicy(min_chars=0),
+    )
     db.upsert_document_revision(
         LONG_ID,
         1,

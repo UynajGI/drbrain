@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from drbrain.storage.database import Database
-from drbrain.tree.blocks import build_content_blocks
+from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import (
     ChildRef,
     LeafRef,
@@ -25,7 +25,13 @@ from drbrain.tree.observability import (
 def _seed_document(db: Database, local_id: str = "p1", *, state: str = "ready") -> str:
     text = "# Sec\n\nbody text of the document\n"
     db.insert_paper(local_id, "T", 2024, "uploaded")
-    blocks = build_content_blocks(text, local_id=local_id, revision=1, media_type="md")
+    blocks = build_content_blocks(
+        text,
+        local_id=local_id,
+        revision=1,
+        media_type="md",
+        policy=BlockPolicy(min_chars=0),
+    )
     db.upsert_document_revision(
         local_id,
         1,

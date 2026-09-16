@@ -50,6 +50,48 @@ def _papers_root(ctx: typer.Context, cfg: Any, explicit: str) -> Path:
     return Path(runtime_data_path(ctx, raw, label="papers root"))
 
 
+def _repack_policy(min_chars: int | None) -> Any:
+    """Repack policy for ``--min-chars``: ``None`` keeps the default, ``0`` disables.
+
+    ``0`` is a meaningful value (raw structural segmentation), so it must not
+    be mistaken for "flag unset" and silently replaced by the default policy.
+    """
+    from drbrain.tree.blocks import BlockPolicy
+
+    if min_chars is None:
+        return BlockPolicy()
+    if int(min_chars) < 0:
+        raise typer.BadParameter("must be >= 0", param_hint="--min-chars")
+    return BlockPolicy(min_chars=int(min_chars))
+
+
+def _open_working_store(ctx: typer.Context, cfg: Any) -> Any:
+    """Open the shared working vector store for repack's retired-doc cleanup.
+
+    ``None`` when the store (or the embedding profile needed to address it)
+    is unavailable — a corpus that was never indexed has nothing to retire.
+    """
+    from drbrain.cli.index_commands import _tree_storage_root
+    from drbrain.services.index_report import embedding_profile
+    from drbrain.tree.prepare import WORKING_VECTORS_DIR
+    from drbrain.tree.vector_store import UnifiedVectorStore
+
+    try:
+        index_dir = _tree_storage_root(ctx, cfg) / WORKING_VECTORS_DIR
+        if not index_dir.is_dir():
+            return None
+        profile, reason = embedding_profile(cfg)
+        if profile is None:
+            typer.echo(f"warning: not retiring replaced vectors ({reason})", err=True)
+            return None
+        store = UnifiedVectorStore(index_dir, dimension=int(profile.dimension))
+        store.open()
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort, never blocking
+        typer.echo(f"warning: cannot open the shared vector store ({exc})", err=True)
+        return None
+    return store
+
+
 @storage_app.command("audit")
 def storage_audit_cmd(
     ctx: typer.Context,
@@ -153,6 +195,87 @@ def storage_migrate_cmd(
             typer.echo(f"  - failed {entry['local_id']}: {entry['error']}", err=True)
     if outcome.failed:
         raise typer.Exit(code=1)
+
+
+@storage_app.command("repack")
+def storage_repack_cmd(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--apply", help="Plan only (default) or execute the plan"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable plan/report"),
+    local_id: str = typer.Option("", "--local-id", help="Restrict to one paper"),
+    max_items: int = typer.Option(0, "--max-items", help="Plan at most N revisions"),
+    min_chars: int | None = typer.Option(
+        None,
+        "--min-chars",
+        help="Merge target in characters; 0 disables merging (default: the policy default)",
+    ),
+):
+    """Re-segment existing blocks into paragraph-sized leaves.
+
+    Revisions, their canonical hashes and the text itself are unchanged —
+    only the block boundaries move (the canonical partition is preserved
+    verbatim).  Every affected leaf and its vectors are rebuilt, so follow
+    with ``index build --force``.
+    """
+    from drbrain.services.storage_repack import apply_repack, plan_repack
+    from drbrain.storage.database import Database
+
+    cfg = _runtime_config(ctx)
+    db_path = _db_path(ctx, cfg)
+    policy = _repack_policy(min_chars)
+    database = Database(db_path)
+    try:
+        plan = plan_repack(
+            database,
+            local_ids=[local_id] if local_id else None,
+            max_items=max(0, int(max_items)),
+            policy=policy,
+        )
+        if dry_run:
+            payload = plan.to_json()
+            if json_output:
+                typer.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+            else:
+                typer.echo(
+                    f"Repack plan: {payload['revisions']} ready revision(s), "
+                    f"{len(payload['repack'])} to re-segment, {payload['skipped']} already coarse, "
+                    f"{len(payload['failed'])} failed"
+                )
+                typer.echo(
+                    f"  blocks {payload['blocks_before']} -> {payload['blocks_after']} "
+                    f"(min_chars={policy.min_chars}, max_tokens={policy.max_tokens})"
+                )
+                for item in payload["repack"][:10]:
+                    typer.echo(
+                        f"  - {item['local_id']}: {item['blocks_before']} -> {item['blocks_after']}"
+                    )
+                if len(payload["repack"]) > 10:
+                    typer.echo(f"  … {len(payload['repack']) - 10} more")
+            if payload["failed"]:
+                raise typer.Exit(code=1)
+            return
+        store = _open_working_store(ctx, cfg)
+        try:
+            outcome = apply_repack(database, plan, policy=policy, store=store)
+        finally:
+            if store is not None:
+                store.close()
+        if json_output:
+            typer.echo(_json.dumps(outcome, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(
+                f"Repack applied: {outcome['applied']} revision(s), {len(outcome['failed'])} failed"
+            )
+            typer.echo(
+                f"  blocks {outcome['blocks_before']} -> {outcome['blocks_after']}; "
+                "run `index build --force` to re-embed and rebuild the hierarchy"
+            )
+        if outcome["failed"]:
+            raise typer.Exit(code=1)
+    finally:
+        database.close()
 
 
 @storage_app.command("export")

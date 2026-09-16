@@ -17,7 +17,7 @@ import pytest
 from drbrain.services.chat_model import ChatModel
 from drbrain.services.model_roles import ModelRole
 from drbrain.storage.database import Database
-from drbrain.tree.blocks import build_content_blocks
+from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import ChildRef, LeafRef, NodeRecord, leaf_node_id, region_node_id
 from drbrain.tree.navigator import (
     ChatActionPlanner,
@@ -33,8 +33,15 @@ DOC_P2 = "# Methods\n\nlambda mu nu xi\n\n# Results\n\nomicron pi rho sigma\n"
 
 def _doc(db: Database, local_id: str, text: str):
     db.insert_paper(local_id, "T", 2024, "uploaded")
+    # Fixture docs stay fine-grained: these tests pin navigation semantics,
+    # not the paragraph merge the production writer applies.
     blocks = build_content_blocks(
-        text, local_id=local_id, revision=1, media_type="md", parser="test"
+        text,
+        local_id=local_id,
+        revision=1,
+        media_type="md",
+        parser="test",
+        policy=BlockPolicy(min_chars=0),
     )
     db.upsert_document_revision(
         local_id,

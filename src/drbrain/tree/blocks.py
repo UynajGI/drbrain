@@ -58,10 +58,18 @@ class BlockPolicy:
     #: kinds that are never split internally (formula/table stay whole when
     #: they fit; oversized ones still split on their own line boundaries).
     atomic_kinds: tuple[str, ...] = ("formula",)
+    #: Merge adjacent spans within one section up to this many characters so a
+    #: leaf carries a paragraph-sized chunk instead of a line/sentence
+    #: fragment (the 10k flow test measured a 118-char median leaf, 23% under
+    #: 40 chars, against RAPTOR's 100-token ≈ 400-char chunking).  ``0`` keeps
+    #: the raw structural segmentation.
+    min_chars: int = 400
 
     def __post_init__(self) -> None:
         if self.max_tokens < 16:
             raise ValueError("max_tokens must be >= 16")
+        if self.min_chars < 0:
+            raise ValueError("min_chars must be >= 0")
 
 
 def _line_starts(text: str) -> list[int]:
@@ -283,6 +291,51 @@ def segment_text(text: str) -> list[Segment]:
     return fixed
 
 
+def _merge_spans(
+    text: str,
+    spans: Sequence[tuple[int, int, Segment]],
+    policy: BlockPolicy,
+) -> list[tuple[int, int, Segment]]:
+    """Group adjacent spans into paragraph-sized blocks for the leaf layer.
+
+    The canonical partition is preserved exactly — merging only re-groups
+    adjacent ranges — while granularity becomes a section chunk instead of a
+    line fragment.  A heading always opens a new group (its title stays with
+    the section it introduces), groups stop growing at ``min_chars``, and the
+    grown group stays inside ``max_tokens``: each span's tokens are counted
+    once and summed, so dense scripts (CJK packs ~1 token per character) can
+    no longer slip past a characters-per-token estimate.
+
+    Page boundaries are not a merge barrier: spans from adjacent pages may
+    rejoin, and the merged block's ``page_start``/``page_end`` then cover the
+    pages it actually spans rather than a fabricated single page.
+    """
+    if policy.min_chars <= 0 or len(spans) < 2:
+        return list(spans)
+    token_limit = max(1, int(policy.max_tokens))
+
+    merged: list[tuple[int, int, Segment]] = []
+    begin, end, segment = spans[0]
+    group_tokens = policy.count_tokens(text[begin:end])
+    for next_begin, next_end, next_segment in spans[1:]:
+        length = end - begin
+        tokens = policy.count_tokens(text[next_begin:next_end])
+        opens_section = next_segment.kind == "title"
+        same_section = next_segment.heading_path == segment.heading_path
+        grows = length < policy.min_chars and group_tokens + tokens <= token_limit
+        if not opens_section and same_section and grows:
+            end = next_end
+            group_tokens += tokens
+            if segment.kind == "title" and next_segment.kind != "title":
+                segment = next_segment
+            continue
+        merged.append((begin, end, segment))
+        begin, end, segment = next_begin, next_end, next_segment
+        group_tokens = tokens
+    merged.append((begin, end, segment))
+    return merged
+
+
 def _split_oversized(
     text: str,
     start: int,
@@ -366,7 +419,9 @@ def build_content_blocks(
             continue
         pieces: list[tuple[int, int]] = [(segment.start, segment.end)]
         if page_bounds:
-            # Split at real page boundaries so every block's page span is exact.
+            # Split at real page boundaries so this span's own page range is
+            # exact before merging; a merge across the boundary later keeps a
+            # page range that covers every page the merged block touches.
             split: list[tuple[int, int]] = []
             for begin, finish in pieces:
                 cut_points = [b for b in page_bounds if begin < b < finish]
@@ -385,6 +440,8 @@ def build_content_blocks(
                 continue
             for sub_begin, sub_finish in _split_oversized(text, begin, finish, policy):
                 spans.append((sub_begin, sub_finish, segment))
+
+    spans = _merge_spans(text, spans, policy)
 
     blocks: list[ContentBlock] = []
     for ordinal, (begin, finish, segment) in enumerate(spans):

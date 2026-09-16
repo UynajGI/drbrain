@@ -26,7 +26,10 @@ def _server() -> dict:
         "command": sys.executable,
         "args": [str(_ECHO_SERVER)],
         "allowed_tools": ["echo"],
-        "timeout_seconds": 5,
+        # The echo server is a fresh interpreter; a loaded machine can spend
+        # several seconds booting it (5s flaked under load, e.g. the pre-push
+        # gate).
+        "timeout_seconds": 30,
     }
 
 

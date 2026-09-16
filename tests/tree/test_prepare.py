@@ -55,7 +55,7 @@ class _FakeSummaryModel:
         return SimpleNamespace(text="summary", finish_reason="stop")
 
 
-def _doc(db: Database, local_id: str, sections: int = 4, words: int = 30) -> None:
+def _doc(db: Database, local_id: str, sections: int = 4, words: int = 200) -> None:
     text = "".join(
         f"# Section {index}\n\n" + " ".join([f"{local_id}body{index}"] * words) + "\n\n"
         for index in range(sections)
