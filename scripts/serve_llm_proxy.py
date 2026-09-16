@@ -65,7 +65,7 @@ def _response_bytes(status: int, headers: list[tuple[str, str]], body: bytes) ->
             continue
         lines.append(f"{key}: {value}")
     lines.append(f"Content-Length: {len(body)}")
-    lines.append("Connection: keep-alive")
+    lines.append("Connection: close")
     return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
 
 
