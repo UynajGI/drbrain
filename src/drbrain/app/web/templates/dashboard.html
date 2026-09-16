@@ -22,21 +22,51 @@
     <li><code>drbrain index build</code> — 文本检索索引（词法 + FTS + 向量 + tree）</li>
     <li><code>drbrain graph embed &amp;&amp; drbrain graph closure</code> — 知识图谱向量与规则闭环（可选）</li>
   </ol>
-  <p class="muted small">导入完成后刷新此页即可看到文献与统计。</p>
+  <p class="muted small">
+    导入完成后刷新此页即可看到文献与统计；「能不能搜、索引到哪一步」看
+    <a class="link" href="/index?project_id={{ project.project_id }}">索引与语料</a>。
+  </p>
 </section>
 {% endif %}
 
+<section class="card" aria-labelledby="index-hint-title">
+  <div class="card-head">
+    <h2 id="index-hint-title">能不能搜？</h2>
+    <a class="btn btn-small" href="/index?project_id={{ project.project_id }}">打开索引与语料 →</a>
+  </div>
+  <p class="small">
+    论文“入库”不等于“能搜到”：入库 / 建索引 / 可检索是三件事。索引状态与自检的只读门面接入中，
+    就绪前请在终端用 <code>drbrain index status</code> 确认。
+  </p>
+</section>
+
 {% set av = data.availability %}
-{% if not av.llm or not av.rag or not av.autoresearch %}
-<section class="card" aria-labelledby="avail-title">
-  <h2 id="avail-title">能力状态</h2>
+<section class="card" aria-labelledby="cap-title">
+  <div class="card-head">
+    <h2 id="cap-title">检索与问答可用性</h2>
+    <a class="btn btn-small" href="/index?project_id={{ project.project_id }}">索引与语料 →</a>
+  </div>
   <ul class="checklist">
-    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置（设置 llm.models 后会话与运行可用）' }}</li>
-    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用（配置 llamaindex.enabled 并运行 drbrain index build）' }}</li>
+    <li class="{{ 'is-ok' if av.search_ready else 'is-off' }}">
+      <strong>找证据</strong>（原文检索）：{{ '可用' if av.search_ready else '不可用' }}
+      {% for reason in av.search_reasons %}
+      {% set meta = index_reason(reason) %}
+      <p class="muted small">{{ meta.label }}{% if meta.hint %}：{{ meta.hint }}{% endif %}</p>
+      {% endfor %}
+    </li>
+    <li class="{{ 'is-ok' if av.ask_ready else 'is-off' }}">
+      <strong>要答案</strong>（检索 + 综合）：{{ '可用' if av.ask_ready else '不可用' }}
+      {% if not av.ask_ready and av.ask_hint %}<p class="muted small">{{ av.ask_hint }}</p>{% endif %}
+      {% for reason in av.ask_reasons %}
+      {% set meta = index_reason(reason) %}
+      <p class="muted small">{{ meta.label }}{% if meta.hint %}：{{ meta.hint }}{% endif %}</p>
+      {% endfor %}
+    </li>
+    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置（llm.models）' }}</li>
     <li class="{{ 'is-ok' if av.autoresearch else 'is-off' }}">Autoresearch：{{ '已启用' if av.autoresearch else '未启用（autoresearch.enabled: true）' }}</li>
   </ul>
+  <p class="muted small">“能不能搜”看索引就绪度，不再看引擎开关；两项分开说明，避免“实际能搜、页面说未启用”。</p>
 </section>
-{% endif %}
 
 <section class="kpis" aria-label="项目统计">
   <div class="kpi"><span class="kpi-value">{{ data.papers }}</span><span class="kpi-label">文献</span></div>

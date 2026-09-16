@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}检索与证据 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>检索与证据</h1>
+    <p class="muted">
+      <strong>找证据</strong>＝直接在原文里找片段，不生成答案（快、可引用）；
+      <strong>要答案</strong>＝先找证据再综合，答案带逐条出处（慢，可能“证据不足”）。
+    </p>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="检索方式">
+  <a class="tab {{ 'on' if mode != 'answer' }}" href="/search?project_id={{ project.project_id }}&amp;mode=evidence" {% if mode != 'answer' %}aria-current="true"{% endif %}>找证据</a>
+  <a class="tab {{ 'on' if mode == 'answer' }}" href="/search?project_id={{ project.project_id }}&amp;mode=answer" {% if mode == 'answer' %}aria-current="true"{% endif %}>要答案</a>
+</nav>
+
+{% if mode != 'answer' %}
+<section class="card" aria-labelledby="evidence-title">
+  <h2 id="evidence-title">找证据</h2>
+  <form class="search-bar" method="get" action="/search">
+    <input type="hidden" name="project_id" value="{{ project.project_id }}">
+    <input type="hidden" name="mode" value="evidence">
+    <div class="search-field grow">
+      <label class="field-label" for="q">在原文里找</label>
+      <input class="input" id="q" name="q" type="search" value="{{ evidence_query }}"
+             placeholder="术语、原句、公式名…（找证据，不是找文献）">
+    </div>
+    <div class="search-field">
+      <label class="field-label" for="paper">限定论文（可选）</label>
+      <input class="input" id="paper" name="paper" value="{{ paper_filter }}"
+             placeholder="local_id，逗号分隔">
+    </div>
+    <div class="search-field compact">
+      <label class="field-label" for="source">来源</label>
+      <select class="input" id="source" name="source">
+        <option value="local" {% if source == 'local' %}selected{% endif %}>仅本地</option>
+        <option value="arxiv" {% if source == 'arxiv' %}selected{% endif %}>仅外部（arXiv）</option>
+        <option value="all" {% if source == 'all' %}selected{% endif %}>本地 + 外部</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">找证据</button>
+    </div>
+  </form>
+
+  {% if evidence_status %}
+  <div class="alert alert-{{ evidence_status.tone }}" role="status">
+    <strong>{{ evidence_status.label }}</strong>
+    {% if evidence_status.hint %}<span class="small">{{ evidence_status.hint }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  {% if evidence %}
+  {% set scope = evidence.scope or {} %}
+  <p class="muted small">
+    {% if scope.best_effort %}
+    项目限定：<strong>尽力而为</strong>（本项目 {{ scope.project_papers }} 篇，超出精确集合过滤的规模；语义与结构两条腿可能看到项目外的片段）。
+    {% elif scope.paper_ids %}
+    项目限定：精确（{{ scope.paper_ids | length }} 篇）。
+    {% else %}
+    范围：全部已入库语料。
+    {% endif %}
+    本次最多展示前 {{ evidence.display_cap }} 条——这是<strong>展示上限，不是命中总数</strong>（检索层不提供总数）。
+    {% if evidence.source != 'local' %}来源：{{ evidence.source }}。{% endif %}
+  </p>
+
+  {% if evidence.legs %}
+  <ul class="list">
+    {% for leg in evidence.legs %}
+    <li class="list-row">
+      <div class="list-main">
+        <span class="strong">{{ leg.source }}</span>
+        {% if leg.reason %}<span class="muted small">{{ leg.reason }}</span>{% endif %}
+      </div>
+      <span class="badge badge-{{ {'ok': 'ok', 'empty': 'muted', 'unavailable': 'warn'}.get(leg.status, 'muted') }}">
+        {{ leg.status }}{% if leg.count is defined %} · {{ leg.count }} 条{% endif %}
+      </span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if evidence.evidence %}
+  <ul class="claim-list">
+    {% for row in evidence.evidence %}
+    {% if row is mapping %}
+    <li class="claim">
+      <div class="claim-head">
+        <span class="badge badge-{{ 'ok' if row.char_start is defined and row.char_end is defined else 'muted' }}">
+          {{ '原文片段' if row.char_start is defined and row.char_end is defined else '位置未标注' }}
+        </span>
+        {% if row.source %}<span class="muted small">找法：{{ row.source }}</span>{% endif %}
+        {% if row.score is not none %}<span class="muted small">分数 {{ '%.3f' % row.score }}</span>{% endif %}
+      </div>
+      <p class="claim-statement">{{ row.text or '' }}</p>
+      <p class="muted small">
+        出处：{% if row.paper_id %}<a class="link" href="/papers/{{ row.paper_id | urlencode }}?project_id={{ project.project_id }}{% if row.node_id %}&amp;node={{ row.node_id | urlencode }}{% endif %}">{{ row.title or row.paper_id }}</a>{% else %}{{ row.title or row.url or '外部来源' }}{% endif %}
+        {%- if row.node_id %} · 章节 <code>{{ row.node_id }}</code>{% endif %}
+        {%- if row.block_id %} · 块 <code>{{ row.block_id }}</code>{% endif %}
+        {%- if row.char_start is defined and row.char_end is defined %} · 位置 <code>[{{ row.char_start }}-{{ row.char_end }}]</code>{% endif %}
+        {%- if row.generation %} · 索引版本 <code>{{ row.generation | short(24) }}</code>{% endif %}
+      </p>
+      <details class="diag">
+        <summary>诊断详情（证据身份，可复制）</summary>
+        <pre class="raw">{{ row | tojson(indent=2) }}</pre>
+      </details>
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+  <p class="muted small">
+    没有标注字符位置的条目只作线索，不作为可引用的原文证据；把它当“系统生成的内容”看待。
+  </p>
+  {% else %}
+  {{ m.empty_state('没有找到证据', '换关键词，或先在索引页确认索引是否就绪。') }}
+  {% endif %}
+  {% endif %}
+
+  <p class="small muted">
+    现在也可以：终端运行 <code>drbrain search "你的问题"</code> 查看同样证据行；
+    去 <a class="link" href="/papers?project_id={{ project.project_id }}">文献库</a> 做书目检索（标题 / 作者 / 概念 / 论证）。
+  </p>
+</section>
+{% endif %}
+
+<section class="card" aria-labelledby="answer-title">
+  <h2 id="answer-title">要答案</h2>
+  <form method="post" action="/search/answer" class="search-bar">
+    {{ m.csrf_field(csrf_token) }}
+    <input type="hidden" name="project_id" value="{{ project.project_id }}">
+    <div class="form-row grow">
+      <label class="field-label" for="question">问题</label>
+      <input class="input" id="question" name="question" type="text" value="{{ question }}"
+             placeholder="例如：flat band 体系里拓扑与关联效应是什么关系？" autocomplete="off">
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit" data-submit-once>提问</button>
+    </div>
+  </form>
+
+  {% if answer_status %}
+  <div class="alert alert-{{ answer_status.tone }}" role="status">
+    <strong>{{ answer_status.label }}</strong>
+    {% if answer_status.hint %}<span class="small">{{ answer_status.hint }}</span>{% endif %}
+  </div>
+  {% if answer_status.key in ('index_not_prepared', 'unavailable') %}
+  <p><a class="btn btn-primary" href="/index?project_id={{ project.project_id }}">去索引页看状态 →</a></p>
+  {% endif %}
+  {% endif %}
+
+  {% if answer and answer.answer %}
+  <article class="answer" aria-label="答案">
+    <div class="answer-body">{{ answer.answer }}</div>
+    {% if answer.sources %}
+    <h3 class="subhead">出处</h3>
+    <ul class="list">
+      {% for src in answer.sources %}
+      {% if src is mapping %}
+      <li class="list-row">
+        <div class="list-main">
+          <span class="strong">{{ src.title or src.paper_title or src.local_id or src.paper_id or ('来源 ' ~ loop.index) }}</span>
+          <span class="muted small">
+            {%- if src.section %}{{ src.section }}{% endif %}
+            {%- if src.node_id %} · node <code>{{ src.node_id }}</code>{% endif %}
+            {%- if src.locator %} · {{ src.locator }}{% endif %}
+          </span>
+          {% if src.text or src.snippet %}<p class="small muted">{{ (src.text or src.snippet)[:240] }}</p>{% endif %}
+        </div>
+        {% if src.leg %}<span class="badge badge-muted">{{ src.leg }}</span>{% endif %}
+      </li>
+      {% else %}
+      <li class="list-row"><div class="list-main"><span>{{ src }}</span></div></li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted small">这次回答没有带出处。请把它当作线索而不是证据，可以换关键词或在文献库里核对。</p>
+    {% endif %}
+  </article>
+  {% endif %}
+
+  {% if answer %}
+  <details class="diag">
+    <summary>诊断详情（原始返回，可复制）</summary>
+    <pre class="raw">{{ answer | tojson(indent=2) }}</pre>
+  </details>
+  {% endif %}
+</section>
+{% endblock %}

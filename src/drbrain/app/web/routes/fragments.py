@@ -6,6 +6,8 @@ JSON API over HTTP, so there is one data path per view.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
@@ -103,6 +105,39 @@ def session_messages(
         unavailable=False,
         error="",
     )
+
+
+@router.get("/index-verify")
+def index_verify(request: Request, project_id: str = Query(DEFAULT_PROJECT_ID)) -> Response:
+    """Read-only self-check (htmx): the CLI's verify items, said in user words."""
+    cfg = deps.get_cfg(request)
+    project = deps.resolve_project(request, project_id)
+    report = service.index_verify(cfg, project["project_id"])
+    return deps.render(request, "fragments/index_verify.html", report=report, project=project)
+
+
+@router.get("/index-job")
+def index_job(
+    request: Request,
+    project_id: str = Query(DEFAULT_PROJECT_ID),
+    job_id: str = Query(""),
+) -> Response:
+    """The build job panel (htmx): self-polling until the job is terminal.
+
+    A missing/unknown job renders the "not started" state so a stale tab can
+    never wedge on a 404; every field comes from the service facade.
+    """
+    cfg = deps.get_cfg(request)
+    project = deps.resolve_project(request, project_id)
+    job: dict[str, Any] = {}
+    if job_id:
+        try:
+            job = service.index_job_state(cfg, job_id)
+        except service.JobNotFoundError:
+            job = {}
+    else:
+        job = service.current_index_job(cfg, project["project_id"])
+    return deps.render(request, "fragments/index_job.html", job=job, project=project)
 
 
 @router.get("/conformance")

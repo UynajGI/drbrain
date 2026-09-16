@@ -55,21 +55,65 @@
 
 <section class="card" aria-labelledby="outline-title">
   <div class="card-head">
-    <h2 id="outline-title">章节结构</h2>
-    <span class="muted small">{{ detail.outline | length }} 个节点{% if detail.outline | length >= 300 %}（已截断）{% endif %}</span>
+    <h2 id="outline-title">正文章节</h2>
+    <span class="muted small">
+      {%- if detail.outline %}{{ detail.outline | length }} 个节点{% if detail.outline | length >= 300 %}（已截断）{% endif %}{% endif -%}
+    </span>
   </div>
+
+  {% if detail.body.source %}
+  <p class="muted small">
+    正文来源：
+    {% if detail.body.source == 'canonical' %}
+      站内登记正文{% if detail.body.revision %} · 第 {{ detail.body.revision }} 版{% endif %}
+    {% else %}
+      旧格式目录文件（{{ detail.body.source }}）
+    {% endif %}
+    —— 两种来源的页面对你是一样的：都能展开看原文片段。
+  </p>
+  {% endif %}
+
+  {% set located = detail.outline | selectattr('node_id', 'equalto', node_target) | list if node_target else [] %}
+  {% if node_target and not located %}
+  <div class="alert alert-warn" role="status">
+    没找到这个片段：<code>{{ node_target | short(40) }}</code> 不在当前正文里（可能来自另一个版本，或已被替换）。
+    下面是这篇文献当前的完整大纲。
+  </div>
+  {% elif located %}
+  <div class="alert alert-ok" role="status">
+    已定位到「{{ located[0].title or '未命名章节' }}」，下方已高亮并展开该节点。
+  </div>
+  {% endif %}
+
   {% if detail.outline %}
   <ul class="outline">
     {% for node in detail.outline %}
-    <li class="outline-node" style="--depth: {{ node.depth }}">
+    <li class="outline-node {% if node_target and node.node_id == node_target %}is-target{% endif %}" style="--depth: {{ node.depth }}">
+      {% if node.excerpt %}
+      <details class="outline-detail" {% if node_target and node.node_id == node_target %}open{% endif %}>
+        <summary>
+          <span class="outline-title">{{ node.title or '(未命名章节)' }}</span>
+          {% if node.node_id %}<code class="outline-id">{{ node.node_id }}</code>{% endif %}
+        </summary>
+        <p class="outline-text">{{ node.excerpt }}</p>
+        <p class="muted small">
+          位置：
+          <code class="locator">{{ paper.local_id }}#{{ node.node_id }}@{% if detail.body.revision %}rev{{ detail.body.revision }}{% else %}legacy{% endif %}{% if node.char_start is defined and node.char_end is defined %} [{{ node.char_start }}-{{ node.char_end }}]{% endif %}</code>
+        </p>
+      </details>
+      {% else %}
       <span class="outline-title">{{ node.title or '(未命名章节)' }}</span>
       {% if node.node_id %}<code class="outline-id">{{ node.node_id }}</code>{% endif %}
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
-  <p class="muted small">node_id 即证据定位符，可与运行裁决中的 <code>paper:node</code> 引用对照。</p>
+  <p class="muted small">
+    点章节标题即可展开原文片段；「位置」是可复制的稳定坐标，可与运行裁决里的
+    <code>paper:node</code> 引用对照。精确字段（node_id、字符区间、版本号）看这里的 <code>位置</code> 行即可。
+  </p>
   {% else %}
-  {{ m.empty_state('没有可用的章节树', '该文献可能尚未完成 ingest（没有正文章节）。') }}
+  {{ m.empty_state('这篇还没有正文章节', '新入库的文献在 drbrain index build 之后会有层级结构；旧论文缺少 tree.json 时也会显示为空。') }}
   {% endif %}
 </section>
 

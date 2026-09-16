@@ -8,6 +8,7 @@ rendering through the FastAPI test client.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -18,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from drbrain.app import auth, service
 from drbrain.app.web import create_app
+from drbrain.app.web.labels import index_reason
 from drbrain.app.web.routes import auth_routes
 from drbrain.loop.store import RunLedger
 from drbrain.security import REDACTED
@@ -321,6 +323,381 @@ def test_pages_render_with_scope_and_content(web):
     # Unknown page entities render the explicit 404 page, not a 500.
     missing = web.client.get("/runs/nope")
     assert missing.status_code == 404 and "找不到研究运行" in missing.text
+
+
+# ── v2 shell (M8) ────────────────────────────────────────────────────────────
+
+
+def test_shell_navigation_and_asset_fingerprint(web):
+    """Seven-item navigation, the shared shell and cache-busted static URLs."""
+    home = web.client.get("/")
+    assert home.status_code == 200
+    for label in ("概览", "索引与语料", "检索与证据", "文献库", "会话", "研究运行", "设置"):
+        assert label in home.text, label
+    assert home.text.count('class="nav-item') == 7
+    assert 'class="topbar"' in home.text and 'class="crumb"' in home.text
+
+    # /static/* is served with a long max-age, so every asset URL must carry a
+    # content fingerprint (baseline P1).
+    urls = re.findall(r'/static/[^"\']+', home.text)
+    assert urls and all("?v=" in url for url in urls)
+    for url in urls:
+        assert web.client.get(url).status_code == 200
+
+
+def test_index_page_shows_three_states_without_guessing(web):
+    """FR-I1: ingested / indexed / retrievable are three labelled states."""
+    page = web.client.get("/index")
+    assert page.status_code == 200
+    assert "索引与语料" in page.text and "已入库" in page.text
+    assert "已建索引" in page.text and "可检索" in page.text
+    assert "三条找法" in page.text and "当前索引版本" in page.text
+    assert "还没处理完的量" in page.text
+
+
+def test_index_page_reads_the_cli_report_and_self_check(web):
+    """FR-I3/I4: the page carries the CLI's report and a read-only self-check."""
+    page = web.client.get("/index")
+    assert page.status_code == 200
+    assert "现在能不能搜？" in page.text
+    # The raw payload stays in the diagnostic fold, not in the body.
+    assert "诊断详情" in page.text and '"tree_state"' in page.text
+
+    frag = web.client.get(
+        "/ui/fragments/index-verify?project_id=prj-default", headers={"HX-Request": "true"}
+    )
+    assert frag.status_code == 200
+    assert "<html" not in frag.text  # a fragment, not a page
+    assert "自检是只读的" in frag.text
+
+
+def test_index_leg_view_speaks_user_language():
+    """FR-I2/D15: route legs and reason codes are translated, never pasted raw."""
+    from drbrain.app.web.routes.pages import (
+        _folded_route_note,
+        _index_legs_view,
+        _index_states_view,
+    )
+
+    report = {
+        "route": {
+            "requested": ["bm25", "vector", "pageindex", "raptor"],
+            "legs": ["bm25", "vector", "tree"],
+        },
+        "states": {
+            "ingested": {"ready": True, "papers": 210},
+            "indexed": {"ready": False, "legs": ["fts", "vector", "tree"]},
+            "retrievable": {"ready": False, "reasons": ["state.tree: no_published_generation"]},
+        },
+        "legs": {
+            "lexical": {"ready": True, "documents": 3},
+            "fts": {"ready": True, "indexed": 9},
+            "vector": {
+                "ready": False,
+                "reasons": ["no_ready_vectors"],
+                "ready_count": 0,
+                "pending": 5,
+                "nodes": 5,
+            },
+            "tree": {"ready": False, "reasons": ["no_published_generation"]},
+        },
+    }
+    rows = _index_legs_view(report)
+    assert [row["leg"]["label"] for row in rows] == ["关键词匹配", "语义相似", "按结构导航"]
+    assert rows[0]["ready"] is True
+    assert rows[0]["facts"] == [("词法索引文档", "3"), ("正文块已索引", "9")]
+    assert rows[1]["ready"] is False
+    assert rows[1]["reasons"][0]["label"] == "还有片段没算向量"
+    assert rows[2]["reasons"][0]["label"] == "还没有发布过索引版本"
+
+    states = _index_states_view(report)
+    assert [state["value"] for state in states] == ["210 篇", "1/3 条腿", "未就绪"]
+
+    note = _folded_route_note(report)
+    assert "已合并为「按结构导航」" in note and "pageindex" in note and "raptor" in note
+    assert _folded_route_note({"route": {"requested": ["bm25"], "legs": ["bm25"]}}) == ""
+    # A state-prefixed reason is translated by its inner code, not pasted raw.
+    assert index_reason("state.vector: no_ready_vectors")["label"] == "还有片段没算向量"
+    assert index_reason("documents_failed:2")["hint"].startswith("运行 drbrain index status")
+
+
+def test_search_page_explains_both_paths(web):
+    page = web.client.get("/search")
+    assert page.status_code == 200
+    assert "找证据" in page.text and "要答案" in page.text
+    answer_mode = web.client.get("/search?mode=answer")
+    assert answer_mode.status_code == 200 and 'name="question"' in answer_mode.text
+
+
+def test_search_answer_reports_status_instead_of_500(web):
+    """FR-S6/A3: a missing capability is a status, never a 500 (D4)."""
+    response = web.client.post(
+        "/search/answer",
+        data={
+            "question": "what is a flat band?",
+            "project_id": "prj-default",
+            "csrf_token": web.csrf,
+        },
+    )
+    assert response.status_code == 200
+    assert "要答案不可用" in response.text or "还没有索引" in response.text
+    assert "去索引页" in response.text and "诊断详情" in response.text
+
+    empty = web.client.post(
+        "/search/answer",
+        data={"question": "   ", "project_id": "prj-default", "csrf_token": web.csrf},
+        follow_redirects=False,
+    )
+    assert empty.status_code == 303
+    assert "error_code=empty_question" in empty.headers["location"]
+
+
+def test_ask_reports_reason_and_hint_for_an_unprepared_index(web, monkeypatch):
+    """A3: the service says *why* and *what to do*; the API only 503s on 'off'."""
+    from drbrain.rag import engine as rag_engine
+
+    # Pretend the engine is selected: the index is then the only thing missing.
+    # (An isolated patcher: undoing the fixture's monkeypatch would drop the
+    # runtime root and every session with it.)
+    engine_patch = pytest.MonkeyPatch()
+    engine_patch.setattr(rag_engine, "resolve_engine", lambda cfg, name: "llamaindex")
+    try:
+        out = service.ask(web.cfg, "what is a flat band?")
+        assert out["status"] == "source_unavailable"
+        assert out["unavailable"] is True and out["unavailable_reason"] == "index_not_prepared"
+        assert out["hint"] and out["sources"] == [] and out["evidence_ids"] == []
+
+        api = web.client.post(
+            "/api/ask", json={"question": "hi"}, headers={"X-CSRF-Token": web.csrf}
+        )
+        assert api.status_code == 200  # an unprepared index is a state, not a 503
+    finally:
+        engine_patch.undo()
+
+    # With the engine switched off (the real config) it is a 503 — the only 503.
+    disabled = service.ask(web.cfg, "hi")
+    assert disabled["unavailable_reason"] == "engine_disabled"
+    assert disabled["status"] == "source_unavailable" and disabled["hint"]
+    off = web.client.post("/api/ask", json={"question": "hi"}, headers={"X-CSRF-Token": web.csrf})
+    assert off.status_code == 503
+
+
+def test_paper_detail_outline_expands_and_locates(web):
+    """FR-L2/L3: outline nodes carry an excerpt and a copyable position."""
+    _seed_paper(web.root, "p-1", "Flat band magic")
+    tree_dir = web.root / "data" / "papers" / "p-1"
+    tree_dir.mkdir(parents=True)
+    (tree_dir / "tree.json").write_text(
+        json.dumps(
+            [
+                {
+                    "node_id": "n-1",
+                    "title": "Introduction",
+                    "text": "Legacy body text about flat bands.",
+                    "nodes": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    page = web.client.get("/papers/p-1")
+    assert page.status_code == 200
+    assert "Legacy body text about flat bands" in page.text
+    assert "p-1#n-1@legacy" in page.text  # the copyable locator
+    assert "旧格式目录文件" in page.text  # provider is named, not implied
+
+    focused = web.client.get("/papers/p-1?node=n-1")
+    assert focused.status_code == 200
+    assert "已定位到" in focused.text and "is-target" in focused.text
+
+    # A locator that no longer exists is an explicit state, not an empty page.
+    missing = web.client.get("/papers/p-1?node=gone")
+    assert missing.status_code == 200 and "没找到这个片段" in missing.text
+
+
+def test_session_memory_is_grouped_and_not_mixed_with_claims(web):
+    """FR-C2/C4: memory layers are explicit and never dressed up as verdicts."""
+    created = web.client.post(
+        "/api/projects/prj-default/sessions",
+        json={"title": "layers"},
+        headers={"X-CSRF-Token": web.csrf},
+    ).json()
+    page = web.client.get(f"/sessions/{created['session_id']}")
+    assert page.status_code == 200
+    assert "会话记忆" in page.text
+    assert "不等于经过验证的研究结论" in page.text
+    assert "本会话的运行" in page.text
+
+
+def test_interrupted_run_points_at_a_resumable_next_step(web):
+    """FR-R3: 已中断（可恢复） is a state with a way forward, not a failure."""
+    run_id = _seed_run(web.cfg, "resume me", status="running")
+    page = web.client.get(f"/runs/{run_id}")
+    assert page.status_code == 200
+    assert "已中断（可恢复）" in page.text and "重新发起同一目标" in page.text
+    assert "失败" not in page.text.split("已中断（可恢复）")[0][-40:]
+
+    # The next step is pre-filled, so resuming is one click, not retyping.
+    listing = web.client.get("/runs?topic=resume+me")
+    assert 'value="resume me"' in listing.text
+    # One status→label mapping: the list says the same thing as the detail page.
+    assert "已中断（可恢复）" in web.client.get("/runs").text
+
+
+def test_run_claims_group_verified_and_unverified(web):
+    """FR-R4: settled verdicts are separated from predicted/unsettled claims."""
+    run_id = _seed_run(web.cfg, "claims split", status="succeeded")
+    with RunLedger(service.ledger_path(web.cfg)).transaction() as conn:
+        now = time.time()
+        conn.execute(
+            "INSERT INTO research_proposals VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "prp-1",
+                run_id,
+                "cl-1",
+                "analyst",
+                json.dumps({"statement": "kept claim"}),
+                "critiqued",
+                0.9,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO research_proposals VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "prp-2",
+                run_id,
+                "cl-2",
+                "analyst",
+                json.dumps({"statement": "unsettled claim"}),
+                "proposed",
+                0.4,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO research_experiments (experiment_id, run_id, proposal_id, claim_id, "
+            "plan_json, environment_json, config_json, seed, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("exp-1", run_id, "prp-1", "cl-1", "{}", "{}", "{}", 1, "settled", now, now),
+        )
+        conn.execute(
+            "INSERT INTO research_claim_settlements (settlement_id, run_id, experiment_id, "
+            "claim_id, verdict, reason, evidence_ids_json, result_json, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "stl-1",
+                run_id,
+                "exp-1",
+                "cl-1",
+                "keep",
+                "holds",
+                json.dumps(["p-1:n-1"]),
+                json.dumps({"supports": 3, "refutes": 0, "orthogonal": 1}),
+                now,
+            ),
+        )
+    page = web.client.get(f"/runs/{run_id}")
+    assert page.status_code == 200
+    assert "研究结论" in page.text
+    assert "通过验证" in page.text and "未通过 / 尚未验证" in page.text
+    assert "支持 3" in page.text and "正交 1" in page.text
+    # A paper:node locator is a page (literature + focused node), not raw JSON.
+    assert "/papers/p-1?node=n-1" in page.text
+    # The verdict wording comes from labels.py, so both pages agree.
+    assert "保留" in page.text
+
+
+def test_evidence_search_scope_and_display_cap(web, monkeypatch):
+    """FR-S8/A2: the display cap is applied and reported, never a fake total."""
+    from drbrain.services import evidence_search as core
+
+    captured: dict = {}
+
+    def fake_run(cfg, query, *, limit=20, paper_ids=None, source="local"):
+        captured.update(limit=limit, paper_ids=paper_ids, source=source)
+        return {
+            "query": query,
+            "status": "ok",
+            "hint": "",
+            "engine": "sql",
+            "source": source,
+            "route": {},
+            "generations": {},
+            "legs": [],
+            "evidence": [],
+        }
+
+    monkeypatch.setattr(core, "run_evidence_search", fake_run)
+    out = service.evidence_search(web.cfg, "kagome", limit=500, project_id="prj-default")
+    assert captured["limit"] == 100  # capped at MAX_EVIDENCE_LIMIT
+    assert out["display_cap"] == 100
+    assert out["scope"]["best_effort"] is False
+    # The API declares the same cap, so an over-large limit is a validation error.
+    assert web.client.get("/api/search/evidence?q=x&limit=500").status_code == 422
+
+
+def test_evidence_search_page_renders_the_four_elements(web, monkeypatch):
+    """FR-S2/S4: passage, source with a locator, finder, index version."""
+    from drbrain.services import evidence_search as core
+
+    def fake_run(cfg, query, *, limit=20, paper_ids=None, source="local"):
+        if query != "kagome":  # the "nothing matched" case must stay a state
+            return {
+                "query": query,
+                "status": "empty",
+                "hint": "",
+                "engine": "sql",
+                "source": source,
+                "route": {"legs": ["tree"], "extras": [], "notes": []},
+                "generations": {},
+                "legs": [{"source": "tree", "status": "empty", "count": 0, "reason": ""}],
+                "evidence": [],
+            }
+        return {
+            "query": query,
+            "status": "ok",
+            "hint": "",
+            "engine": "sql",
+            "source": source,
+            "route": {"legs": ["tree"], "extras": [], "notes": []},
+            "generations": {"result": "gen-1", "tree": "gen-1", "sql": None},
+            "legs": [
+                {"source": "tree", "status": "ok", "count": 1, "duration_ms": 1.0, "reason": ""}
+            ],
+            "evidence": [
+                {
+                    "evidence_id": "ev-1",
+                    "paper_id": "p-1",
+                    "node_id": "n-1",
+                    "title": "Flat band magic",
+                    "text": "kagome flat band evidence",
+                    "score": 0.9,
+                    "source": "tree",
+                    "char_start": 10,
+                    "char_end": 40,
+                    "generation": "gen-1",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(core, "run_evidence_search", fake_run)
+    _seed_paper(web.root, "p-1", "Flat band magic")
+    page = web.client.get("/search?q=kagome&mode=evidence")
+    assert page.status_code == 200
+    assert "kagome flat band evidence" in page.text  # ① the passage
+    assert "Flat band magic" in page.text and "/papers/p-1" in page.text
+    assert "node=n-1" in page.text  # ② source, linking to the focused node
+    assert "找法：tree" in page.text  # ③ which finder produced it
+    assert "gen-1" in page.text  # ④ the index version
+    assert "原文片段" in page.text
+    assert "展示上限，不是命中总数" in page.text
+    # An empty result is "not found", not a broken page.
+    empty = web.client.get("/search?q=nothing&mode=evidence")
+    assert empty.status_code == 200 and "没有找到证据" in empty.text
 
 
 def test_fragments_render_rows_and_events(web):

@@ -19,6 +19,8 @@ from drbrain.storage.content import ContentUnavailableError, read_text, sections
 
 MAX_OUTLINE_NODES = 300
 MAX_OUTLINE_DEPTH = 4
+#: Bounded section preview used by the literature page (per outline node).
+DEFAULT_EXCERPT_CHARS = 400
 
 
 @dataclass(frozen=True)
@@ -115,8 +117,69 @@ def body_outline(
     return _legacy_tree_outline(papers_root, local_id, max_nodes=max_nodes)
 
 
+def _excerpt(text: str, limit: int) -> str:
+    """A bounded, whitespace-normalised preview of one section's text."""
+    collapsed = " ".join(str(text or "").split())
+    if limit <= 0 or len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+def body_view(
+    db,
+    local_id: str,
+    *,
+    papers_root: str | Path | None = None,
+    max_nodes: int = MAX_OUTLINE_NODES,
+    excerpt_chars: int = DEFAULT_EXCERPT_CHARS,
+) -> dict[str, Any]:
+    """Outline + bounded excerpts + provider provenance, in one read.
+
+    This is the literature page's display contract: the canonical store is the
+    first provider and the read-only legacy adapter covers un-migrated
+    material, exactly like :func:`body_outline`.  With ``excerpt_chars > 0``
+    every node additionally carries a bounded ``excerpt`` and, when the
+    provider has one, a stable locator (``char_start``/``char_end`` for the
+    canonical store, whatever the legacy tree records) so the UI can point at
+    a position and let the user copy it.
+    """
+    limit = max(0, int(excerpt_chars))
+    revision = _canonical_revision(db, local_id)
+    if revision is not None:
+        try:
+            canonical_sections = sections(db, local_id, revision)
+        except ContentUnavailableError:
+            canonical_sections = []
+        if canonical_sections:
+            return {
+                "source": "canonical",
+                "revision": revision,
+                "warnings": [],
+                "available": True,
+                "nodes": _canonical_outline(
+                    canonical_sections, max_nodes=max_nodes, excerpt_chars=limit
+                ),
+            }
+    if papers_root is None:
+        return {
+            "source": "",
+            "revision": None,
+            "warnings": ["no canonical content and no papers root for the legacy fallback"],
+            "available": False,
+            "nodes": [],
+        }
+    nodes = _legacy_tree_outline(papers_root, local_id, max_nodes=max_nodes, excerpt_chars=limit)
+    return {
+        "source": "tree.json" if nodes else "",
+        "revision": None,
+        "warnings": [] if nodes else ["no canonical content and no legacy tree.json"],
+        "available": bool(nodes),
+        "nodes": nodes,
+    }
+
+
 def _canonical_outline(
-    section_rows: list[dict[str, Any]], *, max_nodes: int
+    section_rows: list[dict[str, Any]], *, max_nodes: int, excerpt_chars: int = 0
 ) -> list[dict[str, Any]]:
     paths = [tuple(str(part) for part in (row.get("heading_path") or ())) for row in section_rows]
     outline: list[dict[str, Any]] = []
@@ -129,19 +192,26 @@ def _canonical_outline(
         children = sum(
             1 for other in paths if len(other) == len(path) + 1 and other[: len(path)] == path
         )
-        outline.append(
-            {
-                "node_id": str(row.get("anchor") or ""),
-                "title": path[-1] if path else _first_line(str(row.get("text") or "")),
-                "depth": depth,
-                "children": children,
-            }
-        )
+        node: dict[str, Any] = {
+            "node_id": str(row.get("anchor") or ""),
+            "title": path[-1] if path else _first_line(str(row.get("text") or "")),
+            "depth": depth,
+            "children": children,
+        }
+        if excerpt_chars > 0:
+            node["excerpt"] = _excerpt(str(row.get("text") or ""), excerpt_chars)
+            node["char_start"] = int(row.get("char_start") or 0)
+            node["char_end"] = int(row.get("char_end") or 0)
+        outline.append(node)
     return outline
 
 
 def _legacy_tree_outline(
-    papers_root: str | Path, local_id: str, *, max_nodes: int
+    papers_root: str | Path,
+    local_id: str,
+    *,
+    max_nodes: int,
+    excerpt_chars: int = 0,
 ) -> list[dict[str, Any]]:
     """The pre-unified tree.json walk, kept for un-migrated material."""
     from drbrain.storage.paths import resolve_paper_dir, tree_json_path
@@ -173,14 +243,23 @@ def _legacy_tree_outline(
         for node in nodes:
             if not isinstance(node, dict) or len(out) >= max_nodes:
                 continue
-            out.append(
-                {
-                    "node_id": str(node.get("node_id") or ""),
-                    "title": str(node.get("title") or node.get("summary") or ""),
-                    "depth": depth,
-                    "children": len(node.get("nodes") or []),
-                }
-            )
+            entry: dict[str, Any] = {
+                "node_id": str(node.get("node_id") or ""),
+                "title": str(node.get("title") or node.get("summary") or ""),
+                "depth": depth,
+                "children": len(node.get("nodes") or []),
+            }
+            if excerpt_chars > 0:
+                entry["excerpt"] = _excerpt(
+                    str(node.get("text") or node.get("summary") or ""), excerpt_chars
+                )
+                if node.get("start_index") is not None:
+                    entry["char_start"] = int(node["start_index"])
+                if node.get("end_index") is not None:
+                    entry["char_end"] = int(node["end_index"])
+                if node.get("line_num") is not None:
+                    entry["line_start"] = int(node["line_num"])
+            out.append(entry)
             walk(list(node.get("nodes") or []), depth + 1)
 
     walk(structure, 0)

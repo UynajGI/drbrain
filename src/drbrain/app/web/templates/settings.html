@@ -20,14 +20,42 @@
 {% endif %}
 
 <section class="card" aria-labelledby="avail-title">
-  <h2 id="avail-title">能力状态</h2>
+  <div class="card-head">
+    <h2 id="avail-title">检索与问答可用性</h2>
+    <a class="btn btn-small" href="/index?project_id={{ project.project_id if project else default_project_id }}">索引与语料 →</a>
+  </div>
   {% set av = view.availability %}
   <ul class="checklist">
-    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置' }}</li>
-    <li class="{{ 'is-ok' if av.rag else 'is-off' }}">RAG 检索：{{ '已启用' if av.rag else '未启用' }}</li>
+    <li class="{{ 'is-ok' if av.search_ready else 'is-off' }}">
+      <strong>找证据</strong>（原文检索）：{{ '可用' if av.search_ready else '不可用' }}
+      {% for reason in av.search_reasons %}
+      {% set meta = index_reason(reason) %}
+      <p class="muted small">{{ meta.label }}{% if meta.hint %}：{{ meta.hint }}{% endif %}</p>
+      {% endfor %}
+    </li>
+    <li class="{{ 'is-ok' if av.ask_ready else 'is-off' }}">
+      <strong>要答案</strong>（检索 + 综合）：{{ '可用' if av.ask_ready else '不可用' }}
+      {% for reason in av.ask_reasons %}
+      {% set meta = index_reason(reason) %}
+      <p class="muted small">{{ meta.label }}{% if meta.hint %}：{{ meta.hint }}{% endif %}</p>
+      {% endfor %}
+    </li>
+    <li class="{{ 'is-ok' if av.llm else 'is-off' }}">LLM 模型：{{ '已配置' if av.llm else '未配置（llm.models）' }}</li>
     <li class="{{ 'is-ok' if av.autoresearch else 'is-off' }}">Autoresearch：{{ '已启用' if av.autoresearch else '未启用' }}</li>
-    <li>文献：{{ av.papers }} 篇</li>
+    <li>文献：{{ av.papers }} 篇 · 索引版本：{% if av.search_generation %}<code>{{ av.search_generation | short(24) }}</code>{% else %}还没有{% endif %}（片段 {{ av.search_nodes.leaves }} / 主题 {{ av.search_nodes.regions }}）</li>
   </ul>
+  <p class="muted small">“找证据”只看索引就绪度；“要答案”= 索引就绪 + 引擎启用 + 模型已配置，各自的缺口在下面对应行里说明。</p>
+</section>
+
+<section class="card" aria-labelledby="plugins-title">
+  <div class="card-head">
+    <h2 id="plugins-title">能力与插件</h2>
+    <a class="btn btn-small" href="/plugins">打开插件页 →</a>
+  </div>
+  <p class="small">
+    插件是外部加载的「模型即工具」：drbrain 核心不内置具体领域插件。
+    这里只做<strong>发现与说明</strong>——被发现的插件不等于“在线”，符合性检查是需要显式触发的动作。
+  </p>
 </section>
 
 <section class="card" aria-labelledby="sessions-title">

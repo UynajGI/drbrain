@@ -76,19 +76,31 @@
 
     <section class="card" aria-labelledby="memory-title">
       <div class="card-head">
-        <h2 id="memory-title">记忆</h2>
+        <h2 id="memory-title">会话记忆</h2>
         <span class="muted small">按来源分层</span>
       </div>
+      <p class="muted small">
+        记忆是<strong>对话里沉淀下来的内容</strong>：模型说过的话、你确认过的结论。
+        它<strong>不等于经过验证的研究结论</strong>——带证据与裁决的那种在运行页，用不同的徽标。
+      </p>
+      {% set run_mem = data.memory.runs or [] %}
+      {% set session_mem = data.memory.session | rejectattr('layer', 'equalto', 'run') | list %}
       {% if data.memory.project %}
       <h3 class="subhead">项目记忆（本会话继承）</h3>
       <ul class="memory-list">
         {% for entry in data.memory.project %}{{ m.memory_entry(entry, csrf_token, project.project_id) }}{% endfor %}
       </ul>
       {% endif %}
-      {% if data.memory.session %}
-      <h3 class="subhead">会话 / 运行记忆</h3>
+      {% if session_mem %}
+      <h3 class="subhead">会话记忆（本会话产生）</h3>
       <ul class="memory-list">
-        {% for entry in data.memory.session %}{{ m.memory_entry(entry, csrf_token, project.project_id, promotable=True) }}{% endfor %}
+        {% for entry in session_mem %}{{ m.memory_entry(entry, csrf_token, project.project_id, promotable=True) }}{% endfor %}
+      </ul>
+      {% endif %}
+      {% if run_mem %}
+      <h3 class="subhead">运行记忆（运行落幕写回）</h3>
+      <ul class="memory-list">
+        {% for entry in run_mem %}{{ m.memory_entry(entry, csrf_token, project.project_id, promotable=True) }}{% endfor %}
       </ul>
       {% endif %}
       {% if not data.memory.project and not data.memory.session %}
@@ -107,12 +119,13 @@
         <li class="list-row">
           <div class="list-main">
             <a class="link strong" href="/runs/{{ run.run_id }}?project_id={{ project.project_id }}">{{ run.topic }}</a>
-            <span class="muted small">{{ run.updated_at | ts }}</span>
+            <span class="muted small">{{ run.updated_at | ts }} · 结论与证据在运行页</span>
           </div>
           {{ m.status_badge(run.display_status or run.status) }}
         </li>
         {% endfor %}
       </ul>
+      <p class="muted small">运行产出的<strong>研究结论</strong>带证据与裁决状态，点进运行详情逐条查看；它们不会混进上面的会话记忆。</p>
       {% else %}
       <p class="muted">尚未发起运行。</p>
       {% endif %}

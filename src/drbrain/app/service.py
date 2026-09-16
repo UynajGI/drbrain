@@ -21,7 +21,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -47,6 +47,8 @@ from drbrain.storage.inbox import first_symlink_component
 _LEDGER_FILE = "ledger.sqlite3"
 MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 20
+#: Bounded per-section preview attached to the literature page's outline.
+OUTLINE_EXCERPT_CHARS = 400
 
 
 class ProjectNotFoundError(ValueError):
@@ -363,8 +365,49 @@ def dashboard(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def _search_readiness(cfg: Any) -> dict[str, Any]:
+    """Cheap "can anything be retrieved" probe (FR-P1/D4).
+
+    Deliberately *not* the full ``index status`` report: that walks the vector
+    backlog row by row, which is fine for the index page but not for a probe the
+    dashboard runs.  This checks the two facts that decide retrievability — a
+    published generation exists and it has ready nodes — and returns reasons
+    plus a next step when it does not.
+    """
+    from drbrain.tree.publish import get_active_tree_generation
+
+    generation = ""
+    try:
+        generation = get_active_tree_generation(tree_storage_root(cfg)) or ""
+    except Exception:  # noqa: BLE001 - an unreadable generation is a reported state
+        generation = ""
+    with _db(cfg) as db:
+        leaves = int(db.count_tree_nodes(kind="leaf", state="ready"))
+        regions = int(db.count_tree_nodes(kind="region", state="ready"))
+    reasons: list[str] = []
+    if not generation:
+        reasons.append("no_published_generation")
+    if leaves + regions <= 0:
+        reasons.append("no_ready_nodes")
+    return {
+        "ready": not reasons,
+        "reasons": reasons,
+        "generation": generation,
+        "leaves": leaves,
+        "regions": regions,
+        "hint": "" if not reasons else "运行 drbrain index build 建一次索引。",
+    }
+
+
 def availability(cfg: Any) -> dict[str, Any]:
-    """Feature availability flags used by the first-run guide and settings."""
+    """Feature availability used by the first-run guide and settings.
+
+    FR-P1/D4: "can find evidence" and "can answer" are two different questions.
+    ``search_ready`` follows the index (a published generation with ready
+    nodes), while ``ask_ready`` additionally needs the LlamaIndex engine and a
+    configured model; each carries its own reasons so the UI never has to
+    collapse them into one misleading boolean.
+    """
     with _db(cfg) as db:
         llm_configured = bool(cfg.get("llm", {}).get("models")) if hasattr(cfg, "get") else False
         rag_enabled = False
@@ -376,12 +419,298 @@ def availability(cfg: Any) -> dict[str, Any]:
             rag_enabled = False
         settings = autoresearch_settings(cfg)
         stats = db.get_stats()
+    search = _search_readiness(cfg)
+    ask_reasons: list[str] = []
+    if not search["ready"]:
+        ask_reasons.extend(search["reasons"])
+    if not rag_enabled:
+        ask_reasons.append("engine_disabled")
+    if not llm_configured:
+        ask_reasons.append("llm_not_configured")
     return {
         "llm": llm_configured,
         "rag": rag_enabled,
         "autoresearch": bool(settings.enabled),
         "papers": int(stats.get("papers", 0)),
+        "search_ready": search["ready"],
+        "search_reasons": search["reasons"],
+        "search_hint": search["hint"],
+        "search_generation": search["generation"],
+        "search_nodes": {"leaves": search["leaves"], "regions": search["regions"]},
+        "ask_ready": not ask_reasons,
+        "ask_reasons": ask_reasons,
+        "ask_hint": ""
+        if not ask_reasons
+        else "见下面的逐项说明（找证据需要索引，要答案还需要引擎与模型）。",
     }
+
+
+# ── index status / verify (read-only, same report as the CLI) ────────────────
+
+
+def tree_storage_root(cfg: Any) -> Path:
+    """The unified tree storage root the app reads.
+
+    Same default chain as the CLI (``llamaindex.tree_storage`` → ``data/tree``)
+    but resolved with the service layer's runtime/symlink policy, so the WebUI
+    never reads a tree that the writer would refuse to write.
+    """
+    from drbrain.rag.config import get_llamaindex_config
+    from drbrain.services.index_report import DEFAULT_TREE_STORAGE
+
+    configured = str(getattr(get_llamaindex_config(cfg), "tree_storage", "") or "").strip()
+    return _runtime_path(Path(configured or DEFAULT_TREE_STORAGE), label="tree storage")
+
+
+def _index_report(builder: Any, cfg: Any, project_id: str | None) -> dict[str, Any]:
+    """Run one read-only index report under the app's own runtime policy.
+
+    The index is corpus-wide, not per project, so ``project_id`` is validated
+    rather than used as a filter: an unknown project must fail like every other
+    scoped request instead of quietly reporting the whole corpus.
+    """
+    pid = normalize_project_id(project_id)
+    resolve_project(cfg, pid)
+    with _db(cfg) as db:
+        return redact_sensitive(builder(cfg, db=db, tree_storage=tree_storage_root(cfg)))
+
+
+def index_status(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
+    """Three-state readiness (ingested / indexed / retrievable) + per-leg detail.
+
+    Byte-for-byte the ``drbrain index status --json`` payload (04-arch A2:
+    field names are not renamed at the service boundary, or the CLI and the UI
+    would immediately diverge).
+    """
+    from drbrain.services.index_report import build_index_status
+
+    return _index_report(build_index_status, cfg, project_id)
+
+
+def index_verify(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
+    """Re-check exactly what ``search``/``ask`` read (the CLI's verify payload)."""
+    from drbrain.services.index_report import build_index_verify
+
+    return _index_report(build_index_verify, cfg, project_id)
+
+
+# ── index build job (04-arch A1) ─────────────────────────────────────────────
+
+#: One worker per job id inside this process; the database lease is the real
+#: arbiter (a terminal CLI can hold the same slot).
+_INDEX_BUILD_WORKERS: dict[str, threading.Thread] = {}
+_INDEX_BUILD_LOCK = threading.Lock()
+
+
+class JobNotFoundError(LookupError):
+    """Raised when a job id is unknown (or is not an index-build job)."""
+
+
+def _index_build_scope(cfg: Any, db: Any) -> str:
+    from drbrain.services.index_build import index_build_scope_key
+
+    return index_build_scope_key(cfg, db, tree_storage=tree_storage_root(cfg))
+
+
+def _read_index_job(cfg: Any, db: Any, row: dict | None) -> dict[str, Any]:
+    from drbrain.services.index_build import index_job_payload
+
+    return index_job_payload(db, row, cfg=cfg)
+
+
+def current_index_job(cfg: Any, project_id: str | None = None) -> dict[str, Any]:
+    """The build job of this deployment's slot (``{}`` when never started)."""
+    pid = normalize_project_id(project_id)
+    resolve_project(cfg, pid)
+    from drbrain.services.index_build import slot_row
+
+    with _db(cfg) as db:
+        return _read_index_job(cfg, db, slot_row(db, _index_build_scope(cfg, db)))
+
+
+def index_job_state(cfg: Any, job_id: str) -> dict[str, Any]:
+    """One job's durable state + progress, for polling."""
+    from drbrain.services.index_build import KIND
+
+    with _db(cfg) as db:
+        row = db.get_tree_job(job_id)
+        if row is None or str(row.get("kind") or "") != KIND:
+            raise JobNotFoundError("unknown job")
+        return _read_index_job(cfg, db, row)
+
+
+def index_jobs(
+    cfg: Any,
+    *,
+    kind: str = "index_build",
+    states: Sequence[str] = (),
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Recent jobs (same fields the single-job endpoint returns)."""
+    from drbrain.services.index_build import index_jobs as _jobs
+
+    with _db(cfg) as db:
+        return _jobs(
+            db,
+            cfg=cfg,
+            kind=kind,
+            states=tuple(str(item) for item in states),
+            limit=max(1, min(int(limit), 100)),
+        )
+
+
+def start_index_build(
+    cfg: Any,
+    *,
+    force: bool = False,
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Start the corpus build, or rejoin the one already running.
+
+    Single-flight: exactly one durable slot per (database, embedding profile,
+    tree storage).  A live run is returned with ``already_running: true`` and no
+    second worker is started; a finished or lease-expired slot is taken over by
+    a fresh worker.  The build never blocks the request, and it is never
+    cancelled — there is no safe interruption point.
+    """
+    pid = normalize_project_id(project_id)
+    resolve_project(cfg, pid)
+    from drbrain.services.index_build import (
+        index_build_job_id,
+        job_is_active,
+        slot_row,
+        worker_owner,
+    )
+
+    takeover = False
+    with _db(cfg) as db:
+        scope = _index_build_scope(cfg, db)
+        row = slot_row(db, scope)
+        if job_is_active(db, row):
+            payload = _read_index_job(cfg, db, row)
+            payload["already_running"] = True
+            payload["takeover"] = False
+            return payload
+        takeover = bool(row)  # finished/failed/stale: the worker re-opens the slot
+        job_id = index_build_job_id(scope)
+        if row is None:
+            # Materialise the slot before the worker starts, so a page that
+            # redirects straight back to /index always has a job to poll —
+            # including the first-attempt failure (no embedding profile).
+            try:
+                db.insert_tree_job(job_id, scope, kind="index_build")
+            except sqlite3.IntegrityError:
+                pass
+            row = slot_row(db, scope)
+        payload = _read_index_job(cfg, db, row) if row else {"job_id": job_id, "state": ""}
+
+    owner = worker_owner("webui")
+    with _INDEX_BUILD_LOCK:
+        existing = _INDEX_BUILD_WORKERS.get(job_id)
+        started = existing is None or not existing.is_alive()
+        if started:
+            thread = threading.Thread(
+                target=_run_index_build_worker,
+                args=(cfg, job_id, owner, bool(force)),
+                name=f"index-build-{job_id[-8:]}",
+                daemon=True,
+            )
+            _INDEX_BUILD_WORKERS[job_id] = thread
+            thread.start()
+    payload.update(
+        {
+            "job_id": job_id,
+            "already_running": False,
+            "takeover": takeover,
+            "worker_started": started,
+            "state": payload.get("state") or "pending",
+            "owner": payload.get("owner") or owner,
+        }
+    )
+    return payload
+
+
+def _run_index_build_worker(cfg: Any, job_id: str, owner: str, force: bool) -> None:
+    """Run one index build inside this process; the job row owns the outcome."""
+    from loguru import logger
+
+    from drbrain.services.index_build import IndexBuildBusyError, run_index_build
+
+    try:
+        with _db(cfg) as db:
+            run_index_build(
+                cfg,
+                db=db,
+                force=force,
+                tree_storage=tree_storage_root(cfg),
+                job_id=job_id,
+                owner=owner,
+            )
+    except IndexBuildBusyError as exc:
+        logger.info("[index] {} (another worker holds the slot)", exc)
+    except Exception as exc:  # noqa: BLE001 - the job row already records the failure
+        logger.error("[index] build {} failed: {}", job_id, safe_error(exc))
+    finally:
+        with _INDEX_BUILD_LOCK:
+            _INDEX_BUILD_WORKERS.pop(job_id, None)
+
+
+# ── evidence search (read-only; the CLI's own payload) ───────────────────────
+
+
+#: Above this many papers the ANN legs cannot be scoped exactly (04-arch F2:
+#: the scope is a native IN list), so the payload reports "best effort" instead
+#: of pretending the filter is exact.
+_EVIDENCE_SCOPE_LIMIT = 1000
+
+
+def evidence_search(
+    cfg: Any,
+    query: str,
+    *,
+    limit: int = 20,
+    paper_ids: Sequence[str] | None = None,
+    source: str = "local",
+    project_id: str | None = None,
+) -> dict[str, Any]:
+    """Evidence rows for one query — the same payload ``drbrain search`` builds.
+
+    Project scope is pushed down as paper ids when it is exact (workspace
+    projects) and reported as ``best_effort`` when the project is too large for
+    the ANN scope (FR-S8/TF3: the UI must say which one it got).  ``limit`` is a
+    *display* cap — the retrieval layer has no total, so the page says "top N"
+    rather than pretending to know how many rows exist.
+    """
+    from drbrain.services.evidence_search import (
+        DEFAULT_EVIDENCE_LIMIT,
+        MAX_EVIDENCE_LIMIT,
+        run_evidence_search,
+    )
+
+    pid = normalize_project_id(project_id)
+    resolve_project(cfg, pid)
+    cap = max(1, min(int(limit or DEFAULT_EVIDENCE_LIMIT), MAX_EVIDENCE_LIMIT))
+    explicit = [str(item) for item in (paper_ids or []) if str(item).strip()]
+    scoped: list[str] | None = explicit or None
+    best_effort = False
+    members: list[str] | None = None
+    if scoped is None:
+        with _db(cfg) as db:
+            members = project_paper_ids(cfg, pid, db=db)
+        if members is not None:
+            if len(members) <= _EVIDENCE_SCOPE_LIMIT:
+                scoped = [str(item) for item in members]
+            else:
+                best_effort = True
+    payload = run_evidence_search(cfg, query, limit=cap, paper_ids=scoped, source=source)
+    payload["scope"] = {
+        "project_id": pid,
+        "paper_ids": scoped or [],
+        "project_papers": len(members) if members is not None else None,
+        "best_effort": best_effort,
+    }
+    payload["display_cap"] = cap
+    return redact_sensitive(payload)
 
 
 # ── search / ask ─────────────────────────────────────────────────────────────
@@ -416,22 +745,50 @@ def search(
 def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
     """Retrieval-augmented answer — same path as ``drbrain ask`` (non-streaming).
 
-    Returns ``{"error": ..., "unavailable": True}`` when the LlamaIndex engine
-    is not enabled / indexed, instead of raising, so the UI can explain.
+    Never raises for a missing capability or an unprepared index: the result
+    carries a ``status`` plus a ``hint`` the UI can render (04-arch A3, D4).
+    ``unavailable`` keeps its exact previous meaning — tests and templates
+    branch on it — and the new fields only add *why* and *what to do next*.
     """
     question = question.strip()
     if not question:
-        return {"error": "empty question"}
-    from drbrain.rag.engine import ask_llamaindex, resolve_engine
+        return {"error": "empty question", "status": "empty_question"}
+    from drbrain.rag.engine import (
+        AskIndexNotPreparedError,
+        ask_llamaindex,
+        ask_prepare_hint,
+        resolve_engine,
+    )
 
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
+        from drbrain.rag.config import get_llamaindex_config
+
+        configured_engine = str(getattr(get_llamaindex_config(cfg), "rag_engine", "") or "")
         return {
             "error": "llamaindex engine unavailable: set `llamaindex.enabled: true` "
             "and run `drbrain index build`",
             "unavailable": True,
+            "unavailable_reason": "engine_disabled",
+            "status": "source_unavailable",
+            "engine": configured_engine,
+            "hint": ask_prepare_hint(cfg),
         }
     with _db(cfg) as db:
-        result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
+        try:
+            result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
+        except AskIndexNotPreparedError as exc:
+            # "Capability not ready" is a reported state, not a 500 (TF2/D4).
+            return {
+                "question": question,
+                "answer": f"index not prepared for engine {exc.engine!r}: run `{exc.hint}`",
+                "status": "source_unavailable",
+                "engine": exc.engine,
+                "hint": exc.hint,
+                "sources": [],
+                "evidence_ids": [],
+                "unavailable": True,
+                "unavailable_reason": "index_not_prepared",
+            }
     return dict(result)
 
 
@@ -496,8 +853,22 @@ def papers(
     }
 
 
-def paper_detail(cfg: Any, local_id: str, project_id: str | None = None) -> dict[str, Any]:
-    """Metadata, concepts, arguments and tree outline for one paper."""
+def paper_detail(
+    cfg: Any,
+    local_id: str,
+    project_id: str | None = None,
+    *,
+    excerpt_chars: int = OUTLINE_EXCERPT_CHARS,
+) -> dict[str, Any]:
+    """Metadata, concepts, arguments and the displayable body outline.
+
+    The outline comes from the shared body provider (canonical first, legacy
+    fallback) and every node carries a bounded excerpt plus a stable locator,
+    so the page can expand a section or point at a quoted fragment.  Body
+    provenance is returned alongside it: the UI has to say *which* copy it is
+    showing (canonical revision vs. a legacy tree) instead of implying there is
+    only one.
+    """
     pid = normalize_project_id(project_id)
     with _db(cfg) as db:
         sync_workspace_projects(cfg, db)
@@ -510,9 +881,26 @@ def paper_detail(cfg: Any, local_id: str, project_id: str | None = None) -> dict
         concepts = db.get_concepts_by_paper(local_id)
         arguments = db.get_arguments_by_paper(local_id)
         outline: list[dict[str, Any]] = []
+        body: dict[str, Any] = {
+            "source": "",
+            "revision": None,
+            "warnings": [],
+            "available": False,
+        }
         try:
             papers_root = _runtime_path(Path(cfg["dirs"]["papers"]), label="papers root")
-            outline = paper_outline(db, local_id, papers_root=papers_root)
+            from drbrain.storage.paper_view import body_view
+
+            view = body_view(
+                db, local_id, papers_root=papers_root, excerpt_chars=max(0, int(excerpt_chars))
+            )
+            outline = list(view.get("nodes") or [])
+            body = {
+                "source": str(view.get("source") or ""),
+                "revision": view.get("revision"),
+                "warnings": [str(item) for item in (view.get("warnings") or ())],
+                "available": bool(view.get("available")),
+            }
         except Exception:  # noqa: BLE001 - outline is optional detail, never fatal
             outline = []
     return {
@@ -520,6 +908,7 @@ def paper_detail(cfg: Any, local_id: str, project_id: str | None = None) -> dict
         "concepts": [redact_sensitive(dict(c)) for c in concepts],
         "arguments": [redact_sensitive(dict(a)) for a in arguments],
         "outline": outline,
+        "body": body,
     }
 
 
@@ -819,6 +1208,7 @@ def run_claims(cfg: Any, run_id: str, project_id: str | None = None) -> list[dic
                     "verdict": st["verdict"] if st else None,
                     "reason": st["reason"] if st else None,
                     "evidence_ids": _loads(st["evidence_ids_json"], []) if st else [],
+                    "result": _loads(st["result_json"], {}) if st else {},
                     "created_at": p["created_at"],
                 }
             )
