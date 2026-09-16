@@ -71,7 +71,8 @@ def _open_working_store(ctx: typer.Context, cfg: Any) -> Any:
     ``None`` when the store (or the embedding profile needed to address it)
     is unavailable — a corpus that was never indexed has nothing to retire.
     """
-    from drbrain.cli.index_commands import _embedding_profile, _tree_storage_root
+    from drbrain.cli.index_commands import _tree_storage_root
+    from drbrain.services.index_report import embedding_profile
     from drbrain.tree.prepare import WORKING_VECTORS_DIR
     from drbrain.tree.vector_store import UnifiedVectorStore
 
@@ -79,7 +80,7 @@ def _open_working_store(ctx: typer.Context, cfg: Any) -> Any:
         index_dir = _tree_storage_root(ctx, cfg) / WORKING_VECTORS_DIR
         if not index_dir.is_dir():
             return None
-        profile, reason = _embedding_profile(cfg)
+        profile, reason = embedding_profile(cfg)
         if profile is None:
             typer.echo(f"warning: not retiring replaced vectors ({reason})", err=True)
             return None
