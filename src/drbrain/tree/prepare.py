@@ -160,8 +160,26 @@ def prepare_unified_index(
     publish: bool = True,
     sample: int = 10,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    on_stage: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> PrepareOutcome:
-    """Prepare FTS, shared vectors and the unified hierarchy, then publish."""
+    """Prepare FTS, shared vectors and the unified hierarchy, then publish.
+
+    ``on_stage`` (optional) is called once per finished stage — ``fts``,
+    ``vectors``, ``hierarchy``, ``publication``, plus a leading ``lexical``
+    event emitted by the caller of the stage list — with that stage's payload,
+    so a durable job (04-arch A1) can checkpoint progress without this function
+    knowing anything about jobs.  Reporting must never fail the build: a
+    callback error is logged and swallowed.
+    """
+
+    def report(stage: str, payload: dict[str, Any]) -> None:
+        if on_stage is None:
+            return
+        try:
+            on_stage(stage, dict(payload))
+        except Exception as exc:  # noqa: BLE001 - progress reporting is best-effort
+            logger.warning("[tree] stage reporter failed at {}: {}", stage, exc)
+
     if builder_config is None and (summary_max_tokens or summary_input_budget):
         import dataclasses as _dataclasses
 
@@ -187,6 +205,7 @@ def prepare_unified_index(
 
     root = Path(storage_dir)
     outcome.fts = _prepare_fts(db, force=force, sample=sample)
+    report("fts", outcome.fts)
     try:
         with UnifiedVectorStore(
             root / WORKING_VECTORS_DIR, create=True, dimension=profile.dimension
@@ -217,6 +236,8 @@ def prepare_unified_index(
                     frontier_limit=hierarchy_frontier_limit,
                     summary_workers=hierarchy_summary_workers,
                 )
+            report("vectors", outcome.vectors)
+            report("hierarchy", outcome.hierarchy)
             wrote = bool(outcome.vectors.get("embedded")) or bool(outcome.hierarchy.get("created"))
             outcome.vectors["optimize"] = (
                 _optimize_vectors(store) if wrote else {"status": "skipped", "reason": "unchanged"}
@@ -225,6 +246,8 @@ def prepare_unified_index(
         logger.warning("[tree] vector store unavailable: {}", exc)
         outcome.vectors = {"status": "failed", "error": f"vector store unavailable: {exc}"}
         outcome.hierarchy = {"status": "skipped", "reason": "vectors-failed"}
+        report("vectors", outcome.vectors)
+        report("hierarchy", outcome.hierarchy)
     outcome.changed = bool(outcome.vectors.get("embedded")) or bool(
         outcome.hierarchy.get("created")
     )
@@ -253,6 +276,7 @@ def prepare_unified_index(
                 "vector_count": result.get("vector_count"),
             }
     outcome.duration_ms = (time.monotonic() - started) * 1000
+    report("publication", outcome.publication)
     _record_last_build(db, outcome)
     return outcome
 

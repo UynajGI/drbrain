@@ -8,6 +8,7 @@ business facade, and ``auth.py`` the single authentication boundary.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import AsyncIterator, Callable
@@ -36,7 +37,7 @@ def _fmt_ts(value: Any) -> str:
     if value in (None, ""):
         return "—"
     try:
-        if isinstance(value, (int, float)) or (
+        if isinstance(value, int | float) or (
             isinstance(value, str) and value.replace(".", "", 1).isdigit()
         ):
             return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(value)))
@@ -56,6 +57,34 @@ def _dom_id(value: Any) -> str:
     return slug or "item"
 
 
+#: name -> (st_mtime_ns, fingerprint).  ``/static/*`` is served with a long
+#: max-age, so the URL has to change whenever the bytes do (baseline P1).
+_ASSET_FINGERPRINTS: dict[str, tuple[int, str]] = {}
+
+
+def asset_url(name: str) -> str:
+    """Return a ``/static`` URL carrying a content fingerprint.
+
+    The fingerprint is recomputed only when the file's mtime changes, so a dev
+    editing app.css/app.js sees the new bytes without restarting the server,
+    while production clients may cache the URL for as long as they like.
+    """
+    path = STATIC_DIR / name
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return f"/static/{name}"
+    cached = _ASSET_FINGERPRINTS.get(name)
+    if cached is None or cached[0] != stamp:
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+        except OSError:
+            digest = str(stamp)
+        cached = (stamp, digest)
+        _ASSET_FINGERPRINTS[name] = cached
+    return f"/static/{name}?v={cached[1]}"
+
+
 def build_templates() -> Jinja2Templates:
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     env = templates.env
@@ -63,10 +92,18 @@ def build_templates() -> Jinja2Templates:
     env.filters["status"] = labels.status_of
     env.filters["short"] = _short
     env.filters["dom_id"] = _dom_id
+    env.globals["asset_url"] = asset_url
     env.globals["status_label"] = labels.status_of
     env.globals["role_labels"] = labels.ROLE_LABELS
     env.globals["layer_labels"] = labels.LAYER_LABELS
     env.globals["error_text"] = labels.error_text
+    env.globals["index_state_labels"] = labels.INDEX_STATE_LABELS
+    env.globals["index_leg"] = labels.index_leg
+    env.globals["index_reason"] = labels.index_reason
+    env.globals["index_check"] = labels.index_check
+    env.globals["severity_tones"] = labels.SEVERITY_TONES
+    env.globals["job_stage"] = labels.job_stage
+    env.globals["job_note"] = labels.job_note
     return templates
 
 
@@ -211,6 +248,7 @@ def create_app(cfg: Any, *, app_title: str = "DrBrain WebUI") -> FastAPI:
     _register_not_found(service.RunNotFoundError, "run_not_found")
     _register_not_found(service.PaperNotInProjectError, "paper_not_found")
     _register_not_found(service.EvidenceNotFoundError, "evidence_not_found")
+    _register_not_found(service.JobNotFoundError, "job_not_found")
     _register_not_found(service.ArtifactNotFoundError, "artifact_not_found")
 
     @app.exception_handler(service.CursorError)
@@ -227,4 +265,4 @@ def create_app(cfg: Any, *, app_title: str = "DrBrain WebUI") -> FastAPI:
     return app
 
 
-__all__ = ["create_app"]
+__all__ = ["asset_url", "build_templates", "create_app"]

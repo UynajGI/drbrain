@@ -1,0 +1,23 @@
+{% import "_macros.html" as m %}
+<div id="verify-out">
+  <p class="muted small">
+    自检是只读的（不改动任何东西）：{{ '全部检查项通过' if report.ok else '有需要处理的项目（下面标出了原因和下一步）' }}。
+  </p>
+  <ul class="checklist">
+    {% for check in report.checks %}
+    {% set meta = index_check(check.name) %}
+    <li class="{{ 'is-ok' if check.ok else 'is-off' }}">
+      {{ meta.label }}
+      {% if not check.ok %}<span class="badge badge-{{ severity_tones.get(check.severity, 'muted') }}">{{ check.severity }}</span>{% endif %}
+      {% if not check.ok and meta.hint %}<p class="muted small">{{ meta.hint }}</p>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if report.errors %}
+  <p class="muted small">未通过：{{ report.errors | join('；') }}</p>
+  {% endif %}
+  <details class="diag">
+    <summary>诊断详情（原始检查项，可复制）</summary>
+    <pre class="raw">{{ report | tojson(indent=2) }}</pre>
+  </details>
+</div>

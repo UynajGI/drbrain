@@ -9,7 +9,7 @@
   </div>
 </header>
 
-<section class="card" aria-labelledby="run-start-title">
+<section class="card" id="start-run" aria-labelledby="run-start-title">
   <h2 id="run-start-title">发起新运行</h2>
   <form method="post" action="/runs" class="form-row-inline">
     {{ m.csrf_field(csrf_token) }}
@@ -17,14 +17,15 @@
     <input type="hidden" name="client_request_id" value="{{ client_request_id }}">
     <div class="search-field grow">
       <label class="field-label" for="topic">研究目标</label>
-      <input class="input" type="text" id="topic" name="topic" required placeholder="用一句话描述要研究的问题">
+      <input class="input" type="text" id="topic" name="topic" required
+             value="{{ prefill_topic or '' }}" placeholder="用一句话描述要研究的问题">
     </div>
     <div class="search-field">
       <label class="field-label" for="session_id">绑定会话</label>
       <select class="input" id="session_id" name="session_id">
         <option value="">不绑定（独立运行）</option>
         {% for session in sessions %}
-        <option value="{{ session.session_id }}">{{ session.title or session.session_id | short }}</option>
+        <option value="{{ session.session_id }}" {% if prefill_session and session.session_id == prefill_session %}selected{% endif %}>{{ session.title or session.session_id | short }}</option>
         {% endfor %}
       </select>
     </div>

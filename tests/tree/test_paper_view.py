@@ -11,7 +11,7 @@ import typer
 from drbrain.app import service
 from drbrain.services.canonical_content import write_canonical_content
 from drbrain.storage.database import Database
-from drbrain.storage.paper_view import body_outline, read_body
+from drbrain.storage.paper_view import body_outline, body_view, read_body
 
 TEXT = "# Title\n\nIntro.\n\n## Methods\n\nStep one.\n\n### Detail\n\nDeep body.\n"
 
@@ -120,6 +120,42 @@ class TestCanonicalFirst:
         assert [entry["title"] for entry in detail["outline"]] == ["Title", "Methods", "Detail"]
         # No tree.json was materialized for the display to work.
         assert not (root / "data" / "papers" / "p1").exists()
+
+
+class TestBodyView:
+    """The literature page's display contract (outline + excerpt + locator)."""
+
+    def test_canonical_body_view_carries_excerpt_and_locator(self, tmp_path):
+        db = _db(tmp_path)
+        _canonical(db)
+        view = body_view(db, "p1")
+        assert view["source"] == "canonical" and view["revision"] is not None
+        assert [node["title"] for node in view["nodes"]] == ["Title", "Methods", "Detail"]
+        methods = view["nodes"][1]
+        assert "Step one." in methods["excerpt"]
+        assert 0 <= methods["char_start"] < methods["char_end"]
+        # The plain outline contract is untouched: no extra keys unless asked.
+        assert all(
+            set(node) == {"node_id", "title", "depth", "children"}
+            for node in body_outline(db, "p1")
+        )
+
+    def test_legacy_body_view_reports_its_provider(self, tmp_path):
+        db = _db(tmp_path)
+        _paper(db)
+        root = tmp_path / "papers"
+        _legacy_dir(root)
+        view = body_view(db, "p1", papers_root=root)
+        assert view["source"] == "tree.json" and view["revision"] is None
+        assert view["nodes"][0]["excerpt"] == "legacy body text"
+
+    def test_missing_material_is_an_empty_view(self, tmp_path):
+        db = _db(tmp_path)
+        _paper(db)
+        root = tmp_path / "papers"
+        root.mkdir()
+        view = body_view(db, "p1", papers_root=root)
+        assert view["source"] == "" and view["nodes"] == [] and view["warnings"]
 
 
 class TestLegacyFallback:

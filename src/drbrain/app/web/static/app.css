@@ -1,34 +1,69 @@
-/* DrBrain 工作台 — 浅色科研工作台
-   Token 语义：surface / text / border / action / status。
+/* DrBrain 工作台 — 视觉基线对齐 design/webui-v1-mockup.html
+   Token 分层：primitives（--color-* / --space-* / --radius / --font）→ 语义别名
+   （surface / text / border / action / status）。组件沿用语义名，色值只有一套。
    正文 16px、行高 1.6；对比度目标 WCAG 2.2 AA。 */
 
 :root {
-  --surface: #ffffff;
-  --surface-2: #f5f7fa;
-  --surface-3: #eceff4;
-  --text: #1c2330;
-  --text-muted: #5b6679;
-  --border: #d8dee9;
-  --border-strong: #b9c2d0;
-  --action: #2f5fd0;
-  --action-strong: #24499f;
-  --action-soft: #e8eefc;
-  --action-border: #c7d6f8;
-  --status-ok: #1c7c4a;
-  --status-ok-soft: #e3f4ea;
-  --status-warn: #96690a;
-  --status-warn-soft: #fbf0d7;
-  --status-bad: #b03434;
-  --status-bad-soft: #fbe7e7;
-  --status-run: #2f5fd0;
-  --status-run-soft: #e8eefc;
-  --status-muted: #5b6679;
-  --status-muted-soft: #eceff4;
-  --radius: 10px;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(28, 35, 48, 0.06), 0 4px 14px rgba(28, 35, 48, 0.05);
-  --font: "Inter", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
-  --mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  /* ── primitives（取自 mockup，28 token） ── */
+  --color-primary: #1e40af;
+  --color-on-primary: #ffffff;
+  --color-secondary: #3b82f6;
+  --color-accent: #d97706;
+  --color-on-accent: #1f2937;
+  --color-background: #f8fafc;
+  --color-foreground: #1e3a8a;
+  --color-card: #ffffff;
+  --color-card-fg: #0f172a;
+  --color-muted: #e9eef6;
+  --color-muted-fg: #475569;
+  --color-border: #dbeafe;
+  --color-border-strong: #c3d6f5;
+  --color-destructive: #dc2626;
+  --color-ok: #15803d;
+  --color-warn: #b45309;
+  --color-ring: #1e40af;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.08);
+  --font: "Fira Sans", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --mono: "Fira Code", "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* ── semantic aliases（组件只认这一层） ── */
+  --surface: var(--color-card);
+  --surface-2: var(--color-background);
+  --surface-3: var(--color-muted);
+  --text: var(--color-card-fg);
+  --text-muted: var(--color-muted-fg);
+  --border: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --action: var(--color-primary);
+  --action-strong: #1b3a9c;
+  --action-soft: #e8f0fe;
+  --action-border: var(--color-border-strong);
+  --status-ok: var(--color-ok);
+  --status-ok-soft: #eaf6ee;
+  --status-warn: var(--color-warn);
+  --status-warn-soft: #fcf1e2;
+  --status-bad: var(--color-destructive);
+  --status-bad-soft: #fdecec;
+  --status-run: var(--color-primary);
+  --status-run-soft: #e8f0fe;
+  --status-muted: var(--color-muted-fg);
+  --status-muted-soft: var(--color-muted);
+
+  /* ── shell（深色侧栏，mockup） ── */
+  --side-bg: #0f1e3d;
+  --side-fg: #c7d6f2;
+  --side-nav: #b9c9e8;
+  --side-muted: #8ba0c9;
+  --side-input: #16294f;
+  --side-line: rgba(255, 255, 255, 0.08);
 }
 
 * { box-sizing: border-box; }
@@ -75,39 +110,69 @@ h3 { font-size: 0.95rem; }
 :focus-visible { outline: 2px solid var(--action); outline-offset: 2px; }
 
 /* ── layout ── */
-.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100vh; }
+.layout { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
 
 .sidebar {
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  padding: 1.1rem 0.9rem;
-  display: flex; flex-direction: column; gap: 1rem;
+  background: var(--side-bg);
+  color: var(--side-fg);
+  padding: var(--space-4) var(--space-3);
+  display: flex; flex-direction: column; gap: var(--space-4);
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
-.brand { display: flex; gap: 0.7rem; align-items: center; padding: 0 0.3rem; }
+.brand { display: flex; gap: 0.6rem; align-items: center; padding: 0 var(--space-1); }
 .brand-mark {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px; border-radius: 10px;
-  background: var(--action); color: #fff; font-weight: 700; letter-spacing: 0.02em;
+  width: 28px; height: 28px; border-radius: var(--radius);
+  background: var(--color-secondary); color: #fff;
+  font-weight: 700; font-size: 0.78rem; letter-spacing: 0.01em;
 }
-.brand-name { margin: 0; font-weight: 650; }
-.brand-sub { margin: 0; font-size: 0.8rem; color: var(--text-muted); }
+.brand-name { margin: 0; font-weight: 600; font-size: 0.95rem; letter-spacing: 0.02em; color: #fff; }
+.brand-sub { margin: 0; font-size: 0.66rem; color: var(--side-muted); letter-spacing: 0.03em; }
 
-.project-switcher { padding: 0 0.3rem; }
-.project-switcher select { width: 100%; }
+.project-switcher { padding: 0 var(--space-1); }
+.project-switcher .field-label { color: var(--side-muted); font-size: 0.66rem; letter-spacing: 0.03em; }
+.project-switcher select {
+  width: 100%; background: var(--side-input); color: #dce6f7;
+  border: 1px solid var(--side-line); border-radius: var(--radius);
+  padding: 0.35rem 0.5rem; font: inherit; font-size: 0.78rem;
+}
+.side-note { margin: 0.35rem 0 0; font-size: 0.68rem; color: var(--side-muted); }
 
-.nav { display: flex; flex-direction: column; gap: 0.15rem; }
+.nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .nav-item {
-  padding: 0.5rem 0.7rem; border-radius: var(--radius-sm); color: var(--text);
-  font-weight: 500;
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.45rem 0.6rem; border-radius: var(--radius);
+  color: var(--side-nav); font-weight: 500; font-size: 0.86rem;
 }
-.nav-item:hover { background: var(--surface-2); text-decoration: none; }
-.nav-item.is-active { background: var(--action-soft); color: var(--action-strong); font-weight: 600; }
+.nav-item:hover { background: rgba(255, 255, 255, 0.06); color: #fff; text-decoration: none; }
+.nav-item.is-active { background: var(--action); color: #fff; font-weight: 600; }
+.nav-icon {
+  width: 16px; height: 16px; flex: none;
+  stroke: currentColor; fill: none; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .sidebar-foot { margin-top: auto; }
+.sidebar-foot .btn { color: var(--side-fg); border-color: var(--side-line); }
+.sidebar-foot .btn:hover { background: rgba(255, 255, 255, 0.08); }
 
 .content-wrap { display: flex; flex-direction: column; min-width: 0; }
-.content { padding: 1.4rem 1.6rem 2rem; max-width: 1200px; width: 100%; margin: 0 auto; }
-.page-foot { padding: 0 1.6rem 1.6rem; max-width: 1200px; margin: 0 auto; width: 100%; }
+.topbar {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; align-items: center; gap: var(--space-4);
+  min-height: 48px; padding: 0 var(--space-5);
+  background: var(--surface); border-bottom: 1px solid var(--border-strong);
+}
+.crumb { font-weight: 600; color: var(--color-foreground); }
+.token {
+  margin-left: auto; display: flex; align-items: center; gap: 0.4rem;
+  font-size: 0.72rem; color: var(--text-muted);
+}
+.token .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--status-ok); display: inline-block;
+}
+.content { padding: var(--space-5); max-width: 1200px; width: 100%; margin: 0 auto; }
+.page-foot { padding: 0 var(--space-5) var(--space-5); max-width: 1200px; margin: 0 auto; width: 100%; }
 
 .page-head {
   display: flex; justify-content: space-between; gap: 1rem; align-items: flex-start;
@@ -208,8 +273,26 @@ h3 { font-size: 0.95rem; }
 .checklist li::before { content: "○ "; color: var(--text-muted); }
 .checklist li.is-ok::before { content: "● "; color: var(--status-ok); }
 .checklist li.is-off::before { content: "○ "; color: var(--status-warn); }
+/* The stage a running index-build job is on (job panel). */
+.checklist li.is-run::before { content: "◐ "; color: var(--status-run); }
+
+/* A stage that failed: never rendered as "not started". */
+.checklist li.is-bad::before { content: "✕ "; color: var(--status-bad); }
 
 .checklist code { background: var(--surface-2); padding: 0 0.25rem; border-radius: 4px; }
+
+/* ── search / evidence ── */
+.tabs { display: flex; gap: 2px; margin-bottom: var(--space-3); }
+.tab {
+  padding: 0.25rem 0.7rem; border-radius: var(--radius-sm);
+  font-size: 0.82rem; color: var(--text-muted); border: 1px solid transparent;
+}
+.tab:hover { background: var(--surface-3); text-decoration: none; }
+.tab.on { background: var(--surface-3); color: var(--color-foreground); font-weight: 600; }
+.answer-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag { margin-top: var(--space-3); }
+.diag summary { cursor: pointer; color: var(--text-muted); font-size: 0.84rem; }
+.diag .raw { margin-top: var(--space-2); }
 
 /* ── dashboard / papers ── */
 .guide-steps { margin: 0.4rem 0 0.6rem 1.2rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
@@ -224,8 +307,16 @@ h3 { font-size: 0.95rem; }
 .abstract { margin: 0.3rem 0 0; }
 .outline { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
 .outline-node { display: flex; gap: 0.6rem; align-items: baseline; padding: 0.24rem 0; padding-left: calc(var(--depth) * 1.1rem); border-bottom: 1px dashed var(--border); }
+.outline-node.is-target { background: var(--action-soft); box-shadow: inset 3px 0 0 var(--action); }
+.outline-detail > summary { display: flex; gap: 0.6rem; align-items: baseline; cursor: pointer; }
+.outline-detail[open] > summary .outline-title { font-weight: 600; }
 .outline-title { flex: 1 1 auto; }
 .outline-id { color: var(--text-muted); font-size: 0.78rem; }
+.outline-text {
+  margin: 0.3rem 0 0.2rem; padding-left: 0.6rem;
+  border-left: 2px solid var(--border-strong); color: var(--text);
+}
+.locator { user-select: all; }
 .arg-claim { margin: 0; }
 
 /* ── sessions ── */
@@ -305,7 +396,7 @@ h3 { font-size: 0.95rem; }
   .layout { grid-template-columns: 1fr; }
   .sidebar {
     position: static; height: auto; flex-direction: row; align-items: center;
-    flex-wrap: wrap; gap: 0.6rem; border-right: 0; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; gap: 0.6rem; border-bottom: 1px solid var(--side-line);
   }
   .nav { flex-direction: row; flex-wrap: wrap; }
   .sidebar-foot { margin: 0 0 0 auto; }

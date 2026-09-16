@@ -3,6 +3,48 @@
 from __future__ import annotations
 
 import re
+from typing import Any
+
+
+def paper_meta(db: Any, local_id: str) -> dict:
+    """Build export-ready metadata for one paper (04-arch A2: moved down here).
+
+    Shared by the CLI export/batch-export commands and the WebUI, so both
+    produce identical BibTeX/RIS/Markdown input.  Returns ``{}`` for an unknown
+    paper instead of raising: the export path treats "no such paper" as "no row
+    to export" and keeps its historical exit codes.
+    """
+    paper = db.get_paper(local_id)
+    if not paper:
+        return {}
+
+    authors = db.conn.execute(
+        "SELECT GROUP_CONCAT(a.variant, ' and ') "
+        "FROM concepts c JOIN aliases a ON a.canonical_id = c.label "
+        "WHERE c.local_id = ? AND c.type = 'Actor'",
+        (local_id,),
+    ).fetchone()
+
+    author_list = authors[0] if authors and authors[0] else ""
+    first_author = author_list.split(" and ")[0].strip() if author_list else ""
+    lastname = _extract_lastname(first_author)
+
+    return {
+        "local_id": local_id,
+        "title": paper.get("title", ""),
+        "year": paper.get("year"),
+        "doi": paper.get("doi", ""),
+        "arxiv": paper.get("arxiv", ""),
+        "authors": author_list,
+        "first_author_lastname": lastname,
+        "paper_type": paper.get("paper_type", "paper"),
+        "abstract": paper.get("abstract", ""),
+        "journal": paper.get("journal", ""),
+        "publisher": paper.get("publisher", ""),
+        "citation_count": paper.get("citation_count", 0),
+        "volume": paper.get("volume", ""),
+        "pages": paper.get("pages", ""),
+    }
 
 
 def _bibtex_escape(text: str) -> str:
