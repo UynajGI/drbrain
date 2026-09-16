@@ -2866,28 +2866,48 @@ class Database:
         ``tree_node_children.child_id`` is ``ON DELETE RESTRICT``, so rows
         referencing a deleted node are removed first; ``node_vectors`` has no
         foreign key and would otherwise linger as orphans.
+
+        Ancestors go too: a region's identity (``region_node_id``) derives
+        from its full member list, so a parent that referenced a removed node
+        is already invalid — leaving it ``ready`` would be a silently
+        corrupted hierarchy.  Deletion cascades upward until no surviving
+        parent references a removed node.
         """
         ids = [str(node_id) for node_id in node_ids if str(node_id)]
         if not ids:
             return 0
         deleted = 0
+        pending = list(dict.fromkeys(ids))
+        removed: set[str] = set()
         with self._write_scope():
-            for start in range(0, len(ids), 500):
-                chunk = ids[start : start + 500]
-                placeholders = ",".join("?" for _ in chunk)
-                self.conn.execute(
-                    f"DELETE FROM tree_node_children WHERE child_id IN ({placeholders})",
-                    tuple(chunk),
-                )
-                self.conn.execute(
-                    f"DELETE FROM node_vectors WHERE node_id IN ({placeholders})",
-                    tuple(chunk),
-                )
-                cursor = self.conn.execute(
-                    f"DELETE FROM tree_nodes WHERE node_id IN ({placeholders})",
-                    tuple(chunk),
-                )
-                deleted += int(cursor.rowcount or 0)
+            while pending:
+                parents: list[str] = []
+                for start in range(0, len(pending), 500):
+                    chunk = pending[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    parents.extend(
+                        str(row[0])
+                        for row in self.conn.execute(
+                            f"SELECT DISTINCT parent_id FROM tree_node_children "
+                            f"WHERE child_id IN ({placeholders})",
+                            tuple(chunk),
+                        )
+                    )
+                    self.conn.execute(
+                        f"DELETE FROM tree_node_children WHERE child_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    self.conn.execute(
+                        f"DELETE FROM node_vectors WHERE node_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    cursor = self.conn.execute(
+                        f"DELETE FROM tree_nodes WHERE node_id IN ({placeholders})",
+                        tuple(chunk),
+                    )
+                    deleted += int(cursor.rowcount or 0)
+                removed.update(pending)
+                pending = [parent for parent in dict.fromkeys(parents) if parent not in removed]
         return deleted
 
     def leaves_missing_parent(self, local_id: str | None = None) -> list[str]:

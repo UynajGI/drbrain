@@ -140,7 +140,7 @@ def test_repack_collapses_fragments_and_keeps_the_revision(tmp_path: Path) -> No
     assert again.skipped == 1
 
 
-def test_repack_clears_child_references_before_deleting_leaves(tmp_path: Path) -> None:
+def test_repack_delete_cascades_to_orphaned_parent_regions(tmp_path: Path) -> None:
     db = _db(tmp_path)
     _legacy_revision(db, FRAGMENTED)
     rows = db.get_content_blocks("p1", 1)
@@ -161,14 +161,15 @@ def test_repack_clears_child_references_before_deleting_leaves(tmp_path: Path) -
     db.insert_tree_node(region)
     db.publish_tree_node(region.node_id)
 
-    assert db.delete_tree_nodes([leaf_id]) == 1
+    # a region's identity derives from its full member list, so the parent
+    # that lost a member is deleted together with the leaf (cascade)
+    assert db.delete_tree_nodes([leaf_id]) == 2
     assert db.get_tree_node(leaf_id) is None
+    assert db.get_tree_node(region.node_id) is None
     remaining = db.conn.execute(
         "SELECT COUNT(*) FROM tree_node_children WHERE child_id = ?", (leaf_id,)
     ).fetchone()[0]
     assert remaining == 0
-    # the parent survives — only its dangling child reference was removed
-    assert db.get_tree_node(region.node_id) is not None
 
 
 def test_repack_skips_a_single_fragment_revision(tmp_path: Path) -> None:
@@ -202,6 +203,15 @@ def test_cli_min_chars_zero_disables_merging() -> None:
     assert _repack_policy(None).min_chars == BlockPolicy().min_chars
     assert _repack_policy(0).min_chars == 0
     assert _repack_policy(320).min_chars == 320
+
+
+def test_cli_min_chars_rejects_negative_values() -> None:
+    import typer
+
+    from drbrain.cli.storage_commands import _repack_policy
+
+    with pytest.raises(typer.BadParameter):
+        _repack_policy(-1)
 
 
 def test_page_marks_refuse_to_guess_after_cross_page_merges() -> None:

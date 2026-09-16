@@ -106,6 +106,8 @@ async def _read_request(reader: asyncio.StreamReader):
         key, value = line.split(":", 1)
         headers[key.strip()] = value.strip()
     lowered = {key.lower(): value for key, value in headers.items()}
+    if "chunked" in lowered.get("transfer-encoding", "").lower():
+        raise ValueError("chunked request bodies are not supported")
     length = int(lowered.get("content-length", "0") or 0)
     body = await reader.readexactly(length) if length else b""
     return method, path, headers, body
@@ -115,7 +117,13 @@ async def serve(port: int, router: Router) -> None:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             method, path, headers, body = await _read_request(reader)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ValueError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            writer.close()
+            return
+        except ValueError as exc:
+            payload = f"bad request: {exc}\n".encode()
+            writer.write(_response_bytes(400, [("Content-Type", "text/plain")], payload))
+            await writer.drain()
             writer.close()
             return
         if path.startswith("/healthz"):

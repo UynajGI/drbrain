@@ -37,6 +37,14 @@ class RepackItem:
     blocks_before: int
     blocks_after: int
 
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "local_id": self.local_id,
+            "revision": self.revision,
+            "blocks_before": self.blocks_before,
+            "blocks_after": self.blocks_after,
+        }
+
 
 @dataclass
 class RepackPlan:
@@ -56,7 +64,7 @@ class RepackPlan:
     def to_json(self) -> dict[str, Any]:
         return {
             "revisions": self.revisions,
-            "repack": [item.__dict__ for item in self.items],
+            "repack": [item.to_json() for item in self.items],
             "skipped": self.skipped,
             "failed": list(self.failed),
             "blocks_before": self.blocks_before,
@@ -208,10 +216,11 @@ def apply_repack(
     fails keeps its old segmentation and is reported in ``failed``.
 
     When ``store`` is given, each revision's retired leaf documents are
-    deleted from the shared vector store before its replacement commits:
-    ``publish_tree_generation`` refuses a generation whose ANN holds more
-    documents than the ready metadata lists, so leaving them behind would
-    break the documented ``index build --force`` follow-up.
+    deleted from the shared vector store once its replacement has committed
+    (the store call is not transactional, so it must not run ahead of the
+    database): ``publish_tree_generation`` refuses a generation whose ANN
+    holds more documents than the ready metadata lists, so leaving them
+    behind would break the documented ``index build --force`` follow-up.
     """
     from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 
@@ -240,8 +249,6 @@ def apply_repack(
                 )
                 for row in rows
             ]
-            if store is not None:
-                store.delete(old_leaves)
             with db.transaction():
                 db.delete_tree_nodes(old_leaves)
                 db.delete_content_blocks(local_id, revision)
@@ -265,6 +272,8 @@ def apply_repack(
                         heading_path=block.heading_path,
                     )
                     db.insert_tree_node(leaf, publish=True)
+            if store is not None:
+                store.delete(old_leaves)
             applied += 1
             blocks_before += len(rows)
             blocks_after += len(blocks)

@@ -60,6 +60,8 @@ def _repack_policy(min_chars: int | None) -> Any:
 
     if min_chars is None:
         return BlockPolicy()
+    if int(min_chars) < 0:
+        raise typer.BadParameter("must be >= 0", param_hint="--min-chars")
     return BlockPolicy(min_chars=int(min_chars))
 
 
