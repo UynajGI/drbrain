@@ -8,7 +8,9 @@ prepares a deterministic plan first and only applies it on explicit request.
 from __future__ import annotations
 
 import json as _json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -17,17 +19,35 @@ from drbrain.cli._common import runtime_data_path
 storage_app = typer.Typer(help="Storage inspection and migration (read-only audit)")
 
 
-def _runtime_config(ctx: typer.Context) -> dict:
-    config = getattr(ctx, "obj", None) or {}
-    return config.get("config", config) if isinstance(config, dict) else {}
+def _config_get(cfg: Any, key: str, default: Any = None) -> Any:
+    """Read one config value from a mapping or a typed config object.
+
+    ``ctx.obj["config"]`` is a typed ``Config`` dataclass, not a dict, so a
+    dict-only read silently falls back to the defaults.
+    """
+    if isinstance(cfg, Mapping):
+        return cfg.get(key, default)
+    return getattr(cfg, key, default)
 
 
-def _db_path(ctx: typer.Context, cfg: dict) -> Path:
-    raw = ""
-    if isinstance(cfg, dict):
-        db_cfg = cfg.get("db", {})
-        raw = db_cfg.get("path", "") if isinstance(db_cfg, dict) else ""
+def _runtime_config(ctx: typer.Context) -> Any:
+    obj = getattr(ctx, "obj", None) or {}
+    return _config_get(obj, "config", {})
+
+
+def _db_path(ctx: typer.Context, cfg: Any) -> Path:
+    db_cfg = _config_get(cfg, "db", {})
+    raw = str(_config_get(db_cfg, "path", "") or "")
     return runtime_data_path(ctx, raw or "data/drbrain.db", label="database path")
+
+
+def _papers_root(ctx: typer.Context, cfg: Any, explicit: str) -> Path:
+    """Resolve the papers root: explicit flag, configured ``dirs.papers``, default."""
+    raw = str(explicit or "")
+    if not raw:
+        dirs_cfg = _config_get(cfg, "dirs", {})
+        raw = str(_config_get(dirs_cfg, "papers", "") or "data/papers")
+    return Path(runtime_data_path(ctx, raw, label="papers root"))
 
 
 @storage_app.command("audit")
@@ -47,15 +67,7 @@ def storage_audit_cmd(
 
     cfg = _runtime_config(ctx)
     db_path = _db_path(ctx, cfg)
-    if papers_root:
-        root = Path(runtime_data_path(ctx, papers_root, label="papers root"))
-    else:
-        default_root = "data/papers"
-        if isinstance(cfg, dict):
-            dirs_cfg = cfg.get("dirs", {})
-            if isinstance(dirs_cfg, dict):
-                default_root = dirs_cfg.get("papers", default_root)
-        root = Path(runtime_data_path(ctx, default_root, label="papers root"))
+    root = _papers_root(ctx, cfg, papers_root)
     generation_dir = (
         Path(runtime_data_path(ctx, storage_dir, label="generation storage"))
         if storage_dir
@@ -104,16 +116,8 @@ def storage_migrate_cmd(
 
     cfg = _runtime_config(ctx)
     db_path = _db_path(ctx, cfg)
-    if papers_root:
-        root: Path | None = Path(runtime_data_path(ctx, papers_root, label="papers root"))
-    else:
-        default_root = "data/papers"
-        if isinstance(cfg, dict):
-            dirs_cfg = cfg.get("dirs", {})
-            if isinstance(dirs_cfg, dict):
-                default_root = dirs_cfg.get("papers", default_root)
-        candidate = Path(runtime_data_path(ctx, default_root, label="papers root"))
-        root = candidate if candidate.is_dir() else None
+    candidate = _papers_root(ctx, cfg, papers_root)
+    root: Path | None = candidate if candidate.is_dir() else None
     plan = build_migration_plan(db_path=db_path, papers_root=root)
     payload = plan.to_json()
     if dry_run:
@@ -174,16 +178,8 @@ def storage_export_cmd(
 
     cfg = _runtime_config(ctx)
     db_path = _db_path(ctx, cfg)
-    if papers_root:
-        root: Path | None = Path(runtime_data_path(ctx, papers_root, label="papers root"))
-    else:
-        default_root = "data/papers"
-        if isinstance(cfg, dict):
-            dirs_cfg = cfg.get("dirs", {})
-            if isinstance(dirs_cfg, dict):
-                default_root = dirs_cfg.get("papers", default_root)
-        candidate = Path(runtime_data_path(ctx, default_root, label="papers root"))
-        root = candidate if candidate.is_dir() else None
+    candidate = _papers_root(ctx, cfg, papers_root)
+    root: Path | None = candidate if candidate.is_dir() else None
 
     from drbrain.storage.database import Database
 

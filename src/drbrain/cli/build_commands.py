@@ -17,6 +17,17 @@ from drbrain.storage.database import Database
 from drbrain.storage.paths import paper_id_from_dir, raw_md_path, resolve_paper_dir, tree_json_path
 
 
+def _ensure_line_nums(nodes: list, counter: list[int] | None = None) -> list:
+    """Fill in missing ``line_num`` values depth-first (stable tree order)."""
+    counter = counter or [0]
+    for node in nodes:
+        if isinstance(node, dict):
+            counter[0] += 1
+            node.setdefault("line_num", counter[0])
+            _ensure_line_nums(node.get("nodes", []), counter)
+    return nodes
+
+
 def translate_cmd(
     ctx: typer.Context,
     local_id: str = typer.Argument(..., help="Paper local_id"),
@@ -259,6 +270,8 @@ def build_cmd(
                 )
             except (OSError, UnicodeError, ValueError):
                 tree_invalid = True
+        section_texts: dict[str, str] | None
+        structure: list
         if (not tree_path.exists() or tree_invalid) and md_path.exists():
             typer.echo("  Tree missing, retrying...")
             try:
@@ -288,6 +301,13 @@ def build_cmd(
                 )
                 db.commit()
                 typer.echo(f"  Tree regenerated: {len(doc_tree.structure)} sections")
+                section_texts = None
+                structure = (
+                    existing_tree.get("structure", []) if isinstance(existing_tree, dict) else []
+                )
+                if not isinstance(structure, list):
+                    structure = []
+                structure = _ensure_line_nums(structure)
             except Exception as e:
                 db.upsert_paper_artifact(
                     pid, "tree", "degraded", error=safe_error(e, secrets=secrets)
@@ -308,7 +328,6 @@ def build_cmd(
                 typer.echo("  No raw.md — ingest this paper first")
                 failed += 1
                 continue
-            section_texts: dict[str, str] | None
             structure, section_texts = canonical
             typer.echo(
                 f"  No raw.md — reading canonical content "
@@ -321,16 +340,6 @@ def build_cmd(
                 structure = tree.get("structure", []) if isinstance(tree, dict) else []
                 if not isinstance(structure, list):
                     structure = []
-
-                def _ensure_line_nums(nodes, counter=None):
-                    counter = counter or [0]
-                    for node in nodes:
-                        if isinstance(node, dict):
-                            counter[0] += 1
-                            node.setdefault("line_num", counter[0])
-                            _ensure_line_nums(node.get("nodes", []), counter)
-                    return nodes
-
                 structure = _ensure_line_nums(structure)
                 if isinstance(tree, dict):
                     tree["structure"] = structure
