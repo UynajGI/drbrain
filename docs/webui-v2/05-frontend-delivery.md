@@ -18,7 +18,7 @@
 | M3 检索与证据 | ✅ 完成 | 找证据（四要素结果行、显示上限、原文/摘要区分）+ 要答案（A3 状态） |
 | M7 设置 | ✅ 完成 | availability 修正（找证据/要答案分开 + reasons）+ 能力与插件分区入口 |
 | M1 概览 | 🟡 部分 | 「能不能搜？」卡 + 检索与问答可用性卡 + 一键进索引页；逐篇差值与索引健康度细项依赖 A4 |
-| A1 构建 job | 🟡 部分（并发协作者） | **core 已由并发协作者落地**：`src/drbrain/services/index_build.py`（587 行，未跟踪）提供 `ensure_index_build_job` / `run_index_build` / `IndexBuildBusy` / 确定性 scope slot + lease（`Database.renew_tree_job` 本就存在于 HEAD → F1 已满足）；`cli/index_commands.py` 已改为委派它。**service/API/UI 层归属待 leader 裁决**（见文末「并发写入提示」） |
+| A1 构建 job | ✅ 完成（并发协作者实现 + backend-dev 两处修复；leader 全门验证通过） | `services/index_build.py`（确定性 scope slot + claim/接管/reopen + 逐阶段 checkpoint + lease 续租）、`Database.renew_tree_job`/`reopen_tree_job`/`count_leaves_missing_parent`（**本次新增，HEAD 中不存在**）、`prepare_unified_index(on_stage=)`、CLI 委派、service `start_index_build`/`index_jobs`/`index_job_state`、`POST /api/index/build` + `GET /api/jobs[/{id}]`、`/index` 构建表单 + 2s 轮询片段；测试 `test_webui_index_build.py` 12 passed |
 | A2 citations/export | ⛔ 未做 | FR-L4/L5 stretch，leader 已定：等 M1–M3 落地后再定 |
 | A4 index_coverage | ⛔ 未做 | 页面已注明“逐篇差值随覆盖明细一起提供” |
 | A5 运行只读扩展 | ⛔ 未做 | FR-R6（后续迭代） |
@@ -111,12 +111,12 @@
 7. 文案单一来源：新增状态/原因/检查项文案全部进 `app/web/labels.py`（`ANSWER_STATUSES`/`EVIDENCE_STATUSES`/`INDEX_REASONS`/`INDEX_CHECKS`/`LEG_LABELS`/`INDEX_STATE_LABELS`/`SEVERITY_TONES`），模板不硬编码颜色词；精确术语只在“诊断详情”折叠区。
 8. 三条“不骗人”红线：不把插件说成在线；不把“部分覆盖”说成全部就绪（索引页明示）；不把模型生成内容当原文证据（无位置证据行明确降级）。另外：**不给索引就绪度编数字**（未接入的部分直接标“未接入/未标注”）。
 
-## 5. 交接清单（未完成项，可照做）
+## 5. 交接清单（A1 已完成 ✅；余下为未完成项，可照做）
 
-1. **A1 构建 job（最高价值）**：按 `04-arch-decisions.md §A1` 实现
+1. **A1 构建 job**：✅ 已完成（实现与验证见上表）——以下为实现要点（存档）：
    - core `services/index_build.py`：`index_build_scope_key()` / `active_index_job()` / `run_index_build(cfg, *, force, tree_storage, notify, job_id, owner)`（搬 `cli/index_commands.py:index_build_cmd` 主体，每阶段 `save_checkpoint`）；
-   - `Database.renew_tree_job()`（§A1 风险 1：lease 续租，或每次 checkpoint 重认领）；
-   - service：`start_index_build()`（同 scope 有活跃 job → `already_running: true`，**单飞互斥**）、`jobs()`、`job_state()`；
+   - `Database.renew_tree_job()`（**订正：HEAD 中并不存在，已由 #6 实现**；§A1 风险 1：lease 续租）；
+   - service：`start_index_build()`（同 scope 有活跃 job → `already_running: true`，**单飞互斥**）、`index_jobs()`、`index_job_state()`（实际签名）；
    - API：`POST /api/index/build`（CSRF）→ 202；`GET /api/jobs`、`GET /api/jobs/{job_id}`（形状见 §A1）；
    - 页面：M2 行动卡把“终端命令”提示换成按钮 + 确认 + htmx 自轮询 1.5–3s（终态停），显示 `stage/stages_done/pending/live`，不承诺取消、不做 ETA。
 2. **A2 citations/export**：`storage/export.py:paper_meta`（从 `cli/_helpers/display.py::_export_paper_to_meta` 纯搬迁，CLI 行为不变）+ service `citations/paper_export` + `GET /api/papers/{id}/citations`、`/api/papers/{id}/export`、`POST /api/export`；`citations` 只读、不得触发 auto-expand。
