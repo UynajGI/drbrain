@@ -212,7 +212,7 @@ def test_embed_tree_provider_none_skips(mock_db_cls, mock_embed_cfg_cls, tmp_pat
 @patch("drbrain.cli.build_commands.GraphEngine")
 @patch("drbrain.cli.build_commands.Database")
 def test_embed_trains_and_saves(mock_db_cls, mock_graph_cls):
-    """embed happy path: trains TransE and persists embeddings."""
+    """embed --graph happy path: trains TransE and persists embeddings."""
     mock_db = MagicMock()
     mock_db.load_embeddings.return_value = []
     mock_db_cls.return_value = mock_db
@@ -227,7 +227,7 @@ def test_embed_trains_and_saves(mock_db_cls, mock_graph_cls):
 
     app = _make_app(_cfg())
     with patch("drbrain.graph.embedding.TransE", return_value=fake_transe):
-        result = runner.invoke(app, ["embed", "--dim", "64", "--epochs", "5"])
+        result = runner.invoke(app, ["embed", "--graph", "--dim", "64", "--epochs", "5"])
 
     assert result.exit_code == 0, result.output
     assert "Trained 2 entities" in result.output
@@ -236,6 +236,17 @@ def test_embed_trains_and_saves(mock_db_cls, mock_graph_cls):
     assert mock_db.save_embedding.call_count >= 3
     mock_db.commit.assert_called()
     mock_db.close.assert_called()
+
+
+@patch("drbrain.cli.build_commands.Database")
+def test_embed_tree_and_graph_are_mutually_exclusive(mock_db_cls):
+    """The text and graph embedding modes cannot be selected together."""
+    app = _make_app(_cfg())
+    result = runner.invoke(app, ["embed", "--tree", "--graph"])
+
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
+    mock_db_cls.assert_called_once()
 
 
 @patch("drbrain.cli.build_commands.GraphEngine")

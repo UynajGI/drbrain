@@ -70,6 +70,12 @@ embed:
   api_key: ""
   batch_size: 64
 
+retrieval:
+  # SQLite remains authoritative; Zvec is the rebuildable ANN sidecar copied
+  # into each immutable SQL generation.
+  vector_backend: "zvec"
+  vector_top_k: 100
+
 # ── LlamaIndex RAG ────────────────────────────────────────────────────
 # LlamaIndex 集成配置(工单 T1 基础设施)。enabled=false 全局回退旧实现。
 # 设计:docs/llamaindex-integration-design.md
@@ -78,7 +84,7 @@ llamaindex:
   llm: "litellm"           # 桥接 drbrain models 列表(T2 填充)
   vector_store: "memory"   # chroma | memory(起步;chromadb 未装前用 memory)
   storage_dir: "data/llamaindex"   # 索引持久化目录
-  retrievers: ["bm25", "vector"]    # fusion 腿
+  retrievers: ["bm25", "vector"]    # fusion 腿；可加入 tree/pageindex
   fusion_mode: "reciprocal_rank"    # | relative_score
   rerank: true
   rerank_model: "Qwen/Qwen3-Reranker-0.6B"
@@ -105,4 +111,3 @@ autoresearch:
   lease_seconds: 900
   budget: {}  # e.g. {max_tokens: 100000, max_tool_calls: 20}
   require_rag_evidence: false  # true = 已启用 RAG 时无可引用证据即降为 prediction
-

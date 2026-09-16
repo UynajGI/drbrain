@@ -82,15 +82,23 @@ def collect_tree_nodes(
     max_node_tokens: int | None = None,
     *,
     paper_id: str | None = None,
+    conn=None,
 ) -> list[Document]:
-    """Collect one :class:`Document` per PageIndex tree node.
+    """Collect one :class:`Document` per projected node (canonical first).
+
+    With ``conn`` (the main database connection) the shared projection serves
+    canonical nodes: one document per block-backed leaf plus region summaries,
+    so RAG and embedding index the same units with the same ids/hashes.  The
+    legacy ``tree.json``/``raw.md`` path stays as the compatibility fallback
+    (and is used when ``conn`` is ``None``).
 
     ``tree_json`` may be a path, a raw parsed dict, or ``None`` (defaults to
     ``<paper_dir>/tree.json``). Each node becomes a Document with
     ``text = "<title>\\n<body>"`` where the body is loaded from ``raw.md`` by
     line range, and metadata::
 
-        {paper_id, node_id, title, line_start, line_end, tree_layer: "pageindex"}
+        {paper_id, node_id, title, text_hash, origin, line_start, line_end,
+         tree_layer: "pageindex"}
 
     When ``max_node_tokens`` is given, oversized nodes become physical
     fragments with unique ids, exact parent-text character offsets, and
@@ -117,7 +125,18 @@ def collect_tree_nodes(
 
     paper_dir = Path(paper_dir)
     resolved_paper_id = paper_id or paper_id_from_dir(paper_dir)
-    records = collect_tree_node_records(paper_dir, tree_json, paper_id=resolved_paper_id)
+    if conn is not None:
+        from drbrain.storage.node_projection import collect_node_records
+
+        records = collect_node_records(
+            conn,
+            resolved_paper_id,
+            paper_dir=paper_dir,
+            tree_json=tree_json,
+            include_regions=True,
+        )
+    else:
+        records = collect_tree_node_records(paper_dir, tree_json, paper_id=resolved_paper_id)
     docs: list[Document] = [
         Document(
             text=row["text"],
@@ -126,6 +145,8 @@ def collect_tree_nodes(
                 "paper_id": resolved_paper_id,
                 "node_id": row["node_id"],
                 "title": row["title"],
+                "text_hash": str(row.get("text_hash") or ""),
+                "origin": str(row.get("origin") or "legacy"),
                 "line_start": row["line_start"],
                 "line_end": row["line_end"],
                 "tree_layer": TREE_LAYER_PAGEINDEX,

@@ -30,8 +30,11 @@ drbrain ingest-link https://example.com --dry-run
 
 1. POSTs the URL to the external extractor service
 2. Receives rendered text (markdown), title, and metadata
-3. Saves as `raw.md` in a paper directory under `data/papers/`
-4. Registers the paper in the database with status `uploaded`
+3. Registers the body **canonically** through the same write path as file ingest
+   (document revision + content blocks + leaves); no per-paper `raw.md` is written
+4. Records `raw` (canonical fingerprint) and `tree` (skipped — `rag prepare` builds the
+   hierarchy) artifacts and registers the paper with status `uploaded`
+5. A canonical write failure rolls the URL back and makes the command exit non-zero
 
 ## CLI Reference
 

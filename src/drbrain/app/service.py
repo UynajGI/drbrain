@@ -427,7 +427,7 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         return {
             "error": "llamaindex engine unavailable: set `llamaindex.enabled: true` "
-            "and run `drbrain rag index`",
+            "and run `drbrain index build`",
             "unavailable": True,
         }
     with _db(cfg) as db:
@@ -509,13 +509,12 @@ def paper_detail(cfg: Any, local_id: str, project_id: str | None = None) -> dict
             raise PaperNotInProjectError(f"unknown paper: {local_id}")
         concepts = db.get_concepts_by_paper(local_id)
         arguments = db.get_arguments_by_paper(local_id)
-    outline: list[dict[str, Any]] = []
-    try:
-        papers_root = Path(cfg["dirs"]["papers"])
-        path = _runtime_path(papers_root, label="papers root")
-        outline = paper_outline(path, local_id)
-    except Exception:  # noqa: BLE001 - outline is optional detail, never fatal
-        outline = []
+        outline: list[dict[str, Any]] = []
+        try:
+            papers_root = _runtime_path(Path(cfg["dirs"]["papers"]), label="papers root")
+            outline = paper_outline(db, local_id, papers_root=papers_root)
+        except Exception:  # noqa: BLE001 - outline is optional detail, never fatal
+            outline = []
     return {
         "paper": redact_sensitive(dict(paper)),
         "concepts": [redact_sensitive(dict(c)) for c in concepts],
@@ -525,41 +524,16 @@ def paper_detail(cfg: Any, local_id: str, project_id: str | None = None) -> dict
 
 
 def paper_outline(
-    papers_root: Path, local_id: str, *, max_nodes: int = 300
+    db: Any,
+    local_id: str,
+    *,
+    papers_root: Path | None = None,
+    max_nodes: int = 300,
 ) -> list[dict[str, Any]]:
-    """Return a bounded section outline from the paper's PageIndex tree."""
-    from drbrain.storage.paths import paper_dir, tree_json_path
+    """Display outline via the shared body provider (T14): canonical first."""
+    from drbrain.storage.paper_view import body_outline
 
-    path = tree_json_path(paper_dir(papers_root, local_id))
-    if not path.is_file():
-        return []
-    try:
-        structure = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(structure, list):
-        return []
-
-    out: list[dict[str, Any]] = []
-
-    def walk(nodes: list, depth: int) -> None:
-        if depth > 4 or len(out) >= max_nodes:
-            return
-        for node in nodes:
-            if not isinstance(node, dict) or len(out) >= max_nodes:
-                continue
-            out.append(
-                {
-                    "node_id": str(node.get("node_id") or ""),
-                    "title": str(node.get("title") or node.get("summary") or ""),
-                    "depth": depth,
-                    "children": len(node.get("nodes") or []),
-                }
-            )
-            walk(list(node.get("nodes") or []), depth + 1)
-
-    walk(structure, 0)
-    return out
+    return body_outline(db, local_id, papers_root=papers_root, max_nodes=max_nodes)
 
 
 # ── autoresearch ledger (read side) ──────────────────────────────────────────

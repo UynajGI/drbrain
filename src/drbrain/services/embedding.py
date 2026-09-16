@@ -662,13 +662,24 @@ def _embed_batch_local(texts: list[str], cfg: EmbedConfig | None = None) -> list
 # ── Build ────────────────────────────────────────────────────────────────────
 
 
-def _collect_tree_nodes(paper_dir: Path) -> list[dict]:
-    """Collect nodes through the shared PageIndex text projection."""
-    from drbrain.storage.node_projection import collect_tree_node_records
+def _collect_tree_nodes(
+    paper_dir: Path,
+    *,
+    conn=None,
+    paper_id: str | None = None,
+) -> list[dict]:
+    """Collect nodes through the shared projection (canonical store first)."""
+    resolved = str(paper_id or paper_dir.name)
+    if conn is not None:
+        from drbrain.storage.node_projection import collect_node_records
 
+        records = collect_node_records(conn, resolved, paper_dir=paper_dir)
+    else:
+        from drbrain.storage.node_projection import collect_tree_node_records
+
+        records = collect_tree_node_records(paper_dir, paper_id=resolved)
     return [
-        {"node_id": row["node_id"], "title": row["title"], "text": row["text"]}
-        for row in collect_tree_node_records(paper_dir)
+        {"node_id": row["node_id"], "title": row["title"], "text": row["text"]} for row in records
     ]
 
 
@@ -696,10 +707,6 @@ def build_tree_vectors(
         logger.info("embed.provider=none; tree vector generation is disabled")
         return 0
 
-    nodes = _collect_tree_nodes(paper_dir)
-    if not nodes:
-        return 0
-
     # Check existing hashes for incremental update
     conn = connect_wal(db_path)
     try:
@@ -707,6 +714,9 @@ def build_tree_vectors(
         # ``paper_dir.name`` is a filesystem key, not necessarily the DB ID
         # (canonical DOI keys are percent-encoded; legacy DOI dirs may nest).
         paper_id = paper_id or paper_id_from_dir(paper_dir)
+        nodes = _collect_tree_nodes(paper_dir, conn=conn, paper_id=paper_id)
+        if not nodes:
+            return 0
         all_node_keys = [
             (node["node_id"], _global_node_id(paper_id, node["node_id"])) for node in nodes
         ]

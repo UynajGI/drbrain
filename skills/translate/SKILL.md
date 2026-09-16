@@ -12,9 +12,14 @@ description: >
 
 # Paper Translation
 
-Translate an ingested paper's `raw.md` to another language using configured LLM models. Uses
+Translate an ingested paper's body to another language using configured LLM models. Uses
 placeholder-protected chunking to preserve code blocks, math notation, and image references.
 Supports resume from interruption and concurrent chunk translation.
+
+> **Current limitation (2026-09)**: the reader still opens the per-paper `raw.md`. Papers
+> ingested after the canonical switch have no `raw.md`; translating them fails with a
+> "No raw.md" error until the canonical reader lands (tracked as follow-up B4). Papers
+> ingested before the switch keep working.
 
 ## Prerequisites
 
@@ -22,7 +27,7 @@ The paper must be ingested first (parse phase must succeed). Verify:
 
 ```bash
 drbrain list                          # confirm paper is in library
-drbrain show p3f8a2                   # confirm raw.md exists
+drbrain show p3f8a2                   # legacy papers: confirm raw.md exists
 ```
 
 ## Quick Start
@@ -33,7 +38,7 @@ drbrain translate p3f8a2 --lang zh
 
 ## What It Does
 
-- Reads the paper's `raw.md` and splits it into chunks at natural boundaries
+- Reads the paper's `raw.md` (legacy path; canonical-only papers have no input yet) and splits it into chunks at natural boundaries
 - Protects placeholders (code blocks, math, images, URLs) from translation
 - Translates each chunk concurrently via configured LLM models with exponential backoff retry
 - Reassembles chunks with placeholders restored to `data/papers/<id>/translated_<lang>.md`

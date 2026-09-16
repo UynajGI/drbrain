@@ -1,9 +1,14 @@
-"""RAG subcommands: ``drbrain rag index`` / ``drbrain rag eval``.
+"""RAG subcommands: evaluation plus the compatibility index entries.
 
-The ``rag`` Typer sub-app hosts LlamaIndex-driven operations. T3 ships the
-``index`` command (build/persist the vector + BM25 index from PageIndex
-assets); T7 ships the ``eval`` command (golden-set retriever/ragas evaluation,
-baseline report into ``docs/llamaindex-eval-baseline.md``).
+The ``rag`` Typer sub-app hosts the evaluation-only operations (``eval``,
+``baselines``, the native PageIndex commands) and, for the compatibility
+period, the historical index entries.  ``rag prepare``/``rag index``/
+``rag health`` are hidden aliases with one stderr migration line: the main
+line prepares and inspects the index through ``drbrain index build`` /
+``drbrain index status``.  The legacy names keep their flags, exit codes and
+JSON contracts, and the ``rag_*_cmd`` symbols stay importable.
+
+Baselines never register a production route.
 """
 
 from __future__ import annotations
@@ -12,11 +17,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from drbrain.cli._common import open_db, runtime_data_path
+from drbrain.cli._compat import migration_alias
 from drbrain.security import configured_secret_values, redact_sensitive, safe_error
 
 rag_app = typer.Typer(help="RAG index publication, readiness and evaluation")
@@ -24,7 +31,95 @@ rag_app = typer.Typer(help="RAG index publication, readiness and evaluation")
 console = Console()
 
 
-@rag_app.command("index")
+@rag_app.command("pageindex-index")
+def pageindex_index_cmd(
+    ctx: typer.Context,
+    paper: list[str] = typer.Option(None, "--paper", help="Restrict indexing to local_id(s)"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Materialize DrBrain papers in PageIndex's native local filesystem.
+
+    This invokes the PageIndex SDK indexer and writes its native
+    ``.pageindex/docs`` store beside each paper.  It is separate from SQL RAG
+    preparation because the native SDK accepts PDF documents only.
+    """
+    cfg = ctx.obj["config"]
+    from drbrain.rag.pageindex_native import ensure_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    selected = set(paper or [])
+    candidates = sorted(
+        p for p in papers_root.iterdir() if p.is_dir() and (not selected or p.name in selected)
+    )
+    indexed = 0
+    skipped = 0
+    errors: list[dict[str, str]] = []
+    for paper_path in candidates:
+        paper_id = paper_path.name
+        try:
+            resolved = paper_dir(papers_root, paper_id)
+            ensure_document(cfg, paper_id, resolved)
+            indexed += 1
+        except Exception as exc:
+            if "requires source.pdf" in str(exc):
+                skipped += 1
+            else:
+                errors.append({"paper": paper_id, "error": safe_error(exc)})
+    result = {
+        "indexed": indexed,
+        "skipped_non_pdf": skipped,
+        "failed": len(errors),
+        "errors": errors,
+    }
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        typer.echo(
+            f"PageIndex native filesystem: indexed={indexed}, "
+            f"skipped_non_pdf={skipped}, failed={len(errors)}"
+        )
+        for item in errors[:10]:
+            typer.echo(f"  {item['paper']}: {item['error']}", err=True)
+    if errors:
+        raise typer.Exit(1)
+
+
+@rag_app.command("pageindex-chat")
+def pageindex_chat_cmd(
+    ctx: typer.Context,
+    paper: str = typer.Option(
+        ..., "--paper", help="DrBrain local_id to scope native PageIndex chat"
+    ),
+    question: list[str] = typer.Argument(..., help="Question for PageIndex native document QA"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Ask PageIndex's native local chat agent about one indexed paper.
+
+    This is intentionally document-scoped: PageIndex local ``chat_completions``
+    returns an answer, while corpus-wide BM25/Zvec/PageIndex-tree/RAPTOR
+    fusion remains the evidence-retrieval path used by ``drbrain ask``.
+    """
+    cfg = ctx.obj["config"]
+    from drbrain.rag.pageindex_native import chat_document
+    from drbrain.storage.paths import paper_dir
+
+    papers_root = Path(cfg["dirs"]["papers"])
+    paper_path = paper_dir(papers_root, paper)
+    if paper_path is None or not paper_path.is_dir():
+        raise typer.BadParameter(f"unknown paper: {paper}", param_hint="--paper")
+    prompt = " ".join(question).strip()
+    try:
+        result = chat_document(cfg, paper, paper_path, prompt)
+    except Exception as exc:
+        raise click.ClickException(safe_error(exc, secrets=configured_secret_values(cfg))) from exc
+    if json_output:
+        typer.echo(json.dumps(redact_sensitive(result), ensure_ascii=False, default=str))
+    else:
+        typer.echo(result["answer"])
+
+
+@rag_app.command("index", hidden=True)
 def rag_index_cmd(
     ctx: typer.Context,
     force: bool = typer.Option(
@@ -40,6 +135,8 @@ def rag_index_cmd(
     SQL snapshots the existing corpus database without running embeddings.
     LlamaIndex builds nodes and embeddings from paper assets; --paper and
     --force control incremental indexing on that backend.
+
+    Compatibility alias: the main line is ``drbrain index build``.
     """
     cfg = ctx.obj["config"]
 
@@ -100,62 +197,200 @@ def rag_index_cmd(
     console.print(table)
 
 
-@rag_app.command("prepare")
+rag_app.command("index", hidden=True)(
+    migration_alias(rag_index_cmd, name="rag index", hint="drbrain index build")
+)
+
+
+@rag_app.command("prepare", hidden=True)
 def rag_prepare_cmd(
     ctx: typer.Context,
     force: bool = typer.Option(False, "--force", "-f", help="Force a full rebuild"),
     paper: list[str] = typer.Option(
         None, "--paper", help="Restrict to paper local_id (repeatable)"
     ),
+    unified: bool = typer.Option(
+        False,
+        "--unified",
+        help=(
+            "Compatibility alias: the unified tree index is what this command "
+            "prepares by default (T45)."
+        ),
+    ),
+    legacy_sql: bool = typer.Option(
+        False,
+        "--legacy-sql",
+        help=(
+            "Deprecated: build the derived drbrain_rag.db SQL working copy "
+            "instead of the unified index"
+        ),
+    ),
+    tree_storage: str = typer.Option(
+        "",
+        "--tree-storage",
+        help="Storage root for unified tree generations (default: data/tree)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
 ):
-    """Prepare and publish the configured RAG backend in one operation.
+    """Prepare and publish the unified tree index (FTS + shared vectors +
+    hierarchy) for the configured backend in one incremental operation.
 
-    SQL mode rebuilds the derived text/vector database and publishes an
-    immutable generation.  LlamaIndex mode delegates to the normal index
-    builder, preserving its incremental cache semantics.
+    This is the default and the only path that advances the production tree
+    generation: canonical FTS, the shared vector collection and the region
+    hierarchy are filled incrementally from the canonical store, and a tree
+    generation is published only when something changed (no KG build/closure
+    dependency, no re-parsing of verified content, no copy of the legacy
+    retrieval database).
+
+    Compatibility alias: the main line is ``drbrain index build``.
+    ``--legacy-sql`` keeps the deprecated derived ``drbrain_rag.db`` working
+    copy available while its readers are migrated; it is opt-in only.
     """
     cfg = ctx.obj["config"]
-    from drbrain.rag.config import get_llamaindex_config
-
-    li = get_llamaindex_config(cfg)
-    if li.rag_engine == "sql":
+    if legacy_sql:
+        typer.echo(
+            "warning: --legacy-sql is deprecated; 'rag prepare' prepares the unified "
+            "index by default. The derived drbrain_rag.db copy is only refreshed for "
+            "the remaining legacy readers.",
+            err=True,
+        )
         from drbrain.rag.preparation import prepare_sql_rag
 
         try:
             stats = prepare_sql_rag(cfg, paper_ids=paper or None, publish=True)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--paper") from exc
-    else:
-        from drbrain.rag.indexer import _LLAMA_INDEX_AVAILABLE, build_index
-
-        if not _LLAMA_INDEX_AVAILABLE:
+        if json_output:
+            typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
+        else:
             typer.echo(
-                "llama-index is not installed. Run: uv add llama-index-core llama-index-retrievers-bm25",
-                err=True,
+                "RAG prepared (legacy SQL copy): " + ", ".join(f"{k}={v}" for k, v in stats.items())
             )
-            raise typer.Exit(1)
+        return
 
-        with open_db(cfg) as db:
-            stats = build_index(
-                cfg,
-                db,
-                paper_ids=paper or None,
-                force=force,
-                max_node_tokens=li.max_node_tokens,
-            )
+    if paper:
+        raise typer.BadParameter(
+            "the unified index is corpus-wide and incremental; omit --paper "
+            "(use 'drbrain index build' for the corpus-wide index; per-paper "
+            "LlamaIndex rebuilds remain 'drbrain rag index --paper')",
+            param_hint="--paper",
+        )
+    from drbrain.rag.config import get_llamaindex_config
+    from drbrain.tree.embedding_identity import profile_from_config
+    from drbrain.tree.prepare import prepare_unified_index
+
+    default_tree_storage = get_llamaindex_config(cfg).tree_storage or "data/tree"
+    root = runtime_data_path(ctx, tree_storage or default_tree_storage, label="tree storage")
+    embed_cfg = getattr(cfg, "embed", None)
+    outcome = None
+    with open_db(cfg) as db:
+        outcome = prepare_unified_index(
+            db,
+            storage_dir=root,
+            profile=profile_from_config(embed_cfg),
+            embed_cfg=embed_cfg,
+            config=cfg,
+            summary_max_tokens=get_llamaindex_config(cfg).summary_max_tokens,
+            summary_input_budget=get_llamaindex_config(cfg).summary_input_budget,
+            force=force,
+        )
+    stats = outcome.to_json()
     if json_output:
         typer.echo(json.dumps(stats, indent=2, ensure_ascii=False, default=str))
     else:
-        typer.echo("RAG prepared: " + ", ".join(f"{key}={value}" for key, value in stats.items()))
+        typer.echo(
+            "Unified prepare: "
+            + ", ".join(f"{key}={value}" for key, value in stats.items() if key != "failed_stages")
+        )
+    if not outcome.ok:
+        raise typer.Exit(code=1)
 
 
-@rag_app.command("health")
+rag_app.command("prepare", hidden=True)(
+    migration_alias(rag_prepare_cmd, name="rag prepare", hint="drbrain index build")
+)
+
+
+@rag_app.command("baselines")
+def rag_baselines_cmd(
+    ctx: typer.Context,
+    name: str = typer.Option(
+        "all",
+        "--name",
+        help="Baseline: bm25_vector|pageindex|unified_tree_flat|raptor_collapsed|concat|all",
+    ),
+    split: str = typer.Option("dev", "--split", help="Golden split: dev|holdout"),
+    k: int = typer.Option(10, "--k", help="Top-k cutoff"),
+    out: str = typer.Option("", "--out", help="Optional JSON report path"),
+    json_output: bool = typer.Option(False, "--json", help="Output JSON to stdout"),
+):
+    """Run evaluation-only baselines over a golden split (T56).
+
+    Baselines exist solely in this evaluation entry: BM25+vector fusion, the
+    real PageIndex tree search, the unified tree's flat all-layer retrieval
+    (``unified_tree_flat``), and simple concatenation.  Each reports the
+    algorithm it ran, its cost counters, and HitRate/MRR at paper and node
+    level; none of them is registered as a production route.
+    """
+    cfg = ctx.obj["config"]
+    if isinstance(name, typer.models.OptionInfo):
+        name = str(name.default or "all")
+    if isinstance(split, typer.models.OptionInfo):
+        split = str(split.default or "dev")
+    if isinstance(k, typer.models.OptionInfo):
+        k = int(k.default or 10)
+    if isinstance(json_output, typer.models.OptionInfo):
+        json_output = bool(json_output.default)
+    if isinstance(out, typer.models.OptionInfo):
+        out = str(out.default or "")
+
+    from drbrain.rag.baselines import BASELINES, evaluate_baseline
+    from drbrain.rag.eval_data import load_golden
+
+    names = (
+        sorted(BASELINES)
+        if str(name).strip().lower() == "all"
+        else [part.strip().lower() for part in str(name).split(",") if part.strip()]
+    )
+    for baseline in names:
+        if baseline not in BASELINES:
+            raise typer.BadParameter(f"unknown baseline {baseline!r}", param_hint="--name")
+
+    entries = load_golden(cfg, split=split)
+    report: dict[str, Any] = {"split": split, "k": k, "baselines": {}}
+    with open_db(cfg) as db:
+        for baseline in names:
+            payload = evaluate_baseline(baseline, cfg, db, entries, k=k).to_json()
+            report["baselines"][baseline] = payload
+            if not json_output:
+                typer.echo(
+                    f"{baseline}: hit_paper={payload['hit_rate_paper']} "
+                    f"hit_node={payload['hit_rate_node']} mrr_paper={payload['mrr_paper']} "
+                    f"mrr_node={payload['mrr_node']} ({payload['queries']} queries, "
+                    f"{payload['cost'].get('elapsed_ms', 0)} ms)"
+                )
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    if out:
+        target = Path(runtime_data_path(ctx, out, label="baseline report"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        typer.echo(f"Baseline report written to {target}")
+
+
+@rag_app.command("health", hidden=True)
 def rag_health_cmd(
     ctx: typer.Context,
     json_output: bool = typer.Option(False, "--json", help="Output the readiness report as JSON"),
 ):
-    """Check RAG index readiness without querying, embedding, or writing."""
+    """Check RAG index readiness without querying, embedding, or writing.
+
+    Compatibility alias: the main line is ``drbrain index status``, which
+    reports per-leg readiness, versions and backlog for the same storage.
+    """
     from drbrain.rag.indexer import get_index_health
 
     report = get_index_health(ctx.obj["config"])
@@ -167,6 +402,11 @@ def rag_health_cmd(
             typer.echo("Reasons: " + ", ".join(report["reasons"]))
     if not report["ready"]:
         raise typer.Exit(1)
+
+
+rag_app.command("health", hidden=True)(
+    migration_alias(rag_health_cmd, name="rag health", hint="drbrain index status")
+)
 
 
 @rag_app.command("eval")

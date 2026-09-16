@@ -180,8 +180,19 @@ def find_path(graph, src: str, dst: str) -> dict | None:
         return None
 
 
-def get_document_structure(papers_dir: Path | None, paper_id: str) -> list[dict]:
-    """Return the tree skeleton for a paper (titles + node_ids, no content)."""
+def get_document_structure(papers_dir: Path | None, paper_id: str, db: Any = None) -> list[dict]:
+    """Return the tree skeleton for a paper (titles + node_ids, no content).
+
+    The canonical store is the first provider (T16); the legacy tree.json
+    remains the compatibility path for un-migrated papers.
+    """
+    conn = getattr(db, "conn", None)
+    if conn is not None:
+        from drbrain.extractor.context import canonical_node_structure
+
+        canonical = canonical_node_structure(conn, paper_id)
+        if canonical is not None:
+            return canonical
     if papers_dir is None:
         return []
 
@@ -218,11 +229,17 @@ def get_section_content(
 ) -> str:
     """Return the raw text content for a tree node.
 
-    Pipeline-ingested papers keep section bodies in the RAG database
-    (``node_texts``); their local ``tree.json`` nodes are structure-only
-    stubs, so the SQL store is read first and the local PageIndex artifact
-    remains as the fallback for papers outside it.
+    The canonical store is the first provider (T16); pipeline-ingested papers
+    keep section bodies in the RAG database (``node_texts``), and the local
+    PageIndex artifact remains the fallback for papers outside both stores.
     """
+    conn = getattr(db, "conn", None)
+    if conn is not None:
+        from drbrain.storage.node_projection import read_node_text
+
+        text = read_node_text(conn, node_id)
+        if text:
+            return text
     if db is not None:
         text = _sql_section_text(db, paper_id, node_id)
         if text:
@@ -477,7 +494,7 @@ def execute_tool(
     elif name in ("get_neighbors", "find_path"):
         return handler(graph, **args)
     elif name == "get_document_structure":
-        return handler(papers_dir, **args)
+        return handler(papers_dir, db=db, **args)
     elif name == "get_section_content":
         return handler(papers_dir, db=db, **args)
     elif name in ("search_tree", "get_raptor_summaries"):

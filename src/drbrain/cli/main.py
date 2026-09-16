@@ -8,6 +8,7 @@ from pathlib import Path
 import typer
 from loguru import logger
 
+from drbrain.cli._compat import migration_alias
 from drbrain.cli._helpers.security import redact_cli_args
 from drbrain.cli.analysis_commands import (
     ask_cmd,
@@ -49,6 +50,7 @@ from drbrain.cli.export_commands import (
     style_cmd,
 )
 from drbrain.cli.graph_commands import graph_app
+from drbrain.cli.index_commands import index_app
 from drbrain.cli.ingest_commands import (
     batch_fetch_cmd,
     check_citations_cmd,
@@ -63,13 +65,12 @@ from drbrain.cli.ingest_commands import (
     proceedings_cmd,
     report_cmd,
 )
+from drbrain.cli.library_commands import library_app
 from drbrain.cli.query_commands import (
     fsearch_cmd,
     hybrid_cmd,
-    index_cmd,
     list_cmd,
     query_cmd,
-    search_cmd,
     seed_cmd,
     show_cmd,
     stats_cmd,
@@ -80,8 +81,10 @@ from drbrain.cli.repair_commands import (
     import_cmd,
     repair_cmd,
 )
+from drbrain.cli.search_commands import search_cmd
 from drbrain.cli.session_commands import session_app
 from drbrain.cli.setup import setup_cmd
+from drbrain.cli.storage_commands import storage_app
 from drbrain.cli.webui_commands import webui_cmd
 from drbrain.cli.ws_commands import ws_app
 from drbrain.log import setup_logging
@@ -316,29 +319,28 @@ def _main_callback(
     logger.info("CLI invoked [{}]: {}", get_session_id(), cmd)
 
 
+# ── Main line ────────────────────────────────────────────────────────────────
+# The help page leads with the flow the design defines:
+# ingest → index build → search / ask, plus the library and graph namespaces.
 app.command("setup")(setup_cmd)
 app.command("ingest")(ingest_cmd)
 app.command("ingest-link")(ingest_link_cmd)
-app.command("patent-search")(patent_search_cmd)
+app.command("search")(search_cmd)
+app.command("ask")(ask_cmd)
 app.command("pipeline")(pipeline_cmd)
+app.command("fetch")(fetch_cmd)
+app.command("batch-fetch")(batch_fetch_cmd)
+app.command("patent-search")(patent_search_cmd)
 app.command("proceedings")(proceedings_cmd)
 app.command("explore")(explore_cmd)
-app.command("batch-fetch")(batch_fetch_cmd)
-app.command("fetch")(fetch_cmd)
 app.command("citations")(citations_cmd)
 app.command("check-citations")(check_citations_cmd)
 app.command("report")(report_cmd)
-app.command("closure")(closure_cmd)
 app.command("seed")(seed_cmd)
 app.command("list")(list_cmd)
 app.command("stats")(stats_cmd)
 app.command("webui")(webui_cmd)
 app.command("show")(show_cmd)
-app.command("index")(index_cmd)
-app.command("query")(query_cmd)
-app.command("fsearch")(fsearch_cmd)
-app.command("search")(search_cmd)
-app.command("hybrid")(hybrid_cmd)
 app.command("export")(export_cmd)
 app.command("export-okf")(export_okf_cmd)
 app.command("queue")(queue_cmd)
@@ -346,7 +348,6 @@ app.command("queue resolve")(queue_resolve_cmd)
 app.command("queue resolve-all")(queue_resolve_all_cmd)
 app.command("delete")(delete_cmd)
 app.command("lineage")(lineage_cmd)
-app.command("ask")(ask_cmd)
 app.command("check")(check_cmd)
 app.command("audit")(audit_cmd)
 app.command("style")(style_cmd)
@@ -360,8 +361,6 @@ app.command("repair")(repair_cmd)
 app.command("enrich")(enrich_cmd)
 app.command("import")(import_cmd)
 app.command("translate")(translate_cmd)
-app.command("build")(build_cmd)
-app.command("embed")(embed_cmd)
 app.command("evolve")(evolve_cmd)
 app.command("descendants")(descendants_cmd)
 app.command("landscape")(landscape_cmd)
@@ -373,13 +372,46 @@ app.command("frontier")(frontier_cmd)
 app.command("survey")(survey_cmd)
 app.command("reason")(reason_cmd)
 
-# Sub-apps
-app.add_typer(session_app, name="session")
+# ── Compatibility aliases ────────────────────────────────────────────────────
+# Hidden from the help page; flags, defaults, exit codes and JSON contracts
+# are unchanged and one migration line is printed on stderr per invocation.
+app.command("query", hidden=True)(migration_alias(query_cmd, name="query", hint="drbrain search"))
+app.command("hybrid", hidden=True)(
+    migration_alias(hybrid_cmd, name="hybrid", hint="drbrain search")
+)
+app.command("fsearch", hidden=True)(
+    migration_alias(fsearch_cmd, name="fsearch", hint="drbrain search --source all")
+)
+app.command("build", hidden=True)(
+    migration_alias(build_cmd, name="build", hint="drbrain graph build")
+)
+app.command("embed", hidden=True)(
+    migration_alias(embed_cmd, name="embed", hint="drbrain graph embed")
+)
+app.command("closure", hidden=True)(
+    migration_alias(closure_cmd, name="closure", hint="drbrain graph closure")
+)
+
+# ── Namespaces ───────────────────────────────────────────────────────────────
+# `graph` owns the knowledge-graph pipeline: the same function objects are
+# registered in both places, so the contracts are identical.
+graph_app.command("build")(build_cmd)
+graph_app.command("embed")(embed_cmd)
+graph_app.command("closure")(closure_cmd)
+app.add_typer(
+    index_app,
+    name="index",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(library_app, name="library")
 app.add_typer(graph_app, name="graph")
+app.add_typer(session_app, name="session")
 app.add_typer(ws_app, name="ws")
 app.add_typer(cg_app, name="cg")
 app.add_typer(rag_app, name="rag")
 app.add_typer(autoresearch_app, name="autoresearch")
+app.add_typer(storage_app, name="storage")
 
 if __name__ == "__main__":
     app()

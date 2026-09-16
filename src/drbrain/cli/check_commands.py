@@ -21,7 +21,15 @@ from drbrain.cli._common import (
 from drbrain.config import load_config
 from drbrain.graph.engine import GraphEngine
 from drbrain.runtime import RuntimeContext
-from drbrain.security import configured_secret_values, safe_error
+from drbrain.security import configured_secret_values, redact_sensitive, safe_error
+from drbrain.services.model_roles import (
+    MODEL_ROLES,
+    ROLE_CHAT,
+    ROLE_INDEX,
+    ModelRole,
+    ModelRoleError,
+    resolve_model_role,
+)
 from drbrain.storage.database import Database
 
 
@@ -50,6 +58,94 @@ def _runtime_path(
     return path.resolve()
 
 
+def _probe_model_role(
+    role_name: str,
+    role: ModelRole,
+    *,
+    secrets: tuple[str, ...] = (),
+    timeout: float = 10.0,
+) -> tuple[str, str, str]:
+    """One minimal real call for an index/chat role.
+
+    Returns ``(status markup, detail, warning)``.  The credential is never
+    rendered: the error path is scrubbed with the active key as an exact secret.
+    """
+    try:
+        if role_name == ROLE_INDEX:
+            from drbrain.services.index_model import IndexModel
+
+            payload = IndexModel(role=role).probe(timeout=timeout)
+        else:
+            from drbrain.services.chat_model import ChatModel
+
+            payload = ChatModel(role=role).probe(timeout=timeout)
+    except Exception as e:
+        reason = safe_error(e, limit=140, secrets=(*secrets, role.api_key))
+        detail = f"probe failed: {reason}"
+        return "[yellow]unreachable[/yellow]", detail, f"model role {role_name} {detail}"
+    detail = (
+        f"probe ok in {payload.get('latency_ms', 0)}ms "
+        f"(finish={payload.get('finish_reason') or 'n/a'}, out={payload.get('tokens_out', 0)} tokens)"
+    )
+    return "[green]reachable[/green]", detail, ""
+
+
+def _model_role_rows(
+    cfg,
+    *,
+    secrets: tuple[str, ...] = (),
+    probe: bool = True,
+    probe_timeout: float = 10.0,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Resolve the four unified model roles for ``drbrain check`` (T17/T47).
+
+    Returns ``(rows, warnings)``; a row is ``(label, status markup, detail)``.
+    Only :meth:`ModelRole.redacted` fields are rendered — the credential value
+    never reaches the table, the logs or the warnings.
+
+    A probe runs for index/chat only when the endpoint could actually answer and
+    the role is explicitly routed (``source`` is not the legacy generic
+    ``llm.models`` fallback, which the LLM-connectivity section already probes):
+    an unconfigured config therefore never turns ``check`` into a network test.
+    """
+    rows: list[tuple[str, str, str]] = []
+    warnings: list[str] = []
+    for role_name in MODEL_ROLES:
+        label = f"  {role_name}"
+        try:
+            role = resolve_model_role(cfg, role_name)
+        except ModelRoleError as e:
+            detail = safe_error(e, limit=180, secrets=secrets)
+            rows.append((label, "[yellow]not configured[/yellow]", detail))
+            warnings.append(f"model role {role_name} unavailable — {detail}")
+            continue
+        resolved = role.redacted()
+        detail = (
+            f"{resolved['endpoint_name'] or '(inline)'} · "
+            f"{resolved['provider']}/{resolved['model']} · "
+            f"{resolved['host'] or '(local)'} · source={resolved['source']} · "
+            f"max_concurrent={resolved['max_concurrent']} · key={resolved['api_key']}"
+        )
+        status = "[green]resolved[/green]"
+        if probe and role_name in (ROLE_INDEX, ROLE_CHAT) and role.source != "models":
+            missing = role.missing_credential_reason
+            if missing:
+                detail = f"{detail} · {missing}"
+                warnings.append(f"model role {role_name}: {missing}")
+            else:
+                status, probe_detail, note = _probe_model_role(
+                    role_name, role, secrets=secrets, timeout=probe_timeout
+                )
+                # The probe detail is free text from an endpoint, so it gets the
+                # extra scrubber pass; the role fields above already come from
+                # ``ModelRole.redacted()`` (no credential to mask).
+                detail = f"{detail} · {str(redact_sensitive(probe_detail))}"
+                if note:
+                    warnings.append(note)
+        rows.append((label, status, detail))
+    return rows, warnings
+
+
 def check_cmd(ctx: typer.Context):
     """Check dependencies, configuration, and environment variables."""
     console = Console()
@@ -73,6 +169,14 @@ def check_cmd(ctx: typer.Context):
         ("pyyaml", "yaml"),
         ("pydantic", "pydantic"),
     ]
+    retrieval_cfg = getattr(cfg, "retrieval", {})
+    vector_backend = (
+        retrieval_cfg.get("vector_backend", "sqlite")
+        if isinstance(retrieval_cfg, dict)
+        else getattr(retrieval_cfg, "vector_backend", "sqlite")
+    )
+    if str(vector_backend).lower() == "zvec":
+        required_packages.append(("zvec", "zvec"))
     for pkg_name, import_name in required_packages:
         try:
             mod = importlib.import_module(import_name)
@@ -99,6 +203,12 @@ def check_cmd(ctx: typer.Context):
         anydoc_found = True
     except ImportError:
         pass
+    pdf_inspector_found = False
+    try:
+        importlib.import_module("pdf_inspector")
+        pdf_inspector_found = True
+    except ImportError:
+        pass
     ocrmypdf_found = False
     try:
         importlib.import_module("ocrmypdf")
@@ -108,6 +218,11 @@ def check_cmd(ctx: typer.Context):
     tesseract_found = shutil.which("tesseract")
 
     cli_tools = {
+        "pdf-inspector": (
+            "CPU-first text PDF parser",
+            pdf_inspector_found,
+            "uv sync --extra pdf",
+        ),
         "mineru-open-api": ("MinerU PDF parser CLI", mineru_found, ""),
         "anydoc": ("PDF fallback parser", anydoc_found, "pip install firecrawl-anydoc"),
         "ocrmypdf": ("OCR backend for scanned PDFs", ocrmypdf_found, "uv sync --extra anydoc"),
@@ -428,7 +543,10 @@ def check_cmd(ctx: typer.Context):
 
             try:
                 req = _urllib.Request(
-                    "https://api.mineru.com/api/v1/status",
+                    cfg.get("mineru", {})
+                    .get("api_base_url", "https://api.mineru.com/api/v1")
+                    .rstrip("/")
+                    + "/status",
                     headers={"Authorization": f"Bearer {mineru_token}"},
                 )
                 _urllib.urlopen(req, timeout=5)
@@ -532,6 +650,15 @@ def check_cmd(ctx: typer.Context):
         table_api.add_row("  LLM", "[yellow]Not configured[/yellow]", "(run `drbrain setup`)")
 
     console.print(table_api)
+
+    # -- Model roles (T17) --
+    console.print("\n[bold]Model Roles[/bold]")
+    table_roles = Table(show_header=False, box=None, padding=(0, 2))
+    role_rows, role_warnings = _model_role_rows(cfg, secrets=config_secrets)
+    for label, status, detail in role_rows:
+        table_roles.add_row(label, status, detail)
+    console.print(table_roles)
+    warnings.extend(role_warnings)
 
     # -- Summary --
     console.print("\n[bold]Summary[/bold]")

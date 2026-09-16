@@ -7,7 +7,7 @@ new relationships through rule-based graph closure.
 ### Quick Reference
 
 - CLI: `drbrain --help`
-- Key commands: `setup`, `ingest`, `build`, `embed`, `closure`, `query`, `ask`, `reason`, `graph`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `export`, `export-okf`, `ws`, `audit`, `webui`
+- Key commands (main line): `setup`, `ingest`, `index build/status/verify`, `search`, `ask`, `library search`, `graph build/embed/closure`, `reason`, `pipeline`, `analyze`, `evolve`, `landscape`, `frontier`, `citations`, `export`, `export-okf`, `ws`, `audit`, `webui`. Historical names (`build`, `embed`, `closure`, `query`, `hybrid`, `fsearch`, `rag prepare/index/health`) remain callable as hidden aliases with one stderr migration line
 - Skills: `skills/*/SKILL.md` (27 total) — paper-ingest, kg-build, kg-reason, paper-query, knowledge-cartography, graph, research-analysis, citation-tracking, workspace-analysis, library-maintenance, audit, export, import, index, show, translate, citation-styles, backup, document, patent-search, pipeline, fsearch, proceedings, explore, enrich, metrics, ingest-link
 - Data: `data/spool/inbox/`, `data/papers/`, `workspace/`
 - Tests: `uv run pytest -m "not integration"` (fast), `uv run pytest` (all)
@@ -37,7 +37,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/app/` | Local WebUI (`drbrain webui`) — FastAPI + Jinja2/htmx (`web/` routes/templates/static) over the service facade (`service.py`), single-user token auth (`auth.py`); pages: 概览/文献库/会话/研究运行/插件/设置; project→session→run scope, SSE run stream, report download. Contract: `docs/webui-design.md`, visual mockup: `design/webui-v1-mockup.html` |
 | `src/drbrain/query/` | BM25 search, RAPTOR two-stage tree traversal retrieval |
 | `src/drbrain/report/` | Knowledge frontier analyzer |
-| `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库 |
+| `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库；`merge_shards` 合并分片时同时携带规范正文与已发布叶节点（统一表），ANN/FTS/层次由主库一次 `index build` 重建 |
 | `scripts/serve_embedding.py` | 本地 Qwen3-Embedding-0.6B 常驻服务（openai-compat /v1/embeddings，max_seq_length=512，batch_size=8 防 OOM，GPU 绑卡） |
 | `tests/` | pytest test suite |
 | `skills/` | Project skills (AgentSkills.io standard, canonical source) |
@@ -70,19 +70,23 @@ uv run pytest --cov=drbrain --cov-report=term
 **KG Build** (all incremental by default — touch only changed papers; use `--all`/`--full`/`--retrain` to force full)
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `build` | `--all`, `--skip-refine`, `--json`, `-s`/`--session`, `[PAPER_ID...]` | 5-stage LLM extraction; default = dirty/touched papers; `--session new|ID` injects summary into persistent session |
-| `embed` | `--dim 128`, `--epochs 100`, `--retrain`, `--tree` | TransE graph embeddings (incremental: warm-start + train only on new edges); `--tree` = PageIndex+RAPTOR text embeddings |
-| `closure` | `--incremental`/`--full`, `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference; default incremental = 2-hop neighborhood of changed concepts (8 symbolic + 4 embedding rules) |
+| `graph build` | `--all`, `--skip-refine`, `--json`, `-s`/`--session`, `[PAPER_ID...]` | 5-stage LLM extraction; default = dirty/touched papers; `--session new|ID` injects summary into persistent session (top-level `build` = hidden alias) |
+| `graph embed` | `--dim 128`, `--epochs 100`, `--retrain` | TransE graph embeddings (incremental: warm-start + train only on new edges); text vectors are prepared by `index build` (top-level `embed`/`--graph` = hidden alias) |
+| `graph closure` | `--incremental`/`--full`, `--mode symbolic/hybrid`, `--mine-rules`, `--min-confidence 0.6`, `--dry-run`, `--ground`, `--rule X`, `-w WS` | Rule-based inference; default incremental = 2-hop neighborhood of changed concepts (8 symbolic + 4 embedding rules) (top-level `closure` = hidden alias) |
 
-**Query & Explore**
+**Index & Retrieval**
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `query` | `--type-filter`, `--arg-type`, `--year-start/end`, `--min-confidence`, `--limit 20` | BM25 + filters over concepts/arguments |
-| | `-n N -R rel1,rel2 -D forward/backward/both` | Graph expansion from results |
-| | `--hybrid` | PageRank-boosted ranking |
-| | `--paper ID` | PageIndex tree retrieval (bypasses BM25) |
-| | `--json/--jsonl`, `-w WS` | |
-| `ask` | — | Natural-language KGQA |
+| `index build` | `--force/-f`, `--tree-storage PATH`, `--json` | Lexical BM25 + canonical FTS + shared vectors + unified tree hierarchy in one incremental run (main corpus only; a persisted LlamaIndex generation stays with `rag index`); publishes one generation; exit 1 on a failed stage |
+| `index status` | `--json` | Read-only ingested / indexed / retrievable report per leg (ready + reasons + versions + backlog) |
+| `index verify` | `--json` | Read-only check of what `search`/`ask` read (FTS, vector backlog, leaf reachability, generation manifest/freshness/profile) |
+| `search` | `--limit/-n`, `--paper ID...`, `--source local|arxiv|all`, `--json` | Evidence retrieval over the ask chain (bm25/vector/tree), no answer synthesis; rows carry sources, text locators, route and generation |
+| `ask` | — | Natural-language KGQA (retrieval + synthesis) |
+| `library search` | `--limit N`, `--type`, `--json` | Bibliographic BM25 search over papers, concepts and arguments (the historical `search`) |
+
+**Reason & Explore**
+| Command | Key Flags | What |
+|---------|-----------|------|
 | `reason` | `-b`/`--bidirectional`, `-r N`/`--max-rounds 3`, `-s`/`--session` | LLM agent tool-calling over KG; `-b` = iterative LLM↔KG validation loop; `-s new|ID` = persistent session context |
 | `graph neighbors` | | Traverse from node with path info |
 | `graph path` | | Shortest path between two nodes |
@@ -91,8 +95,7 @@ uv run pytest --cov=drbrain --cov-report=term
 | `graph query` | | TransE complex query (∧∨¬ operators) |
 | `graph traverse-from` | | Hybrid tree+graph: section → concepts → graph |
 | `graph export` | `--format graphml/jsonld/cypher`, `--output`, `--workspace` | Export KG to GraphML, JSON-LD, or Cypher |
-| `search` | `--limit N`, `--type`, `--json` | Quick BM25 keyword search over papers, concepts, and arguments |
-| `fsearch` | `--arxiv`, `--arxiv-only`, `--limit 20`, `--json` | Federated search: local DB + arXiv with ingested annotation |
+| `search --source all` | `--arxiv`, `--limit 20`, `--json` | External-source rows in the evidence chain (replaces `fsearch`, still callable as a hidden alias) |
 | `patent-search` | `--source odp/ppubs`, `--application ID`, `--limit 10` | USPTO patent search (PPUBS free or ODP with API key) |
 
 **Analysis & Genealogy**
@@ -140,7 +143,7 @@ uv run pytest --cov=drbrain --cov-report=term
 | `check-citations` | | Verify in-text citations against local library |
 | `lineage` | | Author/research lineage via OpenAlex deduplicated IDs |
 | `queue` | resolve, resolve-all | Accept/reject confidence queue items |
-| `index` | | Rebuild BM25 search index |
+| `index` (bare) | `--rebuild`, `--json` | Rebuild the BM25 search index (lexical stage; `index build` runs all legs) |
 | `backup` | `--list`, `--target NAME`, `--dry-run` | Local tar.gz + rsync remote backup |
 | `restore` | `--target PATH`, `--force`, `--json` | Restore from tar.gz backup to target location |
 | `enrich` | `--all`, `--dry-run`, `--json` | CrossRef metadata backfill + scrub detection |
@@ -151,7 +154,7 @@ uv run pytest --cov=drbrain --cov-report=term
 **Pipeline**
 | Command | Key Flags | What |
 |---------|-----------|------|
-| `pipeline` | `--preset full/quick/embed`, `--steps S1,S2`, `--list`, `--dry-run` | Chain steps (ingest→build→embed→closure) in sequence |
+| `pipeline` | `--preset full/quick/embed/full-rag`, `--steps S1,S2`, `--list`, `--dry-run` | Chain steps (ingest→build→embed→closure→rag) in sequence; children are `graph build/embed/closure` and `index build` |
 
 **Session**
 | Command | Key Flags | What |
@@ -226,13 +229,13 @@ audit → repair → check-citations → queue resolve-all
 
 ## Architecture
 
-DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses configured BM25/vector/RAPTOR/graph sources. SQL vectors rerank the BM25 pool; LlamaIndex can use independent vector recall. Logical evidence units are tree sections/summaries; bounded physical fragments carry exact parent-text offsets. See `docs/rag-layer-completion.md` for contracts and migration.
+DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid retrieval**. Ingest PDFs → extract concepts/arguments via LLM → deduplicate → infer new edges via rule-based closure. Retrieval fuses the configured legs — BM25, vector and tree (graph/claims are live extras). Without a legacy SQL corpus the unified store serves all three legs (canonical FTS, shared leaf ANN, tree navigator); a published SQL snapshot keeps serving BM25/vector from its projection. Logical evidence units are tree sections/summaries; bounded physical fragments carry exact parent-text offsets. See `docs/rag-layer-completion.md` for contracts and migration.
 
 ### Pipeline
 
-**Ingest** (`drbrain ingest`): PDF→markdown (MinerU CLI, fallback pymupdf4llm). 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) for metadata + venue (journal/publisher/citation_count). LLM tree-structures markdown → `tree.json`. Status: `uploaded`.
+**Ingest** (`drbrain ingest`): PDF→markdown (MinerU CLI, fallback pymupdf4llm). 5-source cross-validation (arXiv, CrossRef, S2, OpenAlex, DeepXiv) for metadata + venue (journal/publisher/citation_count). The body is registered **canonically** (`document_revisions` + `content_blocks` + one leaf per block) and that write is **required** — a canonical failure fails the paper instead of leaving a record without its body. `data/papers/<id>/` keeps only the original material + attachments: no `raw.md`/`tree.json` is written for new papers (the hierarchy is built by `drbrain index build`); legacy files stay readable for old papers. Status: `uploaded`.
 
-**Build** (`drbrain build [id...]`): 5-stage LLM extraction — ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → refinement (`--skip-refine` to skip). Status: `extracted`.
+**Build** (`drbrain graph build [id...]`, alias `drbrain build`): 5-stage LLM extraction — ontology extension → entity extraction (10-way concurrent) → relation extraction → coreference → refinement (`--skip-refine` to skip). Status: `extracted`.
 
 ### Key Modules
 
@@ -245,6 +248,7 @@ DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid r
 | Embedding    | `src/drbrain/services/embedding.py`                                                                                                                                  | Tree node embeddings (sentence-transformers), openai-compat API, FAISS cosine search, GPU batch auto-tuning, post_filter, multi-source download (ModelScope+HuggingFace), provider=none grace  |
 | Quality      | `src/drbrain/services/audit.py`, `src/drbrain/services/repair.py`, `src/drbrain/services/enrich.py`                                                                                                                | 15 audit rules, metadata enrichment via OpenAlex, CrossRef backfill + scrub detection                                                  |
 | Import       | `src/drbrain/services/zotero_import.py`, `src/drbrain/services/translate.py`                                                                                                     | Zotero/BibTeX/Endnote import, LLM translation with resume                                         |
+| Unified tree | `src/drbrain/tree/` (contracts.py, posteriors.py, affinity.py, assign.py, clustering.py, builder.py, embed_parallel.py, prepare.py, summary.py, vector_store.py, search.py, navigator.py, leg.py, reading.py, publish.py, cost.py, proposals.py, jobs.py, vector_migration.py) | Unified-tree RAG core — frozen two-stage assignment with structural reweighting (λ), one shared Zvec store (each leaf/region vector computed once), bounded-round builder with cost gate + per-run frontier cap (`hierarchy_frontier_limit`) and concurrent summaries (`hierarchy_summary_workers`; scheduling knobs, not part of the deployment identity), parallel vector spooling across devices (`embed_parallel.py`), `index build` stages (FTS/vectors/hierarchy; deployment-identity signature + stale-contract retirement), request-scoped model-driven navigator (ReadReceipt-only evidence), read-only generation reader (`leg.py`/`reading.py`) behind the production tree leg, immutable generation publication. Protocol: `docs/unified-tree-algorithms.md` |
 | RAG          | `src/drbrain/rag/` (engine.py, fusion.py, retrievers.py, indexer.py, agent.py, llm.py, rerank.py, eval.py, authority.py, status.py, mcp_tools.py)                                                                                                      | LlamaIndex RAG layer — 5-leg fusion retrieval (bm25/vector/tree/graph/raptor), FunctionAgent (7+1 graph tools + MCP tools), Qwen3-Reranker, REFINE synthesis, eval (MRR/RAGAS); Epistemic Layer: authority ranking + conflict resolution, retrieval status/failure semantics, ACL post-filter                                                            |
 | Plugins      | `src/drbrain/plugins/` (protocol.py, manifest.py, conformance.py, registry.py, backends.py) | Model-as-Tool interface abstraction — Plugin/PluginResult/ResultStatus descriptors, `abi_version` fail-closed negotiation, `PLUGIN_MANIFEST` declaration style + conformance suite (`python -m drbrain.plugins.conformance`), PluginRegistry (register/discover/call/jobs/to_llamaindex_tools); drbrain ships only the interface, concrete plugins load externally at runtime. Standard: `docs/plugins.md` |
 | Loop         | `src/drbrain/loop/` (workflow.py, director.py, discussion.py, roles.py, events.py) | Research loop 编排闭环 — LlamaIndex Workflow 13 节点（检索→抽取→gap→假设→讨论→实算→核验→沉淀→报告）+ 条件循环；agent-backed 节点 4 角色 analyst/critic/compute/verifier（`loop/roles.py`）+ 讨论层（`loop/discussion.py` 消息板 MessageBoard + 队列 ResearchQueue，对齐 AutoScientists Discussion-Before-Queuing 非作者门 + queue claim）+ Supports/Refutes/Orthogonal 代码化 + 实算门（`job_id` 作业文件校验）；settle 闭环沉淀写回 claims 表 |
@@ -258,7 +262,7 @@ DrBrain is a **symbol-driven academic knowledge graph with corpus-scale hybrid r
 data/
 ├── spool/inbox/        PDFs awaiting ingest
 ├── spool/pending/      Failed ingests
-├── papers/<id>/        source.pdf, raw.md, tree.json, images/
+├── papers/<id>/        source.pdf, images/ (body lives in the canonical store; legacy raw.md/tree.json only for old papers)
 ├── drbrain.db          SQLite (WAL mode, schema_versions)
 ├── metrics.db          LLM token tracking + user behavior analytics
 ├── cache/              API cache (rebuildable)
@@ -308,7 +312,10 @@ workspace/<name>/       workspace.yaml + refs/papers.json
 | [Sessions](docs/sessions.md) | Persistent SessionAgent deep dive |
 | [Embedding](docs/embedding.md) | local / openai-compat / none provider setup |
 | [Troubleshooting](docs/troubleshooting.md) | Common problems and recovery |
-| [Glossary](docs/glossary.md) | Terminology reference |
+| [Glossary](docs/glossary.md) | Terminology reference (incl. unified-tree terms: generation, leaf/region, λ weighting, ReadReceipt, tree leg) |
+| [Unified tree RAG design](docs/unified-tree-rag-design.md) | Storage/retrieval design for the unified tree (canonical text, one vector store, regions) |
+| [Unified tree atomic plan](docs/unified-tree-atomic-plan.md) | 64-task plan + the 2026-09-15 Round 2 gate-status note |
+| [Unified tree algorithms](docs/unified-tree-algorithms.md) | Frozen two-stage protocol (normative — do not edit) |
 | [Skills](docs/skills.md) | 27 agent skills → CLI command mapping |
 | [Contributing](docs/contributing.md) | Codebase tour, PR process, testing guide |
 | [CHANGELOG](CHANGELOG.md) | Version history |

@@ -133,6 +133,11 @@ embed:
   api_key: "" # API key (set via drbrain setup, or env var DRBRAIN_EMBED_API_KEY)
   batch_size: 64
 
+retrieval:
+  # Authoritative text/metadata stay in SQLite; Zvec is the derived ANN sidecar.
+  vector_backend: "zvec" # "zvec" | "sqlite"
+  vector_top_k: 100 # oversampled ANN candidates before ACL/category filtering
+
 # ── Quality Control ──────────────────────────────────────────────
 queue:
   weak_threshold: 0.7 # confidence below this → review queue
@@ -147,7 +152,7 @@ llamaindex:
   rag_engine: "sql" # sql = derived corpus copy (drbrain_rag.db) via immutable snapshots; llamaindex = persisted docstore index (single-library / debugging)
   vector_store: "memory" # "memory" | "chroma" (chromadb optional)
   storage_dir: "data/llamaindex" # published index generations
-  retrievers: ["bm25", "vector"] # fusion legs
+  retrievers: ["bm25", "vector", "tree"] # fusion legs; tree=PageIndex
   fusion_mode: "reciprocal_rank" # | relative_score
   rerank: true
   rerank_model: "Qwen/Qwen3-Reranker-0.6B"

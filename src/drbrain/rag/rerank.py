@@ -66,15 +66,32 @@ except ImportError:  # pragma: no cover - envs without llama-index
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "RERANK_HEAD_MAX",
+    "RERANK_HEAD_MIN",
     "_LLAMA_INDEX_AVAILABLE",
     "CrossEncoderReranker",
     "DeduplicatePostprocessor",
     "RerankPostprocessor",
     "build_reranker",
+    "clamp_rerank_head",
     "kendall_tau",
     "mean_rank_displacement",
     "top_k_overlap",
 ]
+
+#: The reranked head is bounded to this window (T44): below 20 the reranker
+#: barely sees candidates, above 50 the latency cost outweighs the gain.
+RERANK_HEAD_MIN = 20
+RERANK_HEAD_MAX = 50
+
+
+def clamp_rerank_head(value: Any, default: int = RERANK_HEAD_MIN) -> int:
+    """Bound the rerank head into the 20–50 window (T44)."""
+    try:
+        head = int(value)
+    except (TypeError, ValueError):
+        head = int(default)
+    return min(RERANK_HEAD_MAX, max(RERANK_HEAD_MIN, head))
 
 
 # ── cross-encoder reranker (lazy, offline-safe, degrade-on-failure) ─────────
@@ -128,10 +145,15 @@ def _resolve_rerank_model_path(model_name: str, cfg: Config) -> str:
         pass
     try:
         # ModelScope's own cache resolution (handles the <org>--<repo> layout
-        # under ~/.cache/modelscope/models, where the Qwen models live).
+        # under <cache_dir>/models, where the Qwen/BGE models live).  The
+        # configured cache_dir must be forwarded: without it
+        # ``snapshot_download`` resolves against MODELSCOPE_CACHE (unset here)
+        # and misses models that are on disk (T47 probe).
         from modelscope import snapshot_download
 
-        local_path = snapshot_download(str(model_name), local_files_only=True)
+        local_path = snapshot_download(
+            str(model_name), cache_dir=str(cache_dir), local_files_only=True
+        )
         if local_path:
             return str(local_path)
     except Exception:  # pragma: no cover - resolution is best-effort
@@ -143,6 +165,7 @@ def _resolve_rerank_model_path(model_name: str, cfg: Config) -> str:
     for root in (
         "~/.cache/modelscope/models",
         "~/.cache/modelscope/hub/models",
+        str(Path(cache_dir).expanduser() / "models"),  # nested modelscope layout
         "~/.cache/huggingface/hub",
     ):
         base = Path(root).expanduser()

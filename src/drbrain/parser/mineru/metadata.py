@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from loguru import logger as _parse_log
@@ -36,6 +37,22 @@ def _resolve_metadata(
     4. Multiple source consensus → high confidence
     5. Returns {title, year, doi, s2_id, openalex_id}
     """
+    # Corpus-scale load tests and local/offline ingestion must not fan out to
+    # arXiv, CrossRef, OpenAlex, S2, or DeepXiv for every document.  Preserve
+    # metadata already extracted from the material and leave enrichment for a
+    # later explicit repair/enrich pass.
+    if os.getenv("DRBRAIN_OFFLINE", "0") == "1":
+        return {
+            "title": raw_title or "",
+            "year": raw_year,
+            "doi": raw_doi,
+            "s2_id": None,
+            "openalex_id": None,
+            "journal": "",
+            "publisher": "",
+            "citation_count": 0,
+        }
+
     sources: dict[str, dict] = {}
 
     from concurrent.futures import ThreadPoolExecutor

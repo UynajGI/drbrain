@@ -62,6 +62,13 @@ for line in open('$INGEST_MANIFEST'):
     except Exception: pass
 print(','.join(ids))
 " 2>/dev/null)
+# Stage 3 keeps the legacy compat command: the shard merge path
+# (merge_shards.py / load_build_merge.py) only carries
+# papers/paper_ids/concepts/edges/tree_vectors/tree_summaries today, so
+# `index build` (unified node_vectors/tree_nodes/content_fts + a per-shard
+# hierarchy) would publish artifacts the merge cannot consume.  Migrating the
+# shard pipeline to `index build` depends on the unified tables being merged
+# first (follow-up round).
 log "stage 3/3 embed ($(( $(echo "$PIDS" | tr ',' '\n' | wc -l) )) papers)..."
 uv run drbrain --config "$EMBED_CFG" embed --tree --db "$SHARD_DB" --papers "$PIDS" >> "$LOG" 2>&1
 EMBED_EXIT=$?

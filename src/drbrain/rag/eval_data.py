@@ -160,6 +160,71 @@ def load_golden(cfg: Config | dict[str, Any] | None = None, split: str | None = 
     return out
 
 
+def _normalized_material_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def validate_golden_materials(
+    entries: list[dict[str, Any]],
+    resolve_leaf_text,
+) -> list[str]:
+    """Validate a fixed golden material set (T55); returns human-readable problems.
+
+    ``resolve_leaf_text(paper_id, node_id)`` returns the exact text of the
+    *pinned revision's leaf* for that id, or ``None`` when the id is not a
+    readable leaf (a region summary, a missing node, a stale revision).  The
+    checks enforce: unique ids; dev/holdout splits; known kinds; quotes found
+    verbatim in leaf text (never in generated summaries); multi-evidence
+    entries spanning at least two papers; and both splits non-empty.
+    """
+    problems: list[str] = []
+    seen: set[str] = set()
+    splits: set[str] = set()
+    kinds: set[str] = set()
+    for entry in entries:
+        gid = str(entry.get("id") or "")
+        if not gid:
+            problems.append("entry without an id")
+        elif gid in seen:
+            problems.append(f"duplicate id: {gid}")
+        seen.add(gid)
+        split = str(entry.get("split") or "")
+        if split not in ("dev", "holdout"):
+            problems.append(f"{gid}: split must be dev or holdout (got {split!r})")
+        splits.add(split)
+        kind = str(entry.get("kind") or "")
+        if kind not in ("term", "formula", "structure", "multi"):
+            problems.append(f"{gid}: unknown kind {kind!r}")
+        kinds.add(kind)
+        if not str(entry.get("query") or "").strip():
+            problems.append(f"{gid}: empty query")
+        evidence = entry.get("evidence") or []
+        if not evidence:
+            problems.append(f"{gid}: no evidence span")
+        papers = {str(item.get("paper_id") or "") for item in evidence}
+        if kind == "multi" and len(papers) < 2:
+            problems.append(f"{gid}: multi-evidence entries need >= 2 papers")
+        for item in evidence:
+            paper_id = str(item.get("paper_id") or "")
+            node_id = str(item.get("node_id") or "")
+            quote = str(item.get("quote") or "")
+            if not quote:
+                problems.append(f"{gid}: empty quote for {paper_id}:{node_id}")
+                continue
+            text = resolve_leaf_text(paper_id, node_id)
+            if text is None:
+                problems.append(
+                    f"{gid}: {paper_id}:{node_id} is not a readable leaf of the pinned revision"
+                )
+            elif _normalized_material_text(quote) not in _normalized_material_text(text):
+                problems.append(f"{gid}: quote not found verbatim in {paper_id}:{node_id}")
+    if "dev" not in splits:
+        problems.append("no dev split entries")
+    if "holdout" not in splits:
+        problems.append("no holdout split entries")
+    return problems
+
+
 #: Curated golden queries (T7). Each entry is ``{id, q, papers}`` where
 #: ``papers`` lists relevant ``test-run/papers`` directory names (source paper
 #: first, then same-topic papers). Queries are title/abstract-derived

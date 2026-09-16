@@ -1,0 +1,23 @@
+pre-commit:
+  parallel: false
+  commands:
+    hygiene:
+      run: uv run pre-commit run --config .pre-commit-config.yaml
+
+pre-push:
+  parallel: true
+  commands:
+    # The gate targets code pushes; a docs/config-only push has nothing to
+    # type-check or test, so the commands skip when no Python file is pushed.
+    format-check:
+      glob: "**/*.py"
+      run: make format-check
+    lint:
+      glob: "**/*.py"
+      run: make lint
+    typecheck:
+      glob: "**/*.py"
+      run: make typecheck
+    tests:
+      glob: "**/*.py"
+      run: make test-unit

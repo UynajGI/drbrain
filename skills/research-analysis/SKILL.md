@@ -99,7 +99,7 @@ drbrain analyze --workspace attention-methods --full --json
 | `drbrain analyze <id> --full` | Adds counterfactual, hypotheses, isomorphism |
 | `drbrain analyze -w <ws>` | Workspace-scoped analysis |
 | `drbrain citations <id> --type shared-refs` | Shared-reference frontier signals |
-| `drbrain closure` | Run graph inference rules, see new edges |
+| `drbrain graph closure` | Run graph inference rules, see new edges |
 
 ## Related Skills
 

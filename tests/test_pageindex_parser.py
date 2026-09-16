@@ -17,6 +17,7 @@ from drbrain.parser.pageindex_parser import (
     get_node_content,
     get_node_content_by_title,
 )
+from drbrain.services.tokens import count_tokens
 
 # -- Node extraction --
 
@@ -133,6 +134,15 @@ def test_split_large_text_single_paragraph_too_large():
     text = "\n".join([f"Line {i} with some extra content to fill tokens." for i in range(50)])
     chunks = _split_large_text(text, max_tokens=50)
     assert len(chunks) > 1
+
+
+def test_split_large_text_chunks_stay_under_limit():
+    """Every produced chunk respects the token budget (small boundary margin)."""
+    text = "\n\n".join([f"Paragraph {i} " + "word " * 30 for i in range(60)])
+    chunks = _split_large_text(text, max_tokens=200)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert count_tokens(chunk) <= 200 + 5
 
 
 def test_recursive_split_large_nodes():

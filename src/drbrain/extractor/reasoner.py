@@ -54,10 +54,10 @@ class ReasonerAgent:
         return find_path(self.graph, src, dst)
 
     def _get_document_structure(self, paper_id: str) -> list[dict]:
-        return get_document_structure(self._papers_dir, paper_id)
+        return get_document_structure(self._papers_dir, paper_id, db=self.db)
 
     def _get_section_content(self, paper_id: str, node_id: str) -> str:
-        return get_section_content(self._papers_dir, paper_id, node_id)
+        return get_section_content(self._papers_dir, paper_id, node_id, db=self.db)
 
     def _search_tree(self, query: str) -> list[dict]:
         return search_tree(self.db, query)

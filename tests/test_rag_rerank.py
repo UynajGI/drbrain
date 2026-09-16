@@ -354,7 +354,7 @@ def test_dedup_content_hash_fallback():
 # ── build_query_engine assembly (T8 chain) ──────────────────────────────────
 
 
-def test_rerank_true_mounts_three_postprocessors_in_order(monkeypatch):
+def test_rerank_true_mounts_the_full_postprocessor_chain(monkeypatch):
     monkeypatch.setattr(
         "drbrain.rag.fusion.get_retrievers", lambda cfg, db: {"vector": _FakeRetriever()}
     )
@@ -365,28 +365,42 @@ def test_rerank_true_mounts_three_postprocessors_in_order(monkeypatch):
         "RerankPostprocessor",
         "SimilarityCutoffPostprocessor",
         "DeduplicatePostprocessor",
+        "ContextBudgetPostprocessor",
     ]
     assert pps[0].top_k == 20
     assert isinstance(pps[0].reranker, _FakeReranker)
     assert pps[1].similarity_cutoff == 0.7
 
 
-def test_rerank_false_mounts_cutoff_only(monkeypatch):
+def test_rerank_head_above_50_is_clamped(monkeypatch):
+    monkeypatch.setattr(
+        "drbrain.rag.fusion.get_retrievers", lambda cfg, db: {"vector": _FakeRetriever()}
+    )
+    monkeypatch.setattr("drbrain.rag.rerank.build_reranker", lambda cfg: _FakeReranker())
+    engine = build_query_engine(_cfg(rerank=True, cutoff=0.7, rerank_top_k=500), db=None)
+    assert engine._node_postprocessors[0].top_k == 50
+
+
+def test_rerank_false_mounts_cutoff_and_context_budget(monkeypatch):
     monkeypatch.setattr(
         "drbrain.rag.fusion.get_retrievers", lambda cfg, db: {"vector": _FakeRetriever()}
     )
     engine = build_query_engine(_cfg(rerank=False, cutoff=0.7), db=None)
     pps = engine._node_postprocessors
-    assert len(pps) == 1
+    assert [type(p).__name__ for p in pps] == [
+        "SimilarityCutoffPostprocessor",
+        "ContextBudgetPostprocessor",
+    ]
     assert isinstance(pps[0], SimilarityCutoffPostprocessor)
 
 
-def test_rerank_false_no_cutoff_mounts_nothing(monkeypatch):
+def test_rerank_false_no_cutoff_mounts_context_budget_only(monkeypatch):
     monkeypatch.setattr(
         "drbrain.rag.fusion.get_retrievers", lambda cfg, db: {"vector": _FakeRetriever()}
     )
     engine = build_query_engine(_cfg(rerank=False, cutoff=None), db=None)
-    assert engine._node_postprocessors == []
+    pps = engine._node_postprocessors
+    assert [type(p).__name__ for p in pps] == ["ContextBudgetPostprocessor"]
 
 
 def test_rerank_true_bumps_fusion_top_k(monkeypatch):
@@ -435,16 +449,16 @@ def test_rerank_false_keeps_caller_top_k(monkeypatch):
     assert captured["top_k"] == 7
 
 
-def test_rerank_chain_executes_rerank_cutoff_dedup(monkeypatch):
-    """Cutoff uses the reranker score, then dedup keeps its highest-scoring copy."""
+def test_rerank_chain_uses_coarse_cutoff_and_keeps_rerank_order(monkeypatch):
+    """T44: the cutoff evaluates coarse similarities (never logits); dedup after."""
     nodes = [
         _fused_node("n1", vector_score=0.9),
         _fused_node("n2", vector_score=0.8),
         _fused_node("n3", vector_score=0.85),
         _fused_node("n2", vector_score=0.8),  # duplicate of n2 (same node_id)
-        _fused_node("n4", vector_score=0.1),  # reranker can rescue a weak vector match
+        _fused_node("n4", vector_score=0.1),  # weak coarse match
     ]
-    # reranker reverses the coarse order
+    # reranker reverses the coarse order (logits, not cosine similarities)
     monkeypatch.setattr(
         "drbrain.rag.fusion.get_retrievers",
         lambda cfg, db: {"vector": _FakeRetriever(nodes)},
@@ -455,9 +469,9 @@ def test_rerank_chain_executes_rerank_cutoff_dedup(monkeypatch):
     )
     engine = build_query_engine(_cfg(rerank=True, cutoff=0.7), db=None)
     out = engine._apply_node_postprocessors(nodes, _qb())
-    # n1/n3 fail the rerank cutoff; n2's weaker duplicate is removed.
-    assert [n.node.node_id for n in out] == ["p1:n2", "p1:n4"]
-    assert [n.score for n in out] == pytest.approx([0.9, 0.7])
+    # n4 fails the coarse cutoff (0.1 < 0.7); n2's weaker duplicate is removed.
+    assert [n.node.node_id for n in out] == ["p1:n2", "p1:n3", "p1:n1"]
+    assert [n.score for n in out] == pytest.approx([0.9, 0.5, 0.1])
 
 
 # ── rank-comparison statistics (A/B tool helpers) ───────────────────────────

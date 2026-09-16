@@ -268,11 +268,13 @@ def build_index(
 
     import concurrent.futures as _cf
 
+    conn = getattr(db, "conn", None)  # test doubles may expose a narrower API
+
     def _collect_one(pid: str) -> tuple[str, list[Document] | None]:
         paper_dir = _resolve_paper_dir(papers_root, pid)
         if paper_dir is None:
             return pid, None
-        return pid, collect_tree_nodes(paper_dir, paper_id=pid)
+        return pid, collect_tree_nodes(paper_dir, paper_id=pid, conn=conn)
 
     missing_dirs = 0
     sorted_ids = sorted(str(p) for p in target_ids)
@@ -304,7 +306,9 @@ def build_index(
         manifest.get("fragment_format") != 2 or manifest.get("max_node_tokens") != max_node_tokens
     )
     if format_changed and paper_ids is not None:
-        raise ValueError("fragment format changed; run a full rag index before indexing a subset")
+        raise ValueError(
+            "fragment format changed; run 'drbrain index build' before indexing a subset"
+        )
     model_changed = (bool(old_model) and old_model != new_model) or format_changed
 
     changed: set[str] = set()

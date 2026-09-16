@@ -7,6 +7,7 @@ anydoc (text PDFs) -> OCRmyPDF text layer + anydoc (scanned PDFs, opt-in)
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ from drbrain.parser.mineru.fallback import (
     filter_sections,
 )
 from drbrain.parser.mineru.metadata import _resolve_metadata
+from drbrain.parser.pdf_inspector_backend import extract_pdf_inspector
 
 
 @dataclass
@@ -84,6 +86,15 @@ class ParsedPaper:
     text_blocks: list[str] = field(default_factory=list)
     raw_md: str = ""
     images_dir: Path | None = None  # extracted images directory
+    backend: str = "mineru"
+    pdf_type: str = ""
+    confidence: float = 0.0
+    pages_needing_ocr: list[int] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    provenance: dict = field(default_factory=dict)
+    identifiers: dict[str, str] = field(default_factory=dict)
+    identifier_candidates: list[dict[str, str]] = field(default_factory=list)
+    source_path: str = ""
 
 
 class MinerUParser:
@@ -103,6 +114,8 @@ class MinerUParser:
         use_anydoc: bool = True,
         ocr_enabled: bool = False,
         ocr_language: str = "eng",
+        skip_mineru: bool = False,
+        request_timeout: int = 120,
     ):
         self.token = token
         self.model = model
@@ -116,6 +129,8 @@ class MinerUParser:
         self.use_anydoc = use_anydoc
         self.ocr_enabled = ocr_enabled
         self.ocr_language = ocr_language
+        self.skip_mineru = skip_mineru
+        self.request_timeout = request_timeout
 
     def extract(self, pdf_path: str | Path, max_pages: int = 150) -> ParsedPaper:
         """Extract structured content from PDF. Splits into chunks if > max_pages."""
@@ -160,22 +175,37 @@ class MinerUParser:
             if not arxiv and arxiv_from_name:
                 arxiv = arxiv_from_name
 
-            meta = _resolve_metadata(
-                arxiv=arxiv,
-                raw_title=title,
-                raw_year=year,
-                raw_doi=doi,
-                deepxiv_token=self.deepxiv_token,
-                s2_api_key=self.s2_api_key,
-            )
-            title = meta["title"] or title
-            year = meta["year"] or year
-            doi = meta["doi"] or doi
-            s2_id = meta["s2_id"]
-            oa_id = meta["openalex_id"]
-            journal = meta["journal"]
-            publisher = meta["publisher"]
-            citation_count = meta["citation_count"]
+            if os.getenv("DRBRAIN_OFFLINE", "0") == "1":
+                meta = {
+                    "title": title,
+                    "year": year,
+                    "doi": doi,
+                    "s2_id": None,
+                    "openalex_id": None,
+                    "journal": "",
+                    "publisher": "",
+                    "citation_count": 0,
+                }
+            else:
+                meta = _resolve_metadata(
+                    arxiv=arxiv,
+                    raw_title=title,
+                    raw_year=year,
+                    raw_doi=doi,
+                    deepxiv_token=self.deepxiv_token,
+                    s2_api_key=self.s2_api_key,
+                )
+            title = str(meta["title"] or title)
+            year_value = meta["year"] or year
+            if year_value is not None:
+                year = int(year_value)
+            doi_value = meta["doi"] or doi
+            doi = None if doi_value is None else str(doi_value)
+            s2_id = None if meta["s2_id"] is None else str(meta["s2_id"])
+            oa_id = None if meta["openalex_id"] is None else str(meta["openalex_id"])
+            journal = str(meta["journal"] or "")
+            publisher = str(meta["publisher"] or "")
+            citation_count = int(meta["citation_count"] or 0)
 
             blocks = filter_sections(merged_md)
 
@@ -229,22 +259,53 @@ class MinerUParser:
     def _extract_mineru_only(
         self, pdf_path: Path, out_dir: Path | None = None
     ) -> tuple[str, Path | None, TemporaryDirectory | None]:
-        """Run MinerU CLI on a PDF chunk, return (raw_md, images_dir, managed_tmp)."""
-        out_dir, managed_tmp = self._try_mineru_open_api(pdf_path, out_dir=out_dir)
+        """Extract one PDF chunk: pdf-inspector first, then the MinerU CLI.
+
+        Mirrors ``_extract_single``'s parser ordering so chunked long PDFs do
+        not bypass the CPU-first parser; the fallback chain's dict is unwrapped
+        to its markdown string (returning the raw dict made chunk merging fail
+        with ``dict += str``).
+        """
+        inspected = extract_pdf_inspector(pdf_path)
+        if inspected is not None:
+            _parse_log.info("[parse] pdf-inspector succeeded for %s", pdf_path.name)
+            return inspected["markdown"], None, None
+        managed_tmp: TemporaryDirectory | None = None
+        if self.skip_mineru:
+            out_dir = None
+        else:
+            out_dir, managed_tmp = self._try_mineru_open_api(pdf_path, out_dir=out_dir)
         if out_dir is not None:
             raw_md = self._read_output_md(out_dir)
             img_dir = out_dir / "images" if (out_dir / "images").exists() else None
         else:
-            raw_md = self._fallback_chain(pdf_path)
+            _parse_log.warning(
+                "[parse] MinerU unavailable for chunk %s, falling back to anydoc/OCR/PyMuPDF",
+                pdf_path.name,
+            )
+            raw_md = self._fallback_chain(pdf_path)["markdown"]
             img_dir = None
         return raw_md, img_dir, managed_tmp
 
     def _extract_single(self, pdf_path: Path) -> ParsedPaper:
         """Extract a single PDF without splitting (existing logic)."""
         arxiv_from_name = _extract_arxiv_from_filename(pdf_path)
-        out_dir, managed_tmp = self._try_mineru_open_api(pdf_path)
+        inspected = extract_pdf_inspector(pdf_path)
+        out_dir, managed_tmp = (
+            (None, None)
+            if inspected is not None or self.skip_mineru
+            else self._try_mineru_open_api(pdf_path)
+        )
         try:
-            if out_dir is not None:
+            fallback: dict = inspected or {}
+            if inspected is not None:
+                # pdf-inspector is the CPU-first parser.  It intentionally
+                # bypasses MinerU, so do not report this successful path as a
+                # MinerU fallback in the ingest log.
+                raw_md = inspected["markdown"]
+                _parse_log.info("[parse] pdf-inspector succeeded for %s", pdf_path.name)
+                out_dir = None
+            elif out_dir is not None:
                 raw_md = self._read_output_md(out_dir)
                 _parse_log.info("[parse] MinerU succeeded for %s", pdf_path.name)
             else:
@@ -252,7 +313,8 @@ class MinerUParser:
                     "[parse] MinerU unavailable, falling back to anydoc/OCR/PyMuPDF for %s",
                     pdf_path.name,
                 )
-                raw_md = self._fallback_chain(pdf_path)
+                fallback = inspected or self._fallback_chain(pdf_path)
+                raw_md = fallback["markdown"]
                 out_dir = None
 
             title = self._extract_title(raw_md, str(pdf_path))
@@ -271,19 +333,26 @@ class MinerUParser:
                 deepxiv_token=self.deepxiv_token,
                 s2_api_key=self.s2_api_key,
             )
-            title = meta["title"] or title
-            year = meta["year"] or year
-            doi = meta["doi"] or doi
-            s2_id = meta["s2_id"]
-            oa_id = meta["openalex_id"]
-            journal = meta["journal"]
-            publisher = meta["publisher"]
-            citation_count = meta["citation_count"]
+            title = str(meta["title"] or title)
+            year_value = meta["year"] or year
+            if year_value is not None:
+                year = int(year_value)
+            doi_value = meta["doi"] or doi
+            doi = None if doi_value is None else str(doi_value)
+            s2_id = None if meta["s2_id"] is None else str(meta["s2_id"])
+            oa_id = None if meta["openalex_id"] is None else str(meta["openalex_id"])
+            journal = str(meta["journal"] or "")
+            publisher = str(meta["publisher"] or "")
+            citation_count = int(meta["citation_count"] or 0)
 
             # Fetch authorships from OpenAlex
             from drbrain.extractor.openalex import search_authors_by_work
 
-            authors = search_authors_by_work(doi=doi, title=title)
+            authors = (
+                []
+                if os.getenv("DRBRAIN_OFFLINE", "0") == "1"
+                else search_authors_by_work(doi=doi, title=title)
+            )
 
             blocks = filter_sections(raw_md)
             _parse_log.info(
@@ -312,6 +381,16 @@ class MinerUParser:
                 text_blocks=blocks,
                 raw_md=raw_md,
                 images_dir=images_dir,
+                backend=fallback.get("backend", "mineru") if out_dir is None else "mineru",
+                pdf_type=fallback.get("pdf_type", "") if out_dir is None else "",
+                confidence=fallback.get("confidence", 0.0) if out_dir is None else 0.0,
+                pages_needing_ocr=fallback.get("pages_needing_ocr", []) if out_dir is None else [],
+                warnings=fallback.get("warnings", []) if out_dir is None else [],
+                provenance=fallback.get("provenance", {})
+                if out_dir is None
+                else {"path": str(pdf_path.resolve()), "backend": "mineru"},
+                identifiers={k: v for k, v in {"doi": doi, "arxiv": arxiv}.items() if v},
+                source_path=str(pdf_path.resolve()),
             )
         finally:
             if managed_tmp:
@@ -394,7 +473,7 @@ class MinerUParser:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=600,
+                    timeout=self.request_timeout,
                 )
                 if result.returncode != 0:
                     _parse_log.warning(
@@ -430,13 +509,20 @@ class MinerUParser:
             return ""
         return md_files[0].read_text(encoding="utf-8")
 
-    def _fallback_chain(self, pdf_path: Path) -> str:
+    def _fallback_chain(self, pdf_path: Path) -> dict:
         """Fallback extraction when MinerU is unavailable: anydoc -> OCR -> pymupdf4llm."""
+        inspected = extract_pdf_inspector(pdf_path)
+        if inspected is not None:
+            return inspected
         if self.use_anydoc:
             status, md = anydoc_to_markdown(pdf_path)
             if status is AnydocStatus.OK:
                 _parse_log.info("[parse] anydoc extracted %s", pdf_path.name)
-                return md
+                return {
+                    "markdown": md,
+                    "backend": "anydoc",
+                    "provenance": {"path": str(pdf_path.resolve()), "backend": "anydoc"},
+                }
             if status is AnydocStatus.UNSUPPORTED and self.ocr_enabled:
                 _parse_log.info("[parse] %s looks scanned, trying OCRmyPDF", pdf_path.name)
                 tmp = TemporaryDirectory(prefix="ocr_")
@@ -446,10 +532,21 @@ class MinerUParser:
                         ocr_status, ocr_md = anydoc_to_markdown(ocr_path)
                         if ocr_status is AnydocStatus.OK:
                             _parse_log.info("[parse] OCR + anydoc extracted %s", pdf_path.name)
-                            return ocr_md
+                            return {
+                                "markdown": ocr_md,
+                                "backend": "ocrmy_pdf+anydoc",
+                                "provenance": {
+                                    "path": str(pdf_path.resolve()),
+                                    "backend": "ocrmy_pdf+anydoc",
+                                },
+                            }
                 finally:
                     tmp.cleanup()
-        return self._fallback_pymupdf(pdf_path)
+        return {
+            "markdown": self._fallback_pymupdf(pdf_path),
+            "backend": "pymupdf4llm",
+            "provenance": {"path": str(pdf_path.resolve()), "backend": "pymupdf4llm"},
+        }
 
     def _fallback_pymupdf(self, pdf_path: Path) -> str:
         """Extract markdown via pymupdf4llm. Falls back to plain text."""
@@ -553,5 +650,7 @@ def extract_pdf(pdf_path: str | Path, config: dict) -> ParsedPaper:
         use_anydoc=mineru_cfg.get("use_anydoc", True),
         ocr_enabled=mineru_cfg.get("ocr_enabled", False),
         ocr_language=mineru_cfg.get("ocr_language", "eng"),
+        skip_mineru=mineru_cfg.get("skip_mineru", False),
+        request_timeout=int(mineru_cfg.get("request_timeout", 120)),
     )
     return parser.extract(pdf_path, max_pages=max_pages)

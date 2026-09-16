@@ -79,3 +79,6 @@ workspace/
 
 # Test-run artifacts (test API keys in config.yaml + local DBs — never commit)
 test-run/
+
+# Local historical document archive (not versioned)
+docs/archive/

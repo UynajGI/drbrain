@@ -779,6 +779,21 @@ class ResearchLoopWorkflow(Workflow):
         parsing free-form agent output. Returns paper titles, or ``[]`` when
         the plugin is absent or finds nothing.
         """
+        # Local CLI fallback when no search plugin is registered.
+        if self._db is not None:
+            try:
+                terms = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", query)[:8]]
+                if terms:
+                    where = " OR ".join("title LIKE ?" for _ in terms)
+                    rows = self._db.conn.execute(
+                        f"SELECT title FROM papers WHERE {where} LIMIT ?",
+                        [f"%{w}%" for w in terms] + [limit],
+                    ).fetchall()
+                    hits = [str(r[0]).strip() for r in rows if r[0]]
+                    if hits:
+                        return hits
+            except Exception:
+                pass
         if self._capability_catalog is not None:
             from drbrain.loop.tool_space import LoopToolSpace
 
@@ -876,12 +891,22 @@ class ResearchLoopWorkflow(Workflow):
         # Generation-pinned evidence must never enter reports or state without
         # its durable bundle. Avoid paying an embedding/retrieval call when an
         # in-memory compatibility run cannot retain that bundle at all.
-        if self._tool_broker is None and self._evidence_recorder is None:
-            return [], None, "unavailable"
+        # Direct local runs (including the CLI autoresearch smoke path) may not
+        # install a tool broker; SQL retrieval is still valid and should be
+        # attempted when a published generation exists.
         if self._tool_broker is None:
             await self._reserve_budget({"rag_calls": 1})
         try:
             from drbrain.rag.agent import retrieve_documents
+
+            if self._db is None:
+                import os
+                from pathlib import Path
+
+                from drbrain.storage.database import Database
+
+                root = Path(os.environ.get("DRBRAIN_ROOT", "."))
+                self._db = Database(root / "data" / "drbrain.db")
 
             arguments = {"query": query, "limit": limit, "generation": self._rag_generation}
             tool_call_id: str | None = None
@@ -1736,6 +1761,10 @@ class ResearchLoopWorkflow(Workflow):
     @classmethod
     def _compose_novelty_score(cls, critic_score: float, label: str) -> float:
         """Blend the critic's (0.7-weighted) rubric with the code novelty label."""
+        # Preserve the hard critique discard bar: a low rubric score must not
+        # be lifted above 0.4 by the neutral novelty prior.
+        if critic_score < CRITIQUE_DISCARD_SCORE:
+            return max(0.0, min(1.0, critic_score))
         weight = float(cls.NOVELTY_WEIGHT)
         novelty = float(cls.NOVELTY_SCORE.get(label, cls.NOVELTY_SCORE["unknown"]))
         return max(0.0, min(1.0, (1.0 - weight) * critic_score + weight * novelty))
@@ -1768,6 +1797,11 @@ class ResearchLoopWorkflow(Workflow):
         (corpus exists or KG query executed) and found nothing; no corpus
         and no KG means "unknown" — never a free novelty bonus.
         """
+        # Do not consult the process-wide/default corpus when this workflow
+        # has no published RAG generation (common for isolated tests and
+        # fresh workspaces); absence of an index means novelty is unknown.
+        if not self._rag_generation:
+            return "unknown"
         query = self._fallback_query(
             f"{hypothesis.statement} {hypothesis.prediction}"
         ) or self._fallback_query(state.task or "")

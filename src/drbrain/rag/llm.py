@@ -66,6 +66,18 @@ def _stream_delta(chunk: Any) -> str:
     return str(getattr(delta, "content", None) or "")
 
 
+def _stream_finish_reason(chunk: Any) -> str:
+    """Extract ``choices[0].finish_reason`` from a stream chunk (T46).
+
+    The terminating chunk usually carries an empty delta but a finish reason,
+    so this is read independently of :func:`_stream_delta`.
+    """
+    choices = getattr(chunk, "choices", None) if chunk is not None else None
+    if not choices:
+        return ""
+    return str(getattr(choices[0], "finish_reason", "") or "")
+
+
 class _DrbrainEmbedMixin:
     """Embed logic delegating to drbrain's own embed provider.
 
@@ -183,8 +195,19 @@ if _LLAMA_INDEX_AVAILABLE:
             # different agents pick different keys round-robin.
             from drbrain.extractor.llm_client import resolve_agent_key
 
-            self._models = [resolve_agent_key(m) for m in cfg.llm.models]
+            # RAG answer synthesis is a chat role; keep it independent from
+            # the local extraction/indexing chain when configured.
+            role_models = getattr(cfg.llm, "chat", None) or cfg.llm.models
+            self._models = [resolve_agent_key(m) for m in role_models]
             self._cache: Any = None  # ApiCache | None, built lazily on first call
+            # T46: finish_reason of the most recent call ("length" = truncated
+            # answer; reasoning endpoints can otherwise eat the whole budget).
+            self._last_finish_reason = ""
+
+        @property
+        def last_finish_reason(self) -> str:
+            """``finish_reason`` of the most recent model call (T46)."""
+            return str(getattr(self, "_last_finish_reason", "") or "")
 
         # ── identity ────────────────────────────────────────────────────
 
@@ -231,11 +254,12 @@ if _LLAMA_INDEX_AVAILABLE:
             self, prompt: str, formatted: bool = False, **kwargs: Any
         ) -> CompletionResponse:
             """Sync completion via drbrain's text fallback chain (no cache)."""
-            from drbrain.extractor.llm_client import call_text_with_fallback
+            from drbrain.extractor.llm_client import call_text_with_meta
 
             max_tokens = kwargs.pop("max_tokens", self.max_tokens)
-            text = call_text_with_fallback(prompt, self._models, max_tokens=max_tokens)
-            return self._completion(text)
+            meta = call_text_with_meta(prompt, self._models, max_tokens=max_tokens)
+            self._last_finish_reason = str((meta or {}).get("finish_reason") or "")
+            return self._completion((meta or {}).get("text"))
 
         async def acomplete(
             self, prompt: str, formatted: bool = False, **kwargs: Any
@@ -259,6 +283,7 @@ if _LLAMA_INDEX_AVAILABLE:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
+            self._last_finish_reason = str((result or {}).get("finish_reason") or "")
             return self._chat(result)
 
         async def achat(self, messages: Sequence[ChatMessage], **kwargs: Any) -> ChatResponse:
@@ -312,6 +337,9 @@ if _LLAMA_INDEX_AVAILABLE:
                     )
                     parts: list[str] = []
                     for chunk in response:
+                        finish = _stream_finish_reason(chunk)
+                        if finish:
+                            self._last_finish_reason = finish
                         delta = _stream_delta(chunk)
                         if not delta:
                             continue
@@ -374,6 +402,9 @@ if _LLAMA_INDEX_AVAILABLE:
                     )
                     parts: list[str] = []
                     for chunk in response:
+                        finish = _stream_finish_reason(chunk)
+                        if finish:
+                            self._last_finish_reason = finish
                         delta = _stream_delta(chunk)
                         if not delta:
                             continue
@@ -424,6 +455,9 @@ if _LLAMA_INDEX_AVAILABLE:
                     )
                     parts: list[str] = []
                     async for chunk in response:
+                        finish = _stream_finish_reason(chunk)
+                        if finish:
+                            self._last_finish_reason = finish
                         delta = _stream_delta(chunk)
                         if not delta:
                             continue
@@ -481,6 +515,9 @@ if _LLAMA_INDEX_AVAILABLE:
                     )
                     parts: list[str] = []
                     async for chunk in response:
+                        finish = _stream_finish_reason(chunk)
+                        if finish:
+                            self._last_finish_reason = finish
                         delta = _stream_delta(chunk)
                         if not delta:
                             continue

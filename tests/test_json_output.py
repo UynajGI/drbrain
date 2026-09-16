@@ -220,7 +220,10 @@ class TestClosureJson:
             try:
                 result = runner.invoke(app, ["closure", "--json"])
                 assert result.exit_code == 0
-                data = json.loads(result.output)
+                # `closure` is a hidden compatibility alias: stdout keeps the
+                # JSON contract, the migration notice goes to stderr.
+                data = json.loads(result.stdout)
                 assert "inferred" in data or isinstance(data, list)
+                assert "'closure' has moved" in result.stderr
             finally:
                 os.chdir(old)
