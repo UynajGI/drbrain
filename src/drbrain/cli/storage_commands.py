@@ -155,6 +155,79 @@ def storage_migrate_cmd(
         raise typer.Exit(code=1)
 
 
+@storage_app.command("repack")
+def storage_repack_cmd(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--apply", help="Plan only (default) or execute the plan"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable plan/report"),
+    local_id: str = typer.Option("", "--local-id", help="Restrict to one paper"),
+    max_items: int = typer.Option(0, "--max-items", help="Plan at most N revisions"),
+    min_chars: int = typer.Option(0, "--min-chars", help="Merge target in characters"),
+):
+    """Re-segment existing blocks into paragraph-sized leaves.
+
+    Revisions, their canonical hashes and the text itself are unchanged —
+    only the block boundaries move (the canonical partition is preserved
+    verbatim).  Every affected leaf and its vectors are rebuilt, so follow
+    with ``index build --force``.
+    """
+    from drbrain.services.storage_repack import apply_repack, plan_repack
+    from drbrain.storage.database import Database
+    from drbrain.tree.blocks import BlockPolicy
+
+    cfg = _runtime_config(ctx)
+    db_path = _db_path(ctx, cfg)
+    policy = BlockPolicy(min_chars=int(min_chars)) if int(min_chars) else BlockPolicy()
+    database = Database(db_path)
+    try:
+        plan = plan_repack(
+            database,
+            local_ids=[local_id] if local_id else None,
+            max_items=max(0, int(max_items)),
+            policy=policy,
+        )
+        if dry_run:
+            payload = plan.to_json()
+            if json_output:
+                typer.echo(_json.dumps(payload, indent=2, ensure_ascii=False))
+            else:
+                typer.echo(
+                    f"Repack plan: {payload['revisions']} ready revision(s), "
+                    f"{len(payload['repack'])} to re-segment, {payload['skipped']} already coarse, "
+                    f"{len(payload['failed'])} failed"
+                )
+                typer.echo(
+                    f"  blocks {payload['blocks_before']} -> {payload['blocks_after']} "
+                    f"(min_chars={policy.min_chars}, max_tokens={policy.max_tokens})"
+                )
+                for item in payload["repack"][:10]:
+                    typer.echo(
+                        f"  - {item['local_id']}: {item['blocks_before']} -> {item['blocks_after']}"
+                    )
+                if len(payload["repack"]) > 10:
+                    typer.echo(f"  … {len(payload['repack']) - 10} more")
+            if payload["failed"]:
+                raise typer.Exit(code=1)
+            return
+        outcome = apply_repack(database, plan, policy=policy)
+        if json_output:
+            typer.echo(_json.dumps(outcome, indent=2, ensure_ascii=False))
+        else:
+            typer.echo(
+                f"Repack applied: {outcome['applied']} revision(s), {len(outcome['failed'])} failed"
+            )
+            typer.echo(
+                f"  blocks {outcome['blocks_before']} -> {outcome['blocks_after']}; "
+                "run `index build --force` to re-embed and rebuild the hierarchy"
+            )
+        if outcome["failed"]:
+            raise typer.Exit(code=1)
+    finally:
+        database.close()
+
+
 @storage_app.command("export")
 def storage_export_cmd(
     ctx: typer.Context,
