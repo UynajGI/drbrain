@@ -303,6 +303,10 @@ def _merge_spans(
     the section it introduces), groups stop growing at ``min_chars``, and a
     rough token ceiling keeps an embedding's 512-token window covering the
     whole block.
+
+    Page boundaries are not a merge barrier: spans from adjacent pages may
+    rejoin, and the merged block's ``page_start``/``page_end`` then cover the
+    pages it actually spans rather than a fabricated single page.
     """
     if policy.min_chars <= 0 or len(spans) < 2:
         return list(spans)
@@ -409,7 +413,9 @@ def build_content_blocks(
             continue
         pieces: list[tuple[int, int]] = [(segment.start, segment.end)]
         if page_bounds:
-            # Split at real page boundaries so every block's page span is exact.
+            # Split at real page boundaries so this span's own page range is
+            # exact before merging; a merge across the boundary later keeps a
+            # page range that covers every page the merged block touches.
             split: list[tuple[int, int]] = []
             for begin, finish in pieces:
                 cut_points = [b for b in page_bounds if begin < b < finish]
