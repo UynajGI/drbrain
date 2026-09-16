@@ -39,6 +39,8 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
   carries the unified tables (see the merge entry above), so the remaining prerequisite for switching
   the shard scripts is the shard ingest writing canonical content (follow-up round) — running
   `index build` per shard before that would still pay for a per-shard hierarchy the shard merge cannot use.
+- **Block repack** (`drbrain storage repack --dry-run/--apply`): re-segments existing revisions into paragraph-sized blocks (default `BlockPolicy.min_chars=400`) so a leaf carries a passage instead of a structural line fragment — the 10k flow test measured a 118-character median leaf with 23% under 40 characters and 87k bare heading lines, against RAPTOR's 100-token ≈ 400-character chunking. Revisions, their `canonical_hash` and the text itself are unchanged (only the boundaries move); `insert_content_blocks` re-proves the canonical hash after the rewrite, PDF page provenance is derived from the existing spans, stale child references are cleared before old leaves are deleted, and the FTS mirror follows the `content_blocks` triggers. Follow with `index build --force` to re-embed and rebuild the hierarchy.
+- **Index-model instance proxy** (`scripts/serve_llm_proxy.py`): forwards OpenAI-compatible traffic to several local model instances, picking the upstream with the fewest in-flight requests (`GET /healthz` reports per-upstream counts). Point the endpoint `base_url` at the proxy and set `max_concurrent` to the total per-instance allowance.
 
 ### Fixed
 - Eval qagen migrated to LlamaIndex `DatasetGenerator`; assorted ruff/mypy/CI fixes.
@@ -48,6 +50,7 @@ and this project adheres to [Conventional Commits](https://www.conventionalcommi
 - Tree navigation against strict chat endpoints: every `tool_call` id of a multi-call model answer now gets a tool response (DeepSeek rejected the next request with 400 otherwise), and the navigator's output budget defaults to 2048 tokens so reasoning endpoints no longer exhaust it on hidden reasoning (`finish_reason=length` with no action).
 - **Read-path review fixes (unified tree)**: scoped tree reads (tools, navigator re-search, read-only store) can no longer cross paper boundaries; fused evidence keeps the actually-read range and per-hit locators instead of re-materialising the whole block; budget exhaustion propagates as `partial`; BM25 applies the paper scope inside the FTS query via the shared `content_search` reader; a failed publish resumes without recomputing and readiness is gated by the recorded last-build outcome; `--force` and algorithm changes retire all ready regions.
 - **Old macro-wrapped LaTeX sources**: preambles that define `\def\bd{\begin{document}}`-style aliases no longer collapse the document body to the brace between the two macro definitions.
+- **Vector index merged before publication**: bulk `upsert` batches each leave a flat zvec segment behind, and every query scanned all of them until the collection was optimized — measured at 1.62M vectors: 12-27s per ANN query (one `search` hung for 15+ minutes) and a 21GB store. The vectors stage now runs `UnifiedVectorStore.optimize()` after it wrote vectors or regions and before the generation is published (a failure is recorded as a degraded stage — never silent, never blocking): 0.05s per query afterwards, store 21GB → 3.5GB.
 
 _Entries above summarize commits between `0.1.0a3` and the current `main`; per-commit details live in `git log`._
 
@@ -110,4 +113,3 @@ _Entries above summarize commits between `0.1.0a3` and the current `main`; per-c
 - **Incremental update coverage**: 19 tests in `test_incremental_updates.py` (schema v8 migration, change-tracking queries, `delete_paper` neighbor touching, `TransE.train_incremental`, `closure_incremental`, centralized write methods).
 - **OKF export coverage**: 12 tests in `test_okf_export.py` (slugify, frontmatter conformance, cross-link rendering, arguments, paper export, index, filtering, broken-link tolerance).
 - **batch_ingest test rewrite**: mocked at `_ingest_single_paper` boundary instead of only `extract_pdf`, so tests no longer hang on unmocked network/async calls.
-
