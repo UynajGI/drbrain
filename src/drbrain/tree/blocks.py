@@ -58,10 +58,18 @@ class BlockPolicy:
     #: kinds that are never split internally (formula/table stay whole when
     #: they fit; oversized ones still split on their own line boundaries).
     atomic_kinds: tuple[str, ...] = ("formula",)
+    #: Merge adjacent spans within one section up to this many characters so a
+    #: leaf carries a paragraph-sized chunk instead of a line/sentence
+    #: fragment (the 10k flow test measured a 118-char median leaf, 23% under
+    #: 40 chars, against RAPTOR's 100-token ≈ 400-char chunking).  ``0`` keeps
+    #: the raw structural segmentation.
+    min_chars: int = 400
 
     def __post_init__(self) -> None:
         if self.max_tokens < 16:
             raise ValueError("max_tokens must be >= 16")
+        if self.min_chars < 0:
+            raise ValueError("min_chars must be >= 0")
 
 
 def _line_starts(text: str) -> list[int]:
@@ -283,6 +291,41 @@ def segment_text(text: str) -> list[Segment]:
     return fixed
 
 
+def _merge_spans(
+    spans: Sequence[tuple[int, int, Segment]],
+    policy: BlockPolicy,
+) -> list[tuple[int, int, Segment]]:
+    """Group adjacent spans into paragraph-sized blocks for the leaf layer.
+
+    The canonical partition is preserved exactly — merging only re-groups
+    adjacent ranges — while granularity becomes a section chunk instead of a
+    line fragment.  A heading always opens a new group (its title stays with
+    the section it introduces), groups stop growing at ``min_chars``, and a
+    rough token ceiling keeps an embedding's 512-token window covering the
+    whole block.
+    """
+    if policy.min_chars <= 0 or len(spans) < 2:
+        return list(spans)
+    ceiling = 4 * int(policy.max_tokens)
+
+    merged: list[tuple[int, int, Segment]] = []
+    begin, end, segment = spans[0]
+    for next_begin, next_end, next_segment in spans[1:]:
+        length = end - begin
+        opens_section = next_segment.kind == "title"
+        same_section = next_segment.heading_path == segment.heading_path
+        grows = length < policy.min_chars and length + (next_end - next_begin) <= ceiling
+        if not opens_section and same_section and grows:
+            end = next_end
+            if segment.kind == "title" and next_segment.kind != "title":
+                segment = next_segment
+            continue
+        merged.append((begin, end, segment))
+        begin, end, segment = next_begin, next_end, next_segment
+    merged.append((begin, end, segment))
+    return merged
+
+
 def _split_oversized(
     text: str,
     start: int,
@@ -385,6 +428,8 @@ def build_content_blocks(
                 continue
             for sub_begin, sub_finish in _split_oversized(text, begin, finish, policy):
                 spans.append((sub_begin, sub_finish, segment))
+
+    spans = _merge_spans(spans, policy)
 
     blocks: list[ContentBlock] = []
     for ordinal, (begin, finish, segment) in enumerate(spans):

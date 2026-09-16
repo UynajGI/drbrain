@@ -8,7 +8,7 @@ import pytest
 
 from drbrain.storage.database import Database
 from drbrain.tree.assign import AssignmentCandidate
-from drbrain.tree.blocks import build_content_blocks
+from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import ChildRef, LeafRef, NodeRecord, leaf_node_id, region_node_id
 from drbrain.tree.cost import (
     CostParams,
@@ -33,7 +33,12 @@ def _count(text: str) -> int:
 def _doc(db: Database, local_id: str, text: str):
     db.insert_paper(local_id, "T", 2024, "uploaded")
     blocks = build_content_blocks(
-        text, local_id=local_id, revision=1, media_type="md", parser="test"
+        text,
+        local_id=local_id,
+        revision=1,
+        media_type="md",
+        parser="test",
+        policy=BlockPolicy(min_chars=0),
     )
     db.upsert_document_revision(
         local_id,
