@@ -1,5 +1,9 @@
 name: CI
 
+# Least privilege: every job only reads the repository.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -80,11 +84,14 @@ jobs:
 
   secrets:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      # Pinned to the v2 commit: a mutable tag could be moved upstream and run
+      # arbitrary code with the workflow token in scope.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
