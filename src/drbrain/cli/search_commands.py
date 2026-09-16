@@ -109,16 +109,21 @@ def search_cmd(
         ctx.obj["config"], text, limit=_limit, paper_ids=_paper or None, source=_source
     )
     if payload.get("status") == "source_unavailable":
-        reason = next(
-            (
-                str(leg.get("reason") or "")
-                for leg in payload.get("legs") or []
-                if leg.get("reason")
-            ),
-            "",
+        failed = next(
+            (leg for leg in payload.get("legs") or [] if leg.get("status") == "unavailable"),
+            {},
         )
-        typer.echo(f"[search] local evidence unavailable: {reason}", err=True)
-        typer.echo("[search] prepare it with: drbrain index build", err=True)
+        reason = str(failed.get("reason") or "")
+        if failed.get("source") == "local":
+            typer.echo(f"[search] local evidence unavailable: {reason}", err=True)
+            typer.echo("[search] prepare it with: drbrain index build", err=True)
+        else:
+            # An external-only request whose provider failed: the remedy is not
+            # "build an index" — say what actually broke.
+            typer.echo(f"[search] external source unavailable: {reason}", err=True)
+            typer.echo(
+                "[search] retry later, or check the network and source configuration", err=True
+            )
     if _json:
         typer.echo(json.dumps(redact_sensitive(payload), indent=2, ensure_ascii=False, default=str))
     else:

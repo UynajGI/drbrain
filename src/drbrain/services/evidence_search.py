@@ -287,6 +287,11 @@ def run_evidence_search(
     elif evidence:
         status = "degraded" if external_error else "ok"
         hint = "外部来源本次不可用，下面是本地证据。" if external_error else ""
+    elif external_error:
+        # External-only request whose provider failed: "unavailable" is not
+        # "empty" — the reader must not be told to try other keywords when the
+        # provider itself never answered.
+        status, hint = "source_unavailable", "外部来源本次不可用：稍后重试，或检查网络与来源配置。"
     else:
         status, hint = "empty", "换关键词，或先在索引页确认索引是否就绪。"
     return {

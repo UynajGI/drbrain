@@ -74,7 +74,12 @@
   {% endif %}
 
   {% set located = detail.outline | selectattr('node_id', 'equalto', node_target) | list if node_target else [] %}
-  {% if node_target and not located %}
+  {% if node_target and not located and detail.outline | length >= 300 %}
+  <div class="alert alert-warn" role="status">
+    目标片段可能在更靠后的章节里：本篇大纲较长（已截断到前 300 个节点），当前列表无法定位 <code>{{ node_target | short(40) }}</code>。
+    它仍然存在——请从检索结果重新进入，或按章节往下翻找。
+  </div>
+  {% elif node_target and not located %}
   <div class="alert alert-warn" role="status">
     没找到这个片段：<code>{{ node_target | short(40) }}</code> 不在当前正文里（可能来自另一个版本，或已被替换）。
     下面是这篇文献当前的完整大纲。
