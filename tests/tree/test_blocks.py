@@ -42,6 +42,9 @@ FIXTURE_MD = (
 
 
 def _blocks(text: str = FIXTURE_MD, **kw):
+    # Segmentation-contract tests pin the raw structural split; paragraph
+    # merging (the production default) is exercised in TestParagraphMerge.
+    kw.setdefault("policy", BlockPolicy(min_chars=0))
     return build_content_blocks(
         text,
         local_id="p1",
@@ -108,7 +111,9 @@ class TestLocators:
     def test_pdf_pages_map_only_from_verified_marks(self):
         text = "Page one text.\nPage two text.\n"
         # A PDF without verified marks gets no page fields (never fabricated).
-        unmarked = build_content_blocks(text, local_id="p", revision=1, media_type="pdf")
+        unmarked = build_content_blocks(
+            text, local_id="p", revision=1, media_type="pdf", policy=BlockPolicy(min_chars=0)
+        )
         assert all(block.page_start is None and block.page_end is None for block in unmarked)
         split = text.index("Page two")
         blocks = build_content_blocks(
@@ -117,11 +122,25 @@ class TestLocators:
             revision=1,
             media_type="pdf",
             page_marks=[(1, 0), (2, split)],
+            policy=BlockPolicy(min_chars=0),
         )
         assert reconstruct(blocks) == text
         assert blocks[0].page_start == 1 and blocks[0].page_end == 1
         assert blocks[-1].page_end == 2
         assert all(block.line_start is None for block in blocks)
+
+    def test_merged_pdf_blocks_span_the_pages_they_cover(self):
+        text = "Page one text.\nPage two text.\n"
+        split = text.index("Page two")
+        blocks = build_content_blocks(
+            text,
+            local_id="p",
+            revision=1,
+            media_type="pdf",
+            page_marks=[(1, 0), (2, split)],
+        )
+        assert len(blocks) == 1
+        assert blocks[0].page_start == 1 and blocks[0].page_end == 2
 
     def test_tex_lines_are_recorded(self):
         tex = "\\section{Intro}\n\nBody line.\n"
@@ -177,3 +196,79 @@ class TestBlockIdentity:
     def test_unknown_media_type_rejected(self):
         with pytest.raises(ValueError, match="media_type"):
             build_content_blocks("x", local_id="p", revision=1, media_type="docx")
+
+
+MERGE_MD = (
+    "# Section One\n"
+    "\n"
+    "Short intro.\n"
+    "\n"
+    "Another short line.\n"
+    "\n"
+    "### Sub\n"
+    "\n"
+    "Third short line under the subheading.\n"
+    "\n"
+    "# Section Two\n"
+    "\n"
+    "Different section body.\n"
+)
+
+
+class TestParagraphMerge:
+    """Leaves carry a paragraph-sized chunk, not a structural line fragment."""
+
+    def test_short_lines_merge_into_one_block_per_section(self):
+        blocks = build_content_blocks(
+            MERGE_MD, local_id="p1", revision=1, media_type="md", parser="test"
+        )
+        assert reconstruct(blocks) == MERGE_MD
+        assert len(blocks) == 3
+        # A heading stays glued to the content it introduces, and the merged
+        # block keeps the section's kind rather than the heading's.
+        assert blocks[0].kind == "paragraph"
+        assert blocks[0].heading_path == ("Section One",)
+        assert blocks[0].text.startswith("# Section One")
+        assert "Another short line." in blocks[0].text
+        assert blocks[1].heading_path == ("Section One", "Sub")
+        assert blocks[2].heading_path == ("Section Two",)
+
+    def test_a_new_heading_always_opens_a_new_block(self):
+        blocks = build_content_blocks(
+            MERGE_MD, local_id="p1", revision=1, media_type="md", parser="test"
+        )
+        assert blocks[1].text.startswith("### Sub")
+        assert blocks[2].text.startswith("# Section Two")
+
+    def test_min_chars_zero_keeps_the_raw_segmentation(self):
+        merged = build_content_blocks(
+            MERGE_MD, local_id="p1", revision=1, media_type="md", parser="test"
+        )
+        raw = build_content_blocks(
+            MERGE_MD,
+            local_id="p1",
+            revision=1,
+            media_type="md",
+            parser="test",
+            policy=BlockPolicy(min_chars=0),
+        )
+        assert len(raw) > len(merged)
+        assert reconstruct(raw) == reconstruct(merged) == MERGE_MD
+
+    def test_merge_never_crosses_a_section_boundary(self):
+        blocks = build_content_blocks(
+            MERGE_MD, local_id="p1", revision=1, media_type="md", parser="test"
+        )
+        paths = [block.heading_path for block in blocks]
+        assert paths == [("Section One",), ("Section One", "Sub"), ("Section Two",)]
+
+    def test_merge_is_contiguous_and_hash_consistent(self):
+        blocks = build_content_blocks(
+            MERGE_MD, local_id="p1", revision=1, media_type="md", parser="test"
+        )
+        for previous, current in zip(blocks, blocks[1:]):
+            assert previous.char_end == current.char_start
+        assert blocks[0].char_start == 0
+        assert blocks[-1].char_end == len(MERGE_MD)
+        for block in blocks:
+            assert block.text_hash == hashlib.sha256(block.text.encode()).hexdigest()

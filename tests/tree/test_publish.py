@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from drbrain.storage.database import Database
-from drbrain.tree.blocks import build_content_blocks
+from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 from drbrain.tree.publish import (
     ACTIVE_POINTER_NAME,
@@ -29,7 +29,12 @@ def _seed(db: Database, local_id: str = "p1", revision: int = 1) -> str:
     text = f"# Sec\n\nbody of {local_id} revision {revision}\n"
     db.insert_paper(local_id, "T", 2024, "uploaded")
     blocks = build_content_blocks(
-        text, local_id=local_id, revision=revision, media_type="md", parser="test"
+        text,
+        local_id=local_id,
+        revision=revision,
+        media_type="md",
+        parser="test",
+        policy=BlockPolicy(min_chars=0),
     )
     db.upsert_document_revision(
         local_id,
