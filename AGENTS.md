@@ -39,6 +39,7 @@ new relationships through rule-based graph closure.
 | `src/drbrain/report/` | Knowledge frontier analyzer |
 | `scripts/pipeline/` | 全量语料增强管线（scibase/openalex 342k 篇）— ingest(build/rebuild_trees)、build(jsonl-out 并发)、load_build(_merge) 入库、embed_batch(本地 0.6B 多路)、vec_backfill/vec_quantize_int8(sqlite-vec)、launch_*.sh 启动器。走"先缓存后入库"：build 只写 jsonl，完成后统一入主库；`merge_shards` 合并分片时同时携带规范正文与已发布叶节点（统一表），ANN/FTS/层次由主库一次 `index build` 重建 |
 | `scripts/serve_embedding.py` | 本地 Qwen3-Embedding-0.6B 常驻服务（openai-compat /v1/embeddings，max_seq_length=512，batch_size=8 防 OOM，GPU 绑卡） |
+| `scripts/serve_llm_proxy.py` | 索引模型多实例轮询代理（openai-compat；按"最少在飞"选上游，`GET /healthz` 报各上游在飞数）。配 `base_url` 指向代理 + `max_concurrent` 等于各实例配额之和（如 3 实例×2=6）；实例本身用 `scripts/serve_transformers_llm.py <port>` 绑不同 GPU 启动 |
 | `tests/` | pytest test suite |
 | `skills/` | Project skills (AgentSkills.io standard, canonical source) |
 | `.github/` | CI workflow, issue/PR templates |
