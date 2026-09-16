@@ -12,7 +12,7 @@ import hashlib
 from pathlib import Path
 
 from drbrain.services.canonical_content import write_canonical_content
-from drbrain.services.storage_repack import apply_repack, plan_repack
+from drbrain.services.storage_repack import RepackItem, apply_repack, plan_repack
 from drbrain.storage.database import Database
 from drbrain.tree.blocks import BlockPolicy, build_content_blocks
 from drbrain.tree.contracts import ChildRef, LeafRef, NodeRecord, leaf_node_id, region_node_id
@@ -109,6 +109,9 @@ def test_repack_collapses_fragments_and_keeps_the_revision(tmp_path: Path) -> No
     outcome = apply_repack(db, plan)
     assert outcome["applied"] == 1
     assert outcome["failed"] == []
+    # the reported totals describe the revisions that actually applied
+    assert outcome["blocks_before"] == item.blocks_before
+    assert outcome["blocks_after"] == item.blocks_after
 
     after_rows = db.get_content_blocks("p1", 1)
     assert len(after_rows) == item.blocks_after
@@ -173,3 +176,27 @@ def test_repack_skips_a_single_fragment_revision(tmp_path: Path) -> None:
     assert plan.items == []
     assert plan.skipped == 1
     assert plan.failed == []
+
+
+def test_apply_reports_only_applied_block_totals(tmp_path: Path) -> None:
+    db = _db(tmp_path)
+    _legacy_revision(db, FRAGMENTED)
+    plan = plan_repack(db)
+    applied_item = plan.items[0]
+    # a vanished revision must not inflate the reported before/after totals
+    plan.items.append(RepackItem(local_id="missing", revision=1, blocks_before=99, blocks_after=1))
+
+    outcome = apply_repack(db, plan)
+
+    assert outcome["applied"] == 1
+    assert [entry["local_id"] for entry in outcome["failed"]] == ["missing"]
+    assert outcome["blocks_before"] == applied_item.blocks_before
+    assert outcome["blocks_after"] == applied_item.blocks_after
+
+
+def test_cli_min_chars_zero_disables_merging() -> None:
+    from drbrain.cli.storage_commands import _repack_policy
+
+    assert _repack_policy(None).min_chars == BlockPolicy().min_chars
+    assert _repack_policy(0).min_chars == 0
+    assert _repack_policy(320).min_chars == 320

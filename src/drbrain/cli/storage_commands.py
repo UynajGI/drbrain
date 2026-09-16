@@ -50,6 +50,19 @@ def _papers_root(ctx: typer.Context, cfg: Any, explicit: str) -> Path:
     return Path(runtime_data_path(ctx, raw, label="papers root"))
 
 
+def _repack_policy(min_chars: int | None) -> Any:
+    """Repack policy for ``--min-chars``: ``None`` keeps the default, ``0`` disables.
+
+    ``0`` is a meaningful value (raw structural segmentation), so it must not
+    be mistaken for "flag unset" and silently replaced by the default policy.
+    """
+    from drbrain.tree.blocks import BlockPolicy
+
+    if min_chars is None:
+        return BlockPolicy()
+    return BlockPolicy(min_chars=int(min_chars))
+
+
 @storage_app.command("audit")
 def storage_audit_cmd(
     ctx: typer.Context,
@@ -164,7 +177,11 @@ def storage_repack_cmd(
     json_output: bool = typer.Option(False, "--json", help="Machine-readable plan/report"),
     local_id: str = typer.Option("", "--local-id", help="Restrict to one paper"),
     max_items: int = typer.Option(0, "--max-items", help="Plan at most N revisions"),
-    min_chars: int = typer.Option(0, "--min-chars", help="Merge target in characters"),
+    min_chars: int | None = typer.Option(
+        None,
+        "--min-chars",
+        help="Merge target in characters; 0 disables merging (default: the policy default)",
+    ),
 ):
     """Re-segment existing blocks into paragraph-sized leaves.
 
@@ -175,11 +192,10 @@ def storage_repack_cmd(
     """
     from drbrain.services.storage_repack import apply_repack, plan_repack
     from drbrain.storage.database import Database
-    from drbrain.tree.blocks import BlockPolicy
 
     cfg = _runtime_config(ctx)
     db_path = _db_path(ctx, cfg)
-    policy = BlockPolicy(min_chars=int(min_chars)) if int(min_chars) else BlockPolicy()
+    policy = _repack_policy(min_chars)
     database = Database(db_path)
     try:
         plan = plan_repack(

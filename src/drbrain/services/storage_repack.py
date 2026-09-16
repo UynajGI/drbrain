@@ -181,11 +181,17 @@ def plan_repack(
 
 
 def apply_repack(db, plan: RepackPlan, *, policy: BlockPolicy | None = None) -> dict[str, Any]:
-    """Re-segment each planned revision inside one transaction per revision."""
+    """Re-segment each planned revision inside one transaction per revision.
+
+    The returned block counts cover applied revisions only: a revision that
+    fails keeps its old segmentation and is reported in ``failed``.
+    """
     from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 
     policy = policy or BlockPolicy()
     applied = 0
+    blocks_before = 0
+    blocks_after = 0
     failed = list(plan.failed)
     for item in plan.items:
         local_id, revision = item.local_id, item.revision
@@ -231,6 +237,8 @@ def apply_repack(db, plan: RepackPlan, *, policy: BlockPolicy | None = None) -> 
                     )
                     db.insert_tree_node(leaf, publish=True)
             applied += 1
+            blocks_before += len(rows)
+            blocks_after += len(blocks)
         except Exception as exc:  # noqa: BLE001 - per-revision failure accounting
             logger.warning("[repack] {}@{} failed: {}", local_id, revision, exc)
             failed.append({"local_id": local_id, "revision": revision, "error": str(exc)})
@@ -238,6 +246,6 @@ def apply_repack(db, plan: RepackPlan, *, policy: BlockPolicy | None = None) -> 
         "applied": applied,
         "skipped": plan.skipped,
         "failed": failed,
-        "blocks_before": plan.blocks_before,
-        "blocks_after": plan.blocks_after,
+        "blocks_before": blocks_before,
+        "blocks_after": blocks_after,
     }
