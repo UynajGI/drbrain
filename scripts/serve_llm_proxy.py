@@ -5,7 +5,7 @@
 ``max_concurrent`` gate caps in-flight calls.  Running three model instances
 on three GPUs therefore needs one address that fans out — this proxy picks
 the upstream with the fewest in-flight requests (ties broken round-robin)
-and forwards the request verbatim.
+and forwards the request with proxy-safe headers.
 
 Usage::
 
@@ -28,6 +28,30 @@ import time
 HOST = "127.0.0.1"
 UPSTREAM_TIMEOUT = 900.0
 MAX_HEADER_BYTES = 64 * 1024
+
+# Hop-by-hop headers a proxy must not forward (RFC 7230 §6.1); "host" is
+# rebuilt by http.client from the upstream address.  Names listed in a
+# Connection header are dropped as well.
+_HOP_BY_HOP = {
+    "host",
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _forward_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Forward headers minus the hop-by-hop ones (and the Connection list)."""
+    drop = set(_HOP_BY_HOP)
+    for key, value in headers.items():
+        if key.lower() == "connection":
+            drop.update(part.strip().lower() for part in value.split(",") if part.strip())
+    return {key: value for key, value in headers.items() if key.lower() not in drop}
 
 
 class Router:
@@ -81,7 +105,8 @@ async def _read_request(reader: asyncio.StreamReader):
             continue
         key, value = line.split(":", 1)
         headers[key.strip()] = value.strip()
-    length = int(headers.get("Content-Length", "0") or 0)
+    lowered = {key.lower(): value for key, value in headers.items()}
+    length = int(lowered.get("content-length", "0") or 0)
     body = await reader.readexactly(length) if length else b""
     return method, path, headers, body
 
@@ -103,7 +128,7 @@ async def serve(port: int, router: Router) -> None:
         router.inflight[upstream] += 1
         started = time.monotonic()
         try:
-            forwarded = {k: v for k, v in headers.items() if k.lower() != "host"}
+            forwarded = _forward_headers(headers)
             status, out_headers, out_body = await asyncio.to_thread(
                 _forward, upstream, method, path, forwarded, body
             )
