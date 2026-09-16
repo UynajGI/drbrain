@@ -86,7 +86,7 @@ tree = [
     "sortedcontainers>=2.4",
 ]
 office = ["python-docx>=1.1", "python-pptx>=1.0", "openpyxl>=3.1"]
-gnn = ["torch>=2.0,<2.14"]
+gnn = ["torch>=2.0,<2.15"]
 anydoc = ["firecrawl-anydoc>=0.1", "ocrmypdf>=16"]
 # Common complete profiles. Dependencies are repeated intentionally because
 # PEP 621 extras cannot portably reference another extra by name.
@@ -137,7 +137,7 @@ full = [
     "sentence-transformers>=5.6.1",
     "sortedcontainers>=2.4",
     "tiktoken>=0.12",
-    "torch>=2.0,<2.14",
+    "torch>=2.0,<2.15",
     "umap-learn>=0.5",
     "uvicorn>=0.30",
     "zvec>=0.7.0",
