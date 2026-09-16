@@ -272,3 +272,17 @@ class TestParagraphMerge:
         assert blocks[-1].char_end == len(MERGE_MD)
         for block in blocks:
             assert block.text_hash == hashlib.sha256(block.text.encode()).hexdigest()
+
+    def test_merge_respects_the_token_ceiling_when_characters_underestimate(self):
+        # One token per character (CJK-like density): a 4-chars-per-token
+        # ceiling let two 300-character paragraphs merge past ``max_tokens``.
+        paragraph = "字" * 300
+        text = "# 标题\n\n" + paragraph + "\n\n" + paragraph
+        policy = BlockPolicy(max_tokens=512, count_tokens=lambda value: max(1, len(value)))
+        blocks = build_content_blocks(
+            text, local_id="p", revision=1, media_type="md", parser="test", policy=policy
+        )
+        assert reconstruct(blocks) == text
+        # the second 300-token paragraph no longer fits the 512-token window
+        assert len(blocks) == 2
+        assert all(policy.count_tokens(block.text) <= policy.max_tokens for block in blocks)

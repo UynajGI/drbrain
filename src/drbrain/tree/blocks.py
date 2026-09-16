@@ -292,6 +292,7 @@ def segment_text(text: str) -> list[Segment]:
 
 
 def _merge_spans(
+    text: str,
     spans: Sequence[tuple[int, int, Segment]],
     policy: BlockPolicy,
 ) -> list[tuple[int, int, Segment]]:
@@ -300,9 +301,10 @@ def _merge_spans(
     The canonical partition is preserved exactly — merging only re-groups
     adjacent ranges — while granularity becomes a section chunk instead of a
     line fragment.  A heading always opens a new group (its title stays with
-    the section it introduces), groups stop growing at ``min_chars``, and a
-    rough token ceiling keeps an embedding's 512-token window covering the
-    whole block.
+    the section it introduces), groups stop growing at ``min_chars``, and the
+    grown group stays inside ``max_tokens``: each span's tokens are counted
+    once and summed, so dense scripts (CJK packs ~1 token per character) can
+    no longer slip past a characters-per-token estimate.
 
     Page boundaries are not a merge barrier: spans from adjacent pages may
     rejoin, and the merged block's ``page_start``/``page_end`` then cover the
@@ -310,22 +312,26 @@ def _merge_spans(
     """
     if policy.min_chars <= 0 or len(spans) < 2:
         return list(spans)
-    ceiling = 4 * int(policy.max_tokens)
+    token_limit = max(1, int(policy.max_tokens))
 
     merged: list[tuple[int, int, Segment]] = []
     begin, end, segment = spans[0]
+    group_tokens = policy.count_tokens(text[begin:end])
     for next_begin, next_end, next_segment in spans[1:]:
         length = end - begin
+        tokens = policy.count_tokens(text[next_begin:next_end])
         opens_section = next_segment.kind == "title"
         same_section = next_segment.heading_path == segment.heading_path
-        grows = length < policy.min_chars and length + (next_end - next_begin) <= ceiling
+        grows = length < policy.min_chars and group_tokens + tokens <= token_limit
         if not opens_section and same_section and grows:
             end = next_end
+            group_tokens += tokens
             if segment.kind == "title" and next_segment.kind != "title":
                 segment = next_segment
             continue
         merged.append((begin, end, segment))
         begin, end, segment = next_begin, next_end, next_segment
+        group_tokens = tokens
     merged.append((begin, end, segment))
     return merged
 
@@ -435,7 +441,7 @@ def build_content_blocks(
             for sub_begin, sub_finish in _split_oversized(text, begin, finish, policy):
                 spans.append((sub_begin, sub_finish, segment))
 
-    spans = _merge_spans(spans, policy)
+    spans = _merge_spans(text, spans, policy)
 
     blocks: list[ContentBlock] = []
     for ordinal, (begin, finish, segment) in enumerate(spans):
