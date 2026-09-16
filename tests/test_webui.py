@@ -1175,3 +1175,132 @@ def test_project_search_restricts_candidates_before_ranking(web):
     assert [row["local_id"] for row in scoped] == ["target"]
     unscoped = service.search(web.cfg, "common", limit=5)
     assert "target" not in {row["local_id"] for row in unscoped}
+
+
+# ── review fixes: evidence/answer scope + readiness probe ────────────────────
+
+
+def _workspace_project(web, name: str) -> str:
+    return next(
+        p for p in web.client.get("/api/projects").json()["items"] if p["workspace_name"] == name
+    )["project_id"]
+
+
+def _capture_evidence_core(monkeypatch) -> dict:
+    """Keep ``run_evidence_search`` offline and record the scope it was given."""
+    from drbrain.services import evidence_search as core
+
+    captured: dict = {}
+
+    def fake_run(cfg, query, *, limit=20, paper_ids=None, source="local"):
+        captured.update(limit=limit, paper_ids=paper_ids, source=source)
+        return {
+            "query": query,
+            "status": "ok",
+            "hint": "",
+            "engine": "sql",
+            "source": source,
+            "route": {},
+            "generations": {},
+            "legs": [],
+            "evidence": [],
+        }
+
+    monkeypatch.setattr(core, "run_evidence_search", fake_run)
+    return captured
+
+
+def test_evidence_scope_intersects_explicit_paper_ids(web, monkeypatch):
+    """P1(a): an explicit filter can never widen a project's membership."""
+    _make_workspace(web.root, "rev-ws", ["p-in"])
+    captured = _capture_evidence_core(monkeypatch)
+    pid = _workspace_project(web, "rev-ws")
+
+    out = service.evidence_search(web.cfg, "q", paper_ids=["p-in", "p-out"], project_id=pid)
+    assert captured["paper_ids"] == ["p-in"]  # the out-of-scope id is dropped
+    assert out["scope"]["paper_ids"] == ["p-in"]
+    assert out["scope"]["reason"] == ""
+
+    empty = service.evidence_search(web.cfg, "q", paper_ids=["p-out"], project_id=pid)
+    # An explicit filter that matches nothing is an empty scope, not "no filter".
+    assert captured["paper_ids"] == []
+    assert empty["scope"]["reason"] == "out_of_scope_paper_ids"
+
+
+def test_empty_workspace_evidence_scope_is_never_unrestricted(web, monkeypatch):
+    """P1(b): an empty project must not coerce ``[]`` into an unfiltered read."""
+    _seed_paper(web.root, "p-1", "Library paper")
+    _make_workspace(web.root, "rev-empty-ws", [])
+    captured = _capture_evidence_core(monkeypatch)
+    pid = _workspace_project(web, "rev-empty-ws")
+
+    out = service.evidence_search(web.cfg, "q", project_id=pid)
+
+    assert captured["paper_ids"] == []  # never None (which reads the whole corpus)
+    assert out["scope"]["paper_ids"] == []
+    assert out["scope"]["reason"] == "empty_project"
+
+
+def test_project_scoped_answer_drops_out_of_scope_citations(web, monkeypatch):
+    """P1(c): the answer path cannot present another project's papers."""
+    import drbrain.rag.engine as engine
+
+    _seed_paper(web.root, "p-in", "Member paper")
+    _seed_paper(web.root, "p-out", "Outside paper")
+    _make_workspace(web.root, "rev-answer-ws", ["p-in"])
+    pid = _workspace_project(web, "rev-answer-ws")
+    monkeypatch.setattr(engine, "resolve_engine", lambda cfg, name: "llamaindex")
+
+    def fake_ask(cfg, db, question, top_k=5, **kwargs):
+        return {
+            "question": question,
+            "answer": "synthesized",
+            "engine": "llamaindex",
+            "sources": [
+                {"paper_id": "p-out", "node_id": "n-1"},
+                {"paper_id": "p-in", "node_id": "n-2"},
+            ],
+            "evidence_ids": ["p-out:n-1", "p-in:n-2"],
+        }
+
+    monkeypatch.setattr(engine, "ask_llamaindex", fake_ask)
+    out = service.ask(web.cfg, "compare", project_id=pid)
+    assert [s["paper_id"] for s in out["sources"]] == ["p-in"]
+    assert out["evidence_ids"] == ["p-in:n-2"]
+    assert out["scope"]["dropped_sources"] == 1
+
+    # Nothing in scope → an explicit state, never an answer about unseen papers.
+    monkeypatch.setattr(
+        engine,
+        "ask_llamaindex",
+        lambda cfg, db, question, top_k=5, **kwargs: {
+            "question": question,
+            "answer": "synthesized",
+            "engine": "llamaindex",
+            "sources": [{"paper_id": "p-out", "node_id": "n-1"}],
+            "evidence_ids": ["p-out:n-1"],
+        },
+    )
+    blocked = service.ask(web.cfg, "compare", project_id=pid)
+    assert blocked["status"] == "permission_denied" and blocked["sources"] == []
+    from drbrain.app.web.labels import answer_status
+
+    assert answer_status(blocked)["key"] == "permission_denied"
+
+
+def test_search_readiness_follows_a_non_unified_route(web):
+    """P2: a route without the unified tree is not reported unready for lacking it."""
+    cfg = dict(web.cfg)
+    cfg["llamaindex"] = {"enabled": True, "rag_engine": "sql", "retrievers": ["bm25", "vector"]}
+
+    ready = service._search_readiness(cfg)
+
+    assert ready["ready"] is True and ready["reasons"] == []
+    assert ready["legs"] == ["bm25", "vector"]
+
+
+def test_search_page_renders_the_redirect_error_code(web):
+    """P2: an empty question comes back as a rendered message, not silence."""
+    page = web.client.get("/search?project_id=prj-default&mode=answer&error_code=empty_question")
+    assert page.status_code == 200
+    assert "请输入问题" in page.text

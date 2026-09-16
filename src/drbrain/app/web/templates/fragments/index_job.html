@@ -2,7 +2,7 @@
    the poll stops on its own the moment a terminal state is rendered, because
    the wrapper's hx-trigger only exists for non-terminal states. #}
 {% import "_macros.html" as m %}
-{% set active = job.state in ('pending', 'running') %}
+{% set active = job.state in ('pending', 'running', 'paused') %}
 <div id="index-job"
      {% if active %}
      hx-get="/ui/fragments/index-job?project_id={{ project.project_id | urlencode }}{% if job.job_id %}&job_id={{ job.job_id | urlencode }}{% endif %}"

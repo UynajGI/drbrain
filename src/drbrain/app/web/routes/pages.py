@@ -252,12 +252,15 @@ def search_page(
     paper: str = Query(""),
     source: str = Query("local"),
     limit: int = Query(0),
+    error_code: str = Query(""),
 ) -> Response:
     """检索与证据：要证据（原文片段）或要答案（带出处）。
 
     Evidence mode reads the same payload as ``drbrain search`` (04-arch A2); the
     result is capped and the page says so, because the retrieval layer has no
-    total to report (FR-S8 rewrite).
+    total to report (FR-S8 rewrite).  ``error_code`` renders a redirect outcome
+    (an empty question, say) through the shared error-code table — never raw
+    text from the URL.
     """
     cfg = deps.get_cfg(request)
     project = deps.resolve_project(request, project_id)
@@ -287,6 +290,7 @@ def search_page(
         evidence_query=q,
         paper_filter=paper,
         source=source,
+        error=labels.error_text(error_code),
     )
 
 
@@ -327,7 +331,7 @@ def search_answer_form(
             status_code=303,
         )
     try:
-        answer = service.ask(cfg, question)
+        answer = service.ask(cfg, question, project_id=project["project_id"])
     except Exception as exc:  # noqa: BLE001 - a failed retrieval is a status, not a crash
         from loguru import logger
 

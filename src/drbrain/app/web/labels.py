@@ -105,6 +105,11 @@ ANSWER_STATUSES: dict[str, tuple[str, str, str]] = {
         "bad",
         "这不是“没找到”，而是检索本身没有跑完；请检查索引与服务配置后重试。",
     ),
+    "permission_denied": (
+        "超出可读范围",
+        "warn",
+        "这次提问命中的来源都不在当前项目内：切到对应项目，或先把这些文献加入项目。",
+    ),
     "empty_question": ("请输入问题", "warn", "问题不能为空。"),
 }
 
@@ -121,6 +126,10 @@ def answer_status(result: dict[str, Any] | None) -> dict[str, str]:
     status = str(payload.get("status") or "")
     if reason == "index_not_prepared":
         key = "index_not_prepared"
+    elif reason in ("out_of_scope", "empty_project"):
+        # A project-scoped answer whose citations fall outside the scope: the
+        # reader needs "out of range", not "engine disabled" (review P1).
+        key = "permission_denied"
     elif payload.get("unavailable"):
         key = "unavailable"
     elif status in ANSWER_STATUSES:
@@ -223,11 +232,31 @@ INDEX_REASONS: dict[str, tuple[str, str]] = {
 #: Verification checks (``index verify``) in user language.
 INDEX_CHECKS: dict[str, tuple[str, str]] = {
     "tree_generation": ("索引版本可用", "没有已发布的索引版本：运行 drbrain index build。"),
+    "embedding_profile": (
+        "向量配置指纹一致",
+        "现有索引是用另一套 embedding 配置建的：运行 drbrain index build 重建。",
+    ),
+    "generation_freshness": (
+        "索引版本不过期",
+        "库里已有比当前索引版本更新的内容：运行 drbrain index build。",
+    ),
+    "last_build": (
+        "上次构建成功",
+        "最近一次构建失败：在索引页重试，或终端运行 drbrain index build。",
+    ),
     "content_fts": ("正文能被直接搜到", "正文索引与正文不一致：重新运行 drbrain index build。"),
     "node_vectors": ("向量与片段一致", "有片段缺向量或向量过期：运行 drbrain index build。"),
     "leaf_reachability": (
         "片段都归到父主题",
         "未归属父主题的片段是合法的多根，不算故障：下次 index build 会重试。",
+    ),
+    "llamaindex_generation": (
+        "引擎索引版本可用",
+        "还没有 LlamaIndex 引擎索引：运行 drbrain rag index；统一存储部署可忽略此项。",
+    ),
+    "sql_snapshot": (
+        "SQL 快照可用",
+        "没有可用的 SQL 快照：重新发布快照，或切换到统一存储（drbrain index build）。",
     ),
     "engine_generation": (
         "引擎版本固定",

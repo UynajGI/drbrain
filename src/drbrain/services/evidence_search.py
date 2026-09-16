@@ -15,7 +15,7 @@ command that prepares it — never an exception for the caller to guess at.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -141,14 +141,19 @@ def _generations(cfg: Any, result: Any) -> dict[str, Any]:
 
 
 def _local_evidence(
-    cfg: Any, query: str, limit: int, paper_ids: list[str] | None
+    cfg: Any, query: str, limit: int, paper_ids: Sequence[str] | None
 ) -> tuple[Any, dict[str, Any], str]:
-    """Run the ask retrieval chain and return ``(rows, route, error)``."""
+    """Run the ask retrieval chain and return ``(rows, route, error)``.
+
+    ``paper_ids`` distinguishes "no restriction" (``None``) from "an explicit,
+    possibly empty scope" (a sequence): an empty sequence is an empty filter —
+    it must never be coerced into ``None``, which would read the whole corpus.
+    """
     from drbrain.rag.config import coerce_config
     from drbrain.rag.retrieval import retrieve_documents
 
     route = _route_info(cfg)
-    filters = {"paper_ids": list(paper_ids)} if paper_ids else None
+    filters = {"paper_ids": [str(item) for item in paper_ids]} if paper_ids is not None else None
     typed = coerce_config(cfg)
     graph = None
     if "graph" in route["extras"]:
@@ -183,7 +188,7 @@ def run_evidence_search(
     query: str,
     *,
     limit: int = DEFAULT_EVIDENCE_LIMIT,
-    paper_ids: list[str] | None = None,
+    paper_ids: Sequence[str] | None = None,
     source: str = "local",
 ) -> dict[str, Any]:
     """Build the ``drbrain search`` payload (same keys, same meanings).
@@ -192,6 +197,10 @@ def run_evidence_search(
     found), ``empty`` (nothing matched), ``source_unavailable`` (a requested
     source could not run at all) or ``degraded`` (local rows fine, the external
     source failed).  ``hint`` says what to do about the non-ok ones.
+
+    ``paper_ids=None`` means "no scope restriction"; an explicit sequence is
+    enforced as a filter, and an *empty* sequence means "nothing is in scope",
+    which returns immediately instead of being widened to the whole corpus.
     """
     text = str(query or "").strip()
     if not text:
@@ -211,6 +220,21 @@ def run_evidence_search(
         selected = "local"
     from drbrain.rag.config import get_llamaindex_config
 
+    if paper_ids is not None and not list(paper_ids):
+        # An explicit empty scope is an empty result, never "no filter": the
+        # request already says nothing is readable, so no retrieval runs.
+        return {
+            "query": text,
+            "status": "empty",
+            "hint": "检索范围为空：没有可检索的论文（项目里还没有论文，或所选论文不在项目内）。",
+            "engine": str(getattr(get_llamaindex_config(cfg), "rag_engine", "llamaindex") or ""),
+            "source": selected,
+            "route": _route_info(cfg),
+            "generations": {"result": None, "tree": None, "sql": None},
+            "legs": [],
+            "evidence": [],
+            "scope_empty": True,
+        }
     local_requested = selected in ("local", "all")
     external_requested = selected in ("arxiv", "all")
 
@@ -222,7 +246,7 @@ def run_evidence_search(
     if local_requested:
         started = time.monotonic()
         try:
-            rows, route, local_error = _local_evidence(cfg, text, int(limit), paper_ids or None)
+            rows, route, local_error = _local_evidence(cfg, text, int(limit), paper_ids)
         except Exception as exc:  # noqa: BLE001 - report the remedy instead of a traceback
             local_error = safe_error(exc)
             rows = None

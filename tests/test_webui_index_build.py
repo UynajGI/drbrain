@@ -154,6 +154,85 @@ def test_renew_and_reopen_only_touch_the_holder():
     assert db.get_tree_job(job_id)["state"] == "running"
 
 
+def test_dead_pending_slot_is_recoverable(cfg):
+    """04-arch A1 P2: a process that died between insert and claim must not
+    block every later start with ``already_running`` forever."""
+    db = Database(cfg["db"]["path"])
+    try:
+        scope = index_build.index_build_scope_key(cfg, db, tree_storage=None)
+        slot = index_build.index_build_job_id(scope)
+        db.insert_tree_job(slot, scope, kind=KIND)  # ... and then the process died
+        db.conn.execute(
+            "UPDATE tree_build_jobs SET updated_at = datetime('now', '-600 seconds') WHERE job_id = ?",
+            (slot,),
+        )
+        db.conn.commit()
+        row = db.get_tree_job(slot)
+        assert index_build.job_is_active(db, row) is False
+        payload = index_build.index_job_payload(db, row)
+        assert payload["dead_insert"] is True and payload["stale"] is True
+
+        taken, disposition = index_build.ensure_index_build_job(db, scope, owner="next")
+        assert disposition == "claimed"
+        assert taken["state"] == "running" and taken["owner"] == "next"
+    finally:
+        db.close()
+
+
+def test_fresh_pending_slot_is_not_stolen(cfg):
+    """The grace window protects a start whose worker is still on its way."""
+    db = Database(cfg["db"]["path"])
+    try:
+        scope = index_build.index_build_scope_key(cfg, db, tree_storage=None)
+        slot = index_build.index_build_job_id(scope)
+        db.insert_tree_job(slot, scope, kind=KIND)
+        row = db.get_tree_job(slot)
+        assert index_build.job_is_active(db, row) is True
+        assert index_build.index_job_payload(db, row)["stale"] is False
+
+        _reused, disposition = index_build.ensure_index_build_job(db, scope, owner="terminal-cli")
+        assert disposition == "reused"
+        claimed, disposition = index_build.ensure_index_build_job(
+            db, scope, owner="webui", claim_fresh_pending=True
+        )
+        assert disposition == "claimed" and claimed["owner"] == "webui"
+    finally:
+        db.close()
+
+
+def test_renew_loop_reports_a_lost_lease_and_closes_its_own_handle():
+    """The heartbeat uses its own connection and never keeps a stolen slot."""
+
+    class FakeHandle:
+        def __init__(self, ok: bool) -> None:
+            self.ok = ok
+            self.calls = 0
+            self.closed = False
+
+        def renew_tree_job(self, job_id: str, owner: str, *, ttl_seconds: int) -> bool:
+            self.calls += 1
+            return self.ok
+
+        def close(self) -> None:
+            self.closed = True
+
+    stop, lost = threading.Event(), threading.Event()
+    handle = FakeHandle(ok=False)
+    thread = threading.Thread(
+        target=index_build._renew_loop,
+        args=(lambda: handle, object(), "job-x", "worker"),
+        kwargs={"ttl_seconds": 60, "interval": 0.01, "stop": stop, "lost": lost},
+        daemon=True,
+    )
+    thread.start()
+    try:
+        assert lost.wait(timeout=5), "a refused renewal must be reported"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert handle.calls >= 1 and handle.closed
+
+
 # ── the build body under the job ─────────────────────────────────────────────
 
 
@@ -217,24 +296,93 @@ def test_run_index_build_is_busy_when_a_live_lease_holds_the_slot(cfg, monkeypat
         db.close()
 
 
+def test_heartbeat_renews_the_lease_inside_a_long_stage(cfg, monkeypatch):
+    """04-arch A1 P1: a stage that outlives the lease must not lose the slot."""
+    seen: list[tuple[str, str]] = []
+
+    def _lease_snapshot() -> tuple[str, str]:
+        # A reader's own handle (runtime-resolved like every other caller here).
+        handle = Database(cfg["db"]["path"])
+        try:
+            row = handle.conn.execute(
+                "SELECT claim_expires_at, owner FROM tree_build_jobs LIMIT 1"
+            ).fetchone()
+        finally:
+            handle.close()
+        return (str(row[0]), str(row[1]))
+
+    def long_stage(db, *, on_stage=None, **kwargs):
+        # Inside the "long stage": the lease has to keep moving on its own.
+        seen.append(_lease_snapshot())
+        time.sleep(1.2)
+        seen.append(_lease_snapshot())
+        other = Database(cfg["db"]["path"])
+        try:
+            scope = index_build.index_build_scope_key(cfg, other, tree_storage=None)
+            row, disposition = index_build.ensure_index_build_job(other, scope, owner="thief")
+            seen.append((disposition, str(row["owner"])))
+        finally:
+            other.close()
+        outcome = PrepareOutcome()
+        outcome.fts = {"status": "ok"}
+        outcome.vectors = {"status": "ok", "embedded": 0, "pending": 0}
+        outcome.hierarchy = {"status": "complete", "created": 0, "frontier_remaining": 0}
+        outcome.publication = {"status": "skipped", "reason": "unchanged"}
+        if on_stage is not None:
+            for name in ("fts", "vectors", "hierarchy", "publication"):
+                on_stage(name, getattr(outcome, name))
+        return outcome
+
+    monkeypatch.setattr("drbrain.tree.prepare.prepare_unified_index", long_stage)
+    db = Database(cfg["db"]["path"])
+    try:
+        payload = index_build.run_index_build(
+            cfg, db=db, owner="worker-a", ttl_seconds=2, heartbeat_seconds=0.05
+        )
+    finally:
+        db.close()
+    assert payload["ok"] is True
+    assert seen[0][1] == seen[1][1] == "worker-a"  # still ours throughout
+    assert seen[1][0] > seen[0][0], "the lease did not move during the long stage"
+    # ... and a second caller was refused while the stage was running.
+    assert seen[2] == ("reused", "worker-a")
+
+
+def test_lost_lease_stops_the_build_without_overwriting_the_slot(cfg, monkeypatch):
+    _stub_stages(monkeypatch)
+    db = Database(cfg["db"]["path"])
+    monkeypatch.setattr(
+        Database, "renew_tree_job", lambda self, job_id, owner, ttl_seconds=900: False
+    )
+    try:
+        with pytest.raises(index_build.IndexBuildBusyError):
+            index_build.run_index_build(cfg, db=db, owner="worker-a", heartbeat_seconds=0.05)
+        scope = index_build.index_build_scope_key(cfg, db, tree_storage=None)
+        row = db.get_tree_job(index_build.index_build_job_id(scope))
+        # The winner's row is never rewritten by the loser.
+        assert row["state"] == "running" and row["reason"] == ""
+    finally:
+        db.close()
+
+
 # ── service facade ───────────────────────────────────────────────────────────
 
 
-def _wait_for_stage(cfg, job_id: str, *, timeout: float = 10.0) -> dict:
-    """Wait until the worker owns the slot and wrote its first checkpoint.
+def _wait_for_stage(cfg, job_id: str, *, stage: str = "fts", timeout: float = 10.0) -> dict:
+    """Wait until the worker reaches ``stage`` and return that payload.
 
-    ``start_index_build`` returns as soon as the worker thread is launched, so
-    "which stage is it in" only becomes a well-defined question once the
-    worker has claimed the slot — this makes that transition observable
-    instead of racing it.
+    Waiting for the *first non-empty* stage is not the same question: the run
+    publishes a ``"lexical"`` checkpoint before it does any work, so a poller
+    can legitimately observe that one instead (OCR review: flaky assertion).
+    This waits for the stage the caller actually cares about.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = service.index_job_state(cfg, job_id)
-        if state.get("stage"):
+        if state.get("stage") == stage:
             return state
         time.sleep(0.05)
-    raise AssertionError("the build never reported a stage")
+    raise AssertionError(f"the build never reported stage {stage!r}")
 
 
 def test_start_index_build_reuses_the_live_job(cfg, monkeypatch):

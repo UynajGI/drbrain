@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -45,6 +46,14 @@ TERMINAL_STATES: tuple[str, ...] = ("done", "failed")
 STAGES: tuple[str, ...] = ("lexical", "fts", "vectors", "hierarchy", "publication")
 #: Lease for the build slot. Long enough for a stage, renewed at every boundary.
 DEFAULT_LEASE_SECONDS = 900
+#: A freshly materialised ``pending`` row is "in flight" only for this long: the
+#: worker claims it within milliseconds, so a pending row older than this means
+#: the process died between insert and claim (04-arch A1 P2) and the next caller
+#: may take it over.
+PENDING_GRACE_SECONDS = 120
+#: Upper bound for the mid-stage lease heartbeat: a 900 s lease is renewed long
+#: before it lapses, and a long stage cannot lose the slot to a second worker.
+HEARTBEAT_MAX_SECONDS = 300.0
 
 
 class IndexBuildError(RuntimeError):
@@ -145,20 +154,109 @@ def lease_expired(db: Any, job_id: str) -> bool:
     return bool(row[0]) if row is not None else False
 
 
-def job_is_active(db: Any, row: dict | None) -> bool:
-    """True when the run is in flight (or resumable) **and** still leased.
+def pending_is_fresh(db: Any, job_id: str, *, grace_seconds: int = PENDING_GRACE_SECONDS) -> bool:
+    """Whether a ``pending`` row was created/updated inside the grace window.
 
-    A ``running`` row whose lease lapsed is not "active": it is a crashed or
-    killed run, and the next caller may take it over.
+    A pending row has no lease (no worker has claimed it yet), so its freshness
+    is the only evidence that a worker is on its way.  Timestamps are compared
+    by SQLite against ``CURRENT_TIMESTAMP``, the same clock the writers use.
+    """
+    row = db.conn.execute(
+        """SELECT updated_at > datetime('now', ?) FROM tree_build_jobs WHERE job_id = ?""",
+        (f"-{max(0, int(grace_seconds))} seconds", str(job_id)),
+    ).fetchone()
+    return bool(row[0]) if row is not None else False
+
+
+def job_is_active(
+    db: Any,
+    row: dict | None,
+    *,
+    pending_grace_seconds: int = PENDING_GRACE_SECONDS,
+) -> bool:
+    """True when the run is in flight (or resumable) **and** still ours to respect.
+
+    * ``running`` with a live lease — in flight;
+    * ``running`` with a lapsed lease — a crashed/killed worker: takeable;
+    * ``pending`` inside the grace window — a worker was just launched for it;
+    * ``pending`` past the window — a dead insert (04-arch A1 P2): takeable;
+    * ``paused`` — resumable, no lease required.
     """
     if not row:
         return False
     state = str(row.get("state") or "")
     if state not in ACTIVE_STATES:
         return False
+    job_id = str(row.get("job_id") or "")
     if state == "running":
-        return not lease_expired(db, str(row.get("job_id") or ""))
+        return not lease_expired(db, job_id)
+    if state == "pending":
+        return pending_is_fresh(db, job_id, grace_seconds=pending_grace_seconds)
     return True
+
+
+def heartbeat_interval(ttl_seconds: int, *, override: float | None = None) -> float:
+    """Seconds between mid-stage lease renewals (never longer than a third of the lease)."""
+    if override is not None and float(override) > 0:
+        return float(override)
+    return max(1.0, min(HEARTBEAT_MAX_SECONDS, float(ttl_seconds) / 3.0))
+
+
+def heartbeat_handle_factory(db: Any) -> Any:
+    """A factory for the heartbeat's own connection, or ``None`` to skip it.
+
+    A SQLite connection belongs to the thread that opened it, so the renewer
+    must not touch the build's handle.  A file-backed database gets a second
+    connection; an in-memory database cannot be shared across connections at
+    all (a new one would be a different, empty database), and it also cannot be
+    reached by another process — so there is nothing to renew against.
+    """
+    path = str(getattr(db, "path", "") or "")
+    if not path or path == ":memory:":
+        return None
+    from drbrain.storage.database import Database
+
+    return lambda: Database(path)
+
+
+def _renew_loop(
+    handle_factory: Any,
+    fallback_db: Any,
+    slot: str,
+    owner: str,
+    *,
+    ttl_seconds: int,
+    interval: float,
+    stop: threading.Event,
+    lost: threading.Event,
+) -> None:
+    """Renew the slot lease while a long stage runs (04-arch A1 P1).
+
+    Runs on its own connection; a renewal that says "we no longer own this"
+    raises ``lost`` so the next stage boundary stops the build instead of
+    racing the worker that took over.  A transient database error is retried on
+    the next tick — the lease is still good until it lapses.
+    """
+    from loguru import logger
+
+    handle = None
+    try:
+        handle = handle_factory() if handle_factory is not None else fallback_db
+        while not stop.wait(interval):
+            try:
+                renewed = handle.renew_tree_job(slot, owner, ttl_seconds=ttl_seconds)
+            except Exception as exc:  # noqa: BLE001 - retried on the next tick
+                logger.warning("[index] lease renewal for {} failed: {}", slot, exc)
+                continue
+            if not renewed:
+                lost.set()
+                return
+    finally:
+        if handle is not None and handle is not fallback_db:
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001 - a closing handle is never fatal here
+                pass
 
 
 def ensure_index_build_job(
@@ -168,23 +266,31 @@ def ensure_index_build_job(
     owner: str,
     job_id: str = "",
     ttl_seconds: int = DEFAULT_LEASE_SECONDS,
+    claim_fresh_pending: bool = False,
 ) -> tuple[dict, str]:
     """Resolve the scope slot and try to take it.
 
     Returns ``(row, disposition)`` where disposition is one of:
 
     * ``"claimed"`` — a fresh or finished slot is now ours;
-    * ``"taken_over"`` — a stale (lease-expired) run is now ours;
-    * ``"reused"`` — somebody else holds a live lease; the caller must not work.
+    * ``"taken_over"`` — a stale (lease-expired run, or a dead ``pending``
+      insert from a process that died before claiming) is now ours;
+    * ``"reused"`` — a live lease, or a ``pending`` row so fresh that its worker
+      is still on its way, belongs to somebody else; the caller must not work.
 
     ``job_id`` lets a caller name the slot explicitly (the WebUI hands the same
     id to its worker); it must belong to ``scope_key`` or the call fails closed.
+    ``claim_fresh_pending`` is for that WebUI worker: the service materialises
+    the ``pending`` row before spawning it, so the row it is about to claim is
+    legitimately its own (04-arch A1 P2).
     """
     slot = str(job_id or index_build_job_id(scope_key))
+    created_here = False
     row = db.get_tree_job(slot)
     if row is None:
         try:
             db.insert_tree_job(slot, scope_key, kind=KIND)
+            created_here = True
         except sqlite3.IntegrityError:
             pass  # another process created the slot first; reuse its row
         row = db.get_tree_job(slot)
@@ -197,6 +303,15 @@ def ensure_index_build_job(
     if state in TERMINAL_STATES:
         if db.reopen_tree_job(slot, owner, ttl_seconds=ttl_seconds):
             return db.get_tree_job(slot) or row, "claimed"
+        return db.get_tree_job(slot) or row, "reused"
+    if (
+        state == "pending"
+        and not created_here
+        and not claim_fresh_pending
+        and pending_is_fresh(db, slot)
+    ):
+        # Somebody launched a worker moments ago; stealing the slot here would
+        # make the caller's own worker fail with "busy" and double the work.
         return db.get_tree_job(slot) or row, "reused"
     if db.claim_tree_job(slot, owner, ttl_seconds=ttl_seconds):
         return db.get_tree_job(slot) or row, (
@@ -341,8 +456,13 @@ def index_job_payload(db: Any, row: dict | None, *, cfg: Any = None) -> dict[str
     if state in TERMINAL_STATES:
         stage = ""
         stages_done = [name for name in STAGES if name in stages_done] or list(STAGES)
+    job_id = str(row.get("job_id") or "")
+    # "Nobody is working on this any more": a lapsed lease on a running row, or
+    # a pending row whose worker never arrived (04-arch A1 P2).
+    leased_out = state == "running" and lease_expired(db, job_id)
+    dead_insert = state == "pending" and not pending_is_fresh(db, job_id)
     payload: dict[str, Any] = {
-        "job_id": str(row.get("job_id") or ""),
+        "job_id": job_id,
         "kind": str(row.get("kind") or KIND),
         "state": state,
         "owner": str(row.get("owner") or ""),
@@ -360,8 +480,9 @@ def index_job_payload(db: Any, row: dict | None, *, cfg: Any = None) -> dict[str
             for key in ("ok", "changed", "published", "failed_stages", "duration_ms")
             if key in metrics
         },
-        "lease_expired": state == "running" and lease_expired(db, str(row.get("job_id") or "")),
-        "stale": state == "running" and lease_expired(db, str(row.get("job_id") or "")),
+        "lease_expired": leased_out,
+        "dead_insert": dead_insert,
+        "stale": leased_out or dead_insert,
     }
     try:
         payload["live"] = live_index_counts(db)
@@ -427,8 +548,9 @@ def _checkpoint(
     pending: dict[str, Any],
     counts: dict[str, Any],
     started_at: float,
+    ttl_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> bool:
-    """Persist progress and renew the lease.
+    """Persist progress and renew the lease with the run's own TTL.
 
     Returns whether we still hold the lease.  A checkpoint write is best-effort
     (progress must never fail a build), but a *lost* lease is not: another
@@ -451,7 +573,7 @@ def _checkpoint(
         from loguru import logger
 
         logger.warning("[index] could not checkpoint job {}: {}", job_id, exc)
-    return bool(db.renew_tree_job(job_id, owner, ttl_seconds=DEFAULT_LEASE_SECONDS))
+    return bool(db.renew_tree_job(job_id, owner, ttl_seconds=int(ttl_seconds)))
 
 
 def run_index_build(
@@ -464,6 +586,8 @@ def run_index_build(
     job_id: str = "",
     owner: str = "",
     ttl_seconds: int = DEFAULT_LEASE_SECONDS,
+    own_slot: bool = False,
+    heartbeat_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run the corpus index build under one claimed job slot.
 
@@ -484,7 +608,16 @@ def run_index_build(
     profile, profile_error = embedding_profile(cfg)
 
     row, disposition = ensure_index_build_job(
-        db, scope_key, owner=owner, job_id=slot, ttl_seconds=ttl_seconds
+        db,
+        scope_key,
+        owner=owner,
+        job_id=slot,
+        ttl_seconds=ttl_seconds,
+        # A caller that names the slot explicitly is claiming a start it owns
+        # (the WebUI materialises the ``pending`` row before spawning its
+        # worker); an auto-derived slot must respect the pending grace so a
+        # terminal CLI never steals a start that is still in flight.
+        claim_fresh_pending=own_slot or bool(job_id),
     )
     if disposition == "reused":
         raise IndexBuildBusyError(
@@ -520,9 +653,34 @@ def run_index_build(
         pending=pending,
         counts={},
         started_at=started,
+        ttl_seconds=ttl_seconds,
     )
 
     lease_lost = False
+
+    # Long stages (vectors/hierarchy run for minutes to hours) must keep the
+    # lease alive between stage boundaries, or another worker may legitimately
+    # take the slot while this one is still writing (04-arch A1 P1).  The
+    # renewer owns a second connection; in-memory databases skip it (nothing to
+    # renew against, and a new connection would be a different database).
+    stop_renewing = threading.Event()
+    renewer_lost = threading.Event()
+    renewer: threading.Thread | None = None
+    handle_factory = heartbeat_handle_factory(db)
+    if handle_factory is not None:
+        renewer = threading.Thread(
+            target=_renew_loop,
+            args=(handle_factory, db, slot, owner),
+            kwargs={
+                "ttl_seconds": int(ttl_seconds),
+                "interval": heartbeat_interval(ttl_seconds, override=heartbeat_seconds),
+                "stop": stop_renewing,
+                "lost": renewer_lost,
+            },
+            name=f"index-build-renew-{slot[-6:]}",
+            daemon=True,
+        )
+        renewer.start()
 
     def on_stage(stage: str, payload: dict[str, Any]) -> None:
         nonlocal lease_lost
@@ -548,6 +706,7 @@ def run_index_build(
             pending=pending,
             counts=counts,
             started_at=started,
+            ttl_seconds=ttl_seconds,
         ):
             # ``prepare_unified_index`` deliberately swallows callback errors,
             # so the loss is recorded and acted on after the call; the stages
@@ -569,6 +728,7 @@ def run_index_build(
             pending=pending,
             counts=counts,
             started_at=started,
+            ttl_seconds=ttl_seconds,
         ):
             raise IndexBuildBusyError(slot, state="running", owner="another worker")
 
@@ -594,7 +754,11 @@ def run_index_build(
         except Exception:  # noqa: BLE001 - the original failure is the one to raise
             pass
         raise
-    if lease_lost:
+    finally:
+        stop_renewing.set()
+        if renewer is not None:
+            renewer.join(timeout=5.0)
+    if lease_lost or renewer_lost.is_set():
         raise IndexBuildBusyError(slot, state="running", owner="another worker")
 
     payload = outcome.to_json()
@@ -639,13 +803,17 @@ def run_index_build(
 __all__ = [
     "ACTIVE_STATES",
     "DEFAULT_LEASE_SECONDS",
+    "HEARTBEAT_MAX_SECONDS",
     "KIND",
+    "PENDING_GRACE_SECONDS",
     "STAGES",
     "TERMINAL_STATES",
     "IndexBuildBusyError",
     "IndexBuildError",
     "IndexBuildProfileUnavailableError",
     "ensure_index_build_job",
+    "heartbeat_handle_factory",
+    "heartbeat_interval",
     "index_build_job_id",
     "index_build_scope_key",
     "index_job_payload",
@@ -653,6 +821,7 @@ __all__ = [
     "job_is_active",
     "lease_expired",
     "live_index_counts",
+    "pending_is_fresh",
     "run_index_build",
     "slot_row",
     "tree_storage_root",

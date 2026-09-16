@@ -370,29 +370,60 @@ def _search_readiness(cfg: Any) -> dict[str, Any]:
 
     Deliberately *not* the full ``index status`` report: that walks the vector
     backlog row by row, which is fine for the index page but not for a probe the
-    dashboard runs.  This checks the two facts that decide retrievability — a
-    published generation exists and it has ready nodes — and returns reasons
-    plus a next step when it does not.
+    dashboard runs.  It mirrors that report's *retrievable* decision with cheap
+    reads only, and follows the deployment instead of assuming one shape
+    (review P2): the unified-tree generation only gates a route that actually
+    reads the tree, a persisted LlamaIndex generation is checked through the
+    backend's own readiness report, and a route without either is ready as soon
+    as it has its own index.
     """
+    from drbrain.rag.config import get_llamaindex_config
+    from drbrain.rag.legs import normalize_legs
     from drbrain.tree.publish import get_active_tree_generation
 
-    generation = ""
+    li = get_llamaindex_config(cfg)
+    engine = str(getattr(li, "rag_engine", "") or "llamaindex")
+    requested = [str(item) for item in (li.retrievers or [])]
     try:
-        generation = get_active_tree_generation(tree_storage_root(cfg)) or ""
-    except Exception:  # noqa: BLE001 - an unreadable generation is a reported state
-        generation = ""
-    with _db(cfg) as db:
-        leaves = int(db.count_tree_nodes(kind="leaf", state="ready"))
-        regions = int(db.count_tree_nodes(kind="region", state="ready"))
+        route_legs = set(normalize_legs(requested).legs)
+    except Exception:  # noqa: BLE001 - an invalid route is a reported state
+        route_legs = set(requested)
+
     reasons: list[str] = []
-    if not generation:
-        reasons.append("no_published_generation")
-    if leaves + regions <= 0:
-        reasons.append("no_ready_nodes")
+    generation = ""
+    leaves = regions = 0
+    if "tree" in route_legs:
+        try:
+            generation = get_active_tree_generation(tree_storage_root(cfg)) or ""
+        except Exception:  # noqa: BLE001 - an unreadable generation is a reported state
+            generation = ""
+        with _db(cfg) as db:
+            leaves = int(db.count_tree_nodes(kind="leaf", state="ready"))
+            regions = int(db.count_tree_nodes(kind="region", state="ready"))
+        if not generation:
+            reasons.append("no_published_generation")
+        if leaves + regions <= 0:
+            reasons.append("no_ready_nodes")
+    if not bool(getattr(li, "enabled", True)):
+        reasons.append("llamaindex_disabled")
+    if engine == "llamaindex":
+        # The persisted generation is the thing bm25/vector read in this mode.
+        from drbrain.rag.indexer import get_index_health
+
+        try:
+            backend_ready = bool(dict(get_index_health(cfg)).get("ready"))
+        except Exception:  # noqa: BLE001 - a broken backend is a reported state
+            backend_ready = False
+        if not backend_ready:
+            reasons.append("llamaindex_generation_not_ready")
+    elif not route_legs:
+        reasons.append("no_published_index")
     return {
         "ready": not reasons,
         "reasons": reasons,
         "generation": generation,
+        "engine": engine,
+        "legs": sorted(route_legs),
         "leaves": leaves,
         "regions": regions,
         "hint": "" if not reasons else "运行 drbrain index build 建一次索引。",
@@ -680,6 +711,12 @@ def evidence_search(
     the ANN scope (FR-S8/TF3: the UI must say which one it got).  ``limit`` is a
     *display* cap — the retrieval layer has no total, so the page says "top N"
     rather than pretending to know how many rows exist.
+
+    Two scope rules are load-bearing (review P1): caller-supplied ``paper_ids``
+    are intersected with the project's members (an explicit filter can never
+    widen the scope), and an empty scope — an empty project, or a filter that
+    matches nothing inside it — returns an explicit empty result instead of
+    falling through to an unrestricted corpus read.
     """
     from drbrain.services.evidence_search import (
         DEFAULT_EVIDENCE_LIMIT,
@@ -691,23 +728,38 @@ def evidence_search(
     resolve_project(cfg, pid)
     cap = max(1, min(int(limit or DEFAULT_EVIDENCE_LIMIT), MAX_EVIDENCE_LIMIT))
     explicit = [str(item) for item in (paper_ids or []) if str(item).strip()]
-    scoped: list[str] | None = explicit or None
+    with _db(cfg) as db:
+        members = project_paper_ids(cfg, pid, db=db)
+    scoped: list[str] | None
     best_effort = False
-    members: list[str] | None = None
-    if scoped is None:
-        with _db(cfg) as db:
-            members = project_paper_ids(cfg, pid, db=db)
-        if members is not None:
-            if len(members) <= _EVIDENCE_SCOPE_LIMIT:
-                scoped = [str(item) for item in members]
-            else:
-                best_effort = True
+    scope_reason = ""
+    if explicit:
+        if members is None:
+            scoped = explicit
+        else:
+            allowed = {str(item) for item in members}
+            scoped = [item for item in explicit if item in allowed]
+            if not scoped:
+                scope_reason = "out_of_scope_paper_ids"
+    elif members is None:
+        scoped = None
+    elif not members:
+        # An empty workspace is an empty scope, not "all papers" (a falsy list
+        # must never be coerced into "no filter").
+        scoped = []
+        scope_reason = "empty_project"
+    elif len(members) <= _EVIDENCE_SCOPE_LIMIT:
+        scoped = [str(item) for item in members]
+    else:
+        best_effort = True
+        scoped = None
     payload = run_evidence_search(cfg, query, limit=cap, paper_ids=scoped, source=source)
     payload["scope"] = {
         "project_id": pid,
         "paper_ids": scoped or [],
         "project_papers": len(members) if members is not None else None,
         "best_effort": best_effort,
+        "reason": scope_reason,
     }
     payload["display_cap"] = cap
     return redact_sensitive(payload)
@@ -742,13 +794,65 @@ def search(
     return [dict(r) for r in results]
 
 
-def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
+def _scoped_answer(
+    result: dict[str, Any], scope: set[str], *, project_id: str, best_effort: bool = True
+) -> dict[str, Any]:
+    """Keep only in-scope citations in an answer (review P1).
+
+    The LlamaIndex engine takes an ``acl_filter`` of ``{key: value}`` pairs, so a
+    multi-paper project scope cannot be pushed down there.  Such a scope is
+    enforced *after* retrieval instead (a single-paper scope is enforced both
+    ways): out-of-scope sources are dropped, and an answer left without a single
+    in-scope citation is replaced by an explicit ``permission_denied`` state
+    rather than a synthesized answer about papers the reader cannot see.
+    """
+    payload = dict(result)
+    sources = [s for s in (payload.get("sources") or []) if str(s.get("paper_id") or "") in scope]
+    dropped = len(payload.get("sources") or []) - len(sources)
+    payload["sources"] = sources
+    payload["evidence_ids"] = [
+        str(item)
+        for item in (payload.get("evidence_ids") or [])
+        if str(item).split(":", 1)[0] in scope
+    ]
+    payload["scope"] = {
+        "project_id": project_id,
+        "best_effort": bool(best_effort),
+        "dropped_sources": dropped,
+    }
+    if not sources and payload.get("answer"):
+        payload.update(
+            {
+                "answer": "",
+                "sources": [],
+                "evidence_ids": [],
+                "status": "permission_denied",
+                "unavailable": True,
+                "unavailable_reason": "out_of_scope",
+                "hint": "这次提问命中的来源都不在当前项目内：切到对应项目，或先在项目里加入这些文献。",
+            }
+        )
+    return payload
+
+
+def ask(
+    cfg: Any,
+    question: str,
+    top_k: int = 5,
+    *,
+    project_id: str | None = None,
+) -> dict[str, Any]:
     """Retrieval-augmented answer — same path as ``drbrain ask`` (non-streaming).
 
     Never raises for a missing capability or an unprepared index: the result
     carries a ``status`` plus a ``hint`` the UI can render (04-arch A3, D4).
     ``unavailable`` keeps its exact previous meaning — tests and templates
     branch on it — and the new fields only add *why* and *what to do next*.
+
+    ``project_id`` is optional and additive (review P1): with it, an answer can
+    never present papers outside the project — a single-paper scope is pushed
+    down as an ACL filter, a wider one is enforced on the citations, and an
+    empty project short-circuits before the engine is asked anything.
     """
     question = question.strip()
     if not question:
@@ -759,6 +863,26 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
         ask_prepare_hint,
         resolve_engine,
     )
+
+    members: list[str] | None = None
+    if project_id is not None:
+        pid = normalize_project_id(project_id)
+        resolve_project(cfg, pid)
+        with _db(cfg) as db:
+            members = project_paper_ids(cfg, pid, db=db)
+        if members is not None and not members:
+            # Nothing in scope: answer nothing instead of reading the corpus.
+            return {
+                "question": question,
+                "answer": "",
+                "status": "permission_denied",
+                "sources": [],
+                "evidence_ids": [],
+                "unavailable": True,
+                "unavailable_reason": "empty_project",
+                "hint": "当前项目还没有论文：先在项目里加入文献，再提问。",
+                "scope": {"project_id": pid, "best_effort": False, "dropped_sources": 0},
+            }
 
     if resolve_engine(cfg, "llamaindex") != "llamaindex":
         from drbrain.rag.config import get_llamaindex_config
@@ -773,9 +897,21 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
             "engine": configured_engine,
             "hint": ask_prepare_hint(cfg),
         }
+    # A one-paper scope is expressible as an ACL filter; a wider one is applied
+    # to the citations after retrieval (see ``_scoped_answer``).  The filter is
+    # passed only when present, so callers/mocks that wrap ``ask_llamaindex``
+    # with the historical signature keep working.
+    acl_filter = (
+        {"paper_id": str(members[0])} if members is not None and len(members) == 1 else None
+    )
     with _db(cfg) as db:
         try:
-            result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
+            if acl_filter:
+                result = ask_llamaindex(
+                    cfg, db, question, top_k=top_k, streaming=False, acl_filter=acl_filter
+                )
+            else:
+                result = ask_llamaindex(cfg, db, question, top_k=top_k, streaming=False)
         except AskIndexNotPreparedError as exc:
             # "Capability not ready" is a reported state, not a 500 (TF2/D4).
             return {
@@ -789,7 +925,18 @@ def ask(cfg: Any, question: str, top_k: int = 5) -> dict[str, Any]:
                 "unavailable": True,
                 "unavailable_reason": "index_not_prepared",
             }
-    return dict(result)
+    payload = dict(result)
+    if members is not None:
+        # Enforced for every membership size: a single-paper scope is pushed
+        # down as an ACL filter *and* checked here (an engine that ignores the
+        # filter must not be able to widen the answer).
+        payload = _scoped_answer(
+            payload,
+            {str(item) for item in members},
+            project_id=pid,
+            best_effort=len(members) > 1,
+        )
+    return payload
 
 
 # ── papers (literature page) ─────────────────────────────────────────────────
