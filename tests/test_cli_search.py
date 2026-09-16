@@ -237,6 +237,22 @@ class TestSearchExternalSource:
         assert "node_id" not in payload["evidence"][0]
         assert payload["legs"][0]["source"] == "arxiv"
 
+    def test_external_only_failure_reports_source_unavailable(self, tmp_path):
+        _write_config(tmp_path)
+        with mock.patch("drbrain.services.fsearch.search_arxiv", side_effect=RuntimeError("boom")):
+            result = _invoke(tmp_path, "search", "kagome", "--source", "arxiv", "--json")
+
+        # A provider failure is not "empty": it exits nonzero, names the external
+        # source (not the local index), and still carries the structured payload.
+        assert result.exit_code == 1
+        combined = _plain(result.output) + _plain(result.stderr or "")
+        assert "external source unavailable" in combined
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "source_unavailable"
+        assert payload["evidence"] == []
+        assert payload["legs"][0]["source"] == "arxiv"
+        assert payload["legs"][0]["status"] == "unavailable"
+
     def test_all_merges_local_and_external_rows(self, tmp_path):
         _write_config(tmp_path)
         arxiv = [

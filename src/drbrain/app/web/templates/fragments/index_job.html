@@ -1,0 +1,75 @@
+{# Index build job panel (04-arch A1). Self-polling while the job is active;
+   the poll stops on its own the moment a terminal state is rendered, because
+   the wrapper's hx-trigger only exists for non-terminal states. #}
+{% import "_macros.html" as m %}
+{% set active = job.state in ('pending', 'running', 'paused') and not job.stale %}
+<div id="index-job"
+     {% if active %}
+     hx-get="/ui/fragments/index-job?project_id={{ project.project_id | urlencode }}{% if job.job_id %}&job_id={{ job.job_id | urlencode }}{% endif %}"
+     hx-trigger="load delay:2000ms" hx-swap="outerHTML"
+     {% endif %}>
+  {% if not job or not job.job_id %}
+  <p class="small muted">还没有发起过构建。发起后这里会显示进度（词法索引 → 正文索引 → 语义向量 → 层次结构 → 发布）。</p>
+  {% else %}
+  <div class="card-head">
+    <span class="strong">任务 {{ job.job_id | short(18) }}</span>
+    {{ m.status_badge(job.state) }}
+  </div>
+  <p class="small">{{ job_note(job.state, stale=job.stale) }}</p>
+
+  <ul class="checklist">
+    {% for name in ('lexical', 'fts', 'vectors', 'hierarchy', 'publication') %}
+    {% set state = (job.stage_states or {}).get(name, 'pending') %}
+    <li class="{{ {'done': 'is-ok', 'running': 'is-run', 'failed': 'is-bad'}.get(state, 'is-off') }}">
+      {{ job_stage(name).label }} —
+      {% if state == 'done' %}已完成{% elif state == 'running' %}进行中{% elif state == 'failed' %}失败{% else %}未开始{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+
+  {% if job.pending %}
+  <p class="muted small">
+    本轮起始待办：
+    {% if job.pending.vectors is not none %}向量 {{ job.pending.vectors }}{% endif %}
+    {% if job.pending.leaves %} · 片段 {{ job.pending.leaves }}{% endif %}
+    {% if job.pending.leaves_missing_parent %} · 待归父主题 {{ job.pending.leaves_missing_parent }}{% endif %}
+  </p>
+  {% endif %}
+  {% if job.live %}
+  <p class="muted small">
+    实时计数（每 2 秒刷新）：片段 {{ job.live.leaves_ready }} · 主题 {{ job.live.regions_ready }} ·
+    向量 {{ job.live.vectors_ready }} · 待归父主题 {{ job.live.leaves_missing_parent }}
+  </p>
+  {% endif %}
+
+  {% if job.state == 'running' and job.counts %}
+  <p class="muted small">
+    已完成的阶段结果：
+    {% for key, value in job.counts.items() %}<code>{{ key }}</code>=<b>{{ value }}</b>{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+
+  {% if job.state == 'failed' %}
+  <p class="small">
+    失败阶段：{% for name in job.failed_stages %}{{ job_stage(name).label }}{% if not loop.last %}、{% endif %}{% else %}未标注（见下面的原因）{% endfor %}
+    {% if job.reason %}（{{ job.reason }}）{% endif %}
+  </p>
+  {% if job.last_build and job.last_build.stage_errors %}
+  <details class="diag" open>
+    <summary>失败原因（可复制）</summary>
+    <pre class="raw">{% for name, detail in job.last_build.stage_errors.items() %}{{ job_stage(name).label }}：{{ detail }}
+{% endfor %}</pre>
+  </details>
+  {% endif %}
+  <p class="muted small">修好后可以再点一次「构建索引」；重复提交不会产生第二个任务（构建没有取消按钮）。</p>
+  {% endif %}
+  {% if job.last_build and job.last_build.ok is not none %}
+  <p class="muted small">
+    最近一次构建记录：
+    {% if job.last_build.ok %}成功{% else %}失败{% endif %}
+    {% if job.last_build.published %}· 版本 <code>{{ job.last_build.published | short(24) }}</code>{% endif %}
+    {% if job.last_build.failed_stages %}· 失败阶段 {{ job.last_build.failed_stages | join('、') }}{% endif %}
+  </p>
+  {% endif %}
+  {% endif %}
+</div>

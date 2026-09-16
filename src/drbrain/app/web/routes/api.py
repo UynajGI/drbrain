@@ -98,8 +98,89 @@ def ask(request: Request, body: dict[str, Any] | None = None) -> Response:
         str(payload.get("question", "")),
         top_k=int(payload.get("top_k", 5) or 5),
     )
-    status = 503 if result.get("unavailable") else 200
+    # 04-arch A3: only "the engine is switched off" is a 503.  An unprepared
+    # index or an abstention is a *reported state* the UI must render (TF2/D4).
+    reason = result.get("unavailable_reason")
+    status = 503 if reason == "engine_disabled" else 200
     return JSONResponse(result, status_code=status)
+
+
+@router.get("/search/evidence")
+def search_evidence(
+    request: Request,
+    q: str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+    paper: list[str] = Query([]),
+    source: str = Query("local"),
+    project_id: str = Query(DEFAULT_PROJECT_ID),
+) -> dict[str, Any]:
+    """Evidence rows (the ``drbrain search`` payload) with project scope + cap."""
+    return service.evidence_search(
+        deps.get_cfg(request),
+        q,
+        limit=limit,
+        paper_ids=paper or None,
+        source=source,
+        project_id=project_id,
+    )
+
+
+# ── index reports (read-only; the CLI's own payloads) ────────────────────────
+
+
+@router.get("/index/status")
+def index_status(request: Request, project_id: str = Query(DEFAULT_PROJECT_ID)) -> dict[str, Any]:
+    """Three-state readiness, per-leg detail, versions and backlog."""
+    return service.index_status(deps.get_cfg(request), project_id=project_id)
+
+
+@router.get("/index/verify")
+def index_verify(request: Request, project_id: str = Query(DEFAULT_PROJECT_ID)) -> dict[str, Any]:
+    """What ``search``/``ask`` actually read, re-checked (failure items included)."""
+    return service.index_verify(deps.get_cfg(request), project_id=project_id)
+
+
+# ── background jobs (index build; 04-arch A1) ───────────────────────────────
+
+
+class IndexBuildRequest(BaseModel):
+    force: bool = False
+    project_id: str | None = None
+
+
+@router.post("/index/build", status_code=202)
+def start_index_build(request: Request, body: IndexBuildRequest | None = None) -> dict[str, Any]:
+    """Start the corpus build, or rejoin the live one (single-flight).
+
+    Re-running is safe: the same slot is returned with ``already_running: true``
+    and no second worker starts.  There is no cancel endpoint by design — the
+    build has no safe interruption point.
+    """
+    payload = body or IndexBuildRequest()
+    project = deps.resolve_project(request, payload.project_id or DEFAULT_PROJECT_ID)
+    return service.start_index_build(
+        deps.get_cfg(request), force=bool(payload.force), project_id=project["project_id"]
+    )
+
+
+@router.get("/jobs")
+def jobs(
+    request: Request,
+    kind: str = Query("index_build"),
+    state: str = Query(""),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """Recent background jobs (durable rows, newest first)."""
+    states = tuple(item for item in (part.strip() for part in state.split(",")) if item)
+    return {
+        "items": service.index_jobs(deps.get_cfg(request), kind=kind, states=states, limit=limit)
+    }
+
+
+@router.get("/jobs/{job_id}")
+def job_state(request: Request, job_id: str) -> dict[str, Any]:
+    """One job's state and progress (the poll target while a build runs)."""
+    return service.index_job_state(deps.get_cfg(request), job_id)
 
 
 # ── literature ───────────────────────────────────────────────────────────────

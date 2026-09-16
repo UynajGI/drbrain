@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% set idx = index_report %}
+{% set states = idx.states or {} %}
+{% block title %}索引与语料 · DrBrain 工作台{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>索引与语料</h1>
+    <p class="muted">能不能搜、搜的是哪个版本、还差什么。</p>
+  </div>
+  <div class="page-actions">
+    <a class="btn" href="/papers?project_id={{ project.project_id }}">看语料</a>
+  </div>
+</header>
+
+<section class="card" aria-labelledby="search-health-title">
+  <div class="card-head">
+    <h2 id="search-health-title">现在能不能搜？</h2>
+    {% if states.retrievable and states.retrievable.ready %}
+    <span class="badge badge-ok">可检索</span>
+    {% elif states.indexed and states.indexed.ready %}
+    <span class="badge badge-warn">部分可用</span>
+    {% else %}
+    <span class="badge badge-warn">还不可用</span>
+    {% endif %}
+  </div>
+  {% if idx.reasons %}
+  <ul class="checklist">
+    {% for reason in idx.reasons %}
+    {% set meta = index_reason(reason) %}
+    <li class="is-off">{{ meta.label }}{% if meta.hint %}<p class="muted small">{{ meta.hint }}</p>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="small">三条找法都就绪。</p>
+  {% endif %}
+  {% if error %}<p class="small">{{ error }}</p>{% endif %}
+  <form method="post" action="/index/build" class="inline-form">
+    {{ m.csrf_field(csrf_token) }}
+    <input type="hidden" name="project_id" value="{{ project.project_id }}">
+    <button type="submit" class="btn" data-submit-once>构建索引</button>
+  </form>
+  <p class="small muted">
+    构建是一个显式的后台任务：会跑一段时间、会占资源、<strong>可以离开本页</strong>。
+    重复点击不会产生第二个任务；构建没有“取消”按钮（它没有安全的打断点）。
+  </p>
+</section>
+
+<section class="card" aria-labelledby="build-title">
+  <div class="card-head">
+    <h2 id="build-title">构建任务</h2>
+    {% if job and job.state %}{{ m.status_badge(job.state) }}{% endif %}
+  </div>
+  {% include "fragments/index_job.html" %}
+</section>
+
+<section class="kpis" aria-label="入库 → 建索引 → 可检索">
+  {% for state in index_states %}
+  {% set meta = index_state_labels.get(state.key, (state.key, '')) %}
+  <div class="kpi">
+    <span class="kpi-value">{{ state.value }}</span>
+    <span class="kpi-label">{{ meta[0] }} · {{ meta[1] }}</span>
+  </div>
+  {% endfor %}
+</section>
+<p class="muted small">
+  三段是三个不同的阶段：<strong>入库</strong>＝正文已登记，<strong>建索引</strong>＝已进入检索结构，
+  <strong>可检索</strong>＝当前索引版本能查到。逐篇差值（哪些文献还没进索引）随覆盖明细一起提供。
+</p>
+
+<div class="two-col">
+  <section class="card" aria-labelledby="legs-title">
+    <h2 id="legs-title">三条找法</h2>
+    {% if folded_note %}<p class="muted small">{{ folded_note }}</p>{% endif %}
+    <ul class="list">
+      {% for row in index_legs %}
+      <li class="list-row">
+        <div class="list-main">
+          <span class="strong">{{ row.leg.label }} <span class="muted small">{{ row.leg.note }}</span></span>
+          {% if row.facts %}
+          <span class="muted small">{% for label, value in row.facts %}{{ label }} {{ value }}{% if not loop.last %} · {% endif %}{% endfor %}</span>
+          {% endif %}
+          {% for reason in row.reasons %}
+          <span class="muted small">{{ reason.label }}{% if reason.hint %}：{{ reason.hint }}{% endif %}</span>
+          {% endfor %}
+        </div>
+        <span class="badge badge-{{ 'ok' if row.ready else 'warn' }}">{{ '就绪' if row.ready else '未就绪' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="muted small">这里显示的是<strong>配置里实际生效的找法</strong>；某条找法退化时，你能看出自己漏看了哪类结果。</p>
+  </section>
+
+  <section class="card" aria-labelledby="generation-title">
+    <h2 id="generation-title">当前索引版本</h2>
+    <dl class="meta-grid">
+      <dt>版本</dt>
+      <dd>{% if idx.generation %}<code>{{ idx.generation | short(28) }}</code>{% else %}还没有发布过索引版本{% endif %}</dd>
+      <dt>结构</dt><dd>{{ idx.tree_state or '—' }}</dd>
+      <dt>引擎</dt><dd>{{ idx.engine or '—' }}（后端 {{ (idx.backend or {}).get('status', '—') }}）</dd>
+      <dt>配置指纹</dt>
+      <dd>
+        {% set tree_leg = (idx.legs or {}).get('tree') or {} %}
+        {% if idx.generation and tree_leg.profile_id and tree_leg.manifest_profile_id and tree_leg.profile_id != tree_leg.manifest_profile_id %}
+        与当前设置不一致（索引是用旧配置建的，建议重建）
+        {% else %}
+        与当前设置一致
+        {% endif %}
+      </dd>
+    </dl>
+    <p class="muted small">任何一次检索结果都能用这个版本号复现；“过期”是明确状态，不会静默发生。</p>
+  </section>
+</div>
+
+<div class="two-col">
+  <section class="card" aria-labelledby="pending-title">
+    <h2 id="pending-title">还没处理完的量</h2>
+    {% set pending = idx.pending or {} %}
+    <ul class="list">
+      <li class="list-row"><div class="list-main"><span>待补向量</span></div><span class="strong">{{ pending.vectors_pending or 0 }}</span></li>
+      <li class="list-row"><div class="list-main"><span>暂存中的向量</span></div><span class="strong">{{ pending.vectors_staging or 0 }}</span></li>
+      <li class="list-row"><div class="list-main"><span>待归父主题的片段</span></div><span class="strong">{{ pending.leaves_missing_parent or 0 }}</span></li>
+      <li class="list-row"><div class="list-main"><span>落后于语料的文献</span></div><span class="strong">{{ pending.documents_stale or 0 }}</span></li>
+      <li class="list-row"><div class="list-main"><span>处理失败的文献</span></div><span class="strong">{{ pending.documents_failed or 0 }}</span></li>
+      <li class="list-row"><div class="list-main"><span>摘要失败</span></div><span class="strong">{{ pending.summaries_failed or 0 }}</span></li>
+    </ul>
+    <p class="muted small">
+      “待归父主题”与“未索引”是两件事：前者是合法的多根，下次构建会重试，不算故障。
+      “部分完成”是被承认的正式状态，不是待修的 bug。
+    </p>
+  </section>
+
+  <section class="card" aria-labelledby="verify-title">
+    <div class="card-head">
+      <h2 id="verify-title">自检</h2>
+      <button type="button" class="btn btn-small"
+              hx-get="/ui/fragments/index-verify?project_id={{ project.project_id }}"
+              hx-target="#verify-out" hx-swap="outerHTML">运行自检</button>
+    </div>
+    <p class="small muted">自检只读：检查“检索实际会读到什么”，不改动任何东西。点按钮运行。</p>
+    <div id="verify-out"><p class="muted small">尚未运行自检。</p></div>
+  </section>
+</div>
+
+<section class="card" aria-labelledby="diag-title">
+  <h2 id="diag-title">诊断详情</h2>
+  <details>
+    <summary>数据位置与原始字段（可复制）</summary>
+    <dl class="meta-grid">
+      <dt>索引目录</dt><dd><code>{{ idx.tree_storage or '—' }}</code></dd>
+      <dt>数据库</dt>
+      <dd><code>{{ assets.database.path }}</code>{% if assets.database.bytes %} · {{ (assets.database.bytes / 1024) | round(0) | int }} KB{% endif %}</dd>
+      <dt>研究运行 ledger</dt>
+      <dd><code>{{ assets.ledger.path }}</code>{% if assets.ledger.bytes is none %} · 尚未创建{% endif %}</dd>
+      <dt>插件目录</dt>
+      <dd>{% if assets.plugins_dir %}<code>{{ assets.plugins_dir }}</code>{% else %}未配置（autoresearch.plugins_dir）{% endif %}</dd>
+      <dt>整体状态</dt><dd>{{ idx.status or '—' }}{% if not idx.ok %} · ok=false{% endif %}</dd>
+    </dl>
+    <pre class="raw">{{ idx | tojson(indent=2) }}</pre>
+  </details>
+</section>
+{% endblock %}

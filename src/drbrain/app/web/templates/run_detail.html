@@ -29,7 +29,11 @@
 </header>
 
 {% if detail.display_status == 'interrupted' %}
-<div class="alert alert-warn" role="alert">运行在服务中断前处于运行态，当前没有活跃工作进程；重新提交同一目标可恢复该运行。</div>
+<div class="alert alert-warn" role="alert">
+  <strong>已中断（可恢复）</strong>：运行在服务中断前处于运行态，当前没有活跃工作进程；
+  账本里的检查点还在——这不是失败。用同一个研究目标重新发起会从检查点继续，而不是从头再来。
+  <a class="link" href="/runs?project_id={{ project.project_id }}&amp;topic={{ detail.topic | urlencode }}{% if detail.session_id %}&amp;session_id={{ detail.session_id }}{% endif %}#start-run">重新发起同一目标 →</a>
+</div>
 {% endif %}
 {% if detail.pending_approvals %}
 <div class="alert alert-warn" role="alert">运行正在等待人工审核：{{ detail.pending_steps | length }} 个步骤（{{ detail.pending_steps | map(attribute='step_name') | join('、') }}）。v1 只展示状态，不在浏览器内批准。</div>
@@ -47,23 +51,47 @@
   <div class="run-side">
     <section class="card" aria-labelledby="claims-title">
       <div class="card-head">
-        <h2 id="claims-title">裁决</h2>
-        <span class="muted small">{{ claims | length }} 项</span>
+        <h2 id="claims-title">研究结论</h2>
+        <span class="muted small">{{ claims | length }} 条</span>
       </div>
       {% if claims %}
+      {% set verified = claims | selectattr('verdict', 'equalto', 'keep') | list %}
+      {% set unsettled = claims | rejectattr('verdict', 'equalto', 'keep') | list %}
+      <p class="muted small">
+        这里只放<strong>运行结算产出的结论</strong>（带证据与裁决）；对话里沉淀的
+        <strong>会话记忆</strong>在会话页，两者不混在一起。
+      </p>
+      {% for group in [(verified, '通过验证', 'ok', '支持/反驳计数与证据都指向它'), (unsettled, '未通过 / 尚未验证', 'warn', '证据不足、被舍弃或还没结算——按推测对待')] %}
+      {% if group[0] %}
+      <h3 class="subhead">{{ group[1] }} <span class="badge badge-{{ group[2] }}">{{ group[0] | length }}</span></h3>
+      <p class="muted small">{{ group[3] }}</p>
       <ul class="claim-list">
-        {% for claim in claims %}
+        {% for claim in group[0] %}
         <li class="claim">
           <div class="claim-head">
             {{ m.status_badge(claim.verdict or claim.status) }}
             <span class="muted small">评分 {{ '%.2f' % (claim.review_score or 0) }}</span>
+            {% if claim.verdict is none %}<span class="muted small">（未结算）</span>{% endif %}
           </div>
           <p class="claim-statement">{{ claim.statement or claim.claim_id }}</p>
+          {% if claim.result and claim.result is mapping and (claim.result.get('supports') is not none or claim.result.get('refutes') is not none) %}
+          <p class="muted small">
+            判定：
+            支持 {{ claim.result.get('supports', 0) }}
+            · 反驳 {{ claim.result.get('refutes', 0) }}
+            · 正交 {{ claim.result.get('orthogonal', 0) }}
+          </p>
+          {% endif %}
           {% if claim.reason %}<p class="muted small">理由：{{ claim.reason }}</p>{% endif %}
           {% if claim.evidence_ids %}
           <p class="evidence-refs">
             {% for eid in claim.evidence_ids %}
-            <a class="chip" href="/api/runs/{{ detail.run_id }}/evidence/{{ eid }}?project_id={{ project.project_id }}" target="_blank" rel="noopener">{{ eid | short(28) }}</a>
+            {% set link = evidence_links.get(eid) if evidence_links else none %}
+            {% if link and link.kind == 'paper' %}
+            <a class="chip" href="{{ link.href }}">看原文：{{ eid | short(28) }}</a>
+            {% else %}
+            <a class="chip" href="/api/runs/{{ detail.run_id }}/evidence/{{ eid }}?project_id={{ project.project_id }}" target="_blank" rel="noopener">{{ eid | short(28) }} (JSON)</a>
+            {% endif %}
             {% endfor %}
           </p>
           {% endif %}
@@ -73,9 +101,17 @@
             <ul>{% for rv in claim.reviews %}<li>{{ rv.reviewer }}：{{ rv.verdict }}（{{ rv.score }}）</li>{% endfor %}</ul>
           </details>
           {% endif %}
+          {% if claim.result %}
+          <details class="muted small">
+            <summary>诊断详情（结算原始结果）</summary>
+            <pre class="raw">{{ claim.result | tojson(indent=2) }}</pre>
+          </details>
+          {% endif %}
         </li>
         {% endfor %}
       </ul>
+      {% endif %}
+      {% endfor %}
       <form method="post" action="/runs/{{ detail.run_id }}/memory/sync" class="run-memory-form">
         {{ m.csrf_field(csrf_token) }}
         <input type="hidden" name="project_id" value="{{ project.project_id }}">
@@ -92,14 +128,29 @@
         <span class="muted small">{{ experiments | length }} 个</span>
       </div>
       {% if experiments %}
-      <ul class="list">
+      <ul class="claim-list">
         {% for exp in experiments %}
-        <li class="list-row">
-          <div class="list-main">
-            <span class="strong">{{ exp.experiment_id | short(20) }}</span>
-            <span class="muted small">{{ exp.status }} · 产物 {{ exp.artifacts }}{% if exp.verdict %} · 裁决 {{ exp.verdict }}{% endif %}</span>
+        <li class="claim">
+          <div class="claim-head">
+            {{ m.status_badge(exp.status) }}
+            <span class="strong">{{ exp.experiment_id | short(24) }}</span>
+            <span class="muted small">产物 {{ exp.artifacts }}</span>
+            {% if exp.verdict %}{{ m.status_badge(exp.verdict) }}{% endif %}
           </div>
-          {% if exp.verdict %}{{ m.status_badge(exp.verdict) }}{% endif %}
+          {% if exp.reason %}<p class="muted small">理由：{{ exp.reason }}</p>{% endif %}
+          <details class="muted small">
+            <summary>作业信息（计划 / 配置 / 结果）</summary>
+            <p class="muted small">
+              计算产物本身留在作业目录里，本页只列元数据；产物详情走
+              <code>/api/runs/{{ detail.run_id }}/artifacts/&lt;artifact_id&gt;</code>（只读，不下载字节）。
+            </p>
+            <p class="muted small">计划</p>
+            <pre class="raw">{{ (exp.plan or {}) | tojson(indent=2) }}</pre>
+            <p class="muted small">配置</p>
+            <pre class="raw">{{ (exp.config or {}) | tojson(indent=2) }}</pre>
+            <p class="muted small">结果</p>
+            <pre class="raw">{{ (exp.result or {}) | tojson(indent=2) }}</pre>
+          </details>
         </li>
         {% endfor %}
       </ul>

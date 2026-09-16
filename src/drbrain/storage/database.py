@@ -2931,6 +2931,27 @@ class Database:
             params = (self._validate_local_id(local_id),)
         return [str(row[0]) for row in self.conn.execute(sql, params).fetchall()]
 
+    def count_leaves_missing_parent(self, local_id: str | None = None) -> int:
+        """COUNT of :meth:`leaves_missing_parent` without materialising the ids.
+
+        The count form exists for pollers (job progress, dashboards): the id
+        list is an audit answer, while the number is a status answer.
+        """
+        sql = (
+            "SELECT COUNT(*) FROM tree_nodes n "
+            "WHERE n.kind = 'leaf' AND n.state = 'ready' AND NOT EXISTS ("
+            "  SELECT 1 FROM tree_node_children c "
+            "  JOIN tree_nodes p ON p.node_id = c.parent_id "
+            "  WHERE c.child_id = n.node_id AND p.state = 'ready'"
+            ") "
+        )
+        params: tuple = ()
+        if local_id is not None:
+            sql += " AND n.local_id = ?"
+            params = (self._validate_local_id(local_id),)
+        row = self.conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
     # ── Canonical content FTS (T12) ───────────────────────────────
     def search_content(
         self,
@@ -3243,6 +3264,47 @@ class Database:
                           OR (state = 'running'
                               AND (claim_expires_at IS NULL
                                    OR claim_expires_at < CURRENT_TIMESTAMP)))""",
+                (str(owner), lease, str(job_id)),
+            )
+            return cursor.rowcount == 1
+
+    def renew_tree_job(self, job_id: str, owner: str, *, ttl_seconds: int = 900) -> bool:
+        """Extend a *held* lease; only the current owner can renew.
+
+        Hour-scale builds (the unified hierarchy is capped per run, T59) would
+        otherwise outlive the 900 s claim and become stealable mid-write.
+        Returns ``False`` when the caller no longer owns a running job, which a
+        worker must treat as "stop, someone else owns this job".
+        """
+        lease = f"+{max(1, int(ttl_seconds))} seconds"
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs
+                   SET claim_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ? AND owner = ? AND state = 'running'""",
+                (lease, str(job_id), str(owner)),
+            )
+            return cursor.rowcount == 1
+
+    def reopen_tree_job(self, job_id: str, owner: str, *, ttl_seconds: int = 900) -> bool:
+        """Take over a *finished* job as a fresh run of the same scope slot.
+
+        The index build owns one stable slot per deployment (scope key), so a
+        completed or failed run has to be re-runnable without losing the slot
+        identity.  Only terminal states are reopenable; a live ``running`` job
+        is never stolen here (that is what lease expiry + ``claim_tree_job``
+        are for).  The previous run's checkpoint is cleared because it belongs
+        to the attempt that just ended.
+        """
+        lease = f"+{max(1, int(ttl_seconds))} seconds"
+        with self._write_scope():
+            cursor = self.conn.execute(
+                """UPDATE tree_build_jobs
+                   SET state = 'running', owner = ?,
+                       claim_expires_at = datetime('now', ?),
+                       checkpoint_json = '{}', reason = '',
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE job_id = ? AND state IN ('done', 'failed')""",
                 (str(owner), lease, str(job_id)),
             )
             return cursor.rowcount == 1
