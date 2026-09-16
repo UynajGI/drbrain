@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from drbrain.services.canonical_content import write_canonical_content
 from drbrain.services.storage_repack import RepackItem, apply_repack, plan_repack
 from drbrain.storage.database import Database
@@ -200,3 +202,56 @@ def test_cli_min_chars_zero_disables_merging() -> None:
     assert _repack_policy(None).min_chars == BlockPolicy().min_chars
     assert _repack_policy(0).min_chars == 0
     assert _repack_policy(320).min_chars == 320
+
+
+def test_page_marks_refuse_to_guess_after_cross_page_merges() -> None:
+    from drbrain.services.storage_repack import _page_marks
+
+    fine = [
+        {"page_start": 1, "page_end": 1, "char_start": 0},
+        {"page_start": 2, "page_end": 2, "char_start": 400},
+    ]
+    assert _page_marks(fine) == [(1, 0), (2, 400)]
+
+    # page 2 has no row starting on it (a merged block covers it), so the
+    # original boundary offsets cannot be recovered exactly
+    merged = [
+        {"page_start": 1, "page_end": 2, "char_start": 0},
+        {"page_start": 3, "page_end": 3, "char_start": 400},
+    ]
+    assert _page_marks(merged) is None
+
+
+def test_repack_retires_replaced_leaf_docs_from_the_shared_store(tmp_path: Path) -> None:
+    pytest.importorskip("zvec", reason="zvec package required for the store test")
+    from drbrain.tree.vector_store import UnifiedVectorStore, VectorEntry
+
+    db = _db(tmp_path)
+    legacy_leaves = _legacy_revision(db, FRAGMENTED)
+    store = UnifiedVectorStore(tmp_path / "vectors", create=True, dimension=3)
+    store.open()
+    store.upsert(
+        [
+            VectorEntry(
+                node_id=leaf_id,
+                node_revision=1,
+                kind="leaf",
+                local_id="p1",
+                layer=0,
+                content_hash="legacy",
+                profile_id="emb-test",
+                vector=(1.0, 0.0, 0.0),
+            )
+            for leaf_id in legacy_leaves
+        ]
+    )
+
+    plan = plan_repack(db)
+    outcome = apply_repack(db, plan, store=store)
+
+    assert outcome["applied"] == 1
+    surviving = {_leaf_id(row) for row in db.get_content_blocks("p1", 1)}
+    retired = [leaf_id for leaf_id in legacy_leaves if leaf_id not in surviving]
+    assert retired  # the merge replaced something
+    assert store.get(retired) == {}
+    store.close()

@@ -63,6 +63,32 @@ def _repack_policy(min_chars: int | None) -> Any:
     return BlockPolicy(min_chars=int(min_chars))
 
 
+def _open_working_store(ctx: typer.Context, cfg: Any) -> Any:
+    """Open the shared working vector store for repack's retired-doc cleanup.
+
+    ``None`` when the store (or the embedding profile needed to address it)
+    is unavailable — a corpus that was never indexed has nothing to retire.
+    """
+    from drbrain.cli.index_commands import _embedding_profile, _tree_storage_root
+    from drbrain.tree.prepare import WORKING_VECTORS_DIR
+    from drbrain.tree.vector_store import UnifiedVectorStore
+
+    try:
+        index_dir = _tree_storage_root(ctx, cfg) / WORKING_VECTORS_DIR
+        if not index_dir.is_dir():
+            return None
+        profile, reason = _embedding_profile(cfg)
+        if profile is None:
+            typer.echo(f"warning: not retiring replaced vectors ({reason})", err=True)
+            return None
+        store = UnifiedVectorStore(index_dir, dimension=int(profile.dimension))
+        store.open()
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort, never blocking
+        typer.echo(f"warning: cannot open the shared vector store ({exc})", err=True)
+        return None
+    return store
+
+
 @storage_app.command("audit")
 def storage_audit_cmd(
     ctx: typer.Context,
@@ -227,7 +253,12 @@ def storage_repack_cmd(
             if payload["failed"]:
                 raise typer.Exit(code=1)
             return
-        outcome = apply_repack(database, plan, policy=policy)
+        store = _open_working_store(ctx, cfg)
+        try:
+            outcome = apply_repack(database, plan, policy=policy, store=store)
+        finally:
+            if store is not None:
+                store.close()
         if json_output:
             typer.echo(_json.dumps(outcome, indent=2, ensure_ascii=False))
         else:

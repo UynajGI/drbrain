@@ -65,17 +65,32 @@ class RepackPlan:
 
 
 def _page_marks(rows: Sequence[dict]) -> list[tuple[int, int]] | None:
-    """Derive PDF page marks from existing block spans (start of each page)."""
+    """Derive PDF page marks from existing block spans (start of each page).
+
+    A block merged across pages has no row starting on the pages it covers
+    inside itself, so those offsets are no longer recoverable exactly.  When
+    the starts do not cover every page up to the highest ``page_end``,
+    refuse to guess: returning ``None`` drops the page fields instead of
+    mislabelling a re-repacked PDF as starting on page one.
+    """
     marks: dict[int, int] = {}
+    last_page = 0
     for row in rows:
         page = row.get("page_start")
         if page is None:
             continue
         marks.setdefault(int(page), int(row["char_start"]))
+        last_page = max(last_page, int(row.get("page_end") or page))
     if not marks:
         return None
     ordered = sorted((page, offset) for page, offset in marks.items())
     if ordered[0][1] != 0:
+        return None
+    pages = [page for page, _offset in ordered]
+    if pages != list(range(pages[0], max(last_page, pages[-1]) + 1)):
+        logger.warning(
+            "[repack] page starts do not cover every page; rebuilding without page spans"
+        )
         return None
     return ordered
 
@@ -180,11 +195,23 @@ def plan_repack(
     return plan
 
 
-def apply_repack(db, plan: RepackPlan, *, policy: BlockPolicy | None = None) -> dict[str, Any]:
+def apply_repack(
+    db,
+    plan: RepackPlan,
+    *,
+    policy: BlockPolicy | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
     """Re-segment each planned revision inside one transaction per revision.
 
     The returned block counts cover applied revisions only: a revision that
     fails keeps its old segmentation and is reported in ``failed``.
+
+    When ``store`` is given, each revision's retired leaf documents are
+    deleted from the shared vector store before its replacement commits:
+    ``publish_tree_generation`` refuses a generation whose ANN holds more
+    documents than the ready metadata lists, so leaving them behind would
+    break the documented ``index build --force`` follow-up.
     """
     from drbrain.tree.contracts import LeafRef, NodeRecord, leaf_node_id
 
@@ -213,6 +240,8 @@ def apply_repack(db, plan: RepackPlan, *, policy: BlockPolicy | None = None) -> 
                 )
                 for row in rows
             ]
+            if store is not None:
+                store.delete(old_leaves)
             with db.transaction():
                 db.delete_tree_nodes(old_leaves)
                 db.delete_content_blocks(local_id, revision)
