@@ -109,7 +109,7 @@ def search_cmd(
         ctx.obj["config"], text, limit=_limit, paper_ids=_paper or None, source=_source
     )
     if payload.get("status") == "source_unavailable":
-        failed = next(
+        failed: dict[str, Any] = next(
             (leg for leg in payload.get("legs") or [] if leg.get("status") == "unavailable"),
             {},
         )
