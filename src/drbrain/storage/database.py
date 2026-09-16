@@ -2847,6 +2847,49 @@ class Database:
             )
             return int(cursor.rowcount or 0)
 
+    def delete_content_blocks(self, local_id: str, revision: int) -> int:
+        """Delete one revision's blocks (the FTS mirror follows its triggers).
+
+        Used by the block repack, which re-segments a revision in place: the
+        canonical text and its hash are unchanged, only the boundaries move.
+        """
+        with self._write_scope():
+            cursor = self.conn.execute(
+                "DELETE FROM content_blocks WHERE local_id = ? AND revision = ?",
+                (str(local_id), int(revision)),
+            )
+        return int(cursor.rowcount or 0)
+
+    def delete_tree_nodes(self, node_ids: Sequence[str]) -> int:
+        """Delete tree nodes together with their child references and vectors.
+
+        ``tree_node_children.child_id`` is ``ON DELETE RESTRICT``, so rows
+        referencing a deleted node are removed first; ``node_vectors`` has no
+        foreign key and would otherwise linger as orphans.
+        """
+        ids = [str(node_id) for node_id in node_ids if str(node_id)]
+        if not ids:
+            return 0
+        deleted = 0
+        with self._write_scope():
+            for start in range(0, len(ids), 500):
+                chunk = ids[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                self.conn.execute(
+                    f"DELETE FROM tree_node_children WHERE child_id IN ({placeholders})",
+                    tuple(chunk),
+                )
+                self.conn.execute(
+                    f"DELETE FROM node_vectors WHERE node_id IN ({placeholders})",
+                    tuple(chunk),
+                )
+                cursor = self.conn.execute(
+                    f"DELETE FROM tree_nodes WHERE node_id IN ({placeholders})",
+                    tuple(chunk),
+                )
+                deleted += int(cursor.rowcount or 0)
+        return deleted
+
     def leaves_missing_parent(self, local_id: str | None = None) -> list[str]:
         """Ready leaves without a *ready* parent (T35 reachability audit).
 
